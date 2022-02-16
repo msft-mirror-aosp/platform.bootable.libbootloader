@@ -22,8 +22,10 @@ cc_test {
     srcs: [
         "VtsBootconfigTest.cpp",
     ],
-    header_libs: ["bpf_headers"],
-    shared_libs: ["libbase"],
+    shared_libs: [
+      "libbase",
+      "libbpf_android",
+    ],
     test_suites: [
         "general-tests",
         "vts",
