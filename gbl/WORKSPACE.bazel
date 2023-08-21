@@ -1,0 +1,77 @@
+# Copyright (C) 2023 The Android Open Source Project
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+workspace(name = "gbl")
+
+load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
+
+git_repository(
+    name = "rules_rust",
+    commit = "78760f889ea04beeb880185cdee6a0ebcc71aeb2",
+
+    # The rust toolchains we need have "uefi" as the system type, which upstream
+    # bazel rust rules doesn't recognize. Apply a patch to fix it.
+    #
+    # Once upstream is fixed and we switch to repo style setup for gbl.
+    # We can simply checkout the repo during `repo init` and turn this into a
+    # local_repository().
+    patch_args = ["-p1"],
+    patches = ["//bazel_patches:0001-rules_rust-add-uefi-support.patch"],
+    remote = "https://android.googlesource.com/platform/external/bazelbuild-rules_rust",
+)
+
+load(
+    "@rules_rust//rust:repositories.bzl",
+    "rules_rust_dependencies",
+    "rust_register_toolchains",
+    "rust_repository_set",
+)
+
+rules_rust_dependencies()
+
+rust_register_toolchains()
+
+# We need "x86_64-unknown-uefi", "aarch64-unknown-uefi" variants of rust toolchain.
+# Fetch directly from upstream rust distribution.
+#
+# Alternatively, we can also consider requesting Android to add the variants to
+# upstream rustc prebuilts at
+# https://android.googlesource.com/platform/prebuilts/rust/+/refs/heads/main/linux-x86/1.71.0/lib/rustlib/
+# so that the toolchain can be checked out during "repo init"
+rust_repository_set(
+    name = "rust_uefi_x86_64",
+    edition = "2021",
+    exec_triple = "x86_64-unknown-linux-gnu",
+    extra_target_triples = ["x86_64-unknown-uefi"],
+    target_settings = ["@gbl//toolchain:gbl_rust_uefi_x86_64"],
+    versions = ["1.71.0"],
+)
+
+rust_repository_set(
+    name = "rust_uefi_aarch64",
+    edition = "2021",
+    exec_triple = "x86_64-unknown-linux-gnu",
+    extra_target_triples = ["aarch64-unknown-uefi"],
+    target_settings = ["@gbl//toolchain:gbl_rust_uefi_aarch64"],
+    versions = ["1.71.0"],
+)
+
+load("//toolchain:gbl_workspace_util.bzl", "gbl_llvm_toolchain_info_repo")
+
+# Set up a repo to export llvm tool path and builtin include directory needed
+# by toolchain declaration.
+gbl_llvm_toolchain_info_repo(name = "gbl_llvm_toolchain_info")
+
+# Register all the clang toolchains defined for gbl.
+register_toolchains("//toolchain:all")
