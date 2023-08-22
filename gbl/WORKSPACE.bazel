@@ -75,3 +75,24 @@ gbl_llvm_toolchain_info_repo(name = "gbl_llvm_toolchain_info")
 
 # Register all the clang toolchains defined for gbl.
 register_toolchains("//toolchain:all")
+
+# The repo contains ELF definitions needed for our elf library.
+git_repository(
+    name = "elfutils",
+    build_file_content = """
+cc_library(
+    name = "elf_type_header",
+    hdrs = ["libelf/elf.h"],
+    visibility = ["//visibility:public"],
+)
+""",
+    commit = "c960c2539c11a01346c58f8bafde978fc413d19f",
+    remote = "https://android.googlesource.com/platform/external/elfutils",
+)
+
+# For C/C++ unit-tests
+git_repository(
+    name = "googletest",
+    commit = "817e9f6edc2fc8301b92403962478d2df0024924",
+    remote = "https://android.googlesource.com/platform/external/googletest",
+)
