@@ -63,7 +63,7 @@ platform(
 )
 
 cc_toolchain_suite(
-    name = "uefi_clang_suite",
+    name = "gbl_clang_suite",
     toolchains = {
         "x86_64": ":x86_64_uefi_clang_cc_toolchain",
         "aarch64": ":aarch64_uefi_clang_cc_toolchain",

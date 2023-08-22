@@ -1,10 +1,11 @@
 # Use our custom-configured c++ toolchain for gbl.
 
-build --crosstool_top=//toolchain:uefi_clang_suite
+build --crosstool_top=//toolchain:gbl_clang_suite
 
 # Use the default Bazel C++ toolchain to build the tools used during the
-# build.
+# build and for test.
 
+test --crosstool_top=@bazel_tools//tools/cpp:toolchain
 build --host_crosstool_top=@bazel_tools//tools/cpp:toolchain
 
 # Bazel fastbuild by default enable stripping via "-Wl,-S" which is
