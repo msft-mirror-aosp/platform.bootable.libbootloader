@@ -40,6 +40,14 @@ directory `libgbl` and run the following:
      TODO(b/292250955): The longer term plan is to integrate the efi image into
      the cuttlefish workflow.
 
+1. Build for x86_32(i386/i686):
+
+    ```
+    bazel build //efi:main \
+        --platforms=//toolchain:gbl_uefi_x86_32 \
+        --cpu=x86_32
+    ```
+
 1. Build for aarch64
 
     ```
