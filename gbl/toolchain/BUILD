@@ -18,6 +18,9 @@ package(
     default_visibility = ["//visibility:public"],
 )
 
+# The following constraint/settings will be used in our newly defined
+# toolchains, so that they only get selected by bazel when we configure
+# to build GBL.
 constraint_setting(name = "firmware_image_type")
 
 constraint_value(
@@ -25,13 +28,16 @@ constraint_value(
     constraint_setting = ":firmware_image_type",
 )
 
-# The following constraint/settings will be used in our newly defined
-# toolchains, so that they only get selected by bazel when we configure
-# to build GBL.
 uefi_x86_64_constraint_values = [
     ":uefi",
     "@platforms//os:none",
     "@platforms//cpu:x86_64",
+]
+
+uefi_x86_32_constraint_values = [
+    ":uefi",
+    "@platforms//os:none",
+    "@platforms//cpu:x86_32",
 ]
 
 uefi_aarch64_constraint_values = [
@@ -43,6 +49,11 @@ uefi_aarch64_constraint_values = [
 config_setting(
     name = "gbl_rust_uefi_x86_64",
     constraint_values = uefi_x86_64_constraint_values,
+)
+
+config_setting(
+    name = "gbl_rust_uefi_x86_32",
+    constraint_values = uefi_x86_32_constraint_values,
 )
 
 config_setting(
@@ -58,6 +69,11 @@ platform(
 )
 
 platform(
+    name = "gbl_uefi_x86_32",
+    constraint_values = uefi_x86_32_constraint_values,
+)
+
+platform(
     name = "gbl_uefi_aarch64",
     constraint_values = uefi_aarch64_constraint_values,
 )
@@ -66,6 +82,7 @@ cc_toolchain_suite(
     name = "gbl_clang_suite",
     toolchains = {
         "x86_64": ":x86_64_uefi_clang_cc_toolchain",
+        "x86_32": ":x86_32_uefi_clang_cc_toolchain",
         "aarch64": ":aarch64_uefi_clang_cc_toolchain",
     },
 )
@@ -75,13 +92,20 @@ cc_toolchain_suite(
 # that do what we want, i.e. compile/link in baremetal environment, UEFI format
 # binary, target architecture etc.
 
-cc_flags_common = ["-ffreestanding"]
+cc_flags_common = [
+    "-ffreestanding",
+    "-fno-common",
+    "-fno-exceptions",
+    "-fno-rtti",
+]
 
 ld_flags_common = [
     "-fuse-ld=lld",
+    "-fno-exceptions",
     "-nostdlib",
-    "-static",
+    "-nostdlib++",
     "-noprofilelib",
+    "-static",
     "-Wl,/subsystem:efi_application",
     "-Wl,/entry:efi_main",
 ]
@@ -99,6 +123,22 @@ toolchain(
     exec_compatible_with = ["@platforms//os:linux"],
     target_compatible_with = uefi_x86_64_constraint_values,
     toolchain = ":x86_64_uefi_clang_cc_toolchain",
+    toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+)
+
+gbl_clang_cc_toolchain(
+    name = "x86_32_uefi_clang_cc_toolchain",
+    cc_flags = cc_flags_common,
+    ld_flags = ld_flags_common,
+    target_cpu = "x86_32",
+    target_system_triple = "x86-windows-msvc",
+)
+
+toolchain(
+    name = "x86_32_uefi_clang",
+    exec_compatible_with = ["@platforms//os:linux"],
+    target_compatible_with = uefi_x86_32_constraint_values,
+    toolchain = ":x86_32_uefi_clang_cc_toolchain",
     toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
 )
 

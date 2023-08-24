@@ -67,6 +67,15 @@ rust_repository_set(
     versions = ["1.71.0"],
 )
 
+rust_repository_set(
+    name = "rust_uefi_x86_32",
+    edition = "2021",
+    exec_triple = "x86_64-unknown-linux-gnu",
+    extra_target_triples = ["i686-unknown-uefi"],
+    target_settings = ["@gbl//toolchain:gbl_rust_uefi_x86_32"],
+    versions = ["1.71.0"],
+)
+
 load("//toolchain:gbl_workspace_util.bzl", "gbl_llvm_toolchain_info_repo")
 
 # Set up a repo to export llvm tool path and builtin include directory needed
