@@ -14,12 +14,10 @@
 
 workspace(name = "gbl")
 
-load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
-git_repository(
+http_archive(
     name = "rules_rust",
-    commit = "78760f889ea04beeb880185cdee6a0ebcc71aeb2",
-
     # The rust toolchains we need have "uefi" as the system type, which upstream
     # bazel rust rules doesn't recognize. Apply a patch to fix it.
     #
@@ -28,7 +26,7 @@ git_repository(
     # local_repository().
     patch_args = ["-p1"],
     patches = ["//bazel_patches:0001-rules_rust-add-uefi-support.patch"],
-    remote = "https://android.googlesource.com/platform/external/bazelbuild-rules_rust",
+    url = "https://android.googlesource.com/platform/external/bazelbuild-rules_rust/+archive/78760f889ea04beeb880185cdee6a0ebcc71aeb2.tar.gz",
 )
 
 load(
@@ -105,7 +103,7 @@ gbl_llvm_toolchain_info_repo(name = "gbl_llvm_toolchain_info")
 register_toolchains("//toolchain:all")
 
 # The repo contains ELF definitions needed for our elf library.
-git_repository(
+http_archive(
     name = "elfutils",
     build_file_content = """
 cc_library(
@@ -114,15 +112,13 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 """,
-    commit = "c960c2539c11a01346c58f8bafde978fc413d19f",
-    remote = "https://android.googlesource.com/platform/external/elfutils",
+    url = "https://android.googlesource.com/platform/external/elfutils/+archive/refs/heads/main.tar.gz",
 )
 
 # For C/C++ unit-tests
-git_repository(
+http_archive(
     name = "googletest",
-    commit = "817e9f6edc2fc8301b92403962478d2df0024924",
-    remote = "https://android.googlesource.com/platform/external/googletest",
+    url = "https://android.googlesource.com/platform/external/googletest/+archive/refs/heads/main.tar.gz",
 )
 
 load("@rules_rust//crate_universe:repositories.bzl", "crate_universe_dependencies")
