@@ -21,8 +21,7 @@ cc_library(
     srcs = ["relocation.cpp"],
     hdrs = ["public/elf/relocation.h"],
     copts = select({
-        # TODO(294059825): For non-host targets, don't define the flag.
-
+        "@gbl//toolchain:gbl_rust_elf_riscv64": [],
         # For the `elf_static_relocation_checker` host tool, enable
         # print and panics as exit().
         "//conditions:default": ["-DHOST_TOOLING"],
@@ -35,6 +34,9 @@ cc_test(
     name = "relocation_test",
     size = "small",
     srcs = ["relocation_test.cpp"],
+    target_compatible_with = [
+        "@platforms//os:linux",
+    ],
     deps = [
         ":relocation",
         "@elfutils//:elf_type_header",

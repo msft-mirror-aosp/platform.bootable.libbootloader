@@ -28,6 +28,11 @@ constraint_value(
     constraint_setting = ":firmware_image_type",
 )
 
+constraint_value(
+    name = "elf",
+    constraint_setting = ":firmware_image_type",
+)
+
 uefi_x86_64_constraint_values = [
     ":uefi",
     "@platforms//os:none",
@@ -46,6 +51,12 @@ uefi_aarch64_constraint_values = [
     "@platforms//cpu:aarch64",
 ]
 
+elf_riscv64_constraint_values = [
+    ":elf",
+    "@platforms//os:linux",
+    "@platforms//cpu:riscv64",
+]
+
 config_setting(
     name = "gbl_rust_uefi_x86_64",
     constraint_values = uefi_x86_64_constraint_values,
@@ -59,6 +70,11 @@ config_setting(
 config_setting(
     name = "gbl_rust_uefi_aarch64",
     constraint_values = uefi_aarch64_constraint_values,
+)
+
+config_setting(
+    name = "gbl_rust_elf_riscv64",
+    constraint_values = elf_riscv64_constraint_values,
 )
 
 # The following will be passed to "bazel build --platform=<>" argument to
@@ -78,12 +94,18 @@ platform(
     constraint_values = uefi_aarch64_constraint_values,
 )
 
+platform(
+    name = "gbl_elf_riscv64",
+    constraint_values = elf_riscv64_constraint_values,
+)
+
 cc_toolchain_suite(
     name = "gbl_clang_suite",
     toolchains = {
         "x86_64": ":x86_64_uefi_clang_cc_toolchain",
         "x86_32": ":x86_32_uefi_clang_cc_toolchain",
         "aarch64": ":aarch64_uefi_clang_cc_toolchain",
+        "riscv64": ":riscv64_elf_clang_cc_toolchain",
     },
 )
 
@@ -94,7 +116,7 @@ cc_toolchain_suite(
 
 cc_flags_common = [
     "-ffreestanding",
-    "-fno-common",
+    #"-fno-common",
     "-fno-exceptions",
     "-fno-rtti",
 ]
@@ -105,6 +127,9 @@ ld_flags_common = [
     "-nostdlib",
     "-nostdlib++",
     "-noprofilelib",
+]
+
+ld_flags_uefi = ld_flags_common + [
     "-static",
     "-Wl,/subsystem:efi_application",
     "-Wl,/entry:efi_main",
@@ -113,7 +138,7 @@ ld_flags_common = [
 gbl_clang_cc_toolchain(
     name = "x86_64_uefi_clang_cc_toolchain",
     cc_flags = cc_flags_common,
-    ld_flags = ld_flags_common,
+    ld_flags = ld_flags_uefi,
     target_cpu = "x86_64",
     target_system_triple = "x86_64-windows-msvc",
 )
@@ -129,7 +154,7 @@ toolchain(
 gbl_clang_cc_toolchain(
     name = "x86_32_uefi_clang_cc_toolchain",
     cc_flags = cc_flags_common,
-    ld_flags = ld_flags_common,
+    ld_flags = ld_flags_uefi,
     target_cpu = "x86_32",
     target_system_triple = "x86-windows-msvc",
 )
@@ -145,7 +170,7 @@ toolchain(
 gbl_clang_cc_toolchain(
     name = "aarch64_uefi_clang_cc_toolchain",
     cc_flags = cc_flags_common,
-    ld_flags = ld_flags_common,
+    ld_flags = ld_flags_uefi,
     target_cpu = "aarch64",
     target_system_triple = "aarch64-windows-msvc",
 )
@@ -155,5 +180,21 @@ toolchain(
     exec_compatible_with = ["@platforms//os:linux"],
     target_compatible_with = uefi_aarch64_constraint_values,
     toolchain = ":aarch64_uefi_clang_cc_toolchain",
+    toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+)
+
+gbl_clang_cc_toolchain(
+    name = "riscv64_elf_clang_cc_toolchain",
+    cc_flags = cc_flags_common + ["-fpie"],
+    ld_flags = ld_flags_common + ["-fpie"],
+    target_cpu = "riscv64",
+    target_system_triple = "riscv64-unknown-linux",
+)
+
+toolchain(
+    name = "riscv64_elf_clang",
+    exec_compatible_with = ["@platforms//os:linux"],
+    target_compatible_with = elf_riscv64_constraint_values,
+    toolchain = ":riscv64_elf_clang_cc_toolchain",
     toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
 )
