@@ -8,7 +8,7 @@ directory `libgbl` and run the following:
 1. Build for x86_64:
 
     ```
-    bazel build //efi:main \
+    bazel build //efi:gbl_efi \
         --platforms=//toolchain:gbl_uefi_x86_64 \
         --cpu=x86_64
     ```
@@ -26,9 +26,10 @@ directory `libgbl` and run the following:
     LLVM.
 
     To test on QEMU:
+
     ```
     mkdir -p /tmp/esp/EFI/BOOT
-    cp bazel-bin/efi/main.efi /tmp/esp/EFI/BOOT/bootx64.efi
+    cp bazel-bin/efi/gbl.efi /tmp/esp/EFI/BOOT/bootx64.efi
     qemu-system-x86_64 -nographic \
         -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
         -drive format=raw,file=fat:rw:/tmp/esp
@@ -43,7 +44,7 @@ directory `libgbl` and run the following:
 1. Build for x86_32(i386/i686):
 
     ```
-    bazel build //efi:main \
+    bazel build //efi:gbl_efi \
         --platforms=//toolchain:gbl_uefi_x86_32 \
         --cpu=x86_32
     ```
@@ -51,16 +52,36 @@ directory `libgbl` and run the following:
 1. Build for aarch64
 
     ```
-    bazel build //efi:main \
+    bazel build //efi:gbl_efi \
         --platforms=//toolchain:gbl_uefi_aarch64 \
         --cpu=aarch64
     ```
 
     To test on QEMU:
+
     ```
     mkdir -p /tmp/esp/EFI/BOOT
-    cp bazel-bin/efi/main.efi /tmp/esp/EFI/BOOT/bootaa64.efi
+    cp bazel-bin/efi/gbl.efi /tmp/esp/EFI/BOOT/bootaa64.efi
     qemu-system-aarch64 -nographic -machine virt -m 1G -cpu cortex-a57 \
         -drive if=pflash,format=raw,readonly=on,file=/usr/share/AAVMF/AAVMF_CODE.fd \
         -drive format=raw,file=fat:rw:/tmp/esp
+    ```
+
+1. Build for riscv64
+
+    ```
+    bazel build //efi:gbl_efi \
+        --platforms=//toolchain:gbl_elf_riscv64 \
+        --cpu=riscv64
+    ```
+
+    To test on QEMU:
+
+    ```
+    mkdir -p /tmp/esp/EFI/BOOT
+    cp bazel-bin/efi/gbl.efi /tmp/esp/EFI/BOOT/bootriscv64.efi
+    qemu-system-riscv64 -nographic -machine virt -m 256M \
+        -bios /usr/lib/u-boot/qemu-riscv64/u-boot.bin \
+        -drive format=raw,file=fat:rw:/tmp/esp,id=blk0 \
+        -device virtio-blk-device,drive=blk0
     ```

@@ -15,6 +15,9 @@
 #![no_std]
 #![no_main]
 
+#[cfg(target_arch = "riscv64")]
+mod riscv64;
+
 use core::panic::PanicInfo;
 
 // The following is a minimal hello world like application and is mainly for
