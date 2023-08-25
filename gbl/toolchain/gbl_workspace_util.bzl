@@ -23,7 +23,21 @@ def _gbl_llvm_toolchain_info_repo_impl(repo_ctx):
 
     # Get clang path from "GBL_LLVM_BIN_DIR" environment variable. Default to
     # host installed LLVM if it is not set.
-    clang = repo_ctx.os.environ.get("GBL_LLVM_CLANG_PATH", "/usr/bin/clang++")
+    clang = repo_ctx.os.environ.get("GBL_LLVM_CLANG_PATH")
+    if clang == None:
+        fail("""
+
+No LLVM clang provided in `GBL_LLVM_CLANG_PATH`.
+
+Please set `GBL_LLVM_CLANG_PATH` environment variable to the path of the LLVM clang binary to use.
+
+It is recommended to use the Android upstream LLVM prebuilt. For example, if you have a local Android source checkout, you can set it to:
+
+    export GBL_LLVM_CLANG_PATH=<path to android source checkout>/prebuilts/clang/host/linux-x86/clang-r475365b/bin/clang
+
+Note: The stable version number "clang-r475365b" might be different.
+
+""")
 
     # Resolve absolute path if the given path is a symlink.
     clang = repo_ctx.execute(["readlink", "-f", clang]).stdout.strip("\n")
