@@ -37,10 +37,18 @@ To build for different architectures:
 1. Build for x86_64:
 
     ```
+    CARGO_BAZEL_REPIN=1 \
     bazel build //efi:gbl_efi \
         --platforms=//toolchain:gbl_uefi_x86_64 \
         --cpu=x86_64
     ```
+
+    Note: `CARGO_BAZEL_REPIN=1` is necessary because the build system downloads
+    third party crates and need to re-generate necessary Cargo.lock/BUILD files
+    during build. A possible alternative is to pre-generate these dependencies
+    and files and hosts them in a dedicated repo, similar to the approach by
+    [Fuchsia](https://cs.opensource.google/fuchsia/fuchsia/+/main:/third_party/rust_crates/Cargo.toml)
+    and [Pigweed](https://pigweed.googlesource.com/third_party/rust_crates)
 
     To test on QEMU:
 
@@ -55,6 +63,7 @@ To build for different architectures:
 1. Build for x86_32(i386/i686):
 
     ```
+    CARGO_BAZEL_REPIN=1 \
     bazel build //efi:gbl_efi \
         --platforms=//toolchain:gbl_uefi_x86_32 \
         --cpu=x86_32
@@ -63,6 +72,7 @@ To build for different architectures:
 1. Build for aarch64
 
     ```
+    CARGO_BAZEL_REPIN=1 \
     bazel build //efi:gbl_efi \
         --platforms=//toolchain:gbl_uefi_aarch64 \
         --cpu=aarch64
@@ -81,6 +91,7 @@ To build for different architectures:
 1. Build for riscv64
 
     ```
+    CARGO_BAZEL_REPIN=1 \
     bazel build //efi:gbl_efi \
         --platforms=//toolchain:gbl_elf_riscv64 \
         --cpu=riscv64

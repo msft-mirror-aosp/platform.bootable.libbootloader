@@ -29,7 +29,7 @@ def _gbl_llvm_toolchain_info_repo_impl(repo_ctx):
 
 No LLVM clang provided in `GBL_LLVM_CLANG_PATH`.
 
-Please set `GBL_LLVM_CLANG_PATH` environment variable to the path of the LLVM clang binary to use.
+Please set environment variable `GBL_LLVM_CLANG_PATH` to the path of the LLVM clang binary to use.
 
 It is recommended to use the Android upstream LLVM prebuilt. For example, if you have a local Android source checkout, you can set it to:
 

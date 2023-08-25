@@ -18,7 +18,9 @@
 #[cfg(target_arch = "riscv64")]
 mod riscv64;
 
+use core::fmt::Write;
 use core::panic::PanicInfo;
+use zerocopy::{AsBytes, FromBytes, LayoutVerified};
 
 // The following is a minimal hello world like application and is mainly for
 // testing the UEFI toolchain. It'll be updated to a full generic bootloader
@@ -28,10 +30,10 @@ use core::panic::PanicInfo;
 // need the `output_string` function.
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-pub struct simple_text_output_protocol {
+pub struct SimpleTextOutputProtocol {
     pub reset: *mut core::ffi::c_void,
     pub output_string: ::core::option::Option<
-        unsafe extern "C" fn(self_: *mut simple_text_output_protocol, string: *mut u16) -> usize,
+        unsafe extern "C" fn(self_: *mut SimpleTextOutputProtocol, string: *mut u16) -> usize,
     >,
     pub test_string: *mut core::ffi::c_void,
     pub query_mode: *mut core::ffi::c_void,
@@ -47,24 +49,34 @@ pub struct simple_text_output_protocol {
 // console out simple text output protocol.
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-pub struct efi_system_table {
+pub struct EfiSystemTable {
     pub efi_table_header: [u8; 24usize],
     pub firmware_vendor: *mut u16,
     pub firmware_version: u32,
     pub console_in_handle: *mut core::ffi::c_void,
     pub console_in_protocol: *mut core::ffi::c_void,
     pub console_out_handle: *mut core::ffi::c_void,
-    pub console_out_protocol: *mut simple_text_output_protocol,
+    pub console_out_protocol: *mut SimpleTextOutputProtocol,
     pub standard_error_handle: *mut core::ffi::c_void,
-    pub standard_error_protocol: *mut simple_text_output_protocol,
+    pub standard_error_protocol: *mut SimpleTextOutputProtocol,
     pub run_time_service: *mut core::ffi::c_void,
     pub boot_service: *mut core::ffi::c_void,
     pub number_of_table_entries: usize,
     pub configuration_table: *const core::ffi::c_void,
 }
 
-fn print(system_table: *mut efi_system_table, msg: &str) {
-    let systab = unsafe { *system_table };
+#[derive(FromBytes, AsBytes)]
+#[repr(C)]
+pub struct EfiTableHeader {
+    pub signature: u64,
+    pub revision: u32,
+    pub header_size: u32,
+    pub crc32: u32,
+    pub reserved: u32,
+}
+
+fn puts(system_table_ptr: *mut EfiSystemTable, msg: &str) {
+    let systab = unsafe { *system_table_ptr };
     let console_out_protocol = unsafe { *systab.console_out_protocol };
     match console_out_protocol.output_string {
         Some(output_string) => {
@@ -79,12 +91,32 @@ fn print(system_table: *mut efi_system_table, msg: &str) {
     }
 }
 
+struct EfiConsole {
+    system_table_ptr: *mut EfiSystemTable,
+}
+
+impl Write for EfiConsole {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        puts(self.system_table_ptr, s);
+        Ok(())
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn efi_main(
     _image_handle: *mut core::ffi::c_void,
-    system_table: *mut efi_system_table,
+    system_table_ptr: *mut EfiSystemTable,
 ) {
-    print(system_table, "Rust EfiMain\n");
+    let systab = unsafe { *system_table_ptr };
+    let efi_table_header =
+        LayoutVerified::<_, EfiTableHeader>::new(&systab.efi_table_header[..]).unwrap();
+    let mut efi_console = EfiConsole { system_table_ptr };
+    puts(system_table_ptr, "Rust EFI application.\n");
+    puts(system_table_ptr, "EFI header table:\n");
+    write!(&mut efi_console, "  signature: {}\n", efi_table_header.signature).unwrap();
+    write!(&mut efi_console, "  revision: {}\n", efi_table_header.revision).unwrap();
+    write!(&mut efi_console, "  header_size: {}\n", efi_table_header.header_size).unwrap();
+    write!(&mut efi_console, "  crc32: {}\n", efi_table_header.crc32).unwrap();
     loop {}
 }
 
