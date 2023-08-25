@@ -33,7 +33,9 @@ rust_binary(
         "-C",
         "panic=abort",
     ],
-    deps = select({
+    deps = [
+        "@zerocopy",
+    ] + select({
         "@gbl//toolchain:gbl_rust_elf_riscv64": ["@gbl//efi/arch/riscv64:efi_arch_deps_riscv64"],
         "//conditions:default": [],
     }),
