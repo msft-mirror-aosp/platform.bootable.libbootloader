@@ -92,7 +92,8 @@ int main(int argc, char* argv[]) {
 
   ASSERT(bin_file.size() >= *dynamic_section_offset);
   // Perform relocation as if we have loaded the program @ address bin_file.data().
-  ApplyRelocation(reinterpret_cast<uintptr_t>(bin_file.data()),
-                  reinterpret_cast<uintptr_t>(bin_file.data() + *dynamic_section_offset));
-  return 0;
+  return ApplyRelocation(reinterpret_cast<uintptr_t>(bin_file.data()),
+                         reinterpret_cast<uintptr_t>(bin_file.data() + *dynamic_section_offset))
+             ? 0
+             : 1;
 }
