@@ -1,0 +1,146 @@
+# Copyright (C) 2023 The Android Open Source Project
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+workspace(name = "gbl")
+
+load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
+
+git_repository(
+    name = "rules_rust",
+    commit = "78760f889ea04beeb880185cdee6a0ebcc71aeb2",
+
+    # The rust toolchains we need have "uefi" as the system type, which upstream
+    # bazel rust rules doesn't recognize. Apply a patch to fix it.
+    #
+    # Once upstream is fixed and we switch to repo style setup for gbl.
+    # We can simply checkout the repo during `repo init` and turn this into a
+    # local_repository().
+    patch_args = ["-p1"],
+    patches = ["//bazel_patches:0001-rules_rust-add-uefi-support.patch"],
+    remote = "https://android.googlesource.com/platform/external/bazelbuild-rules_rust",
+)
+
+load(
+    "@rules_rust//rust:repositories.bzl",
+    "rules_rust_dependencies",
+    "rust_register_toolchains",
+    "rust_repository_set",
+)
+
+rules_rust_dependencies()
+
+# We need to use the same version for both the host and cross-compile toolchains. This is
+# because proc-macro crates are compiled using host rust toolchain. The resulting dylib are
+# then added as input when cross-compiling for target architecture. If version doesn't match,
+# there is a risk that dylib metadata format is different and rustc gives confusing error
+# "invalid metadata version found ...".
+RUST_VERSION = ["1.71.0"]
+
+rust_register_toolchains(
+    edition = "2021",
+    versions = RUST_VERSION,
+)
+
+# We need "x86_64-unknown-uefi", "aarch64-unknown-uefi" variants of rust toolchain.
+# Fetch directly from upstream rust distribution.
+#
+# Alternatively, we can also consider requesting Android to add the variants to
+# upstream rustc prebuilts at
+# https://android.googlesource.com/platform/prebuilts/rust/+/refs/heads/main/linux-x86/1.71.0/lib/rustlib/
+# so that the toolchain can be checked out during "repo init"
+rust_repository_set(
+    name = "rust_uefi_x86_64",
+    edition = "2021",
+    exec_triple = "x86_64-unknown-linux-gnu",
+    extra_target_triples = ["x86_64-unknown-uefi"],
+    target_settings = ["@gbl//toolchain:gbl_rust_uefi_x86_64"],
+    versions = RUST_VERSION,
+)
+
+rust_repository_set(
+    name = "rust_uefi_x86_32",
+    edition = "2021",
+    exec_triple = "x86_64-unknown-linux-gnu",
+    extra_target_triples = ["i686-unknown-uefi"],
+    target_settings = ["@gbl//toolchain:gbl_rust_uefi_x86_32"],
+    versions = RUST_VERSION,
+)
+
+rust_repository_set(
+    name = "rust_uefi_aarch64",
+    edition = "2021",
+    exec_triple = "x86_64-unknown-linux-gnu",
+    extra_target_triples = ["aarch64-unknown-uefi"],
+    target_settings = ["@gbl//toolchain:gbl_rust_uefi_aarch64"],
+    versions = RUST_VERSION,
+)
+
+rust_repository_set(
+    name = "rust_elf_riscv64",
+    edition = "2021",
+    exec_triple = "x86_64-unknown-linux-gnu",
+    extra_target_triples = ["riscv64gc-unknown-linux-gnu"],
+    target_settings = ["@gbl//toolchain:gbl_rust_elf_riscv64"],
+    versions = RUST_VERSION,
+)
+
+load("//toolchain:gbl_workspace_util.bzl", "gbl_llvm_toolchain_info_repo")
+
+# Set up a repo to export llvm tool path and builtin include directory needed
+# by toolchain declaration.
+gbl_llvm_toolchain_info_repo(name = "gbl_llvm_toolchain_info")
+
+# Register all the clang toolchains defined for gbl.
+register_toolchains("//toolchain:all")
+
+# The repo contains ELF definitions needed for our elf library.
+git_repository(
+    name = "elfutils",
+    build_file_content = """
+cc_library(
+    name = "elf_type_header",
+    hdrs = ["libelf/elf.h"],
+    visibility = ["//visibility:public"],
+)
+""",
+    commit = "c960c2539c11a01346c58f8bafde978fc413d19f",
+    remote = "https://android.googlesource.com/platform/external/elfutils",
+)
+
+# For C/C++ unit-tests
+git_repository(
+    name = "googletest",
+    commit = "817e9f6edc2fc8301b92403962478d2df0024924",
+    remote = "https://android.googlesource.com/platform/external/googletest",
+)
+
+load("@rules_rust//crate_universe:repositories.bzl", "crate_universe_dependencies")
+
+crate_universe_dependencies(bootstrap = True)
+
+load("//rust_crates:gbl_rust_crates.bzl", "gbl_remote_rust_crate")
+
+gbl_remote_rust_crate(
+    name = "zerocopy",
+    urls = [
+        # This is equivalent to a git_repository() with:
+        #   commit = "af0663b274a233cd4b16275533df71e5f4a9a06b",
+        #   remote = "https://android.googlesource.com/platform/external/rust/crates/zerocopy",
+        "https://android.googlesource.com/platform/external/rust/crates/zerocopy/+archive/af0663b274a23c3d4b16275533df71e5f4a9a06b.tar.gz",
+    ],
+)
+
+load("@zerocopy_crate_index//:defs.bzl", rust_zerocopy_crate_repositories = "crate_repositories")
+
+rust_zerocopy_crate_repositories()
