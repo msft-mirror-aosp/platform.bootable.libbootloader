@@ -66,5 +66,5 @@ def gbl_llvm_builtin_include():
 gbl_llvm_toolchain_info_repo = repository_rule(
     implementation = _gbl_llvm_toolchain_info_repo_impl,
     local = True,
-    environ = ["GBL_LLVM_BIN_DIR"],
+    environ = ["GBL_LLVM_CLANG_PATH"],
 )
