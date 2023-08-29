@@ -116,7 +116,7 @@ cc_toolchain_suite(
 
 cc_flags_common = [
     "-ffreestanding",
-    #"-fno-common",
+    "-fno-common",
     "-fno-exceptions",
     "-fno-rtti",
 ]
