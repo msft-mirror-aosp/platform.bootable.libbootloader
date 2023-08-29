@@ -89,6 +89,8 @@ rust_repository_set(
     edition = "2021",
     exec_triple = "x86_64-unknown-linux-gnu",
     extra_target_triples = ["riscv64gc-unknown-linux-gnu"],
+    # We re-define the toolchain in "toolchain/BUILD" to override `stdlib_linkflags`.
+    register_toolchain = False,
     target_settings = ["@gbl//toolchain:gbl_rust_elf_riscv64"],
     versions = RUST_VERSION,
 )
