@@ -81,3 +81,9 @@ def android_external_rust_crates_repositories():
         rev = "e987328e0df1334022cb8ada4233e672a2e4ea0e",
         build_file = "@gbl//android_external_rust_crates:BUILD.zerocopy-derive.bazel",
     )
+
+    android_external_rust_crate_archive(
+        name = "bitflags",
+        rev = "4cb5dac10a9ca8a0c9b78ea24f0f23e7972576e2",
+        build_file = "@gbl//android_external_rust_crates:BUILD.bitflags.bazel",
+    )
