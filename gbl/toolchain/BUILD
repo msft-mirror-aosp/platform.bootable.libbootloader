@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@rules_rust//rust:toolchain.bzl", "rust_toolchain")
 load(":gbl_clang_cc_toolchain.bzl", "gbl_clang_cc_toolchain")
 
 package(
@@ -197,4 +198,39 @@ toolchain(
     target_compatible_with = elf_riscv64_constraint_values,
     toolchain = ":riscv64_elf_clang_cc_toolchain",
     toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+)
+
+# We need to re-define the rust riscv64gc-unknown-linux-gnu toolchain to override the default
+# setting of linking with -lpthread and -ldl.
+
+RUST_RISCV64_TOOLCHAIN_REPO = "rust_elf_riscv64__riscv64gc-unknown-linux-gnu__stable_tools"
+
+rust_toolchain(
+    name = "rust_riscv64_unknown_linux_gnu",
+    allocator_library = None,
+    binary_ext = "",
+    default_edition = "2021",
+    dylib_ext = ".so",
+    exec_triple = "x86_64-unknown-linux-gnu",
+    global_allocator_library = None,
+    rust_doc = "@{}//:rustdoc".format(RUST_RISCV64_TOOLCHAIN_REPO),
+    rust_std = "@{}//:rust_std-riscv64gc-unknown-linux-gnu".format(RUST_RISCV64_TOOLCHAIN_REPO),
+    rustc = "@{}//:rustc".format(RUST_RISCV64_TOOLCHAIN_REPO),
+    rustc_lib = "@{}//:rustc_lib".format(RUST_RISCV64_TOOLCHAIN_REPO),
+    staticlib_ext = ".a",
+    # Override. Don't add -lpthread and -ldl
+    stdlib_linkflags = [],
+    target_triple = "riscv64gc-unknown-linux-gnu",
+)
+
+toolchain(
+    name = "rust_riscv64_unknown_linux_gnu_toolchain",
+    exec_compatible_with = ["@platforms//os:linux"],
+    target_compatible_with = elf_riscv64_constraint_values,
+    target_settings = [
+        "@rules_rust//rust/toolchain/channel:stable",
+        "@gbl//toolchain:gbl_rust_elf_riscv64",
+    ],
+    toolchain = ":rust_riscv64_unknown_linux_gnu",
+    toolchain_type = "@rules_rust//rust:toolchain",
 )
