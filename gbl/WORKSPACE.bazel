@@ -89,6 +89,8 @@ rust_repository_set(
     edition = "2021",
     exec_triple = "x86_64-unknown-linux-gnu",
     extra_target_triples = ["riscv64gc-unknown-linux-gnu"],
+    # We re-define the toolchain in "toolchain/BUILD" to override `stdlib_linkflags`.
+    register_toolchain = False,
     target_settings = ["@gbl//toolchain:gbl_rust_elf_riscv64"],
     versions = RUST_VERSION,
 )
@@ -121,22 +123,6 @@ http_archive(
     url = "https://android.googlesource.com/platform/external/googletest/+archive/refs/heads/main.tar.gz",
 )
 
-load("@rules_rust//crate_universe:repositories.bzl", "crate_universe_dependencies")
+load("@gbl//android_external_rust_crates:repositories.bzl", "android_external_rust_crates_repositories")
 
-crate_universe_dependencies(bootstrap = True)
-
-load("//rust_crates:gbl_rust_crates.bzl", "gbl_remote_rust_crate")
-
-gbl_remote_rust_crate(
-    name = "zerocopy",
-    urls = [
-        # This is equivalent to a git_repository() with:
-        #   commit = "af0663b274a233cd4b16275533df71e5f4a9a06b",
-        #   remote = "https://android.googlesource.com/platform/external/rust/crates/zerocopy",
-        "https://android.googlesource.com/platform/external/rust/crates/zerocopy/+archive/af0663b274a23c3d4b16275533df71e5f4a9a06b.tar.gz",
-    ],
-)
-
-load("@zerocopy_crate_index//:defs.bzl", rust_zerocopy_crate_repositories = "crate_repositories")
-
-rust_zerocopy_crate_repositories()
+android_external_rust_crates_repositories()
