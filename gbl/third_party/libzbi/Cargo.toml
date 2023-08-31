@@ -1,0 +1,16 @@
+[package]
+name = "zbi"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+# This code is also required to run in Android tree. And it contains only `zerocopy-0.6` at the
+# moment. So we have this feature to make sure it works with both versions.
+zerocopy_0_6 = []
+
+[dependencies]
+zerocopy = {version = "=0.7.0-alpha.5", default-features=false}
+bitflags = "1"
+
+[dev-dependencies]
+hex = "0"
