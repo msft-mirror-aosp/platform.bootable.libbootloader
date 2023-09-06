@@ -1,0 +1,8 @@
+{
+  // TODO(b/294053908) Enable presumbit when SLO is met
+  "postsubmit": [
+    {
+       "name": "libzbi_device_test"
+    }
+  ]
+}
