@@ -16,31 +16,41 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-rust_library {
-    name: "libzbi",
+rust_defaults {
+    name: "libzbi_defaults",
     crate_name: "zbi",
     edition: "2021",
-    host_supported: true,
     features: ["zerocopy_0_6"],
     srcs: ["src/lib.rs"],
-    rustlibs: ["libbitflags","libzerocopy"],
+    rustlibs: ["libbitflags"],
+}
+
+rust_library {
+    name: "libzbi",
+    host_supported: true,
+    defaults: [ "libzbi_defaults" ],
+    rustlibs: ["libzerocopy"],
 }
 
 rust_library_rlib {
     name: "libzbi_nostd",
-    crate_name: "zbi",
-    edition: "2021",
+    defaults: [ "libzbi_defaults" ],
     no_stdlibs: true,
     prefer_rlib: true,
-    srcs: ["src/lib.rs"],
-    features: ["zerocopy_0_6"],
-    rustlibs: ["libbitflags","libzerocopy_nostd_noalloc"],
+    rustlibs: ["libzerocopy_nostd_noalloc"],
 }
 
-// libzbi unit tests.
+// libzbi unit tests to run on host.
 rust_test_host {
-   name: "libzbi_test",
-   features: ["zerocopy_0_6"],
-   srcs: [ "src/lib.rs" ],
-   rustlibs: ["libbitflags","libzerocopy","libhex"],
+   name: "libzbi_host_test",
+   defaults: [ "libzbi_defaults" ],
+   rustlibs: ["libzerocopy","libhex"],
+}
+
+// libzbi unit tests to run on devices.
+rust_test {
+   name: "libzbi_device_test",
+   defaults: [ "libzbi_defaults" ],
+   rustlibs: ["libzerocopy","libhex"],
+   test_suites: ["general-tests"],
 }
