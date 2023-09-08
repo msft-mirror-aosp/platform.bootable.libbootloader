@@ -24,7 +24,7 @@ To get just `zbi-rs` from Fuchsia following commands can be used:
 git clone -n --depth=1 --filter=tree:0 sso://fuchsia/fuchsia
 cd fuchsia/
 git sparse-checkout set --no-clone src/firmware/lib/zbi-rs
-git checkout 2c45d1be1e88b2f9c1e55c940a4385a7d32d8c1e
+git checkout 66312656c47900cfa1e6714e995e836053d74ce2
 ```
 
 Changing Licence in source files is required at the moment.
