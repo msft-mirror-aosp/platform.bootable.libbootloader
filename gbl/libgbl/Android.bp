@@ -48,6 +48,7 @@ rust_test {
     name: "libgbl_device_test",
     defaults: [ "libgbl_defaults" ],
     rustlibs: ["libzbi"],
+    test_suites: ["general-tests"],
 }
 
 rust_test_host {
