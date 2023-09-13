@@ -20,11 +20,20 @@
 //!
 //! A block device is represented by a type that implements the `BlockDevice` trait. The trait
 //! provides information on block size, total size, alignment requirement and read/write methods.
-//! The library offers two APIs `read()` and `write()` for reading/writing with the trait.
+//! The library offers two APIs `BlockDevice::read()` and `BlockDevice::write()` for
+//! reading/writing with the trait without any alignment requirement on inputs.
+//!
+//! The trait also provides APIs `BlockDevice::sync_gpt()`, `BlockDevice::read_gpt_partition()` and
+//! `BlockDevice::write_gpt_partition()` for loading/repairing, reading and writing GPT partitions.
 
 #![cfg_attr(not(test), no_std)]
 
 use core::cmp::min;
+
+// Selective export of submodule types.
+mod gpt;
+pub type Gpt<'a> = gpt::Gpt<'a>;
+pub type GptEntry = gpt::GptEntry;
 
 /// The type of Result used in this library.
 pub type Result<T> = core::result::Result<T, StorageError>;
@@ -37,6 +46,8 @@ pub enum StorageError {
     ScratchTooSmall,
     BlockDeviceError,
     InvalidInput,
+    NoValidGpt,
+    NotExist,
 }
 
 impl Into<&'static str> for StorageError {
@@ -47,6 +58,8 @@ impl Into<&'static str> for StorageError {
             StorageError::ScratchTooSmall => "Not enough scratch buffer",
             StorageError::BlockDeviceError => "Block device error",
             StorageError::InvalidInput => "Invalid input",
+            StorageError::NoValidGpt => "GPT not found",
+            StorageError::NotExist => "Not exists",
         }
     }
 }
@@ -158,7 +171,7 @@ pub trait BlockDevice {
     /// * `offset`: Offset in number of bytes.
     ///
     /// * `data`: Data to write. It can be `&[u8]`, `&mut [u8]` or other types that implement the
-    ///   `Bytes` trait.
+    ///   `WriteBuffer` trait.
     ///
     /// * If `data` is an immutable bytes slice `&[u8]` or doesn't support `Bytes::as_mut_slice()`,
     ///   when offset`/`data.len()` is not aligned to `blk_dev.block_size()` or data.as_ptr() is
@@ -180,6 +193,87 @@ pub trait BlockDevice {
     {
         write(self, offset, data, scratch)
     }
+
+    /// Parse and sync GPT from a block device.
+    ///
+    /// # Args
+    ///
+    /// * The API validates and restores primary/secondary GPT header.
+    ///
+    /// * `blk_dev`: The block device to read GPT.
+    ///
+    /// * `scratch`: A buffer for the API to handle buffer and write range misalignment. Its size
+    ///   must be at least `required_scratch_size(blk_dev)`.
+    ///
+    /// # Returns
+    ///
+    /// Returns success if GPT is loaded/restored successfully.
+    fn sync_gpt(&mut self, gpt: &mut Gpt, scratch: &mut [u8]) -> Result<()> {
+        gpt::gpt_sync(self, gpt, scratch)
+    }
+
+    /// Read a GPT partition on a block device
+    ///
+    /// # Args
+    ///
+    /// * `gpt`: An instance of Gpt. If the GPT comes from the same block device, this should be
+    ///   obtained from calling sync_gpt() of this BlockDevice.
+    ///
+    /// * `part_name`: Name of the partition.
+    ///
+    /// * `offset`: Offset in number of bytes into the partition.
+    ///
+    /// * `out`: Buffer to store the read data.
+    ///
+    /// * `scratch`: A scratch buffer for reading/writing `blk_dev`. Must have a size at least
+    ///   `required_scratch_size(blk_dev)`. See `BlockDevice::read()/write()` for more details.
+    ///
+    /// # Returns
+    ///
+    /// Returns success when exactly `out.len()` of bytes are read successfully.
+    fn read_gpt_partition(
+        &mut self,
+        gpt: &Gpt,
+        part_name: &str,
+        offset: usize,
+        out: &mut [u8],
+        scratch: &mut [u8],
+    ) -> Result<()> {
+        gpt::read_gpt_partition(self, gpt, part_name, offset, out, scratch)
+    }
+
+    /// Write a GPT partition on a block device
+    ///
+    /// # Args
+    ///
+    /// * `gpt`: An instance of Gpt. If the GPT comes from the same block device, this should be
+    ///   obtained from calling sync_gpt() of this BlockDevice.
+    ///
+    /// * `part_name`: Name of the partition.
+    ///
+    /// * `offset`: Offset in number of bytes into the partition.
+    ///
+    /// * `data`: Data to write. See `data` passed to `BlockDevice::write()` for details.
+    ///
+    /// * `scratch`: A scratch buffer for reading/writing `blk_dev`. Must have a size at least
+    ///   `required_scratch_size(blk_dev)`. See `BlockDevice::read()/write()` for more details.
+    ///
+    /// # Returns
+    ///
+    /// Returns success when exactly `data.len()` of bytes are written successfully.
+    fn write_gpt_partition<B>(
+        &mut self,
+        gpt: &Gpt,
+        part_name: &str,
+        offset: usize,
+        data: B,
+        scratch: &mut [u8],
+    ) -> Result<()>
+    where
+        B: WriteBuffer,
+    {
+        gpt::write_gpt_partition(self, gpt, part_name, offset, data, scratch)
+    }
 }
 
 /// Add two usize integers and check overflow
@@ -200,6 +294,11 @@ fn rem(lhs: usize, rhs: usize) -> Result<usize> {
 /// Multiply two numbers and check overflow
 fn mul(lhs: usize, rhs: usize) -> Result<usize> {
     lhs.checked_mul(rhs).ok_or_else(|| StorageError::ArithmeticOverflow)
+}
+
+/// Divide two numbers and check overflow
+fn div(lhs: usize, rhs: usize) -> Result<usize> {
+    lhs.checked_div(rhs).ok_or_else(|| StorageError::ArithmeticOverflow)
 }
 
 /// Check if `value` is aligned to (multiples of) `alignment`
@@ -225,6 +324,11 @@ fn round_down(size: usize, alignment: usize) -> Result<usize> {
 fn round_up(size: usize, alignment: usize) -> Result<usize> {
     // equivalent to round_down(size + alignment - 1, alignment)
     round_down(add(size, sub(alignment, 1)?)?, alignment)
+}
+
+/// Check and convert u64 into usize
+fn to_usize(val: u64) -> Result<usize> {
+    val.try_into().map_err(|_| StorageError::ArithmeticOverflow)
 }
 
 /// Check read/write range and calculate offset in number of blocks.
@@ -620,6 +724,16 @@ pub trait WriteBuffer {
 
     /// Return a bytes slice for the data. Return None if not supported.
     fn as_slice(&mut self) -> Option<&[u8]>;
+
+    // Provided methods
+
+    /// Return the length of the data.
+    fn data_len(&mut self) -> Result<usize> {
+        self.as_slice()
+            .map(|v| v.len())
+            .or(self.as_mut_slice().map(|v| v.len()))
+            .ok_or(StorageError::InvalidInput)
+    }
 }
 
 impl WriteBuffer for &[u8] {
