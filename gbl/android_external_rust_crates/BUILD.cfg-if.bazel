@@ -12,32 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
-
-package(
-    default_visibility = ["//visibility:public"],
-)
+load("@rules_rust//rust:defs.bzl", "rust_library")
 
 rust_library(
-    name = "libstorage",
-    srcs = [
-        "src/gpt.rs",
-        "src/lib.rs",
-    ],
-    crate_name = "gbl_storage",
+    name = "cfg-if",
+    srcs = glob(["**/*.rs"]),
     edition = "2021",
-    deps = [
-        "@crc32fast",
-        "@zerocopy",
-    ],
-)
-
-rust_test(
-    name = "gbl_libstorage_test",
-    compile_data = [
-        "@gbl//libstorage/test:gpt_test.bin",
-        "@gbl//libstorage/test:boot_a.bin",
-        "@gbl//libstorage/test:boot_b.bin",
-    ],
-    crate = ":libstorage",
+    visibility = ["//visibility:public"],
 )
