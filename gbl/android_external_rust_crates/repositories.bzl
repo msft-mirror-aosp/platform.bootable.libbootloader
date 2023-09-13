@@ -41,6 +41,18 @@ def android_external_rust_crates_repositories():
     )
 
     android_external_rust_crate_archive(
+        name = "cfg-if",
+        rev = "3a308fd77901411c7ed5161012cebeb2cf8dab1a",
+        build_file = "@gbl//android_external_rust_crates:BUILD.cfg-if.bazel",
+    )
+
+    android_external_rust_crate_archive(
+        name = "crc32fast",
+        rev = "7225fa79b53d6a75f4dadcd974ca82c666044953",
+        build_file = "@gbl//android_external_rust_crates:BUILD.crc32fast.bazel",
+    )
+
+    android_external_rust_crate_archive(
         name = "proc-macro2",
         rev = "5c471c4a5c3e80c810dadb19c5996e420426c3bc",
         build_file = "@gbl//android_external_rust_crates:BUILD.proc-marco2.bazel",
