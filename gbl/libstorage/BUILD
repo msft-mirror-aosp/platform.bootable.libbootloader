@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library", "rust_test")
 
 package(
     default_visibility = ["//visibility:public"],
@@ -39,5 +39,10 @@ rust_test(
         "@gbl//libstorage/test:boot_a.bin",
         "@gbl//libstorage/test:boot_b.bin",
     ],
+    crate = ":libstorage",
+)
+
+rust_doc_test(
+    name = "gbl_libstorage_doc_test",
     crate = ":libstorage",
 )
