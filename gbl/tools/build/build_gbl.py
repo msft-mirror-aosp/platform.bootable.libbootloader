@@ -26,10 +26,6 @@ import subprocess
 # GBL bazel root.
 GBL_DIR = pathlib.Path(__file__).resolve().parents[2]
 
-# Android has a get_clang_version.py that we might use to auto detect stable
-# version. This will be investigated in the future.
-CLANG_VERSION = "r498229"
-
 ARCHS = ["x86_64", "x86_32", "aarch64", "riscv64"]
 
 
@@ -38,10 +34,11 @@ def parse_args():
     parser.add_argument("--aosp_root", help="Path to Android root source")
     parser.add_argument("--clang", help="Override path to clang compiler")
     parser.add_argument("--bazel", help="Override path to bazel executable")
-    parser.add_argument("--arch",
-                        help="Add a specific target architecture to build list",
-                        action='append',
-                        choices=ARCHS)
+    parser.add_argument(
+        "--arch",
+        help="Add a specific target architecture to build list",
+        action='append',
+        choices=ARCHS)
     parser.add_argument("out", help="Output directory")
 
     return parser.parse_args()
@@ -54,6 +51,17 @@ ARCH_TO_BAZEL_PLATFORM_CONFIG = {
     "riscv64": "gbl_elf_riscv64",
 }
 
+AOSP_GET_CLANG_VERSION_SCRIPT = pathlib.Path(
+    "build") / "soong" / "scripts" / "get_clang_version.py"
+
+
+def aosp_get_clang(aosp_root: pathlib.Path) -> str:
+    return subprocess.run([AOSP_GET_CLANG_VERSION_SCRIPT],
+                          check=True,
+                          text=True,
+                          capture_output=True,
+                          cwd=str(aosp_root)).stdout.strip('\n')
+
 
 def main() -> int:
     args = parse_args()
@@ -63,9 +71,8 @@ def main() -> int:
 
     if args.aosp_root:
         aosp_root = pathlib.Path(args.aosp_root).resolve()
-        clang = (aosp_root /
-            "prebuilts" / "clang" / "host" / "linux-x86" /
-            f"clang-{CLANG_VERSION}" / "bin" / "clang")
+        clang = (aosp_root / "prebuilts" / "clang" / "host" / "linux-x86" /
+                 aosp_get_clang(aosp_root) / "bin" / "clang")
         bazel = aosp_root / "prebuilts" / "bazel" / "linux-x86_64" / "bazel"
 
     if args.clang:
