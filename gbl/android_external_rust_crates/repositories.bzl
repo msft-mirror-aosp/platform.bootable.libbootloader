@@ -53,6 +53,12 @@ def android_external_rust_crates_repositories():
     )
 
     android_external_rust_crate_archive(
+        name = "hex",
+        rev = "1ddb3bec93394eeb62ee4f4187e8579b489c3d07",
+        build_file = "@gbl//android_external_rust_crates:BUILD.hex.bazel",
+    )
+
+    android_external_rust_crate_archive(
         name = "proc-macro2",
         rev = "5c471c4a5c3e80c810dadb19c5996e420426c3bc",
         build_file = "@gbl//android_external_rust_crates:BUILD.proc-marco2.bazel",
