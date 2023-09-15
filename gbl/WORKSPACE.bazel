@@ -126,3 +126,10 @@ http_archive(
 load("@gbl//android_external_rust_crates:repositories.bzl", "android_external_rust_crates_repositories")
 
 android_external_rust_crates_repositories()
+
+# Register rust bindgen toolchains
+load("@rules_rust//bindgen:repositories.bzl", "rust_bindgen_dependencies", "rust_bindgen_register_toolchains")
+
+rust_bindgen_dependencies()
+
+rust_bindgen_register_toolchains()
