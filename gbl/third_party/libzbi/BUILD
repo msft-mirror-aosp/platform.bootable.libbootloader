@@ -14,30 +14,28 @@
 
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
-package(
-    default_visibility = ["//visibility:public"],
-)
-
 rust_library(
-    name = "libstorage",
+    name = "libzbi",
     srcs = [
-        "src/gpt.rs",
         "src/lib.rs",
+        "src/zbi_format.rs",
     ],
-    crate_name = "gbl_storage",
+    crate_features = ["zerocopy_0_6"],
     edition = "2021",
+    visibility = ["//visibility:public"],
     deps = [
-        "@crc32fast",
+        "@bitflags",
         "@zerocopy",
     ],
 )
 
 rust_test(
-    name = "gbl_libstorage_test",
-    compile_data = [
-        "@gbl//libstorage/test:gpt_test.bin",
-        "@gbl//libstorage/test:boot_a.bin",
-        "@gbl//libstorage/test:boot_b.bin",
+    name = "libzbi_test",
+    crate = ":libzbi",
+    crate_features = ["zerocopy_0_6"],
+    deps = [
+        "@bitflags",
+        "@hex",
+        "@zerocopy",
     ],
-    crate = ":libstorage",
 )

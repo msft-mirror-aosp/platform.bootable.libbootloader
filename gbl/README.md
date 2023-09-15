@@ -12,8 +12,9 @@ it:
 
 ### Build from AOSP
 
-If you already have an AOSP checkout, simply provide the path to the script.
-i.e.
+If you already have a
+[AOSP](https://source.android.com/docs/setup/download/downloading) checkout,
+simply provide the path to the script. i.e.
 
 ```.sh
 python3 build_gbl.py --aosp_root=<path to AOSP source root> <output directory>
@@ -28,12 +29,6 @@ source. After build completes, the EFI image will be available in
 `<output director>/gbl/`. By default, the script builds for all of `x86_64`,
 `x86_32`, `aarch64` and `riscv64` architectures. If you only want to build for
 a subset, append option `--arch <x86_64|x86_32|aarch64|riscv64>` one by one.
-
-The AOSP source can either be a full
-[main AOSP](https://source.android.com/docs/setup/download/downloading)
-checkout, or a
-[bootloader development](https://source.android.com/docs/setup/create/cuttlefish-bootloader-dev)
-checkout, both of which includes this repo and the needed tools.
 
 ### Build without AOSP
 
