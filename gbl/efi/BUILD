@@ -34,8 +34,8 @@ rust_binary(
         "panic=abort",
     ],
     deps = [
+        "@gbl//libefi",
         "@gbl//third_party/libzbi",
-        "@zerocopy",
     ] + select({
         "@gbl//toolchain:gbl_rust_elf_riscv64": ["@gbl//efi/arch/riscv64:efi_arch_deps_riscv64"],
         "//conditions:default": [],
