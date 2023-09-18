@@ -1,5 +1,9 @@
 {
-  // TODO(b/294053908) Enable presumbit when SLO is met
+  "presubmit": [
+    {
+       "name": "libzbi_device_test"
+    }
+  ],
   "postsubmit": [
     {
        "name": "libzbi_device_test"
