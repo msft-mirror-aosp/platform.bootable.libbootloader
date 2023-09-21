@@ -22,42 +22,52 @@ rust_defaults {
 }
 
 // GBL Rust library.
-//
-// We can only build rlib here because we want to build with [no_std], but
+rust_library {
+    name: "libgbl",
+    host_supported: true,
+    crate_name: "gbl",
+    defaults: [ "libgbl_defaults" ],
+    rustlibs: ["libzbi"],
+}
+
+// Defining rlib here because we want to build with [no_std], but
 // don't want to define panic handlers (the library user should do that).
 // Only rlibs can compile without these definitions and allow other code
 // to provide them instead (https://stackoverflow.com/q/43097676).
-//
-// We also only need a host lib because this library is not currently used
-// in-tree except for testing; bootloaders will need to copy this code out to
-// their external codebase, so they will not be consuming these build targets
-// directly.
-rust_library_host_rlib {
-    name: "libgbl",
+rust_library_rlib {
+    name: "libgbl_nostd",
     crate_name: "gbl",
     defaults: [ "libgbl_defaults" ],
+    rlibs: ["libzbi_nostd"],
+    no_stdlibs: true,
+    prefer_rlib: true,
 }
 
 // libgbl unit tests.
-//
-// Rust unit tests always use std, so this module performs our main logic
-// unit testing but cannot test a full [no_std] compilation.
-rust_test_host {
-    name: "libgbl_test",
+rust_test {
+    name: "libgbl_device_test",
     defaults: [ "libgbl_defaults" ],
-    // Also build the module which can test [no_std] compilation.
-    required: [ "libgbl_test_nostd" ],
+    rustlibs: ["libzbi"],
+    test_suites: ["general-tests"],
+}
+
+rust_test_host {
+    name: "libgbl_host_test",
+    defaults: [ "libgbl_defaults" ],
+    rustlibs: ["libzbi"],
 }
 
 // Test building with libgbl in a [no_std] environment.
 //
 // This is a compile-only test to ensure [no_std] works and demonstrate
 // which Rust hooks are required to implement. This code will not be exeuted,
-// so actual logic unittests go in libgbl_test instead.
-rust_binary_host {
+// so actual logic unittests go in libgbl tests instead.
+rust_binary {
     name: "libgbl_test_nostd",
     srcs: [ "tests/nostd.rs" ],
-    rlibs: [ "libgbl" ],
+    rustlibs: [ "libgbl_nostd" ],
     // panic=abort to satisfy the eh_personality compile requirement.
     flags: [ "-C", "panic=abort" ],
+    no_stdlibs: true,
+    prefer_rlib: true,
 }
