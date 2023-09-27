@@ -51,6 +51,8 @@
 #![cfg_attr(not(test), no_std)]
 
 use core::ptr::null_mut;
+#[cfg(not(test))]
+use core::{fmt::Write, panic::PanicInfo};
 
 #[rustfmt::skip]
 pub mod defs;
@@ -311,6 +313,25 @@ impl Drop for LocatedHandles<'_> {
             .free_pool(self.handles.as_ptr() as *mut _)
             .unwrap();
     }
+}
+
+/// Provide a builtin panic handler.
+/// In the long term, to improve flexibility, consider allowing application to install a custom
+/// handler into `EfiEntry` to be called here.
+#[cfg(not(test))]
+#[panic_handler]
+fn panic(panic: &PanicInfo) -> ! {
+    // If there is a valid internal `efi_entry` from global allocator, print the panic info.
+    let entry = allocation::internal_efi_entry();
+    if let Some(e) = entry {
+        match e.system_table().con_out() {
+            Ok(mut con_out) => {
+                let _ = write!(con_out, "Panics! {}\n", panic);
+            }
+            _ => {}
+        }
+    }
+    loop {}
 }
 
 #[cfg(test)]

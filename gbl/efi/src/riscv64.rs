@@ -35,3 +35,10 @@ extern "C" {
 pub extern "C" fn get_efi_header() -> *const core::ffi::c_void {
     unsafe { dos_header }
 }
+
+// The function is related to stack unwinding and called by liballoc. However we don't expect
+// exception handling in UEFI application. If it ever reaches here, panics.
+#[no_mangle]
+pub extern "C" fn _Unwind_Resume(_: *mut core::ffi::c_void) {
+    panic!();
+}

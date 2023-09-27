@@ -17,11 +17,21 @@ use super::EfiEntry;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
 
-// Implement a global allocator using `EFI_BOOT_SERVICES.AllocatePool()/FreePool()`
+/// Implement a global allocator using `EFI_BOOT_SERVICES.AllocatePool()/FreePool()`
 pub struct EfiAllocator(Option<EfiEntry>);
 
 #[global_allocator]
 static mut EFI_GLOBAL_ALLOCATOR: EfiAllocator = EfiAllocator(None);
+
+/// An internal API to obtain library internal global EfiEntry.
+pub(crate) fn internal_efi_entry() -> &'static Option<EfiEntry> {
+    // SAFETY:
+    // For now, the `EfiEntry` in `EfiAllocator` is only modified when `EfiAllocator` is being
+    // initialized where there should be no event/notification function that can be triggered.
+    // In the future, we may reset it to None after calling EFI_BOOT_SERVICES.ExitBootServices()
+    // where the same should hold as well. Therefore, it should be safe from race condition.
+    unsafe { &EFI_GLOBAL_ALLOCATOR.0 }
+}
 
 unsafe impl GlobalAlloc for EfiAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
