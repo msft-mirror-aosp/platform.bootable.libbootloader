@@ -19,58 +19,129 @@
 mod riscv64;
 
 use core::fmt::Write;
-use core::panic::PanicInfo;
-use efi::defs::*;
+use gbl_storage::{required_scratch_size, BlockDevice, Gpt, StorageError};
 
-// The following is a minimal hello world like application and is mainly for
-// testing the UEFI toolchain. It'll be updated to a full generic bootloader
-// application as development goes.
+use efi::defs::EfiSystemTable;
+use efi::{
+    initialize, BlockIoProtocol, DeviceHandle, DevicePathProtocol, DevicePathText,
+    DevicePathToTextProtocol, EfiEntry, EfiError, LoadedImageProtocol, Protocol,
+};
 
-fn puts(system_table_ptr: *mut EfiSystemTable, msg: &str) {
-    let systab = unsafe { *system_table_ptr };
-    let console_out_protocol = unsafe { *systab.con_out };
-    match console_out_protocol.output_string {
-        Some(output_string) => {
-            for ch in msg.as_bytes() {
-                let mut char16_msg: [u16; 2usize] = [*ch as u16, 0];
-                unsafe {
-                    output_string(systab.con_out, char16_msg.as_mut_ptr());
+// For the `vec!` macro
+#[macro_use]
+extern crate alloc;
+
+// Implement a block device on top of BlockIoProtocol
+struct EfiBlockDevice<'a>(Protocol<'a, BlockIoProtocol>);
+
+impl BlockDevice for EfiBlockDevice<'_> {
+    fn block_size(&mut self) -> u64 {
+        self.0.media().unwrap().block_size as u64
+    }
+
+    fn num_blocks(&mut self) -> u64 {
+        (self.0.media().unwrap().last_block + 1) as u64
+    }
+
+    fn alignment(&mut self) -> u64 {
+        core::cmp::max(1, self.0.media().unwrap().io_align as u64)
+    }
+
+    fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> bool {
+        self.0.read_blocks(blk_offset, out).is_ok()
+    }
+
+    fn write_blocks(&mut self, blk_offset: u64, data: &[u8]) -> bool {
+        self.0.write_blocks(blk_offset, data).is_ok()
+    }
+}
+
+/// A top level error type that consolidates errors from different libraries.
+#[derive(Debug)]
+enum GblEfiError {
+    StorageError(gbl_storage::StorageError),
+    EfiError(efi::EfiError),
+}
+
+impl From<StorageError> for GblEfiError {
+    fn from(error: StorageError) -> GblEfiError {
+        GblEfiError::StorageError(error)
+    }
+}
+
+impl From<EfiError> for GblEfiError {
+    fn from(error: EfiError) -> GblEfiError {
+        GblEfiError::EfiError(error)
+    }
+}
+
+/// Helper function to get the `DevicePathText` from a `DeviceHandle`.
+fn get_device_path<'a>(
+    entry: &'a EfiEntry,
+    handle: DeviceHandle,
+) -> Result<DevicePathText<'a>, GblEfiError> {
+    let bs = entry.system_table().boot_services();
+    let path = bs.open_protocol::<DevicePathProtocol>(handle)?;
+    let path_to_text = bs.find_first_and_open::<DevicePathToTextProtocol>()?;
+    Ok(path_to_text.convert_device_path_to_text(&path, false, false)?)
+}
+
+/// Helper macro for printing message via `EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL` in
+/// `EFI_SYSTEM_TABLE.ConOut`.
+#[macro_export]
+macro_rules! efi_print {
+    ( $efi_entry:expr, $( $x:expr ),* ) => {
+        write!($efi_entry.system_table().con_out().unwrap(), $($x,)*).unwrap()
+    };
+}
+
+fn main(
+    image_handle: *mut core::ffi::c_void,
+    systab_ptr: *mut EfiSystemTable,
+) -> Result<(), GblEfiError> {
+    let entry = initialize(image_handle, systab_ptr);
+
+    efi_print!(entry, "\n\n****Rust EFI Application****\n\n");
+
+    let bs = entry.system_table().boot_services();
+    let loaded_image = bs.open_protocol::<LoadedImageProtocol>(entry.image_handle())?;
+    efi_print!(entry, "Image path: {}\n", get_device_path(&entry, loaded_image.device_handle()?)?);
+
+    let mut gpt_buf = vec![0u8; Gpt::required_buffer_size(128)?];
+    let mut gpt = Gpt::new_from_buffer(128, &mut gpt_buf[..])?;
+
+    efi_print!(entry, "Scanning block devices...\n");
+    let block_dev_handles = bs.locate_handle_buffer_by_protocol::<BlockIoProtocol>()?;
+    for (i, handle) in block_dev_handles.handles().iter().enumerate() {
+        efi_print!(entry, "-------------------\n");
+        efi_print!(entry, "Block device #{}: {}\n", i, get_device_path(&entry, *handle)?);
+
+        let mut blk_dev = EfiBlockDevice(bs.open_protocol::<BlockIoProtocol>(*handle)?);
+        let mut scratch = vec![0u8; required_scratch_size(&mut blk_dev)?];
+        efi_print!(
+            entry,
+            "block size: {}, blocks: {}, alignment: {}\n",
+            blk_dev.block_size(),
+            blk_dev.num_blocks(),
+            blk_dev.alignment()
+        );
+        match blk_dev.sync_gpt(&mut gpt, &mut scratch) {
+            Ok(()) => {
+                efi_print!(entry, "GPT found!\n");
+                for e in gpt.entries()? {
+                    efi_print!(entry, "{}\n", e);
                 }
             }
+            Err(e) => {
+                efi_print!(entry, "No GPT on device. {}\n", e);
+            }
         }
-        None => {}
     }
-}
-
-struct EfiConsole {
-    system_table_ptr: *mut EfiSystemTable,
-}
-
-impl Write for EfiConsole {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        puts(self.system_table_ptr, s);
-        Ok(())
-    }
+    Ok(())
 }
 
 #[no_mangle]
-pub extern "C" fn efi_main(
-    _image_handle: *mut core::ffi::c_void,
-    system_table_ptr: *mut EfiSystemTable,
-) {
-    let systab = unsafe { *system_table_ptr };
-    let efi_table_header = systab.header;
-    let mut efi_console = EfiConsole { system_table_ptr };
-    puts(system_table_ptr, "Rust EFI application.\n");
-    puts(system_table_ptr, "EFI header table:\n");
-    write!(&mut efi_console, "  signature: {}\n", efi_table_header.signature).unwrap();
-    write!(&mut efi_console, "  revision: {}\n", efi_table_header.revision).unwrap();
-    write!(&mut efi_console, "  header_size: {}\n", efi_table_header.header_size).unwrap();
-    write!(&mut efi_console, "  crc32: {}\n", efi_table_header.crc32).unwrap();
-    loop {}
-}
-
-#[panic_handler]
-fn panic(_panic: &PanicInfo) -> ! {
+pub extern "C" fn efi_main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) {
+    main(image_handle, systab_ptr).unwrap();
     loop {}
 }
