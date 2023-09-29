@@ -35,6 +35,7 @@ rust_binary(
     ],
     deps = [
         "@gbl//libefi",
+        "@gbl//libstorage",
         "@gbl//third_party/libzbi",
     ] + select({
         "@gbl//toolchain:gbl_rust_elf_riscv64": ["@gbl//efi/arch/riscv64:efi_arch_deps_riscv64"],
