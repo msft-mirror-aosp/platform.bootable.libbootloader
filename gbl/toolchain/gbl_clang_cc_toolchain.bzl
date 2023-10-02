@@ -68,11 +68,8 @@ def _gbl_clang_cc_toolchain_config_impl(ctx):
             action_config(
                 action_name = ACTION_NAMES.cpp_link_executable,
                 enabled = True,
-                tools = [tool(path = gbl_llvm_tool_path("clang++"))],
-                flag_sets = [
-                    _flag_set(["--target={}".format(ctx.attr.target_system_triple)]),
-                    _flag_set(ctx.attr.ld_flags),
-                ],
+                tools = [tool(path = gbl_llvm_tool_path("lld"))],
+                flag_sets = [] if ctx.attr.ld_flags == [] else [_flag_set(ctx.attr.ld_flags)],
             ),
         ],
         tool_paths = [
@@ -127,8 +124,8 @@ def gbl_clang_cc_toolchain(
         name,
         target_cpu,
         target_system_triple,
-        cc_flags,
-        ld_flags):
+        cc_flags = None,
+        ld_flags = None):
     """Configure a clang based cc_toolchain().
 
     Args:
@@ -138,6 +135,8 @@ def gbl_clang_cc_toolchain(
         cc_flags (List): clang compile flags.
         ld_flags (List): clang link flags
     """
+    cc_flags = cc_flags or []
+    ld_flags = ld_flags or []
     config_name = "_{}_config".format(name)
     _gbl_clang_cc_toolchain_config(
         name = config_name,
