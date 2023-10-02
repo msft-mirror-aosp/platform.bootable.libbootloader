@@ -32,70 +32,15 @@ http_archive(
 load(
     "@rules_rust//rust:repositories.bzl",
     "rules_rust_dependencies",
-    "rust_register_toolchains",
-    "rust_repository_set",
 )
 
 rules_rust_dependencies()
 
-# We need to use the same version for both the host and cross-compile toolchains. This is
-# because proc-macro crates are compiled using host rust toolchain. The resulting dylib are
-# then added as input when cross-compiling for target architecture. If version doesn't match,
-# there is a risk that dylib metadata format is different and rustc gives confusing error
-# "invalid metadata version found ...".
-RUST_VERSION = ["1.72.0"]
-
-rust_register_toolchains(
-    edition = "2021",
-    versions = RUST_VERSION,
+load(
+    "//toolchain:gbl_workspace_util.bzl",
+    "gbl_custom_rust_sysroot",
+    "gbl_llvm_toolchain_info_repo",
 )
-
-# We need "x86_64-unknown-uefi", "aarch64-unknown-uefi" variants of rust toolchain.
-# Fetch directly from upstream rust distribution.
-#
-# Alternatively, we can also consider requesting Android to add the variants to
-# upstream rustc prebuilts at
-# https://android.googlesource.com/platform/prebuilts/rust/+/refs/heads/main/linux-x86/1.71.0/lib/rustlib/
-# so that the toolchain can be checked out during "repo init"
-rust_repository_set(
-    name = "rust_uefi_x86_64",
-    edition = "2021",
-    exec_triple = "x86_64-unknown-linux-gnu",
-    extra_target_triples = ["x86_64-unknown-uefi"],
-    target_settings = ["@gbl//toolchain:gbl_rust_uefi_x86_64"],
-    versions = RUST_VERSION,
-)
-
-rust_repository_set(
-    name = "rust_uefi_x86_32",
-    edition = "2021",
-    exec_triple = "x86_64-unknown-linux-gnu",
-    extra_target_triples = ["i686-unknown-uefi"],
-    target_settings = ["@gbl//toolchain:gbl_rust_uefi_x86_32"],
-    versions = RUST_VERSION,
-)
-
-rust_repository_set(
-    name = "rust_uefi_aarch64",
-    edition = "2021",
-    exec_triple = "x86_64-unknown-linux-gnu",
-    extra_target_triples = ["aarch64-unknown-uefi"],
-    target_settings = ["@gbl//toolchain:gbl_rust_uefi_aarch64"],
-    versions = RUST_VERSION,
-)
-
-rust_repository_set(
-    name = "rust_elf_riscv64",
-    edition = "2021",
-    exec_triple = "x86_64-unknown-linux-gnu",
-    extra_target_triples = ["riscv64gc-unknown-linux-gnu"],
-    # We re-define the toolchain in "toolchain/BUILD" to override `stdlib_linkflags`.
-    register_toolchain = False,
-    target_settings = ["@gbl//toolchain:gbl_rust_elf_riscv64"],
-    versions = RUST_VERSION,
-)
-
-load("//toolchain:gbl_workspace_util.bzl", "gbl_llvm_toolchain_info_repo")
 
 # Set up a repo to export llvm tool path and builtin include directory needed
 # by toolchain declaration.
@@ -128,8 +73,19 @@ load("@gbl//android_external_rust_crates:repositories.bzl", "android_external_ru
 android_external_rust_crates_repositories()
 
 # Register rust bindgen toolchains
+# TODO(http://b/302569430): Switch to use Android prebuilts for bindgen toolchain.
 load("@rules_rust//bindgen:repositories.bzl", "rust_bindgen_dependencies", "rust_bindgen_register_toolchains")
 
 rust_bindgen_dependencies()
 
 rust_bindgen_register_toolchains()
+
+gbl_custom_rust_sysroot(name = "gbl_custom_rust_sysroot")
+
+# Fetch Android upstream rust prebuilts:
+# https://android.googlesource.com/platform/prebuilts/rust
+http_archive(
+    name = "rust_prebuilts",
+    build_file = "@gbl//toolchain:BUILD.android_rust_prebuilts.bazel",
+    url = "https://android.googlesource.com/platform/prebuilts/rust/+archive/72697c0b73f7df92389bdad2ba6a8a513f00269a/linux-x86/1.72.0.tar.gz",
+)
