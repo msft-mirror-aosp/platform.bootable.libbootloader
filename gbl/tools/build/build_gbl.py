@@ -91,19 +91,35 @@ def main() -> int:
     os.makedirs(str(out_dir), exist_ok=True)
     # Set LLVM clang path
     os.environ["GBL_LLVM_CLANG_PATH"] = str(clang)
-    # Re-generate dependencies for external rust crates.
-    os.environ["CARGO_BAZEL_REPIN"] = "1"
 
     out_paths = []
     for arch in archs:
+        common_args = [
+            f"--platforms=@gbl//toolchain:{ARCH_TO_BAZEL_PLATFORM_CONFIG[arch]}",
+            f"--cpu={arch}",
+            "--verbose_failures",
+        ]
+
+        # Build Rust sysroot
+        # TODO(http://b/302569430): This can be skipped for platforms that will
+        # get prebuilt sysroot upstream. It saves about 20 seconds build time
+        # each.
+        subprocess.run([
+            bazel,
+            "build",
+            "@gbl//rust_sysroot",
+        ] + common_args,
+                       cwd=str(GBL_DIR),
+                       check=True)
+
+        os.environ["GBL_CUSTOM_RUST_SYSROOT"] =\
+            str((GBL_DIR / "bazel-bin" / "rust_sysroot").resolve())
+
         subprocess.run([
             bazel,
             "build",
             "@gbl//efi:gbl_efi",
-            f"--platforms=@gbl//toolchain:{ARCH_TO_BAZEL_PLATFORM_CONFIG[arch]}",
-            f"--cpu={arch}",
-            "--verbose_failures",
-        ],
+        ] + common_args,
                        cwd=str(GBL_DIR),
                        check=True)
         out_path = out_dir / f"gbl_{arch}.efi"
