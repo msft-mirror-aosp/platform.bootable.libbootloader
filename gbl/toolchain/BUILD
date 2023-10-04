@@ -122,24 +122,9 @@ cc_flags_common = [
     "-fno-rtti",
 ]
 
-ld_flags_common = [
-    "-fuse-ld=lld",
-    "-fno-exceptions",
-    "-nostdlib",
-    "-nostdlib++",
-    "-noprofilelib",
-]
-
-ld_flags_uefi = ld_flags_common + [
-    "-static",
-    "-Wl,/subsystem:efi_application",
-    "-Wl,/entry:efi_main",
-]
-
 gbl_clang_cc_toolchain(
     name = "x86_64_uefi_clang_cc_toolchain",
     cc_flags = cc_flags_common,
-    ld_flags = ld_flags_uefi,
     target_cpu = "x86_64",
     target_system_triple = "x86_64-windows-msvc",
 )
@@ -155,7 +140,6 @@ toolchain(
 gbl_clang_cc_toolchain(
     name = "x86_32_uefi_clang_cc_toolchain",
     cc_flags = cc_flags_common,
-    ld_flags = ld_flags_uefi,
     target_cpu = "x86_32",
     target_system_triple = "x86-windows-msvc",
 )
@@ -171,7 +155,6 @@ toolchain(
 gbl_clang_cc_toolchain(
     name = "aarch64_uefi_clang_cc_toolchain",
     cc_flags = cc_flags_common,
-    ld_flags = ld_flags_uefi,
     target_cpu = "aarch64",
     target_system_triple = "aarch64-windows-msvc",
 )
@@ -187,7 +170,6 @@ toolchain(
 gbl_clang_cc_toolchain(
     name = "riscv64_elf_clang_cc_toolchain",
     cc_flags = cc_flags_common + ["-fpie"],
-    ld_flags = ld_flags_common + ["-fpie"],
     target_cpu = "riscv64",
     target_system_triple = "riscv64-unknown-linux",
 )

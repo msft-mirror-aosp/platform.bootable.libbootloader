@@ -43,7 +43,7 @@ rules_rust_dependencies()
 # then added as input when cross-compiling for target architecture. If version doesn't match,
 # there is a risk that dylib metadata format is different and rustc gives confusing error
 # "invalid metadata version found ...".
-RUST_VERSION = ["1.71.0"]
+RUST_VERSION = ["1.72.0"]
 
 rust_register_toolchains(
     edition = "2021",
