@@ -12,27 +12,24 @@ it:
 
 ### Build from AOSP
 
-If you already have a
-[AOSP](https://source.android.com/docs/setup/download/downloading) checkout,
-simply provide the path to the script. i.e.
+If this repo is checked out from a full
+[AOSP](https://source.android.com/docs/setup/download/downloading) or
+[Android Bootloader](https://source.android.com/docs/setup/create/cuttlefish-bootloader-dev#develop-bootloader)
+super project, you can simply run
 
 ```.sh
-python3 build_gbl.py --aosp_root=<path to AOSP source root> <output directory>
+python3 build_gbl.py <output directory>
 ```
 
-You can skip the option if you have run `source build/envsetup.sh` from an AOSP
-checkout. The script will get the root from emitted environmental variable
-`ANDROID_BUILD_TOP`.
-
-The script will auto select the needed LLVM and Bazel tools from the AOSP
-source. After build completes, the EFI image will be available in
+The script will auto select the needed dependencies from the super project.
+After build completes, the EFI image will be available in
 `<output director>/gbl/`. By default, the script builds for all of `x86_64`,
 `x86_32`, `aarch64` and `riscv64` architectures. If you only want to build for
 a subset, append option `--arch <x86_64|x86_32|aarch64|riscv64>` one by one.
 
 ### Build without AOSP
 
-If a full AOSP source checkout is too heavy-weight, use the following options,
+If a full super project checkout is too heavy-weight, use the following options,
 which only requires a Bazel binary.
 
 ```

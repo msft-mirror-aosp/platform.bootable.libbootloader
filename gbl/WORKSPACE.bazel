@@ -18,23 +18,14 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_archive(
     name = "rules_rust",
-    # The rust toolchains we need have "uefi" as the system type, which upstream
-    # bazel rust rules doesn't recognize. Apply a patch to fix it.
-    #
-    # Once upstream is fixed and we switch to repo style setup for gbl.
-    # We can simply checkout the repo during `repo init` and turn this into a
-    # local_repository().
-    patch_args = ["-p1"],
-    patches = ["//bazel_patches:0001-rules_rust-add-uefi-support.patch"],
     url = "https://android.googlesource.com/platform/external/bazelbuild-rules_rust/+archive/78760f889ea04beeb880185cdee6a0ebcc71aeb2.tar.gz",
 )
 
-load(
-    "@rules_rust//rust:repositories.bzl",
-    "rules_rust_dependencies",
+http_archive(
+    name = "rules_rust_tinyjson",
+    build_file = "@rules_rust//util/process_wrapper:BUILD.tinyjson.bazel",
+    url = "https://android.googlesource.com/platform/external/rust/crates/tinyjson/+archive/bd3c80f2d602fe6aab658d32af8380febee844e2.tar.gz",
 )
-
-rules_rust_dependencies()
 
 load(
     "//toolchain:gbl_workspace_util.bzl",
@@ -45,9 +36,6 @@ load(
 # Set up a repo to export llvm tool path and builtin include directory needed
 # by toolchain declaration.
 gbl_llvm_prebuilts(name = "gbl_llvm_prebuilts")
-
-# Register all the clang toolchains defined for gbl.
-register_toolchains("//toolchain:all")
 
 # The repo contains ELF definitions needed for our elf library.
 http_archive(
@@ -89,3 +77,6 @@ http_archive(
     build_file_content = """exports_files(["bindgen"])""",
     url = "https://android.googlesource.com/platform/prebuilts/clang-tools/+archive/820ba880a1e95afd4cb6645356f724b7898d387c/linux-x86/bin.tar.gz",
 )
+
+# Register all the LLVM/Rust toolchains.
+register_toolchains("//toolchain:all")
