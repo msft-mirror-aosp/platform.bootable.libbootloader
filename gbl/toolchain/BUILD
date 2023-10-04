@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@rules_rust//rust:toolchain.bzl", "rust_toolchain")
+load("@rules_rust//rust:toolchain.bzl", "rust_toolchain", "rustfmt_toolchain")
 load(":gbl_clang_cc_toolchain.bzl", "gbl_clang_cc_toolchain")
 
 package(
@@ -182,37 +182,183 @@ toolchain(
     toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
 )
 
-# We need to re-define the rust riscv64gc-unknown-linux-gnu toolchain to override the default
-# setting of linking with -lpthread and -ldl.
+# Rust toolchains
 
-RUST_RISCV64_TOOLCHAIN_REPO = "rust_elf_riscv64__riscv64gc-unknown-linux-gnu__stable_tools"
-
+# Linux x86_64 Host toolchain
 rust_toolchain(
-    name = "rust_riscv64_unknown_linux_gnu",
+    name = "x86_64_unknown_linux_gnu",
     allocator_library = None,
     binary_ext = "",
     default_edition = "2021",
     dylib_ext = ".so",
     exec_triple = "x86_64-unknown-linux-gnu",
     global_allocator_library = None,
-    rust_doc = "@{}//:rustdoc".format(RUST_RISCV64_TOOLCHAIN_REPO),
-    rust_std = "@{}//:rust_std-riscv64gc-unknown-linux-gnu".format(RUST_RISCV64_TOOLCHAIN_REPO),
-    rustc = "@{}//:rustc".format(RUST_RISCV64_TOOLCHAIN_REPO),
-    rustc_lib = "@{}//:rustc_lib".format(RUST_RISCV64_TOOLCHAIN_REPO),
+    rust_doc = "@rust_prebuilts//:bin/rustdoc",
+    rust_std = "@rust_prebuilts//:prebuilt_stdlibs",
+    rustc = "@rust_prebuilts//:bin/rustc",
     staticlib_ext = ".a",
-    # Override. Don't add -lpthread and -ldl
     stdlib_linkflags = [],
-    target_triple = "riscv64gc-unknown-linux-gnu",
+    target_triple = "x86_64-unknown-linux-gnu",
 )
 
 toolchain(
-    name = "rust_riscv64_unknown_linux_gnu_toolchain",
+    name = "x86_64_unknown_linux_gnu_toolchain",
     exec_compatible_with = ["@platforms//os:linux"],
-    target_compatible_with = elf_riscv64_constraint_values,
-    target_settings = [
-        "@rules_rust//rust/toolchain/channel:stable",
-        "@gbl//toolchain:gbl_rust_elf_riscv64",
+    target_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
     ],
-    toolchain = ":rust_riscv64_unknown_linux_gnu",
+    toolchain = ":x86_64_unknown_linux_gnu",
     toolchain_type = "@rules_rust//rust:toolchain",
+)
+
+# x86_64 UEFI toolchain
+rust_toolchain(
+    name = "x86_64-unknown-uefi",
+    allocator_library = None,
+    binary_ext = ".efi",
+    default_edition = "2021",
+    dylib_ext = ".so",
+    exec_triple = "x86_64-unknown-linux-gnu",
+    global_allocator_library = None,
+    rust_doc = "@rust_prebuilts//:bin/rustdoc",
+    # TODO(http://b/302569430): Switch to use prebuilt sysroot libraries once they are available.
+    rust_std = "@gbl_custom_rust_sysroot//:stdlib",
+    rustc = "@rust_prebuilts//:bin/rustc",
+    staticlib_ext = ".a",
+    stdlib_linkflags = [],
+    target_triple = "x86_64-unknown-uefi",
+)
+
+toolchain(
+    name = "x86_64-unknown-uefi_toolchain",
+    exec_compatible_with = ["@platforms//os:linux"],
+    target_settings = [":gbl_rust_uefi_x86_64"],
+    toolchain = ":x86_64-unknown-uefi",
+    toolchain_type = "@rules_rust//rust:toolchain",
+)
+
+# i686 UEFI toolchain
+rust_toolchain(
+    name = "i686-unknown-uefi",
+    allocator_library = None,
+    binary_ext = ".efi",
+    default_edition = "2021",
+    dylib_ext = ".so",
+    exec_triple = "x86_64-unknown-linux-gnu",
+    global_allocator_library = None,
+    rust_doc = "@rust_prebuilts//:bin/rustdoc",
+    # TODO(http://b/302569430): Switch to use prebuilt sysroot libraries once they are available.
+    rust_std = "@gbl_custom_rust_sysroot//:stdlib",
+    rustc = "@rust_prebuilts//:bin/rustc",
+    staticlib_ext = ".a",
+    stdlib_linkflags = [],
+    target_triple = "i686-unknown-uefi",
+)
+
+toolchain(
+    name = "i686-unknown-uefi_toolchain",
+    exec_compatible_with = ["@platforms//os:linux"],
+    target_settings = [":gbl_rust_uefi_x86_32"],
+    toolchain = ":i686-unknown-uefi",
+    toolchain_type = "@rules_rust//rust:toolchain",
+)
+
+# aarch64 UEFI toolchain
+rust_toolchain(
+    name = "aarch64-unknown-uefi",
+    allocator_library = None,
+    binary_ext = ".efi",
+    default_edition = "2021",
+    dylib_ext = ".so",
+    exec_triple = "x86_64-unknown-linux-gnu",
+    global_allocator_library = None,
+    rust_doc = "@rust_prebuilts//:bin/rustdoc",
+    # TODO(http://b/302569430): Switch to use prebuilt sysroot libraries once they are available.
+    rust_std = "@gbl_custom_rust_sysroot//:stdlib",
+    rustc = "@rust_prebuilts//:bin/rustc",
+    staticlib_ext = ".a",
+    stdlib_linkflags = [],
+    target_triple = "aarch64-unknown-uefi",
+)
+
+toolchain(
+    name = "aarch64-unknown-uefi_toolchain",
+    exec_compatible_with = ["@platforms//os:linux"],
+    target_settings = [":gbl_rust_uefi_aarch64"],
+    toolchain = ":aarch64-unknown-uefi",
+    toolchain_type = "@rules_rust//rust:toolchain",
+)
+
+# riscv64 PIE ELF toolchain
+rust_toolchain(
+    name = "riscv64gc-unknown-none-pie_elf",
+    allocator_library = None,
+    binary_ext = "",
+    default_edition = "2021",
+    dylib_ext = ".so",
+    exec_triple = "x86_64-unknown-linux-gnu",
+    global_allocator_library = None,
+    rust_doc = "@rust_prebuilts//:bin/rustdoc",
+    # Need to use our own built sysroot because we are using a custom spec below.
+    rust_std = "@gbl_custom_rust_sysroot//:stdlib",
+    rustc = "@rust_prebuilts//:bin/rustc",
+    staticlib_ext = ".a",
+    stdlib_linkflags = [],
+    # The custom spec is based on builtin target "riscv64gc-unknown-none-elf" but with the
+    # following changes for enabling PIE:
+    #
+    #   1. "relocation-model" config entry changed from "static" to "pic".
+    #   2. Added "position-independent-executables": true.
+    #
+    # The original spec can be obtained by:
+    #
+    #   rustc +nightly -Z unstable-options --print target-spec-json \
+    #     --target riscv64gc-unknown-none-elf
+    target_json = """
+                {
+                    "arch": "riscv64",
+                    "code-model": "medium",
+                    "cpu": "generic-rv64",
+                    "data-layout": "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128",
+                    "eh-frame-header": false,
+                    "emit-debug-gdb-scripts": false,
+                    "features": "+m,+a,+f,+d,+c",
+                    "is-builtin": false,
+                    "linker": "rust-lld",
+                    "linker-flavor": "ld.lld",
+                    "llvm-abiname": "lp64d",
+                    "llvm-target": "riscv64-unknown-linux",
+                    "max-atomic-width": 64,
+                    "os": "none",
+                    "panic-strategy": "abort",
+                    "relocation-model": "pic",
+                    "position-independent-executables": true,
+                    "supported-sanitizers": [
+                        "kernel-address"
+                    ],
+                    "target-pointer-width": "64"
+                }
+""",
+)
+
+toolchain(
+    name = "riscv64gc-unknown-none-pie_elf_toolchain",
+    exec_compatible_with = ["@platforms//os:linux"],
+    target_settings = ["@gbl//toolchain:gbl_rust_elf_riscv64"],
+    toolchain = ":riscv64gc-unknown-none-pie_elf",
+    toolchain_type = "@rules_rust//rust:toolchain",
+)
+
+# rustfmt toolchain
+rustfmt_toolchain(
+    name = "rustfmt",
+    rustfmt = "@rust_prebuilts//:bin/rustfmt",
+)
+
+toolchain(
+    name = "rustfmt_toolchain",
+    exec_compatible_with = ["@platforms//os:linux"],
+    toolchain = ":rustfmt",
+    toolchain_type = "@rules_rust//rust/rustfmt:toolchain_type",
 )
