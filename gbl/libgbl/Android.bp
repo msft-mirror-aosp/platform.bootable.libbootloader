@@ -1,0 +1,73 @@
+// Copyright 2023, The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+rust_defaults {
+    name: "libgbl_defaults",
+    srcs: ["src/lib.rs"],
+}
+
+// GBL Rust library.
+rust_library {
+    name: "libgbl",
+    host_supported: true,
+    crate_name: "gbl",
+    defaults: [ "libgbl_defaults" ],
+    rustlibs: ["libzbi"],
+}
+
+// Defining rlib here because we want to build with [no_std], but
+// don't want to define panic handlers (the library user should do that).
+// Only rlibs can compile without these definitions and allow other code
+// to provide them instead (https://stackoverflow.com/q/43097676).
+rust_library_rlib {
+    name: "libgbl_nostd",
+    crate_name: "gbl",
+    defaults: [ "libgbl_defaults" ],
+    rlibs: ["libzbi_nostd"],
+    no_stdlibs: true,
+    prefer_rlib: true,
+}
+
+// libgbl unit tests.
+rust_test {
+    name: "libgbl_device_test",
+    defaults: [ "libgbl_defaults" ],
+    rustlibs: ["libzbi"],
+    test_suites: ["general-tests"],
+}
+
+rust_test_host {
+    name: "libgbl_host_test",
+    defaults: [ "libgbl_defaults" ],
+    rustlibs: ["libzbi"],
+}
+
+// Test building with libgbl in a [no_std] environment.
+//
+// This is a compile-only test to ensure [no_std] works and demonstrate
+// which Rust hooks are required to implement. This code will not be exeuted,
+// so actual logic unittests go in libgbl tests instead.
+rust_binary {
+    name: "libgbl_test_nostd",
+    srcs: [ "tests/nostd.rs" ],
+    rustlibs: [ "libgbl_nostd" ],
+    // panic=abort to satisfy the eh_personality compile requirement.
+    flags: [ "-C", "panic=abort" ],
+    no_stdlibs: true,
+    prefer_rlib: true,
+}

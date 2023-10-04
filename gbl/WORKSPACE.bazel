@@ -1,0 +1,91 @@
+# Copyright (C) 2023 The Android Open Source Project
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+workspace(name = "gbl")
+
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "rules_rust",
+    # The rust toolchains we need have "uefi" as the system type, which upstream
+    # bazel rust rules doesn't recognize. Apply a patch to fix it.
+    #
+    # Once upstream is fixed and we switch to repo style setup for gbl.
+    # We can simply checkout the repo during `repo init` and turn this into a
+    # local_repository().
+    patch_args = ["-p1"],
+    patches = ["//bazel_patches:0001-rules_rust-add-uefi-support.patch"],
+    url = "https://android.googlesource.com/platform/external/bazelbuild-rules_rust/+archive/78760f889ea04beeb880185cdee6a0ebcc71aeb2.tar.gz",
+)
+
+load(
+    "@rules_rust//rust:repositories.bzl",
+    "rules_rust_dependencies",
+)
+
+rules_rust_dependencies()
+
+load(
+    "//toolchain:gbl_workspace_util.bzl",
+    "gbl_custom_rust_sysroot",
+    "gbl_llvm_toolchain_info_repo",
+)
+
+# Set up a repo to export llvm tool path and builtin include directory needed
+# by toolchain declaration.
+gbl_llvm_toolchain_info_repo(name = "gbl_llvm_toolchain_info")
+
+# Register all the clang toolchains defined for gbl.
+register_toolchains("//toolchain:all")
+
+# The repo contains ELF definitions needed for our elf library.
+http_archive(
+    name = "elfutils",
+    build_file_content = """
+cc_library(
+    name = "elf_type_header",
+    hdrs = ["libelf/elf.h"],
+    visibility = ["//visibility:public"],
+)
+""",
+    url = "https://android.googlesource.com/platform/external/elfutils/+archive/refs/heads/main.tar.gz",
+)
+
+# For C/C++ unit-tests
+http_archive(
+    name = "googletest",
+    url = "https://android.googlesource.com/platform/external/googletest/+archive/refs/heads/main.tar.gz",
+)
+
+load("@gbl//android_external_rust_crates:repositories.bzl", "android_external_rust_crates_repositories")
+
+android_external_rust_crates_repositories()
+
+# Register rust bindgen toolchains
+# TODO(http://b/302569430): Switch to use Android prebuilts for bindgen toolchain.
+load("@rules_rust//bindgen:repositories.bzl", "rust_bindgen_dependencies", "rust_bindgen_register_toolchains")
+
+rust_bindgen_dependencies()
+
+rust_bindgen_register_toolchains()
+
+gbl_custom_rust_sysroot(name = "gbl_custom_rust_sysroot")
+
+# Fetch Android upstream rust prebuilts:
+# https://android.googlesource.com/platform/prebuilts/rust
+http_archive(
+    name = "rust_prebuilts",
+    build_file = "@gbl//toolchain:BUILD.android_rust_prebuilts.bazel",
+    url = "https://android.googlesource.com/platform/prebuilts/rust/+archive/72697c0b73f7df92389bdad2ba6a8a513f00269a/linux-x86/1.72.0.tar.gz",
+)
