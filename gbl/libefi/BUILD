@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@gbl_llvm_prebuilts//:info.bzl", "gbl_llvm_builtin_include")
 load("@rules_rust//bindgen:bindgen.bzl", "rust_bindgen")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
@@ -62,7 +63,7 @@ rust_bindgen(
     clang_flags = select({
         "@gbl//toolchain:gbl_rust_uefi_x86_32": ["-m32"],
         "//conditions:default": ["-m64"],
-    }),
+    }) + ["-I{}".format(gbl_llvm_builtin_include())],
     header = "defs/efi.h",
 )
 
