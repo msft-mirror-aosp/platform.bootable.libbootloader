@@ -32,8 +32,8 @@ ARCHS = ["x86_64", "x86_32", "aarch64", "riscv64"]
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--aosp_root", help="Path to Android root source")
-    parser.add_argument("--clang", help="Override path to clang compiler")
     parser.add_argument("--bazel", help="Override path to bazel executable")
+    parser.add_argument("--test", action="store_true", help="Run unittests")
     parser.add_argument(
         "--arch",
         help="Add a specific target architecture to build list",
@@ -71,26 +71,26 @@ def main() -> int:
 
     if args.aosp_root:
         aosp_root = pathlib.Path(args.aosp_root).resolve()
-        clang = (aosp_root / "prebuilts" / "clang" / "host" / "linux-x86" /
-                 aosp_get_clang(aosp_root) / "bin" / "clang")
+        os.environ["GBL_LLVM_PREBUILTS"] = str(aosp_root / "prebuilts" /
+                                               "clang" / "host" / "linux-x86" /
+                                               aosp_get_clang(aosp_root))
         bazel = aosp_root / "prebuilts" / "bazel" / "linux-x86_64" / "bazel"
-
-    if args.clang:
-        clang = pathlib.Path(args.clang).resolve()
 
     if args.bazel:
         bazel = pathlib.Path(args.bazel).resolve()
 
     archs = args.arch if args.arch else ARCHS
 
-    print(f"clang = {clang}")
     print(f"bazel = {bazel}")
     print(f"Target architectures: {archs}")
 
     out_dir = (pathlib.Path(args.out) / "gbl").resolve()
     os.makedirs(str(out_dir), exist_ok=True)
-    # Set LLVM clang path
-    os.environ["GBL_LLVM_CLANG_PATH"] = str(clang)
+
+    if args.test:
+        subprocess.run([bazel, "test", "@gbl//tests", "--verbose_failures"],
+                       cwd=str(GBL_DIR),
+                       check=True)
 
     out_paths = []
     for arch in archs:

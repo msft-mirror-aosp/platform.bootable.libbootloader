@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@rules_rust//bindgen:bindgen.bzl", "rust_bindgen_toolchain")
 load("@rules_rust//rust:toolchain.bzl", "rust_toolchain", "rustfmt_toolchain")
-load(":gbl_clang_cc_toolchain.bzl", "gbl_clang_cc_toolchain")
+load(":gbl_toolchain.bzl", "gbl_clang_cc_toolchain", "prebuilt_binary")
 
 package(
     default_visibility = ["//visibility:public"],
@@ -361,4 +362,25 @@ toolchain(
     exec_compatible_with = ["@platforms//os:linux"],
     toolchain = ":rustfmt",
     toolchain_type = "@rules_rust//rust/rustfmt:toolchain_type",
+)
+
+# Rust bindgen toolchain
+
+prebuilt_binary(
+    name = "bindgen_prebuilt",
+    bin = "@bindgen//:bindgen",
+)
+
+rust_bindgen_toolchain(
+    name = "bindgen_toolchain_impl",
+    bindgen = ":bindgen_prebuilt",
+    clang = "@gbl_llvm_prebuilts//:clang-bin",
+    libclang = "@gbl_llvm_prebuilts//:libclang",
+    libstdcxx = "@gbl_llvm_prebuilts//:libc++",
+)
+
+toolchain(
+    name = "bindgen_toolchain",
+    toolchain = "bindgen_toolchain_impl",
+    toolchain_type = "@rules_rust//bindgen:toolchain_type",
 )
