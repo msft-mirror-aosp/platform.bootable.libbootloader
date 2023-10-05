@@ -16,41 +16,33 @@
 This file contains rules and logic to initialize GBL workspace.
 """
 
-def _gbl_llvm_toolchain_info_repo_impl(repo_ctx):
-    """Implementation for gbl_llvm_toolchain_info_repo
+def _abs_path(repo_ctx, path):
+    return repo_ctx.execute(["readlink", "-f", path]).stdout.strip("\n")
 
-    The repository rule gets the LLVM clang path from environment variable
-    `GBL_LLVM_CLANG_PATH` and assembles a repo to export the value of LLVM
-    tool path and builtin include directory, which are needed for toolchain
-    definition.
+def _gbl_llvm_prebuilts_impl(repo_ctx):
+    """Implementation for gbl_llvm_prebuilts
+
+    The repository rule sets up a repo for hosting LLVM distribution. It can be provided manually
+    via the `GBL_LLVM_PREBUILTS` environment variable. If it doesn't exist, the rule fetches from
+    Android upstream.
+
+    Only Linux x86_64 platform is supported.
     """
+    prebuilts = repo_ctx.os.environ.get("GBL_LLVM_PREBUILTS")
+    if prebuilts:
+        repo_ctx.symlink(prebuilts, "llvm-linux-x86")
+    else:
+        # Fetch the LLVM prebuilts used by Trusty and u-boot.
+        repo_ctx.download_and_extract(
+            url = "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/18420bf70dde33f6fae92624a1dad774aeae0e83/clang-r475365b.tar.gz",
+            output = "llvm-linux-x86",
+        )
 
-    # Get clang path from "GBL_LLVM_BIN_DIR" environment variable. Default to
-    # host installed LLVM if it is not set.
-    clang = repo_ctx.os.environ.get("GBL_LLVM_CLANG_PATH")
-    if clang == None:
-        fail("""
-
-No LLVM clang provided in `GBL_LLVM_CLANG_PATH`.
-
-Please set environment variable `GBL_LLVM_CLANG_PATH` to the path of the LLVM clang binary to use.
-
-It is recommended to use the Android upstream LLVM prebuilt. For example, if you have a local Android source checkout, you can set it to:
-
-    export GBL_LLVM_CLANG_PATH=<path to android source checkout>/prebuilts/clang/host/linux-x86/clang-r475365b/bin/clang
-
-Note: The stable version number "clang-r475365b" might be different.
-
-""")
-
-    # Resolve absolute path if the given path is a symlink.
-    clang = repo_ctx.execute(["readlink", "-f", clang]).stdout.strip("\n")
-
-    # Get the directory. This assumes that the clang lives in a standard LLVM
-    # distribution directory layout.
-    gbl_llvm_bin_dir = repo_ctx.execute(["dirname", clang]).stdout.strip("\n")
+    # Get the bin directory so that we can access other LLVM tools by path.
+    gbl_llvm_bin_dir = _abs_path(repo_ctx, "llvm-linux-x86/bin")
 
     # Get the builtin include directory, which is required by cc_toolchain config.
+    clang = repo_ctx.execute(["readlink", "-f", "llvm-linux-x86/bin/clang"]).stdout.strip("\n")
     llvm_resource_dir = repo_ctx.execute([clang, "--print-resource-dir"]).stdout.strip("\n")
     builtin_include = "{}/include/".format(llvm_resource_dir)
 
@@ -64,13 +56,51 @@ def gbl_llvm_builtin_include():
     return "{}"
 """.format(gbl_llvm_bin_dir, builtin_include))
 
-    # Add a BUILD file to make it a package
-    repo_ctx.file("BUILD", "")
+    # The following files are needed for defining bindgen toolchain, we symlink them out to the
+    # top level directory in case the the distribution repo has its own BUILD file which blocks
+    # direct access.
+    repo_ctx.symlink("llvm-linux-x86/bin/clang", "clang")
 
-gbl_llvm_toolchain_info_repo = repository_rule(
-    implementation = _gbl_llvm_toolchain_info_repo_impl,
+    # In some prebuilt versions, "libc++.so" is a symlink to "libc++.so.1" etc. We need to use the
+    # same name as the actual library file name in cc_import(). Otherwise it complains it can't
+    # find the shared object.
+    libcpp_sharelib_path = _abs_path(repo_ctx, "llvm-linux-x86/lib/libc++.so")
+    libcpp_base_name = repo_ctx.execute(["basename", libcpp_sharelib_path]).stdout.strip("\n")
+    repo_ctx.symlink(libcpp_sharelib_path, libcpp_base_name)
+
+    # Do the same for libclang.so in case it's a symlink.
+    libclang_sharelib_path = _abs_path(repo_ctx, "llvm-linux-x86/lib/libclang.so")
+    libclang_basename = repo_ctx.execute(["basename", libclang_sharelib_path]).stdout.strip("\n")
+    repo_ctx.symlink(libclang_sharelib_path, libclang_basename)
+
+    # Add a BUILD file to make it a package
+    repo_ctx.file("BUILD", """
+package(
+    default_visibility = ["//visibility:public"],
+)
+
+exports_files(glob(["**/*"]))
+
+sh_binary(
+    name = "clang-bin",
+    srcs = [":clang"],
+)
+
+cc_import(
+    name = "libc++",
+    shared_library = ":{}",
+)
+
+cc_import(
+    name = "libclang",
+    shared_library = ":{}",
+)
+""".format(libcpp_base_name, libclang_basename))
+
+gbl_llvm_prebuilts = repository_rule(
+    implementation = _gbl_llvm_prebuilts_impl,
     local = True,
-    environ = ["GBL_LLVM_CLANG_PATH"],
+    environ = ["GBL_LLVM_PREBUILTS"],
 )
 
 def _gbl_custom_rust_sysroot(repo_ctx):

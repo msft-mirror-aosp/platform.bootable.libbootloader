@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@gbl_llvm_toolchain_info//:info.bzl", "gbl_llvm_tool_path")
+load("@gbl_llvm_prebuilts//:info.bzl", "gbl_llvm_tool_path")
 load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 package(

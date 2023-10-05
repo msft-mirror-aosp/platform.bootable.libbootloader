@@ -75,7 +75,6 @@
 #![cfg_attr(not(test), no_std)]
 
 use core::cmp::min;
-use core::mem::size_of;
 
 // Selective export of submodule types.
 mod gpt;
@@ -790,6 +789,7 @@ impl WriteBuffer for &mut [u8] {
 #[cfg(test)]
 mod test {
     use super::*;
+    use core::mem::size_of;
     use Vec;
 
     pub struct TestBlockDevice {
