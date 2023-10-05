@@ -32,16 +32,17 @@ a subset, append option `--arch <x86_64|x86_32|aarch64|riscv64>` one by one.
 
 ### Build without AOSP
 
-If a full AOSP source checkout is too heavy-weight and you prefer to just
-checkout this repo and provide your own Bazel and LLVM tools, use the following
-options:
+If a full AOSP source checkout is too heavy-weight, use the following options,
+which only requires a Bazel binary.
 
 ```
 python3 build_gbl.py \
-    --clang=<path to LLVM clang> \
     --bazel=<path to Bazel executable> \
     <output directory>
 ```
+
+The above command will automatically download necessary toolchains from
+Android prebuilts.
 
 ## Run on emulator
 

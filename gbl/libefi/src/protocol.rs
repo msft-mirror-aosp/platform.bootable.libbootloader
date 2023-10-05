@@ -115,7 +115,7 @@ impl Protocol<'_, BlockIoProtocol> {
                 self.interface,
                 self.media()?.media_id,
                 lba,
-                buffer.len() as size_t, // size_t should be equivalent to usize.
+                buffer.len(),
                 buffer.as_mut_ptr() as *mut _
             )
         }
@@ -130,7 +130,7 @@ impl Protocol<'_, BlockIoProtocol> {
                 self.interface,
                 self.media()?.media_id,
                 lba,
-                buffer.len() as size_t, // size_t should be equivalent to usize.
+                buffer.len(),
                 buffer.as_ptr() as *const _
             )
         }
@@ -316,7 +316,6 @@ impl<'a> Protocol<'a, LoadedImageProtocol> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::defs::size_t;
     use crate::initialize;
     use crate::test::*;
 
@@ -362,11 +361,5 @@ mod test {
                 assert_eq!(traces.borrow_mut().free_pool_trace.inputs.len(), 0);
             });
         })
-    }
-
-    #[test]
-    fn test_size_t_same_as_usize() {
-        assert!(size_t::try_from(usize::MAX).is_ok());
-        assert!(usize::try_from(size_t::MAX).is_ok());
     }
 }

@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+This file contains rules for defininig GBL toolchains.
+"""
+
 load(
     "@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl",
     "action_config",
@@ -20,7 +24,7 @@ load(
     "tool",
     "tool_path",
 )
-load("@gbl_llvm_toolchain_info//:info.bzl", "gbl_llvm_builtin_include", "gbl_llvm_tool_path")
+load("@gbl_llvm_prebuilts//:info.bzl", "gbl_llvm_builtin_include", "gbl_llvm_tool_path")
 load("@rules_cc//cc:action_names.bzl", "ACTION_NAMES", "ALL_CC_COMPILE_ACTION_NAMES")
 
 def _flag_set(flags):
@@ -163,3 +167,24 @@ def gbl_clang_cc_toolchain(
         strip_files = empty_filegroup_target,
         supports_param_files = 0,
     )
+
+def _prebuilt_binary_impl(ctx):
+    """Generate a wrapper executable type target that simply symlinks to a given executable binary.
+
+    This is for rules that only accept executable type target but not binary file directly.
+    i.e. `rust_bindgen_toolchain`
+    """
+    out = ctx.actions.declare_file(ctx.label.name)
+    ctx.actions.symlink(
+        output = out,
+        target_file = ctx.executable.bin,
+    )
+    return [DefaultInfo(files = depset([out]), executable = out)]
+
+prebuilt_binary = rule(
+    implementation = _prebuilt_binary_impl,
+    executable = True,
+    attrs = {
+        "bin": attr.label(allow_single_file = True, executable = True, cfg = "exec"),
+    },
+)
