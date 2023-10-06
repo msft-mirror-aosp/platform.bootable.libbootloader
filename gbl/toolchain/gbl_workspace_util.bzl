@@ -22,9 +22,9 @@ def _abs_path(repo_ctx, path):
 def _gbl_llvm_prebuilts_impl(repo_ctx):
     """Implementation for gbl_llvm_prebuilts
 
-    The repository rule sets up a repo for hosting LLVM distribution. It can be provided manually
-    via the `GBL_LLVM_PREBUILTS` environment variable. If it doesn't exist, the rule fetches from
-    Android upstream.
+    The repository rule sets up a repo for hosting LLVM distribution and Linux sysroot. They can
+    be provided manually via the `GBL_LLVM_PREBUILTS` and `GBL_LINUX_SYSROOT` environment
+    variables. If they don't exist, the rule fetches them from Android upstream.
 
     Only Linux x86_64 platform is supported.
     """
@@ -38,23 +38,46 @@ def _gbl_llvm_prebuilts_impl(repo_ctx):
             output = "llvm-linux-x86",
         )
 
+    # Linux host toolchain additionally needs a sysroot
+    linux_glibc = repo_ctx.os.environ.get("GBL_LINUX_SYSROOT")
+    if linux_glibc:
+        repo_ctx.symlink(linux_glibc, "linux_glibc")
+    else:
+        repo_ctx.download_and_extract(
+            url = "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/+archive/refs/heads/main.tar.gz",
+            output = "linux_glibc",
+        )
+
     # Get the bin directory so that we can access other LLVM tools by path.
     gbl_llvm_bin_dir = _abs_path(repo_ctx, "llvm-linux-x86/bin")
 
-    # Get the builtin include directory, which is required by cc_toolchain config.
-    clang = repo_ctx.execute(["readlink", "-f", "llvm-linux-x86/bin/clang"]).stdout.strip("\n")
-    llvm_resource_dir = repo_ctx.execute([clang, "--print-resource-dir"]).stdout.strip("\n")
-    builtin_include = "{}/include/".format(llvm_resource_dir)
-
-    # Create a info.bzl file in the assembled repo to export the tool path and
-    # builtin include directory.
-    repo_ctx.file("info.bzl", """
+    # Create a info.bzl file in the assembled repo to export header/library/tool paths.
+    info_bzl_content = """
 def gbl_llvm_tool_path(tool_name):
     return "{}/" + tool_name
+""".format(gbl_llvm_bin_dir)
 
-def gbl_llvm_builtin_include():
-    return "{}"
-""".format(gbl_llvm_bin_dir, builtin_include))
+    # Get the builtin include directories.
+    clang = _abs_path(repo_ctx, "llvm-linux-x86/bin/clang")
+    llvm_resource_dir = repo_ctx.execute([clang, "--print-resource-dir"]).stdout.strip("\n")
+    info_bzl_content += """
+LLVM_PREBUILTS_C_INCLUDE = "{}"
+LLVM_PREBUILTS_CPP_INCLUDE = "{}"
+""".format(
+        "{}/include".format(llvm_resource_dir),
+        _abs_path(repo_ctx, "llvm-linux-x86/include/c++/v1"),
+    )
+
+    # Linux sysroot headers
+    sysroot_includes = [
+        _abs_path(repo_ctx, "linux_glibc/sysroot/usr/include"),
+        _abs_path(repo_ctx, "linux_glibc/sysroot/usr/include/x86_64-linux-gnu"),
+    ]
+    info_bzl_content += """
+LINUX_SYSROOT_INCLUDES = [{}]
+""".format(",".join(["\"{}\"".format(inc) for inc in sysroot_includes]))
+
+    repo_ctx.file("info.bzl", info_bzl_content)
 
     # The following files are needed for defining bindgen toolchain, we symlink them out to the
     # top level directory in case the the distribution repo has its own BUILD file which blocks
@@ -100,7 +123,7 @@ cc_import(
 gbl_llvm_prebuilts = repository_rule(
     implementation = _gbl_llvm_prebuilts_impl,
     local = True,
-    environ = ["GBL_LLVM_PREBUILTS"],
+    environ = ["GBL_LLVM_PREBUILTS", "GBL_LINUX_SYSROOT"],
 )
 
 def _gbl_custom_rust_sysroot(repo_ctx):
