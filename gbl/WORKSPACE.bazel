@@ -18,36 +18,24 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_archive(
     name = "rules_rust",
-    # The rust toolchains we need have "uefi" as the system type, which upstream
-    # bazel rust rules doesn't recognize. Apply a patch to fix it.
-    #
-    # Once upstream is fixed and we switch to repo style setup for gbl.
-    # We can simply checkout the repo during `repo init` and turn this into a
-    # local_repository().
-    patch_args = ["-p1"],
-    patches = ["//bazel_patches:0001-rules_rust-add-uefi-support.patch"],
     url = "https://android.googlesource.com/platform/external/bazelbuild-rules_rust/+archive/78760f889ea04beeb880185cdee6a0ebcc71aeb2.tar.gz",
 )
 
-load(
-    "@rules_rust//rust:repositories.bzl",
-    "rules_rust_dependencies",
+http_archive(
+    name = "rules_rust_tinyjson",
+    build_file = "@rules_rust//util/process_wrapper:BUILD.tinyjson.bazel",
+    url = "https://android.googlesource.com/platform/external/rust/crates/tinyjson/+archive/bd3c80f2d602fe6aab658d32af8380febee844e2.tar.gz",
 )
-
-rules_rust_dependencies()
 
 load(
     "//toolchain:gbl_workspace_util.bzl",
     "gbl_custom_rust_sysroot",
-    "gbl_llvm_toolchain_info_repo",
+    "gbl_llvm_prebuilts",
 )
 
 # Set up a repo to export llvm tool path and builtin include directory needed
 # by toolchain declaration.
-gbl_llvm_toolchain_info_repo(name = "gbl_llvm_toolchain_info")
-
-# Register all the clang toolchains defined for gbl.
-register_toolchains("//toolchain:all")
+gbl_llvm_prebuilts(name = "gbl_llvm_prebuilts")
 
 # The repo contains ELF definitions needed for our elf library.
 http_archive(
@@ -72,14 +60,6 @@ load("@gbl//android_external_rust_crates:repositories.bzl", "android_external_ru
 
 android_external_rust_crates_repositories()
 
-# Register rust bindgen toolchains
-# TODO(http://b/302569430): Switch to use Android prebuilts for bindgen toolchain.
-load("@rules_rust//bindgen:repositories.bzl", "rust_bindgen_dependencies", "rust_bindgen_register_toolchains")
-
-rust_bindgen_dependencies()
-
-rust_bindgen_register_toolchains()
-
 gbl_custom_rust_sysroot(name = "gbl_custom_rust_sysroot")
 
 # Fetch Android upstream rust prebuilts:
@@ -89,3 +69,14 @@ http_archive(
     build_file = "@gbl//toolchain:BUILD.android_rust_prebuilts.bazel",
     url = "https://android.googlesource.com/platform/prebuilts/rust/+archive/72697c0b73f7df92389bdad2ba6a8a513f00269a/linux-x86/1.72.0.tar.gz",
 )
+
+# Fetch `bindgen` from Android upstream prebuilts, i.e.:
+# https://android.googlesource.com/platform/prebuilts/clang-tools/+/refs/heads/main/linux-x86/bin/bindgen
+http_archive(
+    name = "bindgen",
+    build_file_content = """exports_files(["bindgen"])""",
+    url = "https://android.googlesource.com/platform/prebuilts/clang-tools/+archive/820ba880a1e95afd4cb6645356f724b7898d387c/linux-x86/bin.tar.gz",
+)
+
+# Register all the LLVM/Rust toolchains.
+register_toolchains("//toolchain:all")
