@@ -189,3 +189,62 @@ prebuilt_binary = rule(
         "bin": attr.label(allow_single_file = True, executable = True, cfg = "exec"),
     },
 )
+
+# A transition rule that emits the `@gbl//toolchain:rust_no_sysroot_true` setting.
+def _no_sysroot_transition_impl(_, __):
+    return {"@gbl//toolchain:rust_no_sysroot": True}
+
+_no_sysroot_transition = transition(
+    implementation = _no_sysroot_transition_impl,
+    inputs = [],
+    outputs = ["@gbl//toolchain:rust_no_sysroot"],
+)
+
+# A rule implementation that simply forwards dependencies from attribute `deps` and generates
+# symlinks to their output files.
+def _forward_and_symlink(ctx):
+    outs = []
+    for file in ctx.files.deps:
+        # Append the label name to the file name but keep the same extension. i.e.
+        # "<file>.<extension>" -> "<file>_<label>.<extension>"
+        stem = file.basename.removesuffix(".{}".format(file.extension))
+        out = ctx.actions.declare_file("{}_{}.{}".format(stem, ctx.label.name, file.extension))
+        ctx.actions.symlink(output = out, target_file = file)
+        outs.append(out)
+    return [DefaultInfo(files = depset(outs))]
+
+# A rule for building rust targets with the `@gbl//toolchain:rust_no_sysroot_true` setting.
+build_with_no_rust_sysroot = rule(
+    implementation = _forward_and_symlink,
+    cfg = _no_sysroot_transition,
+    attrs = {
+        # Mandatory attribute for rules with transition.
+        "_allowlist_function_transition": attr.label(
+            default = Label("@bazel_tools//tools/allowlists/function_transition_allowlist"),
+        ),
+        "deps": attr.label_list(allow_files = True, mandatory = True),
+    },
+)
+
+# A transition rule that emits the "--platforms=<attr.platform>" option.
+def _platform_transition_impl(_, attr):
+    return {"//command_line_option:platforms": attr.platform}
+
+_platform_transition = transition(
+    implementation = _platform_transition_impl,
+    inputs = [],
+    outputs = ["//command_line_option:platforms"],
+)
+
+build_with_platform = rule(
+    implementation = _forward_and_symlink,
+    cfg = _platform_transition,
+    attrs = {
+        # Mandatory attribute for rules with transition.
+        "_allowlist_function_transition": attr.label(
+            default = Label("@bazel_tools//tools/allowlists/function_transition_allowlist"),
+        ),
+        "platform": attr.string(mandatory = True),
+        "deps": attr.label_list(allow_files = True, mandatory = True),
+    },
+)

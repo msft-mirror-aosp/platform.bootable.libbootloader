@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@bazel_skylib//rules:common_settings.bzl", "bool_setting")
 load(
     "@gbl_llvm_prebuilts//:info.bzl",
     "LINUX_SYSROOT_INCLUDES",
@@ -20,8 +21,18 @@ load(
     "gbl_llvm_tool_path",
 )
 load("@rules_rust//bindgen:bindgen.bzl", "rust_bindgen_toolchain")
-load("@rules_rust//rust:toolchain.bzl", "rust_toolchain", "rustfmt_toolchain")
-load(":gbl_toolchain.bzl", "gbl_clang_cc_toolchain", "prebuilt_binary")
+load(
+    "@rules_rust//rust:toolchain.bzl",
+    "rust_stdlib_filegroup",
+    "rust_toolchain",
+    "rustfmt_toolchain",
+)
+load(
+    ":gbl_toolchain.bzl",
+    "build_with_no_rust_sysroot",
+    "gbl_clang_cc_toolchain",
+    "prebuilt_binary",
+)
 
 package(
     default_visibility = ["//visibility:public"],
@@ -106,6 +117,17 @@ platform(
 platform(
     name = "gbl_elf_riscv64",
     constraint_values = elf_riscv64_constraint_values,
+)
+
+bool_setting(
+    name = "rust_no_sysroot",
+    build_setting_default = False,
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "rust_no_sysroot_true",
+    flag_values = {":rust_no_sysroot": "True"},
 )
 
 # Linux host LLVM toolchain.
@@ -212,6 +234,27 @@ toolchain(
 
 # Rust toolchains
 
+# An empty rust std file group used as placeholder when building rust sysroot.
+rust_stdlib_filegroup(
+    name = "rust_stdlib_empty",
+    srcs = [],
+)
+
+# A rule for building sysroot from source.
+build_with_no_rust_sysroot(
+    name = "rust_sysroot_source_build",
+    deps = [
+        "@rust_prebuilts//:liballoc",
+        "@rust_prebuilts//:libcompiler_builtins",
+        "@rust_prebuilts//:libcore",
+    ],
+)
+
+rust_stdlib_filegroup(
+    name = "rust_std_source_build",
+    srcs = [":rust_sysroot_source_build"],
+)
+
 # Linux x86_64 Host toolchain
 rust_toolchain(
     name = "x86_64_unknown_linux_gnu",
@@ -256,7 +299,10 @@ rust_toolchain(
     global_allocator_library = None,
     rust_doc = "@rust_prebuilts//:bin/rustdoc",
     # TODO(http://b/302569430): Switch to use prebuilt sysroot libraries once they are available.
-    rust_std = "@gbl_custom_rust_sysroot//:stdlib",
+    rust_std = select({
+        ":rust_no_sysroot_true": ":rust_stdlib_empty",
+        "//conditions:default": ":rust_std_source_build",
+    }),
     rustc = "@rust_prebuilts//:bin/rustc",
     staticlib_ext = ".a",
     stdlib_linkflags = [],
@@ -283,7 +329,10 @@ rust_toolchain(
     global_allocator_library = None,
     rust_doc = "@rust_prebuilts//:bin/rustdoc",
     # TODO(http://b/302569430): Switch to use prebuilt sysroot libraries once they are available.
-    rust_std = "@gbl_custom_rust_sysroot//:stdlib",
+    rust_std = select({
+        ":rust_no_sysroot_true": ":rust_stdlib_empty",
+        "//conditions:default": ":rust_std_source_build",
+    }),
     rustc = "@rust_prebuilts//:bin/rustc",
     staticlib_ext = ".a",
     stdlib_linkflags = [],
@@ -310,7 +359,10 @@ rust_toolchain(
     global_allocator_library = None,
     rust_doc = "@rust_prebuilts//:bin/rustdoc",
     # TODO(http://b/302569430): Switch to use prebuilt sysroot libraries once they are available.
-    rust_std = "@gbl_custom_rust_sysroot//:stdlib",
+    rust_std = select({
+        ":rust_no_sysroot_true": ":rust_stdlib_empty",
+        "//conditions:default": ":rust_std_source_build",
+    }),
     rustc = "@rust_prebuilts//:bin/rustc",
     staticlib_ext = ".a",
     stdlib_linkflags = [],
@@ -337,7 +389,10 @@ rust_toolchain(
     global_allocator_library = None,
     rust_doc = "@rust_prebuilts//:bin/rustdoc",
     # Need to use our own built sysroot because we are using a custom spec below.
-    rust_std = "@gbl_custom_rust_sysroot//:stdlib",
+    rust_std = select({
+        ":rust_no_sysroot_true": ":rust_stdlib_empty",
+        "//conditions:default": ":rust_std_source_build",
+    }),
     rustc = "@rust_prebuilts//:bin/rustc",
     staticlib_ext = ".a",
     stdlib_linkflags = [],
