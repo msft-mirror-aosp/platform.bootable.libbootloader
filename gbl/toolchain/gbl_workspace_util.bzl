@@ -19,12 +19,16 @@ This file contains rules and logic to initialize GBL workspace.
 def _abs_path(repo_ctx, path):
     return repo_ctx.execute(["readlink", "-f", path]).stdout.strip("\n")
 
+def _dir_of(repo_ctx, path):
+    return repo_ctx.execute(["dirname", _abs_path(repo_ctx, path)]).stdout.strip("\n")
+
 def _gbl_llvm_prebuilts_impl(repo_ctx):
     """Implementation for gbl_llvm_prebuilts
 
     The repository rule sets up a repo for hosting LLVM distribution and Linux sysroot. They can
     be provided manually via the `GBL_LLVM_PREBUILTS` and `GBL_LINUX_SYSROOT` environment
-    variables. If they don't exist, the rule fetches them from Android upstream.
+    variables. If they don't exist, the top-level workspace needs to define them in repo
+    `@llvm_linux_x86_64_prebuilts` and `@linux_x86_64_sysroot` respectively.
 
     Only Linux x86_64 platform is supported.
     """
@@ -32,21 +36,16 @@ def _gbl_llvm_prebuilts_impl(repo_ctx):
     if prebuilts:
         repo_ctx.symlink(prebuilts, "llvm-linux-x86")
     else:
-        # Fetch the LLVM prebuilts used by Trusty and u-boot.
-        repo_ctx.download_and_extract(
-            url = "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/18420bf70dde33f6fae92624a1dad774aeae0e83/clang-r475365b.tar.gz",
-            output = "llvm-linux-x86",
-        )
+        path = _dir_of(repo_ctx, repo_ctx.path(Label("@llvm_linux_x86_64_prebuilts//:BUILD.bazel")))
+        repo_ctx.symlink(path, "llvm-linux-x86")
 
     # Linux host toolchain additionally needs a sysroot
     linux_glibc = repo_ctx.os.environ.get("GBL_LINUX_SYSROOT")
     if linux_glibc:
         repo_ctx.symlink(linux_glibc, "linux_glibc")
     else:
-        repo_ctx.download_and_extract(
-            url = "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8/+archive/refs/heads/main.tar.gz",
-            output = "linux_glibc",
-        )
+        path = _dir_of(repo_ctx, repo_ctx.path(Label("@linux_x86_64_sysroot//:BUILD.bazel")))
+        repo_ctx.symlink(path, "linux_glibc")
 
     # Get the bin directory so that we can access other LLVM tools by path.
     gbl_llvm_bin_dir = _abs_path(repo_ctx, "llvm-linux-x86/bin")

@@ -137,6 +137,10 @@ def main() -> int:
     for arch in archs:
         common_args = [
             f"--platforms=@gbl//toolchain:{ARCH_TO_BAZEL_PLATFORM_CONFIG[arch]}",
+            # Specifying a `cpu` allows bazel to separate build artifacts in
+            # different directories per cpu. This allows environment variable
+            # `GBL_CUSTOM_RUST_SYSROOT` to be the same per arch and prevents
+            # unnecessary rebuild of sysroot.
             f"--cpu={arch}",
             "--verbose_failures",
         ]
