@@ -108,16 +108,6 @@ platform(
     constraint_values = elf_riscv64_constraint_values,
 )
 
-cc_toolchain_suite(
-    name = "gbl_clang_suite",
-    toolchains = {
-        "x86_64": ":x86_64_uefi_clang_cc_toolchain",
-        "x86_32": ":x86_32_uefi_clang_cc_toolchain",
-        "aarch64": ":aarch64_uefi_clang_cc_toolchain",
-        "riscv64": ":riscv64_elf_clang_cc_toolchain",
-    },
-)
-
 # Linux host LLVM toolchain.
 # The toolchain is mainly used for building/linking host tools, i.e. bindgen pre-processing
 gbl_clang_cc_toolchain(
