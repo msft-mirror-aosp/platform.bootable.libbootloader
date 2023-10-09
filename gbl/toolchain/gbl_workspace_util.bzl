@@ -124,38 +124,3 @@ gbl_llvm_prebuilts = repository_rule(
     local = True,
     environ = ["GBL_LLVM_PREBUILTS", "GBL_LINUX_SYSROOT"],
 )
-
-def _gbl_custom_rust_sysroot(repo_ctx):
-    """Implementation for gbl_custom_rust_sysroot
-
-    The repository rule checks if a custom rust sysroot is provided via environmental variable
-    `GBL_CUSTOM_RUST_SYSROOT`. If yes, it sets up a repo with a `rust_stdlib_filegroup` target to
-    export the sysroot libraries. The rule is used when we need to export our own built sysroot
-    libraries via //rust_sysroot:sysroot. See build_gbl.py for more detail.
-    """
-    sysroot_dir = repo_ctx.os.environ.get("GBL_CUSTOM_RUST_SYSROOT")
-    if sysroot_dir:
-        repo_ctx.symlink(sysroot_dir, "sysroot")
-
-    # Always make a build file so that reference to the repository is always valid. When `sysroot`
-    # does not exist, reference is a harmless noop (empty file group). This is the case when we are
-    # building the sysroot itself.
-    repo_ctx.file("BUILD", """
-load("@rules_rust//rust:toolchain.bzl", "rust_stdlib_filegroup")
-
-# Export all .rlib files found in this repo
-rust_stdlib_filegroup(
-    name = "stdlib",
-    srcs = glob(
-        ["**/*.rlib"],
-        allow_empty = True,
-    ),
-    visibility = ["//visibility:public"],
-)
-""")
-
-gbl_custom_rust_sysroot = repository_rule(
-    implementation = _gbl_custom_rust_sysroot,
-    local = True,
-    environ = ["GBL_CUSTOM_RUST_SYSROOT"],
-)
