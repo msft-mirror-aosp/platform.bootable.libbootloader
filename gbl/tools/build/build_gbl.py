@@ -52,13 +52,6 @@ def parse_args():
     return parser.parse_args()
 
 
-ARCH_TO_BAZEL_PLATFORM_CONFIG = {
-    "x86_64": "gbl_uefi_x86_64",
-    "x86_32": "gbl_uefi_x86_32",
-    "aarch64": "gbl_uefi_aarch64",
-    "riscv64": "gbl_elf_riscv64",
-}
-
 AOSP_GET_CLANG_VERSION_SCRIPT = pathlib.Path(
     "build") / "soong" / "scripts" / "get_clang_version.py"
 
@@ -135,33 +128,15 @@ def main() -> int:
 
     out_paths = []
     for arch in archs:
-        common_args = [
-            f"--platforms=@gbl//toolchain:{ARCH_TO_BAZEL_PLATFORM_CONFIG[arch]}",
-            # Specifying a `cpu` allows bazel to separate build artifacts in
-            # different directories per cpu. This allows environment variable
-            # `GBL_CUSTOM_RUST_SYSROOT` to be the same per arch and prevents
-            # unnecessary rebuild of sysroot.
-            f"--cpu={arch}",
-            "--verbose_failures",
-        ]
-
-        # Build Rust sysroot
-        # TODO(http://b/302569430): This can be skipped for platforms that will
-        # get prebuilt sysroot upstream. It saves about 20 seconds build time
-        # each.
         run_bazel(bazel, out_dir,
-                  ["build", "@gbl//rust_sysroot"] + common_args)
-
-        os.environ["GBL_CUSTOM_RUST_SYSROOT"] =\
-            str((GBL_DIR / "bazel-bin" / "rust_sysroot").resolve())
-
-        run_bazel(bazel, out_dir, ["build", "@gbl//efi:gbl_efi"] + common_args)
-
+                  ["build", f"@gbl//efi:{arch}", "--verbose_failures"])
         out_path = out_dir / f"gbl_{arch}.efi"
         # Delete old image first. Otherwise if the image doesn't have write permission,
         # copy fails.
         out_path.unlink(missing_ok=True)
-        shutil.copy(GBL_DIR / "bazel-bin" / "efi" / "gbl.efi", out_path)
+        shutil.copy(
+            (GBL_DIR / "bazel-bin" / "efi" / f"gbl_{arch}.efi").resolve(),
+            out_path)
         out_paths.append(out_path)
 
     for path in out_paths:
