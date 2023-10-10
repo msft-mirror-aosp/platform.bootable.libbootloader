@@ -124,3 +124,49 @@ gbl_llvm_prebuilts = repository_rule(
     local = True,
     environ = ["GBL_LLVM_PREBUILTS", "GBL_LINUX_SYSROOT"],
 )
+
+def _android_rust_prebuilts_impl(repo_ctx):
+    """Assemble a rust toolchain repo from the Android rust prebuilts repo.
+
+    The Android rust prebuilts repo is expected to be from
+    https://android.googlesource.com/platform/prebuilts/rust/. The repository rule auto-detects
+    the current version of toolchain from the repo.
+
+    Attributes:
+        path (String): Relative path to the Android rust prebuilts repo.
+        build_file (Label): Label of the build file to use.
+    """
+
+    # We only support linux x86 platform.
+    path = repo_ctx.workspace_root.get_child(repo_ctx.attr.path).get_child("linux-x86")
+
+    # Scan sub directoires
+    curr_ver = None
+    for entry in [ele.basename for ele in path.readdir()]:
+        # Different versions of toolchains are organized into their own subdirs named afer the
+        # version i.e. "1.71.0/", "1.72.0/" etc.
+        arr = entry.split(".")
+        if len(arr) == 3 and all([ele.isdigit() for ele in arr]):
+            curr_ver = max(curr_ver or entry, entry)
+
+    if not curr_ver:
+        fail("Failed to find rust toolchain prebuilt from {}".format(path))
+
+    # Symlink everything into the assembled repo.
+    path = path.get_child(curr_ver)
+    for entry in path.readdir():
+        # Ignore native BUILD file as we'll use override from `ctx.attr.build_file` instead.
+        if entry.basename == "BUILD" or entry.basename == "BUILD.bazel":
+            continue
+        repo_ctx.symlink(entry.realpath, entry.basename)
+
+    # Symlink the provided build file
+    repo_ctx.symlink(repo_ctx.attr.build_file, "BUILD")
+
+android_rust_prebuilts = repository_rule(
+    implementation = _android_rust_prebuilts_impl,
+    attrs = {
+        "path": attr.string(mandatory = True),
+        "build_file": attr.label(mandatory = True),
+    },
+)
