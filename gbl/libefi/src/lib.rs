@@ -193,7 +193,7 @@ impl<'a> BootServices<'a> {
         let mut out: *mut core::ffi::c_void = null_mut();
         // SAFETY: `EFI_BOOT_SERVICES` method call.
         unsafe {
-            efi_call!(self.boot_services.allocate_pool, pool_type, size as size_t, &mut out)?;
+            efi_call!(self.boot_services.allocate_pool, pool_type, size, &mut out)?;
         }
         Ok(out)
     }
@@ -442,7 +442,7 @@ mod test {
         search_type: EfiLocateHandleSearchType,
         protocol: *const EfiGuid,
         search_key: *mut core::ffi::c_void,
-        num_handles: *mut size_t,
+        num_handles: *mut usize,
         buf: *mut *mut EfiHandle,
     ) -> EfiStatus {
         assert_eq!(search_type, EFI_LOCATE_HANDLE_SEARCH_TYPE_BY_PROTOCOL);
@@ -456,7 +456,7 @@ mod test {
             // A correct implementation of BootServices::open_protocol guarantees to pass valid
             // pointers here.
             unsafe {
-                *num_handles = num as u64;
+                *num_handles = num as usize;
                 *buf = handles as *mut EfiHandle;
             };
 

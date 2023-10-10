@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@gbl_llvm_toolchain_info//:info.bzl", "gbl_llvm_tool_path")
+load("@gbl//toolchain:gbl_toolchain.bzl", "build_with_platform")
+load("@gbl_llvm_prebuilts//:info.bzl", "gbl_llvm_tool_path")
 load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 package(
@@ -56,11 +57,48 @@ genrule(
         #
         # 1. `llvm-objcopy <elf image> -O binary <efi image>`
         # 2. `elf_static_relocation_checker <elf image> <efi image>`
-        "@gbl//toolchain:gbl_rust_elf_riscv64": "{} -O binary $(location @gbl//efi:main) $@ && $(location @gbl//libelf:elf_static_relocation_checker) $(location @gbl//efi:main) $@".format(gbl_llvm_tool_path("llvm-objcopy")),
-        "//conditions:default": "cp $(location @gbl//efi:main) $@",
+        "@gbl//toolchain:gbl_rust_elf_riscv64": """
+            {} -O binary $(location @gbl//efi:main) $(OUTS) && \\
+            $(location @gbl//libelf:elf_static_relocation_checker) $(SRCS) $(OUTS)
+        """.format(gbl_llvm_tool_path("llvm-objcopy")),
+        "//conditions:default": "cp $(SRCS) $(OUTS)",
     }),
     tools = select({
         "@gbl//toolchain:gbl_rust_elf_riscv64": ["@gbl//libelf:elf_static_relocation_checker"],
         "//conditions:default": [],
     }),
+)
+
+build_with_platform(
+    name = "x86_64",
+    platform = "@gbl//toolchain:gbl_uefi_x86_64",
+    deps = [":gbl_efi"],
+)
+
+build_with_platform(
+    name = "x86_32",
+    platform = "@gbl//toolchain:gbl_uefi_x86_32",
+    deps = [":gbl_efi"],
+)
+
+build_with_platform(
+    name = "aarch64",
+    platform = "@gbl//toolchain:gbl_uefi_aarch64",
+    deps = [":gbl_efi"],
+)
+
+build_with_platform(
+    name = "riscv64",
+    platform = "@gbl//toolchain:gbl_elf_riscv64",
+    deps = [":gbl_efi"],
+)
+
+filegroup(
+    name = "all_platforms",
+    srcs = [
+        ":aarch64",
+        ":riscv64",
+        ":x86_32",
+        ":x86_64",
+    ],
 )
