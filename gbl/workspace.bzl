@@ -17,11 +17,7 @@ This file contains rules and logic to initialize GBL workspace.
 """
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
-load(
-    "@gbl//toolchain:gbl_workspace_util.bzl",
-    "gbl_custom_rust_sysroot",
-    "gbl_llvm_prebuilts",
-)
+load("@gbl//toolchain:gbl_workspace_util.bzl", "gbl_llvm_prebuilts")
 
 def _android_external_rust_crate_archive(name, rev, build_file):
     crate_url = "https://android.googlesource.com/platform/external/rust/crates/" + \
@@ -185,9 +181,6 @@ def define_gbl_workspace(name = None):
 
     # Set up a repo to export llvm tool/library/header/sysroot paths
     gbl_llvm_prebuilts(name = "gbl_llvm_prebuilts")
-
-    # Setup a repo to export custom built Rust sysroot
-    gbl_custom_rust_sysroot(name = "gbl_custom_rust_sysroot")
 
     # Register all the LLVM/Rust toolchains.
     native.register_toolchains("@gbl//toolchain:all")
