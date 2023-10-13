@@ -20,7 +20,7 @@ rust_defaults {
     name: "libzbi_defaults",
     crate_name: "zbi",
     edition: "2021",
-    features: ["zerocopy_0_6"],
+    features: [],
     srcs: ["src/lib.rs"],
     rustlibs: ["libbitflags"],
 }
