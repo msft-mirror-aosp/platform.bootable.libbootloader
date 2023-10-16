@@ -1,10 +1,10 @@
-# Copyright 2023, The Android Open Source Project
+# Copyright (C) 2023 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http:#www.apache.org/licenses/LICENSE-2.0
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,10 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# For now this file is only provided so that `rustfmt` can run, but it may
-# be worthwhile to set it up properly as a reference implementation for building
-# with libgbl.
+test_suite(
+    name = "tests",
+    tests = [
+        "@gbl//libefi:libefi_test",
+        "@gbl//libstorage:gbl_libstorage_test",
+        "@gbl//third_party/libzbi:libzbi_test",
 
-[package]
-name = "gbl"
-version = "0.1.0"
+        # Doc test doesn't work yet.
+        # "@gbl//libstorage:gbl_libstorage_doc_test",
+    ],
+)
