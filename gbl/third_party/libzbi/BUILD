@@ -20,7 +20,6 @@ rust_library(
         "src/lib.rs",
         "src/zbi_format.rs",
     ],
-    crate_features = ["zerocopy_0_6"],
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
@@ -32,7 +31,6 @@ rust_library(
 rust_test(
     name = "libzbi_test",
     crate = ":libzbi",
-    crate_features = ["zerocopy_0_6"],
     deps = [
         "@bitflags",
         "@hex",
