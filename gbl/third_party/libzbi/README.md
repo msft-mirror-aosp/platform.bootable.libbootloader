@@ -17,16 +17,14 @@ This is temporary approach until butter way is found (http://b/297795783).
 
 Source of truth is considered Fuchsia version. To make any changes start with submitting it to Fuchsia tree, then copying to AOSP.
 
-Current version is copied for following revision: [commit](https://cs.opensource.google/fuchsia/fuchsia/+/2c45d1be1e88b2f9c1e55c940a4385a7d32d8c1e)
+Current version is copied for following revision: [commit](https://cs.opensource.google/fuchsia/fuchsia/+/74345229e91646568d27c481e24ae53efb280dca)
 
 To get just `zbi-rs` from Fuchsia following commands can be used:
 ```
 git clone -n --depth=1 --filter=tree:0 sso://fuchsia/fuchsia
 cd fuchsia/
 git sparse-checkout set --no-clone src/firmware/lib/zbi-rs
-git checkout 66312656c47900cfa1e6714e995e836053d74ce2
+git checkout 74345229e91646568d27c481e24ae53efb280dca
 ```
 
 Changing Licence in source files is required at the moment.
-
-AOSP also contains `zerocopy-0.6` which requires changes to Cargo.toml file.
