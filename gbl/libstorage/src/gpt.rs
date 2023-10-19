@@ -18,13 +18,13 @@ use crate::{
 use core::default::Default;
 use core::mem::{align_of, size_of};
 use crc32fast::Hasher;
-use zerocopy::{AsBytes, FromBytes, LayoutVerified};
+use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 
 const GPT_GUID_LEN: usize = 16;
 const GPT_NAME_LEN: usize = 36;
 
 #[repr(C, packed)]
-#[derive(Debug, Default, Copy, Clone, FromBytes, AsBytes)]
+#[derive(Debug, Default, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
 struct GptHeader {
     pub magic: u64,
     pub revision: u32,
@@ -45,7 +45,7 @@ struct GptHeader {
 impl GptHeader {
     /// Cast a bytes slice into a GptHeader structure.
     fn from_bytes(bytes: &mut [u8]) -> &mut GptHeader {
-        LayoutVerified::<_, GptHeader>::new_from_prefix(bytes).unwrap().0.into_mut()
+        Ref::<_, GptHeader>::new_from_prefix(bytes).unwrap().0.into_mut()
     }
 
     /// Update the header crc32 value.
@@ -57,7 +57,7 @@ impl GptHeader {
 
 /// GptEntry is the partition entry data structure in the GPT.
 #[repr(C)]
-#[derive(Debug, Copy, Clone, FromBytes, AsBytes)]
+#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
 pub struct GptEntry {
     pub part_type: [u8; GPT_GUID_LEN],
     pub guid: [u8; GPT_GUID_LEN],
@@ -195,9 +195,8 @@ impl<'a> Gpt<'a> {
     /// If the object does not contain a valid GPT, the method returns Error.
     pub fn entries(&self) -> Result<&[GptEntry]> {
         self.check_valid()?;
-        Ok(&LayoutVerified::<_, [GptEntry]>::new_slice(&self.primary_entries[..])
-            .unwrap()
-            .into_slice()[..to_usize(self.num_valid_entries)?])
+        Ok(&Ref::<_, [GptEntry]>::new_slice(&self.primary_entries[..]).unwrap().into_slice()
+            [..to_usize(self.num_valid_entries)?])
     }
 
     /// Search for a partition entry.
@@ -242,10 +241,7 @@ impl<'a> Gpt<'a> {
             ),
         };
         blk_dev.read(header_start, header_bytes, scratch)?;
-        let header = LayoutVerified::<_, GptHeader>::new_from_prefix(&header_bytes[..])
-            .unwrap()
-            .0
-            .into_ref();
+        let header = Ref::<_, GptHeader>::new_from_prefix(&header_bytes[..]).unwrap().0.into_ref();
 
         if header.magic != GPT_MAGIC {
             return Ok(false);
@@ -329,9 +325,8 @@ impl<'a> Gpt<'a> {
 
         self.valid = true;
         // Calculate actual number of GPT entries by finding the first invalid entry.
-        let entries = LayoutVerified::<_, [GptEntry]>::new_slice(&self.primary_entries[..])
-            .unwrap()
-            .into_slice();
+        let entries =
+            Ref::<_, [GptEntry]>::new_slice(&self.primary_entries[..]).unwrap().into_slice();
         self.num_valid_entries = match entries.iter().position(|e| e.is_null()) {
             Some(idx) => idx as u64,
             _ => self.max_entries,
