@@ -18,87 +18,24 @@
 #[cfg(target_arch = "riscv64")]
 mod riscv64;
 
+use core::ffi::CStr;
 use core::fmt::Write;
-use gbl_storage::{required_scratch_size, BlockDevice, Gpt, StorageError};
+use core::str::from_utf8;
+use gbl_storage::{required_scratch_size, BlockDevice, Gpt};
 
 use efi::defs::EfiSystemTable;
-use efi::{
-    initialize, BlockIoProtocol, DeviceHandle, DevicePathProtocol, DevicePathText,
-    DevicePathToTextProtocol, EfiEntry, EfiError, LoadedImageProtocol, Protocol,
-};
+use efi::{initialize, BlockIoProtocol, LoadedImageProtocol};
+use fdt::Fdt;
 
 // For the `vec!` macro
 #[macro_use]
 extern crate alloc;
 
-// Implement a block device on top of BlockIoProtocol
-struct EfiBlockDevice<'a>(Protocol<'a, BlockIoProtocol>);
+#[macro_use]
+mod utils;
+use utils::{get_device_path, get_efi_fdt, EfiBlockDevice, Result};
 
-impl BlockDevice for EfiBlockDevice<'_> {
-    fn block_size(&mut self) -> u64 {
-        self.0.media().unwrap().block_size as u64
-    }
-
-    fn num_blocks(&mut self) -> u64 {
-        (self.0.media().unwrap().last_block + 1) as u64
-    }
-
-    fn alignment(&mut self) -> u64 {
-        core::cmp::max(1, self.0.media().unwrap().io_align as u64)
-    }
-
-    fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> bool {
-        self.0.read_blocks(blk_offset, out).is_ok()
-    }
-
-    fn write_blocks(&mut self, blk_offset: u64, data: &[u8]) -> bool {
-        self.0.write_blocks(blk_offset, data).is_ok()
-    }
-}
-
-/// A top level error type that consolidates errors from different libraries.
-#[derive(Debug)]
-enum GblEfiError {
-    StorageError(gbl_storage::StorageError),
-    EfiError(efi::EfiError),
-}
-
-impl From<StorageError> for GblEfiError {
-    fn from(error: StorageError) -> GblEfiError {
-        GblEfiError::StorageError(error)
-    }
-}
-
-impl From<EfiError> for GblEfiError {
-    fn from(error: EfiError) -> GblEfiError {
-        GblEfiError::EfiError(error)
-    }
-}
-
-/// Helper function to get the `DevicePathText` from a `DeviceHandle`.
-fn get_device_path<'a>(
-    entry: &'a EfiEntry,
-    handle: DeviceHandle,
-) -> Result<DevicePathText<'a>, GblEfiError> {
-    let bs = entry.system_table().boot_services();
-    let path = bs.open_protocol::<DevicePathProtocol>(handle)?;
-    let path_to_text = bs.find_first_and_open::<DevicePathToTextProtocol>()?;
-    Ok(path_to_text.convert_device_path_to_text(&path, false, false)?)
-}
-
-/// Helper macro for printing message via `EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL` in
-/// `EFI_SYSTEM_TABLE.ConOut`.
-#[macro_export]
-macro_rules! efi_print {
-    ( $efi_entry:expr, $( $x:expr ),* ) => {
-        write!($efi_entry.system_table().con_out().unwrap(), $($x,)*).unwrap()
-    };
-}
-
-fn main(
-    image_handle: *mut core::ffi::c_void,
-    systab_ptr: *mut EfiSystemTable,
-) -> Result<(), GblEfiError> {
+fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -> Result<()> {
     let entry = initialize(image_handle, systab_ptr);
 
     efi_print!(entry, "\n\n****Rust EFI Application****\n\n");
@@ -137,6 +74,28 @@ fn main(
             }
         }
     }
+
+    // Check if we have a device tree.
+    match get_efi_fdt(&entry) {
+        Some((_, bytes)) => {
+            let fdt = Fdt::new(bytes)?;
+            efi_print!(entry, "Device tree found\n");
+            let print_property = |node: &str, name: &CStr| -> Result<()> {
+                efi_print!(
+                    entry,
+                    "{}:{} = {}\n",
+                    node,
+                    name.to_str().unwrap(),
+                    from_utf8(fdt.get_property(node, name).unwrap_or("NA".as_bytes())).unwrap()
+                );
+                Ok(())
+            };
+            print_property("/", CStr::from_bytes_with_nul(b"compatible\0").unwrap())?;
+            print_property("/chosen", CStr::from_bytes_with_nul(b"u-boot,version\0").unwrap())?;
+            print_property("/chosen", CStr::from_bytes_with_nul(b"bootargs\0").unwrap())?;
+        }
+        _ => {}
+    }
     Ok(())
 }
 
@@ -145,3 +104,6 @@ pub extern "C" fn efi_main(image_handle: *mut core::ffi::c_void, systab_ptr: *mu
     main(image_handle, systab_ptr).unwrap();
     loop {}
 }
+
+#[no_mangle]
+pub extern "C" fn __chkstk() {}

@@ -25,7 +25,7 @@ load(
     "tool_path",
 )
 load("@gbl_llvm_prebuilts//:info.bzl", "LLVM_PREBUILTS_C_INCLUDE", "gbl_llvm_tool_path")
-load("@rules_cc//cc:action_names.bzl", "ACTION_NAMES", "ALL_CC_COMPILE_ACTION_NAMES")
+load("@rules_cc//cc:action_names.bzl", "ACTION_NAMES", "ALL_CPP_COMPILE_ACTION_NAMES")
 
 def _flag_set(flags):
     """Convert a list of compile/link flags to a flag_set type."""
@@ -40,6 +40,15 @@ def _flag_set(flags):
 def _gbl_clang_cc_toolchain_config_impl(ctx):
     """Implementation for rule _gbl_clang_cc_toolchain_config()"""
     builtin_includes = ctx.attr.builtin_includes or [LLVM_PREBUILTS_C_INCLUDE]
+    common_compile_flagset = [
+        _flag_set([
+            "--target={}".format(ctx.attr.target_system_triple),
+            "-nostdinc",
+            "-no-canonical-prefixes",
+            "-Werror",
+            "-Wall",
+        ] + ["-I{}".format(inc) for inc in builtin_includes] + ctx.attr.cc_flags),
+    ]
     return cc_common.create_cc_toolchain_config_info(
         ctx = ctx,
         cxx_builtin_include_directories = builtin_includes,
@@ -56,17 +65,17 @@ def _gbl_clang_cc_toolchain_config_impl(ctx):
                 action_name = action_name,
                 enabled = True,
                 tools = [tool(path = gbl_llvm_tool_path("clang++"))],
-                flag_sets = [
-                    _flag_set([
-                        "--target={}".format(ctx.attr.target_system_triple),
-                        "-nostdinc",
-                        "-no-canonical-prefixes",
-                        "-Werror",
-                        "-Wall",
-                    ] + ["-I{}".format(inc) for inc in builtin_includes] + ctx.attr.cc_flags),
-                ],
+                flag_sets = common_compile_flagset,
             )
-            for action_name in ALL_CC_COMPILE_ACTION_NAMES
+            for action_name in ALL_CPP_COMPILE_ACTION_NAMES +
+                               [ACTION_NAMES.assemble, ACTION_NAMES.preprocess_assemble]
+        ] + [
+            action_config(
+                action_name = ACTION_NAMES.c_compile,
+                enabled = True,
+                tools = [tool(path = gbl_llvm_tool_path("clang"))],
+                flag_sets = common_compile_flagset,
+            ),
         ] + [
             action_config(
                 action_name = ACTION_NAMES.cpp_link_executable,
@@ -246,5 +255,46 @@ build_with_platform = rule(
         ),
         "platform": attr.string(mandatory = True),
         "deps": attr.label_list(allow_files = True, mandatory = True),
+    },
+)
+
+# This rule creates symlink for a static library in both Linux/GNU and MSVC naming styles so that
+# rust linker is able to find it when building for them.
+#
+# When flag "-Clink-arg=-l<libname>" is passed to rustc, for Linux/GNU target platforms, the linker
+# looks for library named "lib<libname>.a", for MSVC target plaforms (i.e. UEFI), the linker looks
+# for library named "<libname>.lib". When bazel builds a cc_library target, it always outputs the
+# Linux/GNU naming style and therefore fails linking when building for UEFI targets.
+def _link_static_cc_library_impl(ctx):
+    # Put an underscore so that we don't need to deal with potential "lib" prefix from user
+    # provided name.
+    libname = "_{}".format(ctx.label.name)
+
+    # Create symlink for both naming styles.
+    out_msvc_style = ctx.actions.declare_file("{}.lib".format(libname))
+    ctx.actions.symlink(output = out_msvc_style, target_file = ctx.files.cc_library[0])
+    out_linux_style = ctx.actions.declare_file("lib{}.a".format(libname))
+    ctx.actions.symlink(output = out_linux_style, target_file = ctx.files.cc_library[0])
+
+    # Construct and return a `CcInfo` for this rule that includes the library to link, so that
+    # other rust_library/cc_library can depend directly on this target.
+    library_to_link = cc_common.create_library_to_link(
+        actions = ctx.actions,
+        # Either is fine, since both yield the same linker option by Bazel.
+        static_library = out_linux_style,
+    )
+    linking_input = cc_common.create_linker_input(
+        owner = ctx.label,
+        libraries = depset([library_to_link]),
+        # Make sure both symlinks are generated.
+        additional_inputs = depset([out_msvc_style, out_linux_style]),
+    )
+    linking_context = cc_common.create_linking_context(linker_inputs = depset([linking_input]))
+    return [CcInfo(linking_context = linking_context)]
+
+link_static_cc_library = rule(
+    implementation = _link_static_cc_library_impl,
+    attrs = {
+        "cc_library": attr.label(),  # The cc_library() target for the static library.
     },
 )
