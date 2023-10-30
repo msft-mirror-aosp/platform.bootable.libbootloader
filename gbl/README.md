@@ -6,40 +6,23 @@ can be loaded directly from the firmware.
 
 ## Build
 
-The library and the EFI application can be built using the
-[build_gbl.py](tools/build/build_gbl.py) script. There are two ways of invoking
-it:
-
-### Build from AOSP
-
-If this repo is checked out from a full
-[AOSP](https://source.android.com/docs/setup/download/downloading) or
+The GBL project are intended to be built from the
 [Android Bootloader](https://source.android.com/docs/setup/create/cuttlefish-bootloader-dev#develop-bootloader)
-super project, you can simply run
+super project checkout.
 
-```.sh
-python3 build_gbl.py <output directory>
-```
-
-The script will auto select the needed dependencies from the super project.
-After build completes, the EFI image will be available in
-`<output director>/gbl/`. By default, the script builds for all of `x86_64`,
-`x86_32`, `aarch64` and `riscv64` architectures. If you only want to build for
-a subset, append option `--arch <x86_64|x86_32|aarch64|riscv64>` one by one.
-
-### Build without AOSP
-
-If a full super project checkout is too heavy-weight, use the following options,
-which only requires a Bazel binary.
+To build the EFI application:
 
 ```
-python3 build_gbl.py \
-    --bazel=<path to Bazel executable> \
-    <output directory>
+./tools/bazel run //u-boot:gbl_efi_dist --extra_toolchains=@gbl//toolchain:all
 ```
+The above builds the EFI application for all of `x86_64`, `x86_32`, `aarch64`
+and `riscv64` platforms.
 
-The above command will automatically download necessary toolchains from
-Android prebuilts.
+To run the set of unit tests:
+
+```
+./tools/bazel test @gbl//tests --extra_toolchains=@gbl//toolchain:all
+```
 
 ## Run on emulator
 
@@ -47,7 +30,7 @@ Android prebuilts.
 
 If you have a main AOSP checkout and is setup to run
 [Cuttlefish](https://source.android.com/docs/setup/create/cuttlefish), you can
-run the EFI image directly with it:
+run the EFI image directly with:
 
 ```
 launch_cvd --android_efi_loader=<path to the EFI image> ...
