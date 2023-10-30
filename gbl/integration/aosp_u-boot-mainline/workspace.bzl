@@ -81,6 +81,12 @@ cc_library(
 """,
     )
 
+    native.new_local_repository(
+        name = "libfdt_c",
+        path = "external/dtc/libfdt",
+        build_file = "@gbl//libfdt:BUILD.libfdt_c.bazel",
+    )
+
     # Following are third party rust crates dependencies.
 
     THIRD_PARTY_CRATES = [
