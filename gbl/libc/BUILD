@@ -12,15 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-test_suite(
-    name = "tests",
-    tests = [
-        "@gbl//libefi:libefi_test",
-        "@gbl//libfdt:libfdt_test",
-        "@gbl//libstorage:gbl_libstorage_test",
-        "@gbl//third_party/libzbi:libzbi_test",
+load("@rules_rust//rust:defs.bzl", "rust_library")
 
-        # Doc test doesn't work yet.
-        # "@gbl//libstorage:gbl_libstorage_doc_test",
+package(
+    default_visibility = ["//visibility:public"],
+)
+
+rust_library(
+    name = "libc",
+    srcs = glob(["**/*.rs"]),
+    edition = "2021",
+)
+
+cc_library(
+    name = "headers",
+    hdrs = [
+        "include/stdlib.h",
+        "include/string.h",
     ],
+    includes = ["include"],
 )

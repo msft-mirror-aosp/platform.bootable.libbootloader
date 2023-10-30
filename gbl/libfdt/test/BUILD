@@ -12,15 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-test_suite(
-    name = "tests",
-    tests = [
-        "@gbl//libefi:libefi_test",
-        "@gbl//libfdt:libfdt_test",
-        "@gbl//libstorage:gbl_libstorage_test",
-        "@gbl//third_party/libzbi:libzbi_test",
-
-        # Doc test doesn't work yet.
-        # "@gbl//libstorage:gbl_libstorage_doc_test",
-    ],
-)
+exports_files(glob(["**/*"]))
