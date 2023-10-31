@@ -1,3 +1,5 @@
+#!/bin/bash
+#
 # Copyright (C) 2023 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,15 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-test_suite(
-    name = "tests",
-    tests = [
-        "@gbl//libefi:libefi_test",
-        "@gbl//libfdt:libfdt_test",
-        "@gbl//libstorage:gbl_libstorage_test",
-        "@gbl//third_party/libzbi:libzbi_test",
+set -e
 
-        # Doc test doesn't work yet.
-        # "@gbl//libstorage:gbl_libstorage_doc_test",
-    ],
-)
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+
+dtc -I dts -O dtb -o ${SCRIPT_DIR}/test.dtb ${SCRIPT_DIR}/test.dts

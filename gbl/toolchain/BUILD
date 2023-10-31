@@ -173,7 +173,7 @@ gbl_clang_cc_toolchain(
     name = "x86_64_uefi_clang_cc_toolchain",
     cc_flags = cc_flags_common,
     target_cpu = "x86_64",
-    target_system_triple = "x86_64-windows-msvc",
+    target_system_triple = "x86_64-unknown-windows-msvc",
 )
 
 toolchain(
@@ -189,7 +189,7 @@ gbl_clang_cc_toolchain(
     name = "x86_32_uefi_clang_cc_toolchain",
     cc_flags = cc_flags_common,
     target_cpu = "x86_32",
-    target_system_triple = "x86-windows-msvc",
+    target_system_triple = "i686-unknown-windows-gnu",
 )
 
 toolchain(

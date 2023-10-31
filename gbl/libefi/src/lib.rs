@@ -51,6 +51,7 @@
 #![cfg_attr(not(test), no_std)]
 
 use core::ptr::null_mut;
+use core::slice::from_raw_parts;
 #[cfg(not(test))]
 use core::{fmt::Write, panic::PanicInfo};
 
@@ -150,7 +151,6 @@ pub fn initialize(image_handle: EfiHandle, systab_ptr: *const EfiSystemTable) ->
 
 /// `SystemTable` provides methods for accessing fields in `EFI_SYSTEM_TABLE`.
 #[derive(Clone, Copy)]
-//pub struct SystemTable<'a>(&'a EfiEntry);
 pub struct SystemTable<'a> {
     efi_entry: &'a EfiEntry,
     table: &'a EfiSystemTable,
@@ -173,6 +173,20 @@ impl<'a> SystemTable<'a> {
             self.table.con_out,
             self.efi_entry,
         ))
+    }
+
+    /// Get the `EFI_SYSTEM_TABLE.ConfigurationTable` array.
+    pub fn configuration_table(&self) -> Option<&[EfiConfigurationTable]> {
+        match self.table.configuration_table.is_null() {
+            true => None,
+            // SAFETY: Non-null pointer to EFI configuration table.
+            false => unsafe {
+                Some(from_raw_parts(
+                    self.table.configuration_table,
+                    self.table.number_of_table_entries,
+                ))
+            },
+        }
     }
 }
 
@@ -295,7 +309,7 @@ impl<'a> LocatedHandles<'a> {
         Self {
             // SAFETY: Given correct UEFI firmware, non-null pointer points to valid memory.
             // The memory is owned by the objects.
-            handles: unsafe { core::slice::from_raw_parts(handles as *mut DeviceHandle, len) },
+            handles: unsafe { from_raw_parts(handles as *mut DeviceHandle, len) },
             efi_entry: efi_entry,
         }
     }
