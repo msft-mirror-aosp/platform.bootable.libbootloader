@@ -33,8 +33,23 @@ rust_stdlib_filegroup(
     srcs = glob(["lib/rustlib/x86_64_unknown-linux-gnu/*"]),
 )
 
-# TODO(http://b/302569430): Add `rust_stdlib_filegroup` for other platforms once the prebuilts are
-# available.
+# sysroot prebuilts for aarch64_unknown-uefi
+rust_stdlib_filegroup(
+    name = "aarch64-unknown-uefi_prebuilt_stdlibs",
+    srcs = glob(["lib/rustlib/aarch64-unknown-uefi/lib/*"]),
+)
+
+# sysroot prebuilts for x86_64-unknown-uefi
+rust_stdlib_filegroup(
+    name = "x86_64-unknown-uefi_prebuilt_stdlibs",
+    srcs = glob(["lib/rustlib/x86_64-unknown-uefi/lib/*"]),
+)
+
+# sysroot prebuilts for i686-unknown-uefi
+rust_stdlib_filegroup(
+    name = "i686-unknown-uefi_prebuilt_stdlibs",
+    srcs = glob(["lib/rustlib/i686-unknown-uefi/lib/*"]),
+)
 
 rust_library(
     name = "liballoc",
