@@ -18,7 +18,6 @@
 #![no_std]
 
 use core::ptr::null_mut;
-use core::slice::from_raw_parts;
 
 /// void *memchr(const void *ptr, int ch, size_t count);
 #[no_mangle]
