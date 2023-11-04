@@ -18,10 +18,11 @@
 #[cfg(target_arch = "riscv64")]
 mod riscv64;
 
+use alloc::vec::Vec;
 use core::ffi::CStr;
 use core::fmt::Write;
 use core::str::from_utf8;
-use gbl_storage::{required_scratch_size, BlockDevice, Gpt};
+use gbl_storage::BlockDevice;
 
 use efi::defs::EfiSystemTable;
 use efi::{initialize, BlockIoProtocol, LoadedImageProtocol};
@@ -33,7 +34,7 @@ extern crate alloc;
 
 #[macro_use]
 mod utils;
-use utils::{get_device_path, get_efi_fdt, EfiBlockDevice, Result};
+use utils::{get_device_path, get_efi_fdt, EfiGptDevice, MultiGptDevices, Result};
 
 fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -> Result<()> {
     let entry = initialize(image_handle, systab_ptr);
@@ -44,36 +45,51 @@ fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -
     let loaded_image = bs.open_protocol::<LoadedImageProtocol>(entry.image_handle())?;
     efi_print!(entry, "Image path: {}\n", get_device_path(&entry, loaded_image.device_handle()?)?);
 
-    let mut gpt_buf = vec![0u8; Gpt::required_buffer_size(128)?];
-    let mut gpt = Gpt::new_from_buffer(128, &mut gpt_buf[..])?;
-
     efi_print!(entry, "Scanning block devices...\n");
     let block_dev_handles = bs.locate_handle_buffer_by_protocol::<BlockIoProtocol>()?;
+    let mut gpt_devices = Vec::<EfiGptDevice>::new();
     for (i, handle) in block_dev_handles.handles().iter().enumerate() {
         efi_print!(entry, "-------------------\n");
         efi_print!(entry, "Block device #{}: {}\n", i, get_device_path(&entry, *handle)?);
-
-        let mut blk_dev = EfiBlockDevice(bs.open_protocol::<BlockIoProtocol>(*handle)?);
-        let mut scratch = vec![0u8; required_scratch_size(&mut blk_dev)?];
+        let mut gpt_dev = EfiGptDevice::new(bs.open_protocol::<BlockIoProtocol>(*handle)?)?;
         efi_print!(
             entry,
             "block size: {}, blocks: {}, alignment: {}\n",
-            blk_dev.block_size(),
-            blk_dev.num_blocks(),
-            blk_dev.alignment()
+            gpt_dev.block_device().block_size(),
+            gpt_dev.block_device().num_blocks(),
+            gpt_dev.block_device().alignment()
         );
-        match blk_dev.sync_gpt(&mut gpt, &mut scratch) {
+        match gpt_dev.sync_gpt() {
             Ok(()) => {
                 efi_print!(entry, "GPT found!\n");
-                for e in gpt.entries()? {
+                for e in gpt_dev.gpt()?.entries()? {
                     efi_print!(entry, "{}\n", e);
                 }
+                gpt_devices.push(gpt_dev);
             }
-            Err(e) => {
-                efi_print!(entry, "No GPT on device. {}\n", e);
+            Err(err) => {
+                efi_print!(entry, "No GPT on device. {:?}\n", err);
             }
-        }
+        };
     }
+
+    // Following is example code for testing library linkage. They'll be removed and replaced with
+    // full GBL boot flow as development goes.
+
+    let mut multi_gpt_dev = MultiGptDevices::new(gpt_devices);
+    match multi_gpt_dev.partition_size("bootconfig") {
+        Ok(sz) => {
+            efi_print!(entry, "Has device-specific bootconfig: {} bytes\n", sz);
+            let mut bootconfig = vec![0u8; sz];
+            multi_gpt_dev.read_gpt_partition("bootconfig", 0, &mut bootconfig[..])?;
+            efi_print!(
+                entry,
+                "{}\n",
+                CStr::from_bytes_until_nul(&mut bootconfig[..]).unwrap().to_str().unwrap()
+            );
+        }
+        _ => {}
+    };
 
     // Check if we have a device tree.
     match get_efi_fdt(&entry) {
