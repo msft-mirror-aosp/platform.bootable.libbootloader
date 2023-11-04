@@ -17,6 +17,7 @@ use crate::{
 };
 use core::default::Default;
 use core::mem::{align_of, size_of};
+use core::num::NonZeroU64;
 use crc32fast::Hasher;
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 
@@ -125,11 +126,26 @@ enum HeaderType {
     Secondary,
 }
 
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+struct GptInfo {
+    num_valid_entries: Option<NonZeroU64>,
+    max_entries: u64,
+}
+
+impl GptInfo {
+    fn from_bytes(bytes: &mut [u8]) -> &mut Self {
+        Ref::<_, GptInfo>::new_from_prefix(bytes).unwrap().0.into_mut()
+    }
+
+    fn num_valid_entries(&self) -> Result<u64> {
+        Ok(self.num_valid_entries.ok_or_else(|| StorageError::InvalidInput)?.get())
+    }
+}
+
 /// An object that contains the GPT header/entries information.
 pub struct Gpt<'a> {
-    valid: bool,
-    num_valid_entries: u64,
-    max_entries: u64,
+    info: &'a mut GptInfo,
     /// Raw bytes of primary GPT header.
     primary_header: &'a mut [u8],
     /// Raw bytes of primary GPT entries.
@@ -160,22 +176,31 @@ impl<'a> Gpt<'a> {
         {
             return Err(StorageError::InvalidInput);
         }
+        *GptInfo::from_bytes(buffer) =
+            GptInfo { num_valid_entries: None, max_entries: max_entries };
+        Self::get_existing_from_buffer(buffer)
+    }
 
+    /// Reconstruct an existing Gpt struct from a buffer previously created with `new_from_buffer`.
+    ///
+    /// The method simply partitions the input buffer and populate the `GptInfo` struct and
+    /// primary/secondary header/entries slices. It assumes that the buffer contains a valid
+    /// GptInfo struct.
+    pub fn get_existing_from_buffer(buffer: &'a mut [u8]) -> Result<Gpt<'a>> {
         let addr_value = buffer.as_ptr() as u64;
         let aligned =
             &mut buffer[to_usize(sub(round_up(addr_value, GPT_ENTRY_ALIGNMENT)?, addr_value)?)?..];
-        let entries_size = mul(max_entries, GPT_ENTRY_SIZE)?;
+        let (info, remain) = Ref::<_, GptInfo>::new_from_prefix(aligned).unwrap();
+        let entries_size = mul(info.max_entries, GPT_ENTRY_SIZE)?;
         let split_pos = add(GPT_HEADER_SIZE_PADDED, entries_size)?;
-        let (primary, secondary) = aligned.split_at_mut(to_usize(split_pos)?);
+        let (primary, secondary) = remain.split_at_mut(to_usize(split_pos)?);
         let (primary_header, primary_entries) =
             primary.split_at_mut(to_usize(GPT_HEADER_SIZE_PADDED)?);
         let (secondary_header, secondary_entries) =
             secondary.split_at_mut(to_usize(GPT_HEADER_SIZE_PADDED)?);
 
         Ok(Self {
-            valid: false,
-            num_valid_entries: 0,
-            max_entries: max_entries,
+            info: info.into_mut(),
             primary_header: primary_header,
             primary_entries: primary_entries,
             secondary_header: secondary_header,
@@ -187,7 +212,11 @@ impl<'a> Gpt<'a> {
     pub fn required_buffer_size(max_entries: u64) -> Result<usize> {
         // Add 7 more bytes to accommodate 8-byte alignment.
         let entries_size = mul(max_entries, GPT_ENTRY_SIZE)?;
-        to_usize(add(mul(2, add(GPT_HEADER_SIZE_PADDED, entries_size)?)?, GPT_ENTRY_ALIGNMENT - 1)?)
+        let info_size = size_of::<GptInfo>() as u64;
+        to_usize(add(
+            add(info_size, mul(2, add(GPT_HEADER_SIZE_PADDED, entries_size)?)?)?,
+            GPT_ENTRY_ALIGNMENT - 1,
+        )?)
     }
 
     /// Return the list of GPT entries.
@@ -196,7 +225,7 @@ impl<'a> Gpt<'a> {
     pub fn entries(&self) -> Result<&[GptEntry]> {
         self.check_valid()?;
         Ok(&Ref::<_, [GptEntry]>::new_slice(&self.primary_entries[..]).unwrap().into_slice()
-            [..to_usize(self.num_valid_entries)?])
+            [..to_usize(self.info.num_valid_entries()?)?])
     }
 
     /// Search for a partition entry.
@@ -217,10 +246,8 @@ impl<'a> Gpt<'a> {
 
     /// Check whether the Gpt has been initialized.
     fn check_valid(&self) -> Result<()> {
-        match self.valid {
-            true => Ok(()),
-            false => Err(StorageError::InvalidInput),
-        }
+        self.info.num_valid_entries()?;
+        Ok(())
     }
 
     /// Helper function for loading and validating GPT header and entries.
@@ -249,7 +276,7 @@ impl<'a> Gpt<'a> {
 
         let entries_size = mul(header.entries_count as u64, GPT_ENTRY_SIZE)?;
         let entries_offset = mul(header.entries as u64, blk_dev.block_size())?;
-        if header.entries_count as u64 > self.max_entries
+        if header.entries_count as u64 > self.info.max_entries
             || add(entries_size, entries_offset)?
                 > mul(sub(blk_dev.num_blocks(), 1)?, blk_dev.block_size())?
         {
@@ -277,7 +304,7 @@ impl<'a> Gpt<'a> {
         blk_dev: &mut (impl BlockDevice + ?Sized),
         scratch: &mut [u8],
     ) -> Result<()> {
-        self.valid = false;
+        self.info.num_valid_entries = None;
 
         let block_size = blk_dev.block_size();
         let total_blocks = blk_dev.num_blocks();
@@ -323,14 +350,14 @@ impl<'a> Gpt<'a> {
             blk_dev.write(secondary_entries_pos, &mut self.secondary_entries[..], scratch)?;
         }
 
-        self.valid = true;
         // Calculate actual number of GPT entries by finding the first invalid entry.
         let entries =
             Ref::<_, [GptEntry]>::new_slice(&self.primary_entries[..]).unwrap().into_slice();
-        self.num_valid_entries = match entries.iter().position(|e| e.is_null()) {
-            Some(idx) => idx as u64,
-            _ => self.max_entries,
-        };
+        self.info.num_valid_entries =
+            NonZeroU64::new(match entries.iter().position(|e| e.is_null()) {
+                Some(idx) => idx as u64,
+                _ => self.info.max_entries,
+            });
         Ok(())
     }
 }
