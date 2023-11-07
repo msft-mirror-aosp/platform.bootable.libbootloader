@@ -37,7 +37,8 @@ mod utils;
 use utils::{get_device_path, get_efi_fdt, EfiGptDevice, MultiGptDevices, Result};
 
 fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -> Result<()> {
-    let entry = initialize(image_handle, systab_ptr);
+    // SAFETY: Called only once here upon EFI app entry.
+    let entry = unsafe { initialize(image_handle, systab_ptr)? };
 
     efi_print!(entry, "\n\n****Rust EFI Application****\n\n");
 
