@@ -13,7 +13,3 @@
 # limitations under the License.
 
 workspace(name = "gbl")
-
-load("@gbl//:workspace.bzl", "define_gbl_workspace")
-
-define_gbl_workspace()
