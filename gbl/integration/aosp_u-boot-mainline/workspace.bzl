@@ -82,6 +82,12 @@ cc_library(
     )
 
     native.new_local_repository(
+        name = "mkbootimg",
+        path = "tools/mkbootimg",
+        build_file_content = """exports_files(glob(["**/*"]))""",
+    )
+
+    native.new_local_repository(
         name = "libfdt_c",
         path = "external/dtc/libfdt",
         build_file = "@gbl//libfdt:BUILD.libfdt_c.bazel",
