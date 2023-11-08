@@ -52,12 +52,12 @@ typedef enum EFI_OPEN_PROTOCOL_ATTRIBUTE : uint32_t {
 } EfiOpenProtocolAttributes;
 
 typedef struct {
-  uint32_t Type;
-  uint32_t Padding;
-  EfiPhysicalAddr PhysicalStart;
-  EfiVirtualAddr VirtualStart;
-  uint64_t NumberOfPages;
-  uint64_t Attribute;
+  uint32_t memory_type;
+  uint32_t padding;
+  EfiPhysicalAddr physical_start;
+  EfiVirtualAddr virtual_start;
+  uint64_t number_of_pages;
+  uint64_t attributes;
 } EfiMemoryDescriptor;
 
 typedef struct {

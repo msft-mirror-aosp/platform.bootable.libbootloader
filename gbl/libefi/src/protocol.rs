@@ -316,13 +316,12 @@ impl<'a> Protocol<'a, LoadedImageProtocol> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::initialize;
     use crate::test::*;
 
     #[test]
     fn test_dont_close_protocol_without_device_handle() {
-        run_test(|image, systab| {
-            let efi_entry = initialize(image, systab);
+        run_test(|image_handle, systab_ptr| {
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
             {
                 Protocol::<BlockIoProtocol>::new(DeviceHandle(null_mut()), 2 as *mut _, &efi_entry);
             }
@@ -334,8 +333,8 @@ mod test {
 
     #[test]
     fn test_device_path_text_drop() {
-        run_test(|image, systab| {
-            let efi_entry = initialize(image, systab);
+        run_test(|image_handle, systab_ptr| {
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
             let mut data: [u16; 4] = [1, 2, 3, 0];
             {
                 let path = DevicePathText::new(data.as_mut_ptr(), &efi_entry);
@@ -352,8 +351,8 @@ mod test {
 
     #[test]
     fn test_device_path_text_null() {
-        run_test(|image, systab| {
-            let efi_entry = initialize(image, systab);
+        run_test(|image_handle, systab_ptr| {
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
             {
                 assert_eq!(DevicePathText::new(null_mut(), &efi_entry).text(), None);
             }
