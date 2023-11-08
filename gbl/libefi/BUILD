@@ -50,13 +50,14 @@ rust_bindgen(
         "--use-core",
         "--with-derive-partialeq",
         "--with-derive-default",
+        "--with-derive-custom-struct=EfiMemoryDescriptor=AsBytes,FromBytes,FromZeroes",
         "--allowlist-type",
         "(Efi.*)",
         "--raw-line",
         """
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
-""",
+use zerocopy::{AsBytes, FromBytes, FromZeroes};""",
     ],
     cc_lib = ":efi_c_headers",
     # For x86_32, we need to explicitly specify 32bit architecture.
@@ -76,13 +77,6 @@ genrule(
     cmd = "cat $(location :efi_defs_bindgen) > $@",
 )
 
-# rust_library() can only depend on cc_library/rust_library. Thus in order to depend on a
-# genrule() we need to make a cc_library() in between.
-cc_library(
-    name = "efi_defs",
-    deps = [":efi_defs_genrule"],
-)
-
 rust_library(
     name = "libefi",
     srcs = [
@@ -92,7 +86,8 @@ rust_library(
         "src/protocol.rs",
     ],
     crate_name = "efi",
-    deps = [":efi_defs"],
+    data = [":efi_defs_genrule"],
+    deps = ["@zerocopy"],
 )
 
 rust_test(
