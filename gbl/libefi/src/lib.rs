@@ -73,6 +73,7 @@ pub use protocol::DevicePathToTextProtocol;
 pub use protocol::LoadedImageProtocol;
 pub use protocol::Protocol;
 pub use protocol::ProtocolInfo;
+pub use protocol::RiscvBootProtocol;
 pub use protocol::SimpleTextOutputProtocol;
 
 mod error {
@@ -199,11 +200,17 @@ impl<'a> SystemTable<'a> {
 
     /// Gets the `EFI_SYSTEM_TABLE.ConOut` field.
     pub fn con_out(&self) -> EfiResult<Protocol<'a, SimpleTextOutputProtocol>> {
-        Ok(Protocol::<SimpleTextOutputProtocol>::new(
-            DeviceHandle(null_mut()), // No device handle. This protocol is a permanent reference.
-            self.table.con_out,
-            self.efi_entry,
-        ))
+        // SAFETY: `EFI_SYSTEM_TABLE.ConOut` is a pointer to EfiSimpleTextOutputProtocol structure
+        // by definition. It lives until ExitBootService and thus as long as `self.efi_entry` or,
+        // 'a
+        Ok(unsafe {
+            Protocol::<SimpleTextOutputProtocol>::new(
+                // No device handle. This protocol is a permanent reference.
+                DeviceHandle(null_mut()),
+                self.table.con_out,
+                self.efi_entry,
+            )
+        })
     }
 
     /// Gets the `EFI_SYSTEM_TABLE.ConfigurationTable` array.
@@ -268,8 +275,10 @@ impl<'a> BootServices<'a> {
                 EFI_OPEN_PROTOCOL_ATTRIBUTE_BY_HANDLE_PROTOCOL
             )?;
         }
-
-        Ok(Protocol::<T>::new(handle, out_handle as *mut _, self.efi_entry))
+        // SAFETY: `EFI_SYSTEM_TABLE.OpenProtocol` returns a valid pointer to `T::InterfaceType`
+        // on success. The pointer remains valid until closed by
+        // `EFI_BOOT_SERVICES.CloseProtocol()` when Protocol goes out of scope.
+        Ok(unsafe { Protocol::<T>::new(handle, out_handle as *mut _, self.efi_entry) })
     }
 
     /// Wrapper of `EFI_BOOT_SERVICES.CloseProtocol()`.
