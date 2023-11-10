@@ -54,7 +54,14 @@ def define_gbl_workspace(name = None):
     native.new_local_repository(
         name = "linux_x86_64_sysroot",
         path = "build/kernel/build-tools",
-        build_file_content = "",
+        build_file_content = """exports_files(glob(["**/*"]))
+cc_library(
+    name = "linux_x86_64_sysroot_include",
+    hdrs = glob(["sysroot/usr/include/**/*.h"]),
+    includes = [ "sysroot/usr/include" ],
+    visibility = ["//visibility:public"],
+)
+""",
     )
 
     android_rust_prebuilts(
