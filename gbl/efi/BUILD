@@ -36,6 +36,7 @@ rust_binary(
         "panic=abort",
     ],
     deps = [
+        "@gbl//libboot",
         "@gbl//libbootimg",
         "@gbl//libefi",
         "@gbl//libfdt",
