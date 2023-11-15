@@ -23,6 +23,7 @@ package(
 rust_binary(
     name = "main",
     srcs = [
+        "src/android_load.rs",
         "src/main.rs",
         "src/riscv64.rs",
         "src/utils.rs",
@@ -37,6 +38,7 @@ rust_binary(
     ],
     deps = [
         "@gbl//libboot",
+        "@gbl//libbootconfig",
         "@gbl//libbootimg",
         "@gbl//libefi",
         "@gbl//libfdt",
