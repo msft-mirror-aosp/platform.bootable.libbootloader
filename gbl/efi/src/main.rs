@@ -12,108 +12,114 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// This EFI application implements a demo for booting Android from disk. It can be run from
+// Cuttlefish by adding `--android_efi_loader=<path of this EFI binary>` to the command line.
+//
+// A number of simplifications are made (see `android_load::load_android_simple()`):
+//
+//   * No A/B slot switching is performed. It always boot from *_a slot.
+//   * No AVB is performed. Thus boot mode is recovery only.
+//   * No dynamic partitions.
+//   * Only support V3/V4 image and Android 13+ (generic ramdisk from the "init_boot" partition)
+//
+// The missing pieces above are currently under development as part of the full end-to-end boot
+// flow in libgbl, which will eventually replace this demo. The demo is currently used as an
+// end-to-end test for libraries developed so far.
+
 #![no_std]
 #![no_main]
-
-#[cfg(target_arch = "riscv64")]
-mod riscv64;
-
-use alloc::vec::Vec;
-use core::ffi::CStr;
-use core::fmt::Write;
-use core::str::from_utf8;
-use gbl_storage::BlockDevice;
-
-use efi::defs::EfiSystemTable;
-use efi::{initialize, BlockIoProtocol, LoadedImageProtocol};
-use fdt::Fdt;
 
 // For the `vec!` macro
 #[macro_use]
 extern crate alloc;
+use core::fmt::Write;
+
+use efi::defs::EfiSystemTable;
+use efi::{exit_boot_services, initialize};
 
 #[macro_use]
 mod utils;
-use utils::{get_device_path, get_efi_fdt, EfiGptDevice, MultiGptDevices, Result};
+use utils::{loaded_image_path, Result};
+
+#[cfg(target_arch = "riscv64")]
+mod riscv64;
+
+mod android_load;
+use android_load::load_android_simple;
 
 fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -> Result<()> {
     // SAFETY: Called only once here upon EFI app entry.
     let entry = unsafe { initialize(image_handle, systab_ptr)? };
 
     efi_print!(entry, "\n\n****Rust EFI Application****\n\n");
+    efi_print!(entry, "Image path: {}\n", loaded_image_path(&entry)?);
 
-    let bs = entry.system_table().boot_services();
-    let loaded_image = bs.open_protocol::<LoadedImageProtocol>(entry.image_handle())?;
-    efi_print!(entry, "Image path: {}\n", get_device_path(&entry, loaded_image.device_handle()?)?);
+    // Allocate buffer for load.
+    let mut load_buffer = vec![0u8; 128 * 1024 * 1024]; // 128MB
 
-    efi_print!(entry, "Scanning block devices...\n");
-    let block_dev_handles = bs.locate_handle_buffer_by_protocol::<BlockIoProtocol>()?;
-    let mut gpt_devices = Vec::<EfiGptDevice>::new();
-    for (i, handle) in block_dev_handles.handles().iter().enumerate() {
-        efi_print!(entry, "-------------------\n");
-        efi_print!(entry, "Block device #{}: {}\n", i, get_device_path(&entry, *handle)?);
-        let mut gpt_dev = EfiGptDevice::new(bs.open_protocol::<BlockIoProtocol>(*handle)?)?;
-        efi_print!(
-            entry,
-            "block size: {}, blocks: {}, alignment: {}\n",
-            gpt_dev.block_device().block_size(),
-            gpt_dev.block_device().num_blocks(),
-            gpt_dev.block_device().alignment()
-        );
-        match gpt_dev.sync_gpt() {
-            Ok(()) => {
-                efi_print!(entry, "GPT found!\n");
-                for e in gpt_dev.gpt()?.entries()? {
-                    efi_print!(entry, "{}\n", e);
-                }
-                gpt_devices.push(gpt_dev);
-            }
-            Err(err) => {
-                efi_print!(entry, "No GPT on device. {:?}\n", err);
-            }
-        };
+    let (kernel, ramdisk, fdt, remains) = load_android_simple(&entry, &mut load_buffer[..])?;
+
+    efi_print!(
+        &entry,
+        "\nBooting kernel @ {:#x}, ramdisk @ {:#x}, fdt @ {:#x}\n\n",
+        kernel.as_ptr() as usize,
+        ramdisk.as_ptr() as usize,
+        fdt.as_ptr() as usize
+    );
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        let _ = exit_boot_services(entry, remains)?;
+        // SAFETY: We currently targets at Cuttlefish emulator where images are provided valid.
+        unsafe { boot::aarch64::jump_linux_el2_or_lower(kernel, fdt) };
     }
 
-    // Following is example code for testing library linkage. They'll be removed and replaced with
-    // full GBL boot flow as development goes.
-
-    let mut multi_gpt_dev = MultiGptDevices::new(gpt_devices);
-    match multi_gpt_dev.partition_size("bootconfig") {
-        Ok(sz) => {
-            efi_print!(entry, "Has device-specific bootconfig: {} bytes\n", sz);
-            let mut bootconfig = vec![0u8; sz];
-            multi_gpt_dev.read_gpt_partition("bootconfig", 0, &mut bootconfig[..])?;
-            efi_print!(
-                entry,
-                "{}\n",
-                CStr::from_bytes_until_nul(&mut bootconfig[..]).unwrap().to_str().unwrap()
-            );
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    {
+        let fdt = fdt::Fdt::new(&fdt[..])?;
+        let efi_mmap = exit_boot_services(entry, remains)?;
+        // SAFETY: We currently targets at Cuttlefish emulator where images are provided valid.
+        unsafe {
+            boot::x86::boot_linux_bzimage(
+                kernel,
+                ramdisk,
+                fdt.get_property(
+                    "chosen",
+                    core::ffi::CStr::from_bytes_with_nul(b"bootargs\0").unwrap(),
+                )
+                .unwrap(),
+                |e820_entries| {
+                    // Convert EFI memorty type to e820 memory type.
+                    if efi_mmap.len() > e820_entries.len() {
+                        return Err(boot::BootError::E820MemoryMapCallbackError(-1));
+                    }
+                    for (idx, mem) in efi_mmap.into_iter().enumerate() {
+                        e820_entries[idx] = boot::x86::e820entry {
+                            addr: mem.physical_start,
+                            size: mem.number_of_pages * 4096,
+                            type_: utils::efi_to_e820_mem_type(mem.memory_type),
+                        };
+                    }
+                    Ok(efi_mmap.len().try_into().unwrap())
+                },
+                0x9_0000,
+            )?;
         }
-        _ => {}
-    };
-
-    // Check if we have a device tree.
-    match get_efi_fdt(&entry) {
-        Some((_, bytes)) => {
-            let fdt = Fdt::new(bytes)?;
-            efi_print!(entry, "Device tree found\n");
-            let print_property = |node: &str, name: &CStr| -> Result<()> {
-                efi_print!(
-                    entry,
-                    "{}:{} = {}\n",
-                    node,
-                    name.to_str().unwrap(),
-                    from_utf8(fdt.get_property(node, name).unwrap_or("NA".as_bytes())).unwrap()
-                );
-                Ok(())
-            };
-            print_property("/", CStr::from_bytes_with_nul(b"compatible\0").unwrap())?;
-            print_property("/chosen", CStr::from_bytes_with_nul(b"u-boot,version\0").unwrap())?;
-            print_property("/chosen", CStr::from_bytes_with_nul(b"bootargs\0").unwrap())?;
-        }
-        _ => {}
+        unreachable!();
     }
-    Ok(())
+
+    #[cfg(target_arch = "riscv64")]
+    {
+        let boot_hart_id = entry
+            .system_table()
+            .boot_services()
+            .find_first_and_open::<efi::RiscvBootProtocol>()?
+            .get_boot_hartid()?;
+        efi_print!(entry, "riscv boot_hart_id: {}\n", boot_hart_id);
+        let _ = exit_boot_services(entry, remains)?;
+        // SAFETY: We currently targets at Cuttlefish emulator where images are provided valid.
+        unsafe { boot::riscv64::jump_linux(kernel, boot_hart_id, fdt) };
+    }
 }
 
 #[no_mangle]

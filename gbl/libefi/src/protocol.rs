@@ -40,7 +40,15 @@ pub struct Protocol<'a, T: ProtocolInfo> {
 /// Protocol<T> will have additional implementation based on type `T`.
 impl<'a, T: ProtocolInfo> Protocol<'a, T> {
     /// Create a new instance with the given device handle, interface pointer and `EfiEntry` data.
-    pub(crate) fn new(
+    ///
+    /// # Safety
+    ///
+    /// Caller needs to ensure that
+    ///
+    /// * `interface` points to a valid object of type T::InterfaceType.
+    ///
+    /// * Object pointed to by `interface` must live as long as the create `Protocol` or 'a.
+    pub(crate) unsafe fn new(
         device: DeviceHandle,
         interface: *mut T::InterfaceType,
         efi_entry: &'a EfiEntry,
@@ -108,7 +116,11 @@ impl ProtocolInfo for BlockIoProtocol {
 impl Protocol<'_, BlockIoProtocol> {
     /// Wrapper of `EFI_BLOCK_IO_PROTOCOL.read_blocks()`
     pub fn read_blocks(&self, lba: u64, buffer: &mut [u8]) -> EfiResult<()> {
-        // SAFETY: EFI protocol method call.
+        // SAFETY:
+        // `self.interface()?` guarantees self.interface is non-null and points to a valid object
+        // established by `Protocol::new()`.
+        // `self.interface` is input parameter and will not be retained. It outlives the call.
+        // `buffer` remains valid during the call.
         unsafe {
             efi_call!(
                 self.interface()?.read_blocks,
@@ -123,7 +135,11 @@ impl Protocol<'_, BlockIoProtocol> {
 
     /// Wrapper of `EFI_BLOCK_IO_PROTOCOL.write_blocks()`
     pub fn write_blocks(&self, lba: u64, buffer: &[u8]) -> EfiResult<()> {
-        // SAFETY: EFI protocol method call.
+        // SAFETY:
+        // `self.interface()?` guarantees self.interface is non-null and points to a valid object
+        // established by `Protocol::new()`.
+        // `self.interface` is input parameter and will not be retained. It outlives the call.
+        // `buffer` remains valid during the call.
         unsafe {
             efi_call!(
                 self.interface()?.write_blocks,
@@ -138,13 +154,19 @@ impl Protocol<'_, BlockIoProtocol> {
 
     /// Wrapper of `EFI_BLOCK_IO_PROTOCOL.flush_blocks()`
     pub fn flush_blocks(&self) -> EfiResult<()> {
-        // SAFETY: EFI protocol method call.
+        // SAFETY:
+        // `self.interface()?` guarantees `self.interface` is non-null and points to a valid object
+        // established by `Protocol::new()`.
+        // `self.interface` is input parameter and will not be retained. It outlives the call.
         unsafe { efi_call!(self.interface()?.flush_blocks, self.interface) }
     }
 
     /// Wrapper of `EFI_BLOCK_IO_PROTOCOL.reset()`
     pub fn reset(&self, extended_verification: bool) -> EfiResult<()> {
-        // SAFETY: EFI protocol method call.
+        // SAFETY:
+        // `self.interface()?` guarantees `self.interface` is non-null and points to a valid object
+        // established by `Protocol::new()`.
+        // `self.interface` is input parameter and will not be retained. It outlives the call.
         unsafe { efi_call!(self.interface()?.reset, self.interface, extended_verification) }
     }
 
@@ -169,7 +191,10 @@ impl ProtocolInfo for SimpleTextOutputProtocol {
 impl Protocol<'_, SimpleTextOutputProtocol> {
     /// Wrapper of `EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL.OutputString()`
     pub fn output_string(&self, msg: *mut char16_t) -> EfiResult<()> {
-        // SAFETY: EFI protocol method call.
+        // SAFETY:
+        // `self.interface()?` guarantees `self.interface` is non-null and points to a valid object
+        // established by `Protocol::new()`.
+        // `self.interface` is input parameter and will not be retained. It outlives the call.
         unsafe { efi_call!(self.interface()?.output_string, self.interface, msg) }
     }
 }
@@ -234,7 +259,10 @@ impl<'a> Protocol<'a, DevicePathToTextProtocol> {
             .convert_device_path_to_text
             .as_ref()
             .ok_or_else::<EfiError, _>(|| EFI_STATUS_NOT_FOUND.into())?;
-        // SAFETY: EFI protocol method call.
+        // SAFETY:
+        // `self.interface()?` guarantees `self.interface` is non-null and points to a valid object
+        // established by `Protocol::new()`.
+        // `self.interface` is input parameter and will not be retained. It outlives the call.
         let res = unsafe { f(device_path.interface_ptr(), display_only, allow_shortcuts) };
         Ok(DevicePathText::new(res, self.efi_entry))
     }
@@ -313,6 +341,35 @@ impl<'a> Protocol<'a, LoadedImageProtocol> {
     }
 }
 
+/// RISCV_EFI_BOOT_PROTOCOL
+pub struct RiscvBootProtocol;
+
+impl ProtocolInfo for RiscvBootProtocol {
+    type InterfaceType = EfiRiscvBootProtocol;
+
+    const GUID: EfiGuid =
+        EfiGuid::new(0xccd15fec, 0x6f73, 0x4eec, [0x83, 0x95, 0x3e, 0x69, 0xe4, 0xb9, 0x40, 0xbf]);
+}
+
+impl<'a> Protocol<'a, RiscvBootProtocol> {
+    pub fn get_boot_hartid(&self) -> EfiResult<usize> {
+        let mut boot_hart_id: usize = 0;
+        // SAFETY:
+        // `self.interface()?` guarantees `self.interface` is non-null and points to a valid object
+        // established by `Protocol::new()`.
+        // `self.interface` is input parameter and will not be retained. It outlives the call.
+        // `&mut boot_hart_id` is output parameter and will not be retained. It outlives the call.
+        unsafe {
+            efi_call!(self.interface()?.get_boot_hartid, self.interface, &mut boot_hart_id)?;
+        }
+        Ok(boot_hart_id)
+    }
+
+    pub fn revision(&self) -> EfiResult<u64> {
+        Ok(self.interface()?.revision)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -322,8 +379,14 @@ mod test {
     fn test_dont_close_protocol_without_device_handle() {
         run_test(|image_handle, systab_ptr| {
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            {
-                Protocol::<BlockIoProtocol>::new(DeviceHandle(null_mut()), 2 as *mut _, &efi_entry);
+            let mut block_io: EfiBlockIoProtocol = Default::default();
+            // SAFETY: `block_io` is a EfiBlockIoProtocol and out lives the created Protocol.
+            unsafe {
+                Protocol::<BlockIoProtocol>::new(
+                    DeviceHandle(null_mut()),
+                    &mut block_io as *mut _,
+                    &efi_entry,
+                );
             }
             efi_call_traces().with(|traces| {
                 assert_eq!(traces.borrow_mut().close_protocol_trace.inputs.len(), 0);
