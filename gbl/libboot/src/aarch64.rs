@@ -46,6 +46,11 @@ pub fn current_el() -> ExceptionLevel {
     }
 }
 
+extern "C" {
+    /// Clean and invalidate data cache and disable data/instruction cache and MMU.
+    fn disable_cache_mmu();
+}
+
 /// Boots a Linux kernel in mode EL2 or lower with the given FDT blob.
 ///
 /// # Safety
@@ -53,9 +58,11 @@ pub fn current_el() -> ExceptionLevel {
 /// Caller must ensure that `kernel` contains a valid Linux kernel.
 pub unsafe fn jump_linux_el2_or_lower(kernel: &[u8], fdt: &[u8]) -> ! {
     assert_ne!(current_el(), ExceptionLevel::EL3);
-    // TODO(b/305093905): Perform other initialization including disabling MMU, flushing cache and
-    // masking interrupt.
-
+    // The following is sufficient to work for existing use cases such as Cuttlefish. But there are
+    // additional initializations listed
+    // https://www.kernel.org/doc/html/v5.11/arm64/booting.html that may need to be performed
+    // explicitly for other platforms.
+    disable_cache_mmu();
     asm!(
         "mov x1, 0",
         "mov x2, 0",
