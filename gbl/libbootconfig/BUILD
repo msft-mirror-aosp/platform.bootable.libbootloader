@@ -12,4 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-workspace(name = "gbl")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(
+    default_visibility = ["//visibility:public"],
+)
+
+rust_library(
+    name = "libbootconfig",
+    srcs = ["src/lib.rs"],
+    crate_name = "bootconfig",
+    edition = "2021",
+)
+
+rust_test(
+    name = "libbootconfig_test",
+    crate = ":libbootconfig",
+)

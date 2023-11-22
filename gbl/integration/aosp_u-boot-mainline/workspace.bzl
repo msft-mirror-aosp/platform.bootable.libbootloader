@@ -54,7 +54,14 @@ def define_gbl_workspace(name = None):
     native.new_local_repository(
         name = "linux_x86_64_sysroot",
         path = "build/kernel/build-tools",
-        build_file_content = "",
+        build_file_content = """exports_files(glob(["**/*"]))
+cc_library(
+    name = "linux_x86_64_sysroot_include",
+    hdrs = glob(["sysroot/usr/include/**/*.h"]),
+    includes = [ "sysroot/usr/include" ],
+    visibility = ["//visibility:public"],
+)
+""",
     )
 
     android_rust_prebuilts(
@@ -82,9 +89,21 @@ cc_library(
     )
 
     native.new_local_repository(
+        name = "mkbootimg",
+        path = "tools/mkbootimg",
+        build_file_content = """exports_files(glob(["**/*"]))""",
+    )
+
+    native.new_local_repository(
         name = "libfdt_c",
         path = "external/dtc/libfdt",
         build_file = "@gbl//libfdt:BUILD.libfdt_c.bazel",
+    )
+
+    native.new_local_repository(
+        name = "arm_trusted_firmware",
+        path = "external/arm-trusted-firmware",
+        build_file = "@gbl//libboot/aarch64_cache_helper:BUILD.arm_trusted_firmware.bazel",
     )
 
     # Following are third party rust crates dependencies.
