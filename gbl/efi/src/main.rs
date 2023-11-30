@@ -127,6 +127,3 @@ pub extern "C" fn efi_main(image_handle: *mut core::ffi::c_void, systab_ptr: *mu
     main(image_handle, systab_ptr).unwrap();
     loop {}
 }
-
-#[no_mangle]
-pub extern "C" fn __chkstk() {}
