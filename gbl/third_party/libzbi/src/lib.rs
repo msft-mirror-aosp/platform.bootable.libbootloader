@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(any(test, android_dylib)), no_std)]
 
 //! ZBI Processing Library
 //!

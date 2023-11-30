@@ -19,6 +19,7 @@ package {
 rust_defaults {
     name: "libgbl_defaults",
     srcs: ["src/lib.rs"],
+    rustlibs: ["libstatic_assertions"],
 }
 
 // GBL Rust library.
@@ -26,8 +27,14 @@ rust_library {
     name: "libgbl",
     host_supported: true,
     crate_name: "gbl",
-    defaults: [ "libgbl_defaults" ],
-    rustlibs: ["libzbi"],
+    defaults: ["libgbl_defaults"],
+    rustlibs: [
+        "libzbi",
+        "libavb_rs",
+        "libring",
+        "libspin",
+        "liblazy_static",
+    ],
 }
 
 // Defining rlib here because we want to build with [no_std], but
@@ -37,24 +44,43 @@ rust_library {
 rust_library_rlib {
     name: "libgbl_nostd",
     crate_name: "gbl",
-    defaults: [ "libgbl_defaults" ],
-    rlibs: ["libzbi_nostd"],
+    defaults: ["libgbl_defaults"],
+    rlibs: [
+        "libzbi_nostd",
+        "libavb_rs_nostd",
+        "libring_nostd",
+        "libspin_nostd",
+        "liblazy_static_nostd",
+    ],
     no_stdlibs: true,
     prefer_rlib: true,
 }
 
 // libgbl unit tests.
+rust_defaults {
+    name: "libgbl_test_defaults",
+    defaults: ["libgbl_defaults"],
+    rustlibs: [
+        "libzbi",
+        "libavb_rs",
+        "libitertools",
+        "libring",
+        "libhex",
+        "libspin",
+        "liblazy_static",
+    ],
+    features: ["alloc"],
+}
+
 rust_test {
     name: "libgbl_device_test",
-    defaults: [ "libgbl_defaults" ],
-    rustlibs: ["libzbi"],
+    defaults: ["libgbl_test_defaults"],
     test_suites: ["general-tests"],
 }
 
 rust_test_host {
     name: "libgbl_host_test",
-    defaults: [ "libgbl_defaults" ],
-    rustlibs: ["libzbi"],
+    defaults: ["libgbl_test_defaults"],
 }
 
 // Test building with libgbl in a [no_std] environment.
@@ -64,10 +90,16 @@ rust_test_host {
 // so actual logic unittests go in libgbl tests instead.
 rust_binary {
     name: "libgbl_test_nostd",
-    srcs: [ "tests/nostd.rs" ],
-    rustlibs: [ "libgbl_nostd" ],
+    srcs: ["tests/nostd.rs"],
+    rustlibs: [
+        "libgbl_nostd",
+        "libbuddy_system_allocator",
+    ],
     // panic=abort to satisfy the eh_personality compile requirement.
-    flags: [ "-C", "panic=abort" ],
+    flags: [
+        "-C",
+        "panic=abort",
+    ],
     no_stdlibs: true,
     prefer_rlib: true,
 }
