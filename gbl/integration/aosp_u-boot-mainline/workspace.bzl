@@ -17,6 +17,7 @@ This file contains rules and logic for setting up GBL workspace dependencies in 
 u-boot-mainline branch.
 """
 
+load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
 load("@gbl//toolchain:gbl_workspace_util.bzl", "android_rust_prebuilts", "gbl_llvm_prebuilts")
 load("@kernel_toolchain_info//:dict.bzl", "CLANG_VERSION")
 
@@ -29,12 +30,14 @@ def define_gbl_workspace(name = None):
     Args:
         name (String): Placeholder for buildifier check.
     """
-    native.local_repository(
+    maybe(
+        repo_rule = native.local_repository,
         name = "rules_rust",
         path = "external/bazelbuild-rules_rust",
     )
 
-    native.local_repository(
+    maybe(
+        repo_rule = native.local_repository,
         name = "rules_license",
         path = "external/bazelbuild-rules_license",
     )
