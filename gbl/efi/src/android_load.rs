@@ -34,7 +34,7 @@ const KERNEL_ALIGNMENT: usize = 2 * 1024 * 1024;
 /// A number of simplifications are made:
 ///
 ///   * No A/B slot switching is performed. It always boot from *_a slot.
-///   * No AVB is performed. Thus boot mode is recovery only.
+///   * No AVB is performed.
 ///   * No dynamic partitions.
 ///   * Only support V3/V4 image and Android 13+ (generic ramdisk from the "init_boot" partition)
 ///
@@ -129,11 +129,11 @@ pub fn load_android_simple<'a>(
     let mut bootconfig_builder = BootConfigBuilder::new(&mut load[ramdisk_load_curr..])?;
     // Add slot index
     bootconfig_builder.add("androidboot.slot_suffix=_a\n")?;
-    // By default, boot mode is recovery. The following needs to be added for normal boot.
-    // However, normal boot requires additional bootconfig generated during AVB, which is under
-    // development.
-    //
-    // bootconfig_builder.add("androidboot.force_normal_boot=1\n")?;
+
+    // Boot into Android
+    bootconfig_builder.add("androidboot.force_normal_boot=1\n")?;
+    // To ignore AVB failure
+    bootconfig_builder.add("androidboot.verifiedbootstate=orange\n")?;
 
     // V4 image has vendor bootconfig.
     if let VendorImageHeader::V4(ref hdr) = vendor_boot_header {
