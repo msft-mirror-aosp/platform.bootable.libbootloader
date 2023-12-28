@@ -67,7 +67,7 @@ rust_defaults {
         "libhex",
         "libspin",
         "liblazy_static",
-	"libstatic_assertions",
+        "libstatic_assertions",
     ],
     features: ["alloc"],
 }
