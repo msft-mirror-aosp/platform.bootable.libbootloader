@@ -25,6 +25,9 @@
 // TODO: b/312610985 - return warning for unused partitions
 #![allow(unused_variables, dead_code)]
 // TODO: b/312608163 - Adding ZBI library usage to check dependencies
+extern crate lazy_static;
+extern crate ring;
+extern crate spin;
 extern crate zbi;
 
 use core::fmt::{Debug, Display, Formatter};
