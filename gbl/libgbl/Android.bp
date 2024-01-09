@@ -19,6 +19,7 @@ package {
 rust_defaults {
     name: "libgbl_defaults",
     srcs: ["src/lib.rs"],
+    features: ["sw_digest"],
 }
 
 // GBL Rust library.
