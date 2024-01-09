@@ -28,13 +28,13 @@ rust_defaults {
 rust_library {
     name: "libzbi",
     host_supported: true,
-    defaults: [ "libzbi_defaults" ],
+    defaults: ["libzbi_defaults"],
     rustlibs: ["libzerocopy"],
 }
 
 rust_library_rlib {
     name: "libzbi_nostd",
-    defaults: [ "libzbi_defaults" ],
+    defaults: ["libzbi_defaults"],
     no_stdlibs: true,
     prefer_rlib: true,
     rustlibs: ["libzerocopy_nostd_noalloc"],
@@ -42,15 +42,21 @@ rust_library_rlib {
 
 // libzbi unit tests to run on host.
 rust_test_host {
-   name: "libzbi_host_test",
-   defaults: [ "libzbi_defaults" ],
-   rustlibs: ["libzerocopy","libhex"],
+    name: "libzbi_host_test",
+    defaults: ["libzbi_defaults"],
+    rustlibs: [
+        "libzerocopy",
+        "libhex",
+    ],
 }
 
 // libzbi unit tests to run on devices.
 rust_test {
-   name: "libzbi_device_test",
-   defaults: [ "libzbi_defaults" ],
-   rustlibs: ["libzerocopy","libhex"],
-   test_suites: ["general-tests"],
+    name: "libzbi_device_test",
+    defaults: ["libzbi_defaults"],
+    rustlibs: [
+        "libzerocopy",
+        "libhex",
+    ],
+    test_suites: ["general-tests"],
 }
