@@ -45,12 +45,12 @@ pub trait GblOps<D: Digest, C: Context<D>>: Ops + Debug {
     /// # Arguments
     ///
     /// * algorithm - algorithm to use for hash computation.
-    fn new_digest(&self, algorithm: &'static Algorithm) -> C {
+    fn new_digest(&self, algorithm: Algorithm) -> C {
         Context::new(algorithm)
     }
     /// Calculate digest of provided data with requested algorithm. Single use unlike [new_digest]
     /// flow.
-    fn digest(&self, algorithm: &'static Algorithm, data: &[u8]) -> D {
+    fn digest(&self, algorithm: Algorithm, data: &[u8]) -> D {
         let mut ctx = self.new_digest(algorithm);
         ctx.update(data);
         ctx.finish()

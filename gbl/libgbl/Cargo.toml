@@ -20,6 +20,11 @@
 name = "gbl"
 version = "0.1.0"
 
+[features]
+default = ["sw_digest"]
+alloc = []
+sw_digest = []
+
 [dependencies]
 zbi = {version = "0.1", path = "../third_party/libzbi"}
 ring = "0.17"
@@ -29,3 +34,4 @@ lazy_static = "1"
 
 [dev-dependencies]
 itertools = "0"
+

@@ -14,16 +14,22 @@
 
 //! GBL Digest trait that defines interface for hash computation.
 //!
+//! Software implementation available in `sw_digest` module. Specifically
+//! [SwContext] and [SwDigest].
 
-// TODO: b/312606477 - SW implementation should be behind feature
-
-extern crate ring;
-pub use ring::digest::Algorithm;
+/// List of supported algorithms
+#[derive(Debug, Eq, PartialEq, Clone, Copy)]
+pub enum Algorithm {
+    /// SHA256 algorithm
+    SHA256,
+    /// SHA512 algorithm
+    SHA512,
+}
 
 /// Digest output trait that return algorithm and ref to the value
 pub trait Digest: AsRef<[u8]> {
     /// Get digest algorithm
-    fn algorithm(&self) -> &'static Algorithm;
+    fn algorithm(&self) -> &Algorithm;
 }
 
 /// Context trait that implements digesting.
@@ -34,7 +40,7 @@ pub trait Context<D: Digest> {
     /// # Arguments
     ///
     /// * algorithm - requested algorithm
-    fn new(algorithm: &'static Algorithm) -> Self;
+    fn new(algorithm: Algorithm) -> Self;
 
     /// Process next portion of data for the digest.
     ///
@@ -49,94 +55,5 @@ pub trait Context<D: Digest> {
     fn finish(self) -> D;
 
     /// The algorithm that this context is using.
-    fn algorithm(&self) -> &'static Algorithm;
-}
-
-/// Software implementation for digest Context
-pub struct SwContext {
-    ring_context: ring::digest::Context,
-}
-impl Context<SwDigest> for SwContext {
-    fn new(algorithm: &'static Algorithm) -> Self
-    where
-        Self: Sized,
-    {
-        Self { ring_context: ring::digest::Context::new(algorithm) }
-    }
-
-    fn update(&mut self, input: &[u8]) {
-        self.ring_context.update(input)
-    }
-
-    fn finish(self) -> SwDigest {
-        SwDigest { ring_digest: self.ring_context.finish() }
-    }
-
-    fn algorithm(&self) -> &'static Algorithm {
-        self.ring_context.algorithm()
-    }
-}
-
-/// Software implementation of Digest.
-pub struct SwDigest {
-    ring_digest: ring::digest::Digest,
-}
-impl AsRef<[u8]> for SwDigest {
-    fn as_ref(&self) -> &[u8] {
-        self.ring_digest.as_ref()
-    }
-}
-impl Digest for SwDigest {
-    fn algorithm(&self) -> &'static Algorithm {
-        self.ring_digest.algorithm()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Compute digest on provided input using algorithm
-    fn digest(algorithm: &'static Algorithm, input: &[u8]) -> SwDigest {
-        let mut ctx = SwContext::new(algorithm);
-        ctx.update(input);
-        ctx.finish()
-    }
-
-    #[test]
-    fn test_swdigest_sha256() {
-        let input = b"abc";
-        let expected =
-            hex::decode("BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD")
-                .unwrap();
-        assert_eq!(digest(&ring::digest::SHA256, input).as_ref(), expected);
-    }
-
-    #[test]
-    fn test_swdigest_sha512() {
-        assert_eq!(
-            digest(&ring::digest::SHA512, b"abc").as_ref(),
-            hex::decode(concat!(
-                "DDAF35A193617ABACC417349AE20413112E6FA4E89A97EA2",
-                "0A9EEEE64B55D39A2192992A274FC1A836BA3C23A3FEEBBD",
-                "454D4423643CE80E2A9AC94FA54CA49F",
-            ))
-            .unwrap()
-        );
-    }
-
-    #[test]
-    fn test_swdigest_sha_partial() {
-        let input = b"abc";
-        let expected =
-            hex::decode("BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD")
-                .unwrap();
-
-        let mut ctx = SwContext::new(&ring::digest::SHA256);
-        for i in input.chunks(input.len()) {
-            ctx.update(i);
-        }
-
-        assert_eq!(ctx.finish().as_ref(), expected);
-    }
+    fn algorithm(&self) -> &Algorithm;
 }
