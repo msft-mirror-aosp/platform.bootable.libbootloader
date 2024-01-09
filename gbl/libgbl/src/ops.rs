@@ -16,6 +16,8 @@
 //!
 #[cfg(feature = "alloc")]
 extern crate alloc;
+#[cfg(test)]
+extern crate static_assertions;
 
 use crate::digest::{Algorithm, Context, Digest};
 use crate::error::{Error, Result};
@@ -117,6 +119,7 @@ where
     }
 }
 
+#[cfg(test)]
 static_assertions::const_assert_eq!(core::mem::size_of::<DefaultGblOps>(), 0);
 impl DefaultGblOps {
     /// Create new DefaultGblOps object

@@ -19,7 +19,6 @@ package {
 rust_defaults {
     name: "libgbl_defaults",
     srcs: ["src/lib.rs"],
-    rustlibs: ["libstatic_assertions"],
 }
 
 // GBL Rust library.
@@ -68,6 +67,7 @@ rust_defaults {
         "libhex",
         "libspin",
         "liblazy_static",
+	"libstatic_assertions",
     ],
     features: ["alloc"],
 }

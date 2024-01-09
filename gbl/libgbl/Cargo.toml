@@ -22,3 +22,10 @@ version = "0.1.0"
 
 [dependencies]
 zbi = {version = "0.1", path = "../third_party/libzbi"}
+ring = "0.17"
+spin = "0.9"
+static_assertions = "0"
+lazy_static = "1"
+
+[dev-dependencies]
+itertools = "0"
