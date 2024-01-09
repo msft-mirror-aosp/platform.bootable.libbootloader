@@ -3,3 +3,5 @@ gbl/bazel-bin
 gbl/bazel-gbl
 gbl/bazel-out
 gbl/bazel-testlogs
+
+MODULE.bazel.lock
