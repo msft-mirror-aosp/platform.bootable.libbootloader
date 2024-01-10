@@ -24,9 +24,9 @@ To run the set of unit tests:
 ./tools/bazel test @gbl//tests --extra_toolchains=@gbl//toolchain:all
 ```
 
-## Run on emulator
+## Run the EFI application
 
-### Run on Cuttlefish
+### Boot Android on Cuttlefish
 
 If you have a main AOSP checkout and is setup to run
 [Cuttlefish](https://source.android.com/docs/setup/create/cuttlefish), you can
@@ -37,15 +37,29 @@ launch_cvd --android_efi_loader=<path to the EFI image> ...
 ```
 
 The above uses the same setting as a normal `launch_cvd` run, except that
-insted of booting Android directly, the emulator first hands off to your EFI
-application.
+insted of booting Android directly, the emulator first hands off to the EFI
+application, which will take over booting android.
 
 Note: For x86 platform, use the EFI image built for `x86_32`.
 
+### Boot Fuchsia on Vim3
+
+Booting Fuchsia on a Vim3 development board is supported. To run the
+application:
+
+1. Complete all
+[bootstrap steps](https://fuchsia.dev/fuchsia-src/development/hardware/khadas-vim3?hl=en)
+to setup Vim3 as a Fuchsia device.
+2. Reboot the device into fastboot mode.
+3. Run fastboot command:
+```
+fastboot stage <path to the EFI binary> && fastboot oem run-staged-efi
+```
+
 ### Run on standalone QEMU
 
-If you simply want to test the EFI image as a standalone application on QEMU
-directly:
+If you want to test the EFI image directly on QEMU with your custom
+configurations:
 
 1. Install EDK, QEMU and u-boot prebuilts
 

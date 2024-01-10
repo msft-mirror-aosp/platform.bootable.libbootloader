@@ -18,7 +18,7 @@ use core::str::from_utf8;
 
 use bootconfig::{BootConfigBuilder, BootConfigError};
 use bootimg::{BootImage, VendorImageHeader};
-use efi::EfiEntry;
+use efi::{exit_boot_services, EfiEntry};
 use fdt::Fdt;
 
 use crate::utils::{
@@ -234,4 +234,88 @@ pub fn load_android_simple<'a>(
     let fdt_len = fdt.header_ref()?.actual_size();
     let (fdt_load_buffer, remains) = load.split_at_mut(fdt_len);
     Ok((kernel_load_buffer, ramdisk_load_buffer, fdt_load_buffer, remains))
+}
+
+// The following implements a demo for booting Android from disk. It can be run from
+// Cuttlefish by adding `--android_efi_loader=<path of this EFI binary>` to the command line.
+//
+// A number of simplifications are made (see `android_load::load_android_simple()`):
+//
+//   * No A/B slot switching is performed. It always boot from *_a slot.
+//   * No AVB is performed.
+//   * No dynamic partitions.
+//   * Only support V3/V4 image and Android 13+ (generic ramdisk from the "init_boot" partition)
+//
+// The missing pieces above are currently under development as part of the full end-to-end boot
+// flow in libgbl, which will eventually replace this demo. The demo is currently used as an
+// end-to-end test for libraries developed so far.
+pub fn android_boot_demo(entry: EfiEntry) -> Result<()> {
+    efi_print!(entry, "Try booting as Android\n");
+
+    // Allocate buffer for load.
+    let mut load_buffer = vec![0u8; 128 * 1024 * 1024]; // 128MB
+
+    let (kernel, ramdisk, fdt, remains) = load_android_simple(&entry, &mut load_buffer[..])?;
+
+    efi_print!(
+        &entry,
+        "\nBooting kernel @ {:#x}, ramdisk @ {:#x}, fdt @ {:#x}\n\n",
+        kernel.as_ptr() as usize,
+        ramdisk.as_ptr() as usize,
+        fdt.as_ptr() as usize
+    );
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        let _ = exit_boot_services(entry, remains)?;
+        // SAFETY: We currently targets at Cuttlefish emulator where images are provided valid.
+        unsafe { boot::aarch64::jump_linux_el2_or_lower(kernel, fdt) };
+    }
+
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    {
+        let fdt = fdt::Fdt::new(&fdt[..])?;
+        let efi_mmap = exit_boot_services(entry, remains)?;
+        // SAFETY: We currently target at Cuttlefish emulator where images are provided valid.
+        unsafe {
+            boot::x86::boot_linux_bzimage(
+                kernel,
+                ramdisk,
+                fdt.get_property(
+                    "chosen",
+                    core::ffi::CStr::from_bytes_with_nul(b"bootargs\0").unwrap(),
+                )
+                .unwrap(),
+                |e820_entries| {
+                    // Convert EFI memory type to e820 memory type.
+                    if efi_mmap.len() > e820_entries.len() {
+                        return Err(boot::BootError::E820MemoryMapCallbackError(-1));
+                    }
+                    for (idx, mem) in efi_mmap.into_iter().enumerate() {
+                        e820_entries[idx] = boot::x86::e820entry {
+                            addr: mem.physical_start,
+                            size: mem.number_of_pages * 4096,
+                            type_: crate::utils::efi_to_e820_mem_type(mem.memory_type),
+                        };
+                    }
+                    Ok(efi_mmap.len().try_into().unwrap())
+                },
+                0x9_0000,
+            )?;
+        }
+        unreachable!();
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    {
+        let boot_hart_id = entry
+            .system_table()
+            .boot_services()
+            .find_first_and_open::<efi::RiscvBootProtocol>()?
+            .get_boot_hartid()?;
+        efi_print!(entry, "riscv boot_hart_id: {}\n", boot_hart_id);
+        let _ = exit_boot_services(entry, remains)?;
+        // SAFETY: We currently target at Cuttlefish emulator where images are provided valid.
+        unsafe { boot::riscv64::jump_linux(kernel, boot_hart_id, fdt) };
+    }
 }

@@ -23,7 +23,8 @@ package(
 rust_binary(
     name = "main",
     srcs = [
-        "src/android_load.rs",
+        "src/android_boot.rs",
+        "src/fuchsia_boot.rs",
         "src/main.rs",
         "src/riscv64.rs",
         "src/utils.rs",
@@ -44,6 +45,7 @@ rust_binary(
         "@gbl//libfdt",
         "@gbl//libstorage",
         "@gbl//third_party/libzbi",
+        "@zerocopy",
     ] + select({
         "@gbl//toolchain:gbl_rust_elf_riscv64": ["@gbl//efi/arch/riscv64:efi_arch_deps_riscv64"],
         "//conditions:default": [],
