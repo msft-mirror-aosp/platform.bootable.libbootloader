@@ -18,6 +18,10 @@
 //!
 //! The intended users of this library are firmware, bootloader, and bring-up teams at OEMs and SOC
 //! Vendors
+//!
+//! # Features
+//! * `sw_digest` - enables software implementation of digests: [SwDigest], [SwContext]
+//! * `alloc` - enables AVB ops related logic that relies on allocation and depends on allocation.
 
 // This code is intended for use in bootloaders that typically will not support
 // the Rust standard library
@@ -25,6 +29,8 @@
 // TODO: b/312610985 - return warning for unused partitions
 #![allow(unused_variables, dead_code)]
 // TODO: b/312608163 - Adding ZBI library usage to check dependencies
+extern crate lazy_static;
+extern crate spin;
 extern crate zbi;
 
 use core::fmt::{Debug, Display, Formatter};
@@ -36,12 +42,16 @@ pub mod boot_reason;
 pub mod digest;
 pub mod error;
 pub mod ops;
+#[cfg(feature = "sw_digest")]
+pub mod sw_digest;
 
 pub use boot_mode::BootMode;
 pub use boot_reason::KnownBootReason;
-pub use digest::{Context, Digest, SwContext, SwDigest};
+pub use digest::{Context, Digest};
 pub use error::{Error, Result};
 pub use ops::{DefaultGblOps, GblOps};
+#[cfg(feature = "sw_digest")]
+pub use sw_digest::{SwContext, SwDigest};
 
 // TODO: b/312607649 - Replace placeholders with actual structures: https://r.android.com/2721974, etc
 /// TODO: b/312607649 - placeholder type
@@ -495,6 +505,7 @@ where
     }
 }
 
+#[cfg(feature = "sw_digest")]
 impl<'a> Default for Gbl<'a, SwDigest, SwContext> {
     fn default() -> Self {
         Self { ops: DefaultGblOps::new(), image_verification: true }
