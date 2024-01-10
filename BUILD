@@ -1,4 +1,4 @@
-# Copyright 2023, The Android Open Source Project
+# Copyright (C) 2024 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,26 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# For now this file is only provided so that `rustfmt` can run, but it may
-# be worthwhile to set it up properly as a reference implementation for building
-# with libgbl.
+load("//build/bazel_common_rules/dist:dist.bzl", "copy_to_dist_dir")
 
-[package]
-name = "gbl"
-version = "0.1.0"
-
-[features]
-default = ["sw_digest"]
-alloc = []
-sw_digest = []
-
-[dependencies]
-zbi = {version = "0.1", path = "../third_party/libzbi"}
-ring = "0.17"
-spin = "0.9"
-static_assertions = "0"
-lazy_static = "1"
-
-[dev-dependencies]
-itertools = "0"
-
+copy_to_dist_dir(
+    name = "gbl_efi_dist",
+    data = ["@gbl//efi:all_platforms"],
+    dist_dir = "out/gbl_efi/",
+    flat = True,
+)

@@ -1,4 +1,4 @@
-# Copyright 2023, The Android Open Source Project
+# Copyright (C) 2024 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,26 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# For now this file is only provided so that `rustfmt` can run, but it may
-# be worthwhile to set it up properly as a reference implementation for building
-# with libgbl.
+load("//build/kernel/kleaf:workspace.bzl", "define_kleaf_workspace")
 
-[package]
-name = "gbl"
-version = "0.1.0"
+local_repository(
+    name = "gbl",
+    path = "bootable/libbootloader/gbl",
+)
 
-[features]
-default = ["sw_digest"]
-alloc = []
-sw_digest = []
+define_kleaf_workspace(common_kernel_package = "@gbl//")
 
-[dependencies]
-zbi = {version = "0.1", path = "../third_party/libzbi"}
-ring = "0.17"
-spin = "0.9"
-static_assertions = "0"
-lazy_static = "1"
+load("@gbl//integration/aosp_u-boot-mainline:workspace.bzl", "define_gbl_workspace")
 
-[dev-dependencies]
-itertools = "0"
-
+define_gbl_workspace()

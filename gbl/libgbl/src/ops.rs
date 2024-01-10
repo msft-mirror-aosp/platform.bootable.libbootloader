@@ -16,6 +16,8 @@
 //!
 #[cfg(feature = "alloc")]
 extern crate alloc;
+#[cfg(test)]
+extern crate static_assertions;
 
 use crate::digest::{Algorithm, Context, Digest};
 use crate::error::{Error, Result};
@@ -43,12 +45,12 @@ pub trait GblOps<D: Digest, C: Context<D>>: Ops + Debug {
     /// # Arguments
     ///
     /// * algorithm - algorithm to use for hash computation.
-    fn new_digest(&self, algorithm: &'static Algorithm) -> C {
+    fn new_digest(&self, algorithm: Algorithm) -> C {
         Context::new(algorithm)
     }
     /// Calculate digest of provided data with requested algorithm. Single use unlike [new_digest]
     /// flow.
-    fn digest(&self, algorithm: &'static Algorithm, data: &[u8]) -> D {
+    fn digest(&self, algorithm: Algorithm, data: &[u8]) -> D {
         let mut ctx = self.new_digest(algorithm);
         ctx.update(data);
         ctx.finish()
@@ -117,6 +119,7 @@ where
     }
 }
 
+#[cfg(test)]
 static_assertions::const_assert_eq!(core::mem::size_of::<DefaultGblOps>(), 0);
 impl DefaultGblOps {
     /// Create new DefaultGblOps object
