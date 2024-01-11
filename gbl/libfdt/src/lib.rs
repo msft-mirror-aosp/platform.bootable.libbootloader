@@ -33,7 +33,6 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 #[derive(Debug)]
 pub enum FdtError {
     CLibError(&'static str),
-    FdtBytesNotMutable,
     InvalidInput,
     IntegerOverflow,
 }
