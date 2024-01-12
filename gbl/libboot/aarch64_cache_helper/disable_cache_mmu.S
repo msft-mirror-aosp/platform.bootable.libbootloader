@@ -34,8 +34,8 @@ disable_cache_mmu:
 
     // Query current EL
     mrs     x0, CurrentEL
-    cmp     x0, #(1 << 2)
-    beq     disable_cache_mmu_el1
+    cmp     x0, #(1 << 3)
+    beq     disable_cache_mmu_el2
 
 disable_cache_mmu_el1:
     mrs x1, sctlr_el1

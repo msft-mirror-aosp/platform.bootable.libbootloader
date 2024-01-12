@@ -74,3 +74,23 @@ pub unsafe fn jump_linux_el2_or_lower(kernel: &[u8], fdt: &[u8]) -> ! {
 
     unreachable!();
 }
+
+/// Boots a ZBI kernel in mode EL2 or lower with the given ZBI blob.
+///
+/// # Safety
+///
+/// Caller must ensure that address at `kernel_entry` contains a valid zircon kernel.
+pub unsafe fn jump_zircon_el2_or_lower(kernel_entry: usize, zbi: &[u8]) -> ! {
+    assert_ne!(current_el(), ExceptionLevel::EL3);
+    disable_cache_mmu();
+    asm!(
+        "mov x1, 0",
+        "mov x2, 0",
+        "mov x3, 0",
+        "br x4",
+        in("x4") kernel_entry,
+        in("x0") zbi.as_ptr() as usize,
+    );
+
+    unreachable!();
+}

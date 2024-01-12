@@ -25,6 +25,7 @@ use efi::{
 };
 use fdt::{FdtError, FdtHeader};
 use gbl_storage::{required_scratch_size, BlockDevice, Gpt, GptEntry, StorageError};
+use libzbi::ZbiError;
 
 pub const EFI_DTB_TABLE_GUID: EfiGuid =
     EfiGuid::new(0xb1b621d5, 0xf19c, 0x41a5, [0x83, 0x0b, 0xd9, 0x15, 0x2c, 0x69, 0xaa, 0xe0]);
@@ -45,9 +46,13 @@ pub type Result<T> = core::result::Result<T, GblEfiError>;
 #[derive(Debug)]
 pub enum EfiAppError {
     ArithmeticOverflow,
+    BufferAlignment,
+    BufferTooSmall,
+    InvalidInput,
     InvalidString,
     NoFdt,
     NotFound,
+    NoZbiImage,
     Unsupported,
 }
 
@@ -61,6 +66,7 @@ pub enum GblEfiError {
     FdtError(FdtError),
     ImageError(ImageError),
     StorageError(StorageError),
+    ZbiError(ZbiError),
 }
 
 impl From<BootConfigError> for GblEfiError {
@@ -102,6 +108,12 @@ impl From<ImageError> for GblEfiError {
 impl From<StorageError> for GblEfiError {
     fn from(error: StorageError) -> GblEfiError {
         GblEfiError::StorageError(error)
+    }
+}
+
+impl From<ZbiError> for GblEfiError {
+    fn from(error: ZbiError) -> GblEfiError {
+        GblEfiError::ZbiError(error)
     }
 }
 
@@ -253,10 +265,26 @@ impl<'a> MultiGptDevices<'a> {
         Err(EfiAppError::NotFound.into())
     }
 
-    /// Return the size of the target partition on the first match.
-    pub fn partition_size(&mut self, part: &str) -> Result<usize> {
-        let (idx, part) = self.find_partition(part)?;
+    /// Finds a partition given by a set of possible aliases on the first match.
+    fn find_partition_with_aliases(&mut self, aliases: &[&str]) -> Result<(usize, GptEntry)> {
+        for alias in aliases {
+            match self.find_partition(alias) {
+                Ok(v) => return Ok(v),
+                _ => {}
+            }
+        }
+        Err(EfiAppError::NotFound.into())
+    }
+
+    /// Finds size of a partition given by a set of possible aliases.
+    pub fn partition_size_with_aliases(&mut self, aliases: &[&str]) -> Result<usize> {
+        let (idx, part) = self.find_partition_with_aliases(aliases)?;
         Ok(usize_mul(part.blocks()?, self.gpt_devices[idx].block_device().block_size())?)
+    }
+
+    /// Returns the size of the target partition on the first match.
+    pub fn partition_size(&mut self, part: &str) -> Result<usize> {
+        self.partition_size_with_aliases(&[part])
     }
 
     /// Traverse all gpt devices and read the given partition on the first match.
@@ -277,8 +305,8 @@ pub fn get_device_path<'a>(
     handle: DeviceHandle,
 ) -> Result<DevicePathText<'a>> {
     let bs = entry.system_table().boot_services();
-    let path = bs.open_protocol::<DevicePathProtocol>(handle)?;
-    let path_to_text = bs.find_first_and_open::<DevicePathToTextProtocol>()?;
+    let path = bs.open_protocol::<DevicePathProtocol>(handle).unwrap();
+    let path_to_text = bs.find_first_and_open::<DevicePathToTextProtocol>().unwrap();
     Ok(path_to_text.convert_device_path_to_text(&path, false, false)?)
 }
 
