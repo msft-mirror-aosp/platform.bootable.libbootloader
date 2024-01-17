@@ -21,7 +21,7 @@
 #![no_main]
 #![no_std]
 
-use core::panic::PanicInfo;
+// use core::panic::PanicInfo;
 
 use gbl as _;
 
@@ -33,10 +33,10 @@ static HEAP_ALLOCATOR: LockedHeap<32> = LockedHeap::<32>::new();
 
 static mut HEAP: [u8; 65536] = [0; 65536];
 
-#[panic_handler]
-fn panic(_: &PanicInfo) -> ! {
-    loop {}
-}
+// #[panic_handler]
+// fn panic(_: &PanicInfo) -> ! {
+//     loop {}
+// }
 
 /// main() entry point replacement required by [no_std].
 #[no_mangle]
