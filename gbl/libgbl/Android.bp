@@ -19,7 +19,11 @@ package {
 rust_defaults {
     name: "libgbl_defaults",
     srcs: ["src/lib.rs"],
-    features: ["sw_digest"],
+    rustlibs: [
+        "libbitflags",
+        "libstatic_assertions",
+        // "sw_digest",
+    ],
 }
 
 // GBL Rust library.
@@ -33,6 +37,9 @@ rust_library {
         "libavb_rs",
         "libring",
         "libspin",
+        "libzbi",
+        "libzerocopy",
+        "libcrc32fast",
         "liblazy_static",
     ],
 }
@@ -50,6 +57,9 @@ rust_library_rlib {
         "libavb_rs_nostd",
         "libring_nostd",
         "libspin_nostd",
+        "libzbi_nostd",
+        "libzerocopy_nostd",
+        "libcrc32fast",
         "liblazy_static_nostd",
     ],
     no_stdlibs: true,
@@ -67,8 +77,8 @@ rust_defaults {
         "libring",
         "libhex",
         "libspin",
-        "liblazy_static",
         "libstatic_assertions",
+        "liblazy_static",
     ],
     features: ["alloc"],
 }
@@ -80,8 +90,13 @@ rust_test {
 }
 
 rust_test_host {
-    name: "libgbl_host_test",
-    defaults: ["libgbl_test_defaults"],
+    name: "libgbl_slot_test",
+    srcs: ["src/fuchsia.rs"],
+    rustlibs: [
+        "libzbi",
+        "libcrc32fast",
+        "libzerocopy",
+    ],
 }
 
 // Test building with libgbl in a [no_std] environment.
@@ -95,6 +110,7 @@ rust_binary {
     rustlibs: [
         "libgbl_nostd",
         "libbuddy_system_allocator",
+        "liblazy_static_nostd",
     ],
     // panic=abort to satisfy the eh_personality compile requirement.
     flags: [
