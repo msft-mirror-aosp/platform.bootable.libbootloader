@@ -42,6 +42,11 @@ pub mod boot_reason;
 pub mod digest;
 pub mod error;
 pub mod ops;
+
+/// The 'slots' module, containing types and traits for
+/// querying and modifying slotted boot behavior.
+pub mod slots;
+
 #[cfg(feature = "sw_digest")]
 pub mod sw_digest;
 
@@ -225,6 +230,7 @@ lazy_static! {
 pub struct Gbl<'a, D, C> {
     ops: &'a mut dyn GblOps<D, C>,
     image_verification: bool,
+    boot_token: Option<slots::BootToken>,
 }
 
 impl<'a, D, C> Gbl<'a, D, C>
@@ -236,14 +242,14 @@ where
     where
         'b: 'a,
     {
-        Gbl { ops, image_verification: true }
+        Gbl { ops, image_verification: true, boot_token: Some(slots::BootToken(())) }
     }
 
     fn new_no_verification<'b>(ops: &'b mut impl GblOps<D, C>) -> Gbl<'a, D, C>
     where
         'b: 'a,
     {
-        Gbl { ops, image_verification: false }
+        Gbl { ops, image_verification: false, boot_token: Some(slots::BootToken(())) }
     }
 }
 
