@@ -24,6 +24,8 @@ rust_binary(
     name = "main",
     srcs = [
         "src/android_boot.rs",
+        "src/avb.rs",
+        "src/error.rs",
         "src/fuchsia_boot.rs",
         "src/main.rs",
         "src/riscv64.rs",
@@ -38,6 +40,8 @@ rust_binary(
         "panic=abort",
     ],
     deps = [
+        "@avb//:avb_crypto_ops_sha_impl_staticlib",
+        "@avb//:libavb_rust",
         "@gbl//libboot",
         "@gbl//libbootconfig",
         "@gbl//libbootimg",
@@ -45,6 +49,7 @@ rust_binary(
         "@gbl//libfdt",
         "@gbl//libstorage",
         "@gbl//third_party/libzbi",
+        "@uuid",
         "@zerocopy",
     ] + select({
         "@gbl//toolchain:gbl_rust_elf_riscv64": ["@gbl//efi/arch/riscv64:efi_arch_deps_riscv64"],

@@ -20,23 +20,70 @@ use bootconfig::{BootConfigBuilder, BootConfigError};
 use bootimg::{BootImage, VendorImageHeader};
 use efi::{exit_boot_services, EfiEntry};
 use fdt::Fdt;
+use libavb_rust::Ops;
 
+use crate::error::{EfiAppError, GblEfiError, Result};
 use crate::utils::{
     aligned_subslice, cstr_bytes_to_str, find_gpt_devices, get_efi_fdt, usize_add, usize_roundup,
-    EfiAppError, GblEfiError, Result,
+    MultiGptDevices,
 };
+
+use crate::avb::GblEfiAvbOps;
+use libavb_rust::{slot_verify, HashtreeErrorMode, SlotVerifyFlags};
 
 // Linux kernel requires 2MB alignment.
 const KERNEL_ALIGNMENT: usize = 2 * 1024 * 1024;
 // libfdt requires FDT buffer to be 8-byte aligned.
 const FDT_ALIGNMENT: usize = 8;
 
+/// A helper macro for creating a null-terminated string literal as CStr.
+macro_rules! cstr_literal {
+    ( $( $x:expr ),* $(,)?) => {
+       CStr::from_bytes_until_nul(core::concat!($($x),*, "\0").as_bytes()).unwrap()
+    };
+}
+
+/// Helper function for performing libavb verification.
+fn avb_verify_slot<'a, 'b, 'c>(
+    gpt_dev: &'b mut MultiGptDevices<'a>,
+    kernel: &'b [u8],
+    vendor_boot: &'b [u8],
+    init_boot: &'b [u8],
+    bootconfig_builder: &'b mut BootConfigBuilder<'c>,
+) -> Result<()> {
+    let preloaded = [("boot", kernel), ("vendor_boot", vendor_boot), ("init_boot", init_boot)];
+    let mut avb_ops = GblEfiAvbOps::new(gpt_dev, Some(&preloaded));
+    let avb_state = match avb_ops.read_is_device_unlocked()? {
+        true => "orange",
+        _ => "green",
+    };
+
+    let res = slot_verify(
+        &mut avb_ops,
+        &[cstr_literal!("boot"), cstr_literal!("vendor_boot"), cstr_literal!("init_boot")],
+        Some(cstr_literal!("_a")),
+        SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_NONE,
+        // For demo, we use the same setting as Cuttlefish u-boot.
+        HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_RESTART_AND_INVALIDATE,
+    )
+    .map_err(|e| Into::<GblEfiError>::into(e.without_verify_data()))?;
+
+    // Append avb generated bootconfig.
+    for cmdline_arg in res.cmdline().to_str().unwrap().split(' ') {
+        write!(bootconfig_builder, "{}\n", cmdline_arg).map_err(|_| EfiAppError::BufferTooSmall)?;
+    }
+
+    // Append "androidboot.verifiedbootstate="
+    write!(bootconfig_builder, "androidboot.verifiedbootstate={}\n", avb_state)
+        .map_err(|_| EfiAppError::BufferTooSmall)?;
+    Ok(())
+}
+
 /// Loads Android images from disk and fixes up bootconfig, commandline, and FDT.
 ///
 /// A number of simplifications are made:
 ///
 ///   * No A/B slot switching is performed. It always boot from *_a slot.
-///   * No AVB is performed.
 ///   * No dynamic partitions.
 ///   * Only support V3/V4 image and Android 13+ (generic ramdisk from the "init_boot" partition)
 ///
@@ -140,15 +187,25 @@ pub fn load_android_simple<'a>(
     )?;
     ramdisk_load_curr = usize_add(ramdisk_load_curr, generic_ramdisk_size)?;
 
-    // Use the remaining buffer for bootconfig
-    let mut bootconfig_builder = BootConfigBuilder::new(&mut load[ramdisk_load_curr..])?;
+    // Prepare partition data for avb verification
+    let (vendor_boot_load_buffer, remains) = load.split_at_mut(vendor_ramdisk_size);
+    let (init_boot_load_buffer, remains) = remains.split_at_mut(generic_ramdisk_size);
+    // Prepare a BootConfigBuilder to add avb generated bootconfig.
+    let mut bootconfig_builder = BootConfigBuilder::new(remains)?;
+    // Perform avb verification.
+    avb_verify_slot(
+        &mut gpt_devices,
+        kernel_tail_buffer,
+        vendor_boot_load_buffer,
+        init_boot_load_buffer,
+        &mut bootconfig_builder,
+    )?;
+
     // Add slot index
     bootconfig_builder.add("androidboot.slot_suffix=_a\n")?;
 
     // Boot into Android
     bootconfig_builder.add("androidboot.force_normal_boot=1\n")?;
-    // To ignore AVB failure
-    bootconfig_builder.add("androidboot.verifiedbootstate=orange\n")?;
 
     // V4 image has vendor bootconfig.
     if let VendorImageHeader::V4(ref hdr) = vendor_boot_header {
@@ -254,7 +311,7 @@ pub fn load_android_simple<'a>(
     let (ramdisk, remains) = images_buffer.split_at_mut(ramdisk_load_buffer_size);
     // Split out the fdt.
     let (fdt, kernel) = aligned_subslice(remains, FDT_ALIGNMENT)?.split_at_mut(fdt_len);
-    // Move the kernel forward as much as possible.
+    // Move the kernel backward as much as possible.
     let kernel = aligned_subslice(kernel, KERNEL_ALIGNMENT)?;
     let kernel_start = kernel.len().checked_sub(kernel_tail_buffer_size).unwrap();
     kernel.copy_within(kernel_start..kernel_start.checked_add(kernel_size).unwrap(), 0);
