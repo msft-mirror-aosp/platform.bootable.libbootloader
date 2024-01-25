@@ -28,6 +28,8 @@ use crate::utils::{
 
 // Linux kernel requires 2MB alignment.
 const KERNEL_ALIGNMENT: usize = 2 * 1024 * 1024;
+// libfdt requires FDT buffer to be 8-byte aligned.
+const FDT_ALIGNMENT: usize = 8;
 
 /// Loads Android images from disk and fixes up bootconfig, commandline, and FDT.
 ///
@@ -41,7 +43,7 @@ const KERNEL_ALIGNMENT: usize = 2 * 1024 * 1024;
 /// # Returns
 ///
 /// Returns a tuple of 4 slices corresponding to:
-///   (kernel load buffer, ramdisk load buffer, FDT load buffer, unused buffer).
+///   (ramdisk load buffer, FDT load buffer, kernel load buffer, unused buffer).
 pub fn load_android_simple<'a>(
     efi_entry: &EfiEntry,
     load: &'a mut [u8],
@@ -101,18 +103,31 @@ pub fn load_android_simple<'a>(
     efi_print!(efi_entry, "init_boot image size: {}\n", generic_ramdisk_size);
 
     // Load and prepare various images.
+    let images_buffer = aligned_subslice(load, KERNEL_ALIGNMENT)?;
+    let load = &mut images_buffer[..];
 
     // Load kernel
-    let load = aligned_subslice(load, KERNEL_ALIGNMENT)?;
-    let (kernel_load_buffer, load) = load.split_at_mut(kernel_size);
-    gpt_devices.read_gpt_partition("boot_a", kernel_hdr_size as u64, kernel_load_buffer)?;
+    // Kernel may need to reserve additional memory after itself. To avoid the risk of this
+    // memory overlapping with ramdisk. We place kernel after ramdisk. We first load it to the tail
+    // of the buffer and move it forward as much as possible after ramdisk and fdt are loaded,
+    // fixed-up and finalized.
+    let kernel_load_offset = {
+        let off = load.len().checked_sub(kernel_size).ok_or_else(|| EfiAppError::BufferTooSmall)?;
+        off.checked_sub(load[off..].as_ptr() as usize % KERNEL_ALIGNMENT)
+            .ok_or_else(|| EfiAppError::BufferTooSmall)?
+    };
+    let (load, kernel_tail_buffer) = load.split_at_mut(kernel_load_offset);
+    gpt_devices.read_gpt_partition(
+        "boot_a",
+        kernel_hdr_size.try_into().unwrap(),
+        &mut kernel_tail_buffer[..kernel_size],
+    )?;
 
     // Load vendor ramdisk
-    let load = aligned_subslice(load, KERNEL_ALIGNMENT)?;
     let mut ramdisk_load_curr = 0;
     gpt_devices.read_gpt_partition(
         "vendor_boot_a",
-        vendor_hdr_size as u64,
+        vendor_hdr_size.try_into().unwrap(),
         &mut load[ramdisk_load_curr..][..vendor_ramdisk_size],
     )?;
     ramdisk_load_curr = usize_add(ramdisk_load_curr, vendor_ramdisk_size)?;
@@ -120,7 +135,7 @@ pub fn load_android_simple<'a>(
     // Load generic ramdisk
     gpt_devices.read_gpt_partition(
         "init_boot_a",
-        init_boot_hdr_size as u64,
+        init_boot_hdr_size.try_into().unwrap(),
         &mut load[ramdisk_load_curr..][..generic_ramdisk_size],
     )?;
     ramdisk_load_curr = usize_add(ramdisk_load_curr, generic_ramdisk_size)?;
@@ -148,7 +163,7 @@ pub fn load_android_simple<'a>(
             gpt_devices
                 .read_gpt_partition(
                     "vendor_boot_a",
-                    bootconfig_offset as u64,
+                    bootconfig_offset.try_into().unwrap(),
                     &mut out[..hdr.bootconfig_size as usize],
                 )
                 .map_err(|_| BootConfigError::GenericReaderError(-1))?;
@@ -188,13 +203,12 @@ pub fn load_android_simple<'a>(
 
     // Use the remaining load buffer for updating FDT.
     let (ramdisk_load_buffer, load) = load.split_at_mut(ramdisk_load_curr);
-    // libfdt requires FDT buffer to be 8-byte aligned.
-    let load = aligned_subslice(load, 8)?;
+    let load = aligned_subslice(load, FDT_ALIGNMENT)?;
     let mut fdt = Fdt::new_from_init(&mut load[..], fdt_bytes)?;
 
     // Add ramdisk range to FDT
-    let ramdisk_addr = ramdisk_load_buffer.as_ptr() as u64;
-    let ramdisk_end = ramdisk_addr + (ramdisk_load_buffer.len() as u64);
+    let ramdisk_addr: u64 = (ramdisk_load_buffer.as_ptr() as usize).try_into().unwrap();
+    let ramdisk_end: u64 = ramdisk_addr + u64::try_from(ramdisk_load_buffer.len()).unwrap();
     fdt.set_property(
         "chosen",
         CStr::from_bytes_with_nul(b"linux,initrd-start\0").unwrap(),
@@ -231,9 +245,23 @@ pub fn load_android_simple<'a>(
     // Finalize FDT to actual used size.
     fdt.shrink_to_fit()?;
 
+    // Move the kernel backward as much as possible to preserve more space after it. This is
+    // necessary in case the input buffer is at the end of address space.
+    let kernel_tail_buffer_size = kernel_tail_buffer.len();
+    let ramdisk_load_buffer_size = ramdisk_load_buffer.len();
     let fdt_len = fdt.header_ref()?.actual_size();
-    let (fdt_load_buffer, remains) = load.split_at_mut(fdt_len);
-    Ok((kernel_load_buffer, ramdisk_load_buffer, fdt_load_buffer, remains))
+    // Split out the ramdisk.
+    let (ramdisk, remains) = images_buffer.split_at_mut(ramdisk_load_buffer_size);
+    // Split out the fdt.
+    let (fdt, kernel) = aligned_subslice(remains, FDT_ALIGNMENT)?.split_at_mut(fdt_len);
+    // Move the kernel forward as much as possible.
+    let kernel = aligned_subslice(kernel, KERNEL_ALIGNMENT)?;
+    let kernel_start = kernel.len().checked_sub(kernel_tail_buffer_size).unwrap();
+    kernel.copy_within(kernel_start..kernel_start.checked_add(kernel_size).unwrap(), 0);
+    // Split out the remaining buffer.
+    let (kernel, remains) = kernel.split_at_mut(kernel_size);
+
+    Ok((ramdisk, fdt, kernel, remains))
 }
 
 // The following implements a demo for booting Android from disk. It can be run from
@@ -255,7 +283,7 @@ pub fn android_boot_demo(entry: EfiEntry) -> Result<()> {
     // Allocate buffer for load.
     let mut load_buffer = vec![0u8; 128 * 1024 * 1024]; // 128MB
 
-    let (kernel, ramdisk, fdt, remains) = load_android_simple(&entry, &mut load_buffer[..])?;
+    let (ramdisk, fdt, kernel, remains) = load_android_simple(&entry, &mut load_buffer[..])?;
 
     efi_print!(
         &entry,
