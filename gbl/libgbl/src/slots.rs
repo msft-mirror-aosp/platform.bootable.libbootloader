@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+/// Export the default implementation
+pub mod fuchsia;
+
 /// A type safe container for describing the number of retries a slot has left
 /// before it becomes unbootable.
 /// Slot tries can only be compared to, assigned to, or assigned from other
@@ -246,7 +249,7 @@ impl<'a> Iterator for SlotIterator<'a> {
 ///
 /// if let Some(Continue(oneshot_target)) = manager.get_oneshot_status() {
 ///     let regular_target = manager.get_boot_target();
-///     if regular_target == oneshot_target() {
+///     if regular_target == oneshot_target {
 ///         println!("The oneshot and regular boot targets are equal");
 ///     } else {
 ///         println!("The oneshot and regular boot targets are NOT equal, which is VALID");
@@ -285,7 +288,7 @@ pub trait Manager: private::SlotGet {
     /// the slot last set active cannot be Recovery.
     fn get_slot_last_set_active(&self) -> Slot;
 
-    /// Given a slot suffix, updates internal metadata (usually the retry count)
+    /// Given a boot target, updates internal metadata (usually the retry count)
     /// indicating that the system will have tried to boot the slot.
     /// Returns Ok(BootToken) on success to verify that boot attempt metadata has been updated.
     /// The token must be consumed by `kernel_jump`.
@@ -297,7 +300,11 @@ pub trait Manager: private::SlotGet {
     /// Note: mark_boot_attempt is NOT idempotent.
     /// It is intended to be called EXACTLY once,
     /// right before jumping into the kernel.
-    fn mark_boot_attempt(&mut self, slot_suffix: Suffix) -> Result<BootToken, Error>;
+    ///
+    /// Note: mark_boot_attempt takes a BootTarget to facilitate generating
+    /// the boot token when booting to recovery. If the boot target is recovery,
+    /// then implementations SHOULD NOT update internal metadata.
+    fn mark_boot_attempt(&mut self, boot_target: BootTarget) -> Result<BootToken, Error>;
 
     /// Attempts to set the active slot.
     ///
