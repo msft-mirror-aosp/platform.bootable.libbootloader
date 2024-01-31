@@ -26,6 +26,8 @@ use alloc::ffi::CString;
 use avb::{IoError, Ops, PublicKeyForPartitionInfo};
 use core::{ffi::CStr, fmt::Debug, ptr::NonNull};
 
+use super::slots;
+
 /// TODO: b/312607649 - Placeholder. Use result type from `avb` when it is stable and public
 pub type AvbResult<T> = core::result::Result<T, IoError>;
 
@@ -55,15 +57,19 @@ pub trait GblOps<D: Digest, C: Context<D>>: Ops + Debug {
         ctx.update(data);
         ctx.finish()
     }
+
     /// Callback for when fastboot mode is requested.
     // Nevertype could be used here when it is stable https://github.com/serde-rs/serde/issues/812
-    fn do_fastboot(&self) -> Result<()> {
+    fn do_fastboot(&self, cursor: &slots::Cursor) -> Result<()> {
         Err(Error::NotImplemented)
     }
 
     /// TODO: b/312607649 - placeholder interface for Gbl specific callbacks that uses alloc.
     #[cfg(feature = "alloc")]
     fn gbl_alloc_extra_action(&mut self, s: &str) -> Result<()>;
+
+    /// Load and initialize a slot manager and return a cursor over the manager on success.
+    fn load_slot_interface(&mut self, boot_token: slots::BootToken) -> Result<slots::Cursor>;
 }
 
 /// Default [GblOps] implementation that returns errors and does nothing.
@@ -112,6 +118,10 @@ where
     D: Digest,
     C: Context<D>,
 {
+    fn load_slot_interface(&mut self, boot_token: slots::BootToken) -> Result<slots::Cursor> {
+        Err(Error::OperationProhibited)
+    }
+
     #[cfg(feature = "alloc")]
     fn gbl_alloc_extra_action(&mut self, s: &str) -> Result<()> {
         let _c_string = CString::new(s);
