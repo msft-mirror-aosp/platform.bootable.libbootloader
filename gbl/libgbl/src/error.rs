@@ -28,6 +28,8 @@ pub enum Error {
     MissingImage,
     /// Functionality is not implemented
     NotImplemented,
+    /// Some combination of parameters and global state prohibits the operation
+    OperationProhibited,
 }
 
 // Unfortunately thiserror is not available in `no_std` world.
@@ -38,6 +40,7 @@ impl Display for Error {
             Error::Error => "Generic error",
             Error::MissingImage => "Missing image required to boot system",
             Error::NotImplemented => "Functionality is not implemented",
+            Error::OperationProhibited => "Operation is prohibited",
         };
         write!(f, "{str}")
     }
