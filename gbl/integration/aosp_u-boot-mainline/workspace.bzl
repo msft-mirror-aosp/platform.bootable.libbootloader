@@ -109,6 +109,18 @@ cc_library(
         build_file = "@gbl//libboot/aarch64_cache_helper:BUILD.arm_trusted_firmware.bazel",
     )
 
+    native.new_local_repository(
+        name = "avb",
+        path = "external/avb",
+        build_file = "@gbl//libavb:BUILD.avb.bazel",
+    )
+
+    native.new_local_repository(
+        name = "uuid",
+        path = "external/rust/crates/uuid",
+        build_file = "@gbl//android_external_rust_crates:BUILD.uuid.bazel",
+    )
+
     # Following are third party rust crates dependencies.
 
     THIRD_PARTY_CRATES = [
