@@ -33,9 +33,9 @@ extern crate lazy_static;
 extern crate spin;
 extern crate zbi;
 
-use core::fmt::{Debug, Display, Formatter};
+use core::fmt::Debug;
 use lazy_static::lazy_static;
-use spin::Mutex;
+use spin::{Mutex, MutexGuard};
 
 pub mod boot_mode;
 pub mod boot_reason;
@@ -46,6 +46,8 @@ pub mod ops;
 /// The 'slots' module, containing types and traits for
 /// querying and modifying slotted boot behavior.
 pub mod slots;
+
+use slots::{BootTarget, BootToken, Cursor, OneShot};
 
 #[cfg(feature = "sw_digest")]
 pub mod sw_digest;
@@ -164,27 +166,6 @@ pub fn get_images<'a: 'b, 'b: 'c, 'c>(
     (boot_image, init_boot_image, vendor_boot_image, partitions_ram_map)
 }
 
-// TODO: b/312607649 - Boot slot placeholder
-#[derive(Debug, PartialEq)]
-#[repr(u32)]
-/// Boot slots used by ABR model
-pub enum BootSlot {
-    /// '_a'
-    A = 0,
-    /// '_b'
-    B = 1,
-}
-
-impl Display for BootSlot {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        let str = match self {
-            BootSlot::A => "a",
-            BootSlot::B => "b",
-        };
-        write!(f, "{str}")
-    }
-}
-
 // TODO: b/312608785 - helper function that would track slices don't overlap
 // [core::slice::from_raw_parts_mut] is not stable for `const` so we have to use `lazy_static` for
 // initialization of constants.
@@ -225,12 +206,13 @@ lazy_static! {
     };
 }
 
+static BOOT_TOKEN: Mutex<Option<BootToken>> = Mutex::new(Some(BootToken(())));
+
 #[derive(Debug)]
 /// GBL object that provides implementation of helpers for boot process.
 pub struct Gbl<'a, D, C> {
     ops: &'a mut dyn GblOps<D, C>,
     image_verification: bool,
-    boot_token: Option<slots::BootToken>,
 }
 
 impl<'a, D, C> Gbl<'a, D, C>
@@ -242,14 +224,14 @@ where
     where
         'b: 'a,
     {
-        Gbl { ops, image_verification: true, boot_token: Some(slots::BootToken(())) }
+        Gbl { ops, image_verification: true }
     }
 
     fn new_no_verification<'b>(ops: &'b mut impl GblOps<D, C>) -> Gbl<'a, D, C>
     where
         'b: 'a,
     {
-        Gbl { ops, image_verification: false, boot_token: Some(slots::BootToken(())) }
+        Gbl { ops, image_verification: false }
     }
 }
 
@@ -258,36 +240,6 @@ where
     D: Digest,
     C: Context<D>,
 {
-    /// Get Boot Mode
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(())` - on success
-    /// * `Err(Error)` - on failure
-    pub fn get_boot_mode(&self) -> Result<BootMode> {
-        unimplemented!();
-    }
-
-    /// Reset Boot Mode (strictly reset generic android struct - not vendor specific)
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(())` - on success
-    /// * `Err(Error)` - on failure
-    pub fn reset_boot_mode(&mut self) -> Result<()> {
-        unimplemented!();
-    }
-
-    /// Get Boot Slot
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(&str)` - Slot Suffix as [BootSolt] enum
-    /// * `Err(Error)` - on failure
-    pub fn get_boot_slot(&self) -> Result<BootSlot> {
-        unimplemented!();
-    }
-
     /// Verify + Load Image Into memory
     ///
     /// Load from disk, validate with AVB
@@ -295,7 +247,7 @@ where
     /// # Arguments
     ///   * `partitions_ram_map` - Partitions to verify with optional address to load image to.
     ///   * `avb_verification_flags` - AVB verification flags/options
-    ///   * `boot_slot` - Optional Boot Slot
+    ///   * `boot_target` - [Optional] Boot Target
     ///
     /// # Returns
     ///
@@ -306,7 +258,7 @@ where
         &self,
         partitions_ram_map: &mut [PartitionRamMap],
         avb_verification_flags: AvbVerificationFlags,
-        boot_slot: Option<&BootSlot>,
+        boot_target: Option<BootTarget>,
     ) -> Result<&'b mut [AvbDescriptor]>
     where
         'a: 'b,
@@ -319,6 +271,20 @@ where
         unimplemented!("partition loading and verification");
     }
 
+    /// Load Slot Manager Interface
+    ///
+    /// The default implementation loads from the `durable_boot` partition
+    /// and writes changes back on the destruction of the cursor.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Cursor)` - Cursor object that manages a Manager
+    /// * `Err(Error)` - on failure
+    pub fn load_slot_interface(&mut self) -> Result<Cursor> {
+        let boot_token = BOOT_TOKEN.lock().take().ok_or(Error::OperationProhibited)?;
+        self.ops.load_slot_interface(boot_token).map_err(|_| Error::OperationProhibited)
+    }
+
     /// Info Load
     ///
     /// Unpack boot image in RAM
@@ -326,7 +292,7 @@ where
     /// # Arguments
     ///   * `boot_image_buffer` - Buffer that contains (Optionally Verified) Boot Image
     ///   * `boot_mode` - Boot Mode
-    ///   * `boot_slot` - [Optional] Boot Slot
+    ///   * `boot_target` - [Optional] Boot Target
     ///
     /// # Returns
     ///
@@ -336,8 +302,7 @@ where
     pub fn unpack_boot_image(
         &self,
         boot_image_buffer: &BootImage,
-        boot_mode: &BootMode,
-        boot_slot: Option<&BootSlot>,
+        boot_target: Option<BootTarget>,
     ) -> Result<InfoStruct> {
         unimplemented!();
     }
@@ -388,7 +353,7 @@ where
         info: &InfoStruct,
         vendor_boot_image: &VendorBootImage,
         init_boot_image: &InitBootImage,
-        ramdisk_load_buffer: &mut [u8],
+        ramdisk: &mut Ramdisk,
         bootconfig_load_buffer: &mut [u8],
     ) -> Result<&'static str> {
         unimplemented!();
@@ -422,6 +387,7 @@ where
     ///   * `ramdisk_bootconfi_load_buffer` - Concatenated Ramdisk, (Bootconfig if present) Load
     ///   buffer
     ///   * `dtb_load_buffer` - DTB Load buffer
+    ///   * `boot_token` - Consumable boot token
     ///
     /// # Returns
     ///
@@ -433,6 +399,7 @@ where
         kernel_load_buffer: KernelImage,
         ramdisk_load_buffer: Ramdisk,
         dtb_load_buffer: Dtb,
+        boot_token: BootToken,
     ) -> Result<()> {
         unimplemented!();
     }
@@ -445,6 +412,7 @@ where
     /// # Arguments
     ///   * `partitions_ram_map` - Partitions to verify and optional address for them to be loaded.
     ///   * `avb_verification_flags` - AVB verification flags/options
+    ///   * `slot_cursor` - Cursor object that manages interactions with boot slot management
     ///
     /// # Returns
     ///
@@ -455,30 +423,60 @@ where
         &mut self,
         partitions_ram_map: &'d mut [PartitionRamMap<'b, 'c>],
         avb_verification_flags: AvbVerificationFlags,
+        slot_cursor: Cursor,
     ) -> Result<()> {
-        let mut boot_mode = self.get_boot_mode()?;
-        self.reset_boot_mode()?;
+        // TODO(dovs):
+        // * Change the receiver of ops.load_slot_interface to be &mut self
+        // * Add partition write capabilites to slot manager
+        let mut dtb_load_buffer = DTB.lock();
+        let dtb = Dtb(&mut dtb_load_buffer);
+        let mut ramdisk_load_buffer = RAMDISK.lock();
+        let mut kernel_load_buffer = KERNEL_IMAGE.lock();
+        let mut ramdisk = Ramdisk(&mut ramdisk_load_buffer);
 
-        // Handle fastboot mode
-        if boot_mode == BootMode::Bootloader {
-            let res = self.ops.do_fastboot();
-            match res {
-                // After `fastboot continue` we need to requery mode and continue usual process.
-                Ok(_) => {
-                    boot_mode = self.get_boot_mode()?;
-                }
-                // Fastboot is not available so we try continue
+        // Call the inner method which consumes the cursor
+        // in order to properly manager cursor lifetime
+        // and cleanup.
+        let (kernel_image, token) = self.lvb_inner(
+            &mut ramdisk,
+            &mut kernel_load_buffer,
+            partitions_ram_map,
+            avb_verification_flags,
+            slot_cursor,
+        )?;
+
+        self.kernel_jump(kernel_image, ramdisk, dtb, token)
+    }
+
+    fn lvb_inner<'b: 'c, 'c, 'd: 'b>(
+        &self,
+        ramdisk: &mut Ramdisk,
+        kernel_load_buffer: &mut MutexGuard<&'static mut [u8]>,
+        partitions_ram_map: &'d mut [PartitionRamMap<'b, 'c>],
+        avb_verification_flags: AvbVerificationFlags,
+        slot_cursor: Cursor,
+    ) -> Result<(KernelImage, BootToken)> {
+        let mut oneshot_status = slot_cursor.ctx.get_oneshot_status();
+        slot_cursor.ctx.clear_oneshot_status();
+
+        if oneshot_status == Some(OneShot::Bootloader) {
+            match self.ops.do_fastboot(&slot_cursor) {
+                Ok(_) => oneshot_status = slot_cursor.ctx.get_oneshot_status(),
                 Err(Error::NotImplemented) => (),
-                // Fail on any other error
                 Err(e) => return Err(e),
             }
         }
 
-        let boot_slot = self.get_boot_slot()?;
+        let boot_target = match oneshot_status {
+            None | Some(OneShot::Bootloader) => slot_cursor.ctx.get_boot_target(),
+            Some(OneShot::Continue(target)) => target,
+        };
+
+        // TODO b/312608785: handle the failure by marking a failed boot attempt
         let avb_descriptors = self.load_and_verify_image(
             partitions_ram_map,
             AvbVerificationFlags(0),
-            Some(&boot_slot),
+            Some(boot_target),
         )?;
 
         let (boot_image, init_boot_image, vendor_boot_image, _) =
@@ -487,27 +485,27 @@ where
         let vendor_boot_image = vendor_boot_image.ok_or(Error::MissingImage)?;
         let init_boot_image = init_boot_image.ok_or(Error::MissingImage)?;
 
-        let info_struct = self.unpack_boot_image(&boot_image, &boot_mode, Some(&boot_slot))?;
+        let info_struct = self.unpack_boot_image(&boot_image, Some(boot_target))?;
 
-        let mut kernel_load_buffer = KERNEL_IMAGE.lock();
-        let kernel_image = self.kernel_load(&info_struct, boot_image, &mut kernel_load_buffer)?;
+        let kernel_image = self.kernel_load(&info_struct, boot_image, kernel_load_buffer)?;
 
-        let mut ramdisk_load_buffer = RAMDISK.lock();
         let mut bootconfig_load_buffer = BOOTCONFIG.lock();
         let cmd_line = self.ramdisk_bootconfig_load(
             &info_struct,
             &vendor_boot_image,
             &init_boot_image,
-            &mut ramdisk_load_buffer,
+            ramdisk,
             &mut bootconfig_load_buffer,
         )?;
 
         self.dtb_update_and_load(&info_struct, vendor_boot_image)?;
 
-        let mut dtb_load_buffer = DTB.lock();
-        let dtb = Dtb(&mut dtb_load_buffer);
-        let ramdisk = Ramdisk(&mut ramdisk_load_buffer);
-        self.kernel_jump(kernel_image, ramdisk, dtb)
+        let token = slot_cursor
+            .ctx
+            .mark_boot_attempt(boot_target)
+            .map_err(|_| Error::OperationProhibited)?;
+
+        Ok((kernel_image, token))
     }
 }
 

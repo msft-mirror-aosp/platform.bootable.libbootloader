@@ -20,10 +20,32 @@ rust_defaults {
     name: "libgbl_defaults",
     srcs: ["src/lib.rs"],
     rustlibs: [
+        "libavb_rs",
         "libbitflags",
+        "libcrc32fast",
+        "liblazy_static",
+        "libring",
+        "libspin",
         "libstatic_assertions",
+        "libzbi",
+        "libzerocopy",
         // "sw_digest",
     ],
+}
+
+rust_defaults {
+    name: "libgbl_defaults_nostd",
+    srcs: ["src/lib.rs"],
+    rlibs: [
+        "libavb_rs_nostd",
+        "libcrc32fast",
+        "liblazy_static_nostd",
+        "libring_nostd",
+        "libspin_nostd",
+        "libzbi_nostd",
+        "libzerocopy_nostd",
+    ],
+    no_stdlibs: true,
 }
 
 // GBL Rust library.
@@ -32,16 +54,6 @@ rust_library {
     host_supported: true,
     crate_name: "gbl",
     defaults: ["libgbl_defaults"],
-    rustlibs: [
-        "libzbi",
-        "libavb_rs",
-        "libring",
-        "libspin",
-        "libzbi",
-        "libzerocopy",
-        "libcrc32fast",
-        "liblazy_static",
-    ],
 }
 
 // Defining rlib here because we want to build with [no_std], but
@@ -51,18 +63,7 @@ rust_library {
 rust_library_rlib {
     name: "libgbl_nostd",
     crate_name: "gbl",
-    defaults: ["libgbl_defaults"],
-    rlibs: [
-        "libzbi_nostd",
-        "libavb_rs_nostd",
-        "libring_nostd",
-        "libspin_nostd",
-        "libzbi_nostd",
-        "libzerocopy_nostd",
-        "libcrc32fast",
-        "liblazy_static_nostd",
-    ],
-    no_stdlibs: true,
+    defaults: ["libgbl_defaults_nostd"],
     prefer_rlib: true,
 }
 
@@ -71,14 +72,18 @@ rust_defaults {
     name: "libgbl_test_defaults",
     defaults: ["libgbl_defaults"],
     rustlibs: [
-        "libzbi",
-        "libavb_rs",
-        "libitertools",
-        "libring",
         "libhex",
+        "libitertools",
+        "libavb_rs",
+        "libbitflags",
+        "libcrc32fast",
+        "liblazy_static",
+        "libring",
         "libspin",
         "libstatic_assertions",
-        "liblazy_static",
+        "libzbi",
+        "libzerocopy",
+
     ],
     features: ["alloc"],
 }
@@ -90,13 +95,8 @@ rust_test {
 }
 
 rust_test_host {
-    name: "libgbl_slot_test",
-    srcs: ["src/fuchsia.rs"],
-    rustlibs: [
-        "libzbi",
-        "libcrc32fast",
-        "libzerocopy",
-    ],
+    name: "libgbl_unit_tests",
+    defaults: ["libgbl_test_defaults"],
 }
 
 // Test building with libgbl in a [no_std] environment.
@@ -108,8 +108,8 @@ rust_binary {
     name: "libgbl_test_nostd",
     srcs: ["tests/nostd.rs"],
     rustlibs: [
-        "libgbl_nostd",
         "libbuddy_system_allocator",
+        "libgbl_nostd",
         "liblazy_static_nostd",
     ],
     // panic=abort to satisfy the eh_personality compile requirement.
