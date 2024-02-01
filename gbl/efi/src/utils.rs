@@ -15,17 +15,14 @@
 use alloc::vec::Vec;
 use core::ffi::CStr;
 
-use boot::BootError;
-use bootconfig::BootConfigError;
-use bootimg::ImageError;
+use crate::error::{EfiAppError, Result};
 use efi::defs::EfiGuid;
 use efi::{
     BlockIoProtocol, DeviceHandle, DevicePathProtocol, DevicePathText, DevicePathToTextProtocol,
-    EfiEntry, EfiError, LoadedImageProtocol, Protocol,
+    EfiEntry, LoadedImageProtocol, Protocol,
 };
-use fdt::{FdtError, FdtHeader};
-use gbl_storage::{required_scratch_size, BlockDevice, Gpt, GptEntry, StorageError};
-use libzbi::ZbiError;
+use fdt::FdtHeader;
+use gbl_storage::{required_scratch_size, BlockDevice, Gpt, GptEntry};
 
 pub const EFI_DTB_TABLE_GUID: EfiGuid =
     EfiGuid::new(0xb1b621d5, 0xf19c, 0x41a5, [0x83, 0x0b, 0xd9, 0x15, 0x2c, 0x69, 0xaa, 0xe0]);
@@ -37,84 +34,6 @@ macro_rules! efi_print {
     ( $efi_entry:expr, $( $x:expr ),* ) => {
         write!($efi_entry.system_table().con_out().unwrap(), $($x,)*).unwrap()
     };
-}
-
-/// GBL EFI application error type.
-pub type Result<T> = core::result::Result<T, GblEfiError>;
-
-/// Error type for EFI application.
-#[derive(Debug)]
-pub enum EfiAppError {
-    ArithmeticOverflow,
-    BufferAlignment,
-    BufferTooSmall,
-    InvalidInput,
-    InvalidString,
-    NoFdt,
-    NotFound,
-    NoZbiImage,
-    Unsupported,
-}
-
-/// A top level error type that consolidates errors from different libraries.
-#[derive(Debug)]
-pub enum GblEfiError {
-    BootConfigError(BootConfigError),
-    BootError(BootError),
-    EfiAppError(EfiAppError),
-    EfiError(EfiError),
-    FdtError(FdtError),
-    ImageError(ImageError),
-    StorageError(StorageError),
-    ZbiError(ZbiError),
-}
-
-impl From<BootConfigError> for GblEfiError {
-    fn from(error: BootConfigError) -> GblEfiError {
-        GblEfiError::BootConfigError(error)
-    }
-}
-
-impl From<BootError> for GblEfiError {
-    fn from(error: BootError) -> GblEfiError {
-        GblEfiError::BootError(error)
-    }
-}
-
-impl From<EfiAppError> for GblEfiError {
-    fn from(error: EfiAppError) -> GblEfiError {
-        GblEfiError::EfiAppError(error)
-    }
-}
-
-impl From<EfiError> for GblEfiError {
-    fn from(error: EfiError) -> GblEfiError {
-        GblEfiError::EfiError(error)
-    }
-}
-
-impl From<FdtError> for GblEfiError {
-    fn from(error: FdtError) -> GblEfiError {
-        GblEfiError::FdtError(error)
-    }
-}
-
-impl From<ImageError> for GblEfiError {
-    fn from(error: ImageError) -> GblEfiError {
-        GblEfiError::ImageError(error)
-    }
-}
-
-impl From<StorageError> for GblEfiError {
-    fn from(error: StorageError) -> GblEfiError {
-        GblEfiError::StorageError(error)
-    }
-}
-
-impl From<ZbiError> for GblEfiError {
-    fn from(error: ZbiError) -> GblEfiError {
-        GblEfiError::ZbiError(error)
-    }
 }
 
 /// Checks and converts an integer into usize
@@ -253,7 +172,7 @@ impl<'a> MultiGptDevices<'a> {
     }
 
     /// Find a partition on the first match.
-    fn find_partition(&mut self, part: &str) -> Result<(usize, GptEntry)> {
+    pub fn find_partition(&mut self, part: &str) -> Result<(usize, GptEntry)> {
         for (idx, device) in &mut self.gpt_devices[..].iter_mut().enumerate() {
             match device.gpt()?.find_partition(part)? {
                 Some(p) => {
@@ -266,7 +185,7 @@ impl<'a> MultiGptDevices<'a> {
     }
 
     /// Finds a partition given by a set of possible aliases on the first match.
-    fn find_partition_with_aliases(&mut self, aliases: &[&str]) -> Result<(usize, GptEntry)> {
+    pub fn find_partition_with_aliases(&mut self, aliases: &[&str]) -> Result<(usize, GptEntry)> {
         for alias in aliases {
             match self.find_partition(alias) {
                 Ok(v) => return Ok(v),
