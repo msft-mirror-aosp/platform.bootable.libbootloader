@@ -187,7 +187,13 @@ toolchain(
 # x86_32 UEFI targets
 gbl_clang_cc_toolchain(
     name = "x86_32_uefi_clang_cc_toolchain",
-    cc_flags = cc_flags_common,
+    cc_flags = cc_flags_common + [
+        "-m32",
+        # Adding this prevents the compiler from generating mmx, sse instructions such as
+        # "movsd (%esp),%xmm0" which likely isn't enabled during the bootloader stage and causes
+        # crash as a result.
+        "-march=i686",
+    ],
     target_cpu = "x86_32",
     target_system_triple = "i686-unknown-windows-gnu",
 )

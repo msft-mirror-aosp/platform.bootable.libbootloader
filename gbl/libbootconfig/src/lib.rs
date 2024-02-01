@@ -140,9 +140,23 @@ impl core::fmt::Display for BootConfigBuilder<'_> {
     }
 }
 
+impl core::fmt::Write for BootConfigBuilder<'_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.add_with(|out| {
+            out.get_mut(..s.len())
+                .ok_or(BootConfigError::BufferTooSmall)?
+                .clone_from_slice(s.as_bytes());
+            Ok(s.len())
+        })
+        .map_err(|_| core::fmt::Error)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+    use core::fmt::Write;
 
     // Taken from Cuttlefish on QEMU aarch64.
     const TEST_CONFIG: &str = "androidboot.hardware=cutf_cvm
@@ -211,7 +225,20 @@ androidboot.verifiedbootstate=orange
         let mut builder = BootConfigBuilder::new(&mut buffer[..]).unwrap();
         for ele in TEST_CONFIG.strip_suffix('\n').unwrap().split('\n') {
             let config = std::string::String::from(ele) + "\n";
-            builder.add(config.as_str()).unwrap()
+            builder.add(config.as_str()).unwrap();
+        }
+        assert_eq!(
+            builder.config_bytes().to_vec(),
+            [TEST_CONFIG.as_bytes(), TEST_CONFIG_TRAILER].concat().to_vec()
+        );
+    }
+
+    #[test]
+    fn test_add_incremental_via_fmt_write() {
+        let mut buffer = [0u8; TEST_CONFIG.len() + TEST_CONFIG_TRAILER.len()];
+        let mut builder = BootConfigBuilder::new(&mut buffer[..]).unwrap();
+        for ele in TEST_CONFIG.strip_suffix('\n').unwrap().split('\n') {
+            write!(builder, "{}\n", ele).unwrap();
         }
         assert_eq!(
             builder.config_bytes().to_vec(),
