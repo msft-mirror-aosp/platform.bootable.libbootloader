@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::utils::{aligned_subslice, find_gpt_devices, get_efi_fdt, usize_add, EfiAppError};
-use crate::Result;
+use crate::error::{EfiAppError, Result};
+use crate::utils::{aligned_subslice, find_gpt_devices, get_efi_fdt, usize_add};
 use core::fmt::Write;
 use core::mem::size_of;
 use efi::EfiEntry;

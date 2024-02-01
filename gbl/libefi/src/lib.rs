@@ -64,6 +64,9 @@ use defs::*;
 #[cfg(not(test))]
 mod allocation;
 
+#[cfg(not(test))]
+pub use allocation::{efi_free, efi_malloc};
+
 mod protocol;
 // Protocol type and implementation to export.
 pub use protocol::BlockIoProtocol;
