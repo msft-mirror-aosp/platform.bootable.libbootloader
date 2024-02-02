@@ -64,6 +64,9 @@ use defs::*;
 #[cfg(not(test))]
 mod allocation;
 
+#[cfg(not(test))]
+pub use allocation::{efi_free, efi_malloc};
+
 mod protocol;
 // Protocol type and implementation to export.
 pub use protocol::BlockIoProtocol;
@@ -160,6 +163,17 @@ pub unsafe fn initialize(
     Ok(efi_entry)
 }
 
+/// A helper for getting a subslice with an aligned address.
+pub fn aligned_subslice(buffer: &mut [u8], alignment: usize) -> Option<&mut [u8]> {
+    let addr = buffer.as_ptr() as usize;
+    let aligned_offset = addr
+        .checked_add(alignment - 1)?
+        .checked_div(alignment)?
+        .checked_mul(alignment)?
+        .checked_sub(addr)?;
+    buffer.get_mut(aligned_offset..)
+}
+
 /// Exits boot service and returns the memory map in the given buffer.
 ///
 /// The API takes ownership of the given `entry` and causes it to go out of scope.
@@ -169,7 +183,10 @@ pub unsafe fn initialize(
 /// Existing heap allocated memories will maintain their states. All system memory including them
 /// will be under onwership of the subsequent OS or OS loader code.
 pub fn exit_boot_services(entry: EfiEntry, mmap_buffer: &mut [u8]) -> EfiResult<EfiMemoryMap> {
-    let res = entry.system_table().boot_services().get_memory_map(mmap_buffer)?;
+    let aligned = aligned_subslice(mmap_buffer, core::mem::align_of::<EfiMemoryDescriptor>())
+        .ok_or_else::<EfiError, _>(|| EFI_STATUS_BUFFER_TOO_SMALL.into())?;
+
+    let res = entry.system_table().boot_services().get_memory_map(aligned)?;
     entry.system_table().boot_services().exit_boot_services(&res)?;
     // SAFETY:
     // At this point, UEFI has successfully exited boot services and no event/notification can be
@@ -501,6 +518,8 @@ mod test {
     use std::collections::VecDeque;
     use std::mem::size_of;
     use std::slice::from_raw_parts_mut;
+
+    use zerocopy::AsBytes;
 
     /// A structure to store the traces of arguments/outputs for EFI methods.
     #[derive(Default)]
@@ -979,6 +998,56 @@ mod test {
             // Validate that the returned `EfiMemoryMap` has the correct map_key.
             assert_eq!(desc.map_key(), map_key);
         })
+    }
+
+    #[test]
+    fn test_exit_boot_services_unaligned_buffer() {
+        run_test(|image_handle, systab_ptr| {
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+            // Create a buffer for 2 EfiMemoryDescriptor.
+            let descriptors: [EfiMemoryDescriptor; 2] = [
+                EfiMemoryDescriptor {
+                    memory_type: EFI_MEMORY_TYPE_LOADER_DATA,
+                    padding: 0,
+                    physical_start: 0,
+                    virtual_start: 0,
+                    number_of_pages: 0,
+                    attributes: 0,
+                },
+                EfiMemoryDescriptor {
+                    memory_type: EFI_MEMORY_TYPE_LOADER_CODE,
+                    padding: 0,
+                    physical_start: 0,
+                    virtual_start: 0,
+                    number_of_pages: 0,
+                    attributes: 0,
+                },
+            ];
+
+            let map_key: usize = 12345;
+            // Set up get_memory_map trace.
+            EFI_CALL_TRACES.with(|traces| {
+                traces.borrow_mut().get_memory_map_trace.outputs =
+                    VecDeque::from([(map_key, 2 * size_of::<EfiMemoryDescriptor>())]);
+            });
+
+            // Construct the destination buffer.
+            let mut buffer = [0u8; 256];
+            let alignment = core::mem::align_of::<EfiMemoryDescriptor>();
+            let size = core::mem::size_of::<EfiMemoryDescriptor>();
+            let aligned = aligned_subslice(&mut buffer[..], alignment).unwrap();
+            // Offset by 1 element so that we can make an unaligned buffer starting somewhere in
+            // between.
+            let start = aligned.get_mut(size..).unwrap();
+            start[..size].clone_from_slice(descriptors[0].as_bytes());
+            start[size..][..size].clone_from_slice(descriptors[1].as_bytes());
+            // Pass an unaligned address.
+            let desc = super::exit_boot_services(efi_entry, &mut aligned[size - 1..]).unwrap();
+            // Validate that the returned `EfiMemoryMap` contains the correct EfiMemoryDescriptor.
+            assert_eq!(desc.into_iter().map(|v| *v).collect::<Vec<_>>(), descriptors[..2].to_vec());
+            // Validate that the returned `EfiMemoryMap` has the correct map_key.
+            assert_eq!(desc.map_key(), map_key);
+        });
     }
 
     #[test]

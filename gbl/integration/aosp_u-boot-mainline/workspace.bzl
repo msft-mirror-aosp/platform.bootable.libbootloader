@@ -17,6 +17,7 @@ This file contains rules and logic for setting up GBL workspace dependencies in 
 u-boot-mainline branch.
 """
 
+load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
 load("@gbl//toolchain:gbl_workspace_util.bzl", "android_rust_prebuilts", "gbl_llvm_prebuilts")
 load("@kernel_toolchain_info//:dict.bzl", "CLANG_VERSION")
 
@@ -29,12 +30,14 @@ def define_gbl_workspace(name = None):
     Args:
         name (String): Placeholder for buildifier check.
     """
-    native.local_repository(
+    maybe(
+        repo_rule = native.local_repository,
         name = "rules_rust",
         path = "external/bazelbuild-rules_rust",
     )
 
-    native.local_repository(
+    maybe(
+        repo_rule = native.local_repository,
         name = "rules_license",
         path = "external/bazelbuild-rules_license",
     )
@@ -104,6 +107,18 @@ cc_library(
         name = "arm_trusted_firmware",
         path = "external/arm-trusted-firmware",
         build_file = "@gbl//libboot/aarch64_cache_helper:BUILD.arm_trusted_firmware.bazel",
+    )
+
+    native.new_local_repository(
+        name = "avb",
+        path = "external/avb",
+        build_file = "@gbl//libavb:BUILD.avb.bazel",
+    )
+
+    native.new_local_repository(
+        name = "uuid",
+        path = "external/rust/crates/uuid",
+        build_file = "@gbl//android_external_rust_crates:BUILD.uuid.bazel",
     )
 
     # Following are third party rust crates dependencies.

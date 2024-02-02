@@ -21,17 +21,31 @@
 #![no_main]
 #![no_std]
 
-use core::panic::PanicInfo;
+// use core::panic::PanicInfo;
 
 use gbl as _;
 
-#[panic_handler]
-fn panic(_: &PanicInfo) -> ! {
-    loop {}
-}
+use buddy_system_allocator::LockedHeap;
+
+// Providing allocator to satisfy AVB dependency
+#[global_allocator]
+static HEAP_ALLOCATOR: LockedHeap<32> = LockedHeap::<32>::new();
+
+static mut HEAP: [u8; 65536] = [0; 65536];
+
+// #[panic_handler]
+// fn panic(_: &PanicInfo) -> ! {
+//     loop {}
+// }
 
 /// main() entry point replacement required by [no_std].
 #[no_mangle]
 pub fn main() -> ! {
+    // SAFETY: Safe because `HEAP` is only used here and `entry` is only called once.
+    unsafe {
+        // Give the allocator some memory to allocate.
+        HEAP_ALLOCATOR.lock().init(HEAP.as_mut_ptr() as usize, HEAP.len());
+    }
+
     panic!()
 }

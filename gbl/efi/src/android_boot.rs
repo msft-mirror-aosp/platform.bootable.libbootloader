@@ -18,30 +18,79 @@ use core::str::from_utf8;
 
 use bootconfig::{BootConfigBuilder, BootConfigError};
 use bootimg::{BootImage, VendorImageHeader};
-use efi::EfiEntry;
+use efi::{exit_boot_services, EfiEntry};
 use fdt::Fdt;
+use libavb_rust::Ops;
 
+use crate::error::{EfiAppError, GblEfiError, Result};
 use crate::utils::{
     aligned_subslice, cstr_bytes_to_str, find_gpt_devices, get_efi_fdt, usize_add, usize_roundup,
-    EfiAppError, GblEfiError, Result,
+    MultiGptDevices,
 };
+
+use crate::avb::GblEfiAvbOps;
+use libavb_rust::{slot_verify, HashtreeErrorMode, SlotVerifyFlags};
 
 // Linux kernel requires 2MB alignment.
 const KERNEL_ALIGNMENT: usize = 2 * 1024 * 1024;
+// libfdt requires FDT buffer to be 8-byte aligned.
+const FDT_ALIGNMENT: usize = 8;
+
+/// A helper macro for creating a null-terminated string literal as CStr.
+macro_rules! cstr_literal {
+    ( $( $x:expr ),* $(,)?) => {
+       CStr::from_bytes_until_nul(core::concat!($($x),*, "\0").as_bytes()).unwrap()
+    };
+}
+
+/// Helper function for performing libavb verification.
+fn avb_verify_slot<'a, 'b, 'c>(
+    gpt_dev: &'b mut MultiGptDevices<'a>,
+    kernel: &'b [u8],
+    vendor_boot: &'b [u8],
+    init_boot: &'b [u8],
+    bootconfig_builder: &'b mut BootConfigBuilder<'c>,
+) -> Result<()> {
+    let preloaded = [("boot", kernel), ("vendor_boot", vendor_boot), ("init_boot", init_boot)];
+    let mut avb_ops = GblEfiAvbOps::new(gpt_dev, Some(&preloaded));
+    let avb_state = match avb_ops.read_is_device_unlocked()? {
+        true => "orange",
+        _ => "green",
+    };
+
+    let res = slot_verify(
+        &mut avb_ops,
+        &[cstr_literal!("boot"), cstr_literal!("vendor_boot"), cstr_literal!("init_boot")],
+        Some(cstr_literal!("_a")),
+        SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_NONE,
+        // For demo, we use the same setting as Cuttlefish u-boot.
+        HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_RESTART_AND_INVALIDATE,
+    )
+    .map_err(|e| Into::<GblEfiError>::into(e.without_verify_data()))?;
+
+    // Append avb generated bootconfig.
+    for cmdline_arg in res.cmdline().to_str().unwrap().split(' ') {
+        write!(bootconfig_builder, "{}\n", cmdline_arg).map_err(|_| EfiAppError::BufferTooSmall)?;
+    }
+
+    // Append "androidboot.verifiedbootstate="
+    write!(bootconfig_builder, "androidboot.verifiedbootstate={}\n", avb_state)
+        .map_err(|_| EfiAppError::BufferTooSmall)?;
+    Ok(())
+}
 
 /// Loads Android images from disk and fixes up bootconfig, commandline, and FDT.
 ///
 /// A number of simplifications are made:
 ///
 ///   * No A/B slot switching is performed. It always boot from *_a slot.
-///   * No AVB is performed. Thus boot mode is recovery only.
 ///   * No dynamic partitions.
 ///   * Only support V3/V4 image and Android 13+ (generic ramdisk from the "init_boot" partition)
 ///
 /// # Returns
 ///
 /// Returns a tuple of 4 slices corresponding to:
-///   (kernel load buffer, ramdisk load buffer, FDT load buffer, unused buffer).
+///   (ramdisk load buffer, FDT load buffer, kernel load buffer, unused buffer).
 pub fn load_android_simple<'a>(
     efi_entry: &EfiEntry,
     load: &'a mut [u8],
@@ -101,18 +150,31 @@ pub fn load_android_simple<'a>(
     efi_print!(efi_entry, "init_boot image size: {}\n", generic_ramdisk_size);
 
     // Load and prepare various images.
+    let images_buffer = aligned_subslice(load, KERNEL_ALIGNMENT)?;
+    let load = &mut images_buffer[..];
 
     // Load kernel
-    let load = aligned_subslice(load, KERNEL_ALIGNMENT)?;
-    let (kernel_load_buffer, load) = load.split_at_mut(kernel_size);
-    gpt_devices.read_gpt_partition("boot_a", kernel_hdr_size as u64, kernel_load_buffer)?;
+    // Kernel may need to reserve additional memory after itself. To avoid the risk of this
+    // memory overlapping with ramdisk. We place kernel after ramdisk. We first load it to the tail
+    // of the buffer and move it forward as much as possible after ramdisk and fdt are loaded,
+    // fixed-up and finalized.
+    let kernel_load_offset = {
+        let off = load.len().checked_sub(kernel_size).ok_or_else(|| EfiAppError::BufferTooSmall)?;
+        off.checked_sub(load[off..].as_ptr() as usize % KERNEL_ALIGNMENT)
+            .ok_or_else(|| EfiAppError::BufferTooSmall)?
+    };
+    let (load, kernel_tail_buffer) = load.split_at_mut(kernel_load_offset);
+    gpt_devices.read_gpt_partition(
+        "boot_a",
+        kernel_hdr_size.try_into().unwrap(),
+        &mut kernel_tail_buffer[..kernel_size],
+    )?;
 
     // Load vendor ramdisk
-    let load = aligned_subslice(load, KERNEL_ALIGNMENT)?;
     let mut ramdisk_load_curr = 0;
     gpt_devices.read_gpt_partition(
         "vendor_boot_a",
-        vendor_hdr_size as u64,
+        vendor_hdr_size.try_into().unwrap(),
         &mut load[ramdisk_load_curr..][..vendor_ramdisk_size],
     )?;
     ramdisk_load_curr = usize_add(ramdisk_load_curr, vendor_ramdisk_size)?;
@@ -120,20 +182,30 @@ pub fn load_android_simple<'a>(
     // Load generic ramdisk
     gpt_devices.read_gpt_partition(
         "init_boot_a",
-        init_boot_hdr_size as u64,
+        init_boot_hdr_size.try_into().unwrap(),
         &mut load[ramdisk_load_curr..][..generic_ramdisk_size],
     )?;
     ramdisk_load_curr = usize_add(ramdisk_load_curr, generic_ramdisk_size)?;
 
-    // Use the remaining buffer for bootconfig
-    let mut bootconfig_builder = BootConfigBuilder::new(&mut load[ramdisk_load_curr..])?;
+    // Prepare partition data for avb verification
+    let (vendor_boot_load_buffer, remains) = load.split_at_mut(vendor_ramdisk_size);
+    let (init_boot_load_buffer, remains) = remains.split_at_mut(generic_ramdisk_size);
+    // Prepare a BootConfigBuilder to add avb generated bootconfig.
+    let mut bootconfig_builder = BootConfigBuilder::new(remains)?;
+    // Perform avb verification.
+    avb_verify_slot(
+        &mut gpt_devices,
+        kernel_tail_buffer,
+        vendor_boot_load_buffer,
+        init_boot_load_buffer,
+        &mut bootconfig_builder,
+    )?;
+
     // Add slot index
     bootconfig_builder.add("androidboot.slot_suffix=_a\n")?;
-    // By default, boot mode is recovery. The following needs to be added for normal boot.
-    // However, normal boot requires additional bootconfig generated during AVB, which is under
-    // development.
-    //
-    // bootconfig_builder.add("androidboot.force_normal_boot=1\n")?;
+
+    // Boot into Android
+    bootconfig_builder.add("androidboot.force_normal_boot=1\n")?;
 
     // V4 image has vendor bootconfig.
     if let VendorImageHeader::V4(ref hdr) = vendor_boot_header {
@@ -148,7 +220,7 @@ pub fn load_android_simple<'a>(
             gpt_devices
                 .read_gpt_partition(
                     "vendor_boot_a",
-                    bootconfig_offset as u64,
+                    bootconfig_offset.try_into().unwrap(),
                     &mut out[..hdr.bootconfig_size as usize],
                 )
                 .map_err(|_| BootConfigError::GenericReaderError(-1))?;
@@ -188,13 +260,12 @@ pub fn load_android_simple<'a>(
 
     // Use the remaining load buffer for updating FDT.
     let (ramdisk_load_buffer, load) = load.split_at_mut(ramdisk_load_curr);
-    // libfdt requires FDT buffer to be 8-byte aligned.
-    let load = aligned_subslice(load, 8)?;
+    let load = aligned_subslice(load, FDT_ALIGNMENT)?;
     let mut fdt = Fdt::new_from_init(&mut load[..], fdt_bytes)?;
 
     // Add ramdisk range to FDT
-    let ramdisk_addr = ramdisk_load_buffer.as_ptr() as u64;
-    let ramdisk_end = ramdisk_addr + (ramdisk_load_buffer.len() as u64);
+    let ramdisk_addr: u64 = (ramdisk_load_buffer.as_ptr() as usize).try_into().unwrap();
+    let ramdisk_end: u64 = ramdisk_addr + u64::try_from(ramdisk_load_buffer.len()).unwrap();
     fdt.set_property(
         "chosen",
         CStr::from_bytes_with_nul(b"linux,initrd-start\0").unwrap(),
@@ -231,7 +302,105 @@ pub fn load_android_simple<'a>(
     // Finalize FDT to actual used size.
     fdt.shrink_to_fit()?;
 
+    // Move the kernel backward as much as possible to preserve more space after it. This is
+    // necessary in case the input buffer is at the end of address space.
+    let kernel_tail_buffer_size = kernel_tail_buffer.len();
+    let ramdisk_load_buffer_size = ramdisk_load_buffer.len();
     let fdt_len = fdt.header_ref()?.actual_size();
-    let (fdt_load_buffer, remains) = load.split_at_mut(fdt_len);
-    Ok((kernel_load_buffer, ramdisk_load_buffer, fdt_load_buffer, remains))
+    // Split out the ramdisk.
+    let (ramdisk, remains) = images_buffer.split_at_mut(ramdisk_load_buffer_size);
+    // Split out the fdt.
+    let (fdt, kernel) = aligned_subslice(remains, FDT_ALIGNMENT)?.split_at_mut(fdt_len);
+    // Move the kernel backward as much as possible.
+    let kernel = aligned_subslice(kernel, KERNEL_ALIGNMENT)?;
+    let kernel_start = kernel.len().checked_sub(kernel_tail_buffer_size).unwrap();
+    kernel.copy_within(kernel_start..kernel_start.checked_add(kernel_size).unwrap(), 0);
+    // Split out the remaining buffer.
+    let (kernel, remains) = kernel.split_at_mut(kernel_size);
+
+    Ok((ramdisk, fdt, kernel, remains))
+}
+
+// The following implements a demo for booting Android from disk. It can be run from
+// Cuttlefish by adding `--android_efi_loader=<path of this EFI binary>` to the command line.
+//
+// A number of simplifications are made (see `android_load::load_android_simple()`):
+//
+//   * No A/B slot switching is performed. It always boot from *_a slot.
+//   * No AVB is performed.
+//   * No dynamic partitions.
+//   * Only support V3/V4 image and Android 13+ (generic ramdisk from the "init_boot" partition)
+//
+// The missing pieces above are currently under development as part of the full end-to-end boot
+// flow in libgbl, which will eventually replace this demo. The demo is currently used as an
+// end-to-end test for libraries developed so far.
+pub fn android_boot_demo(entry: EfiEntry) -> Result<()> {
+    efi_print!(entry, "Try booting as Android\n");
+
+    // Allocate buffer for load.
+    let mut load_buffer = vec![0u8; 128 * 1024 * 1024]; // 128MB
+
+    let (ramdisk, fdt, kernel, remains) = load_android_simple(&entry, &mut load_buffer[..])?;
+
+    efi_print!(
+        &entry,
+        "\nBooting kernel @ {:#x}, ramdisk @ {:#x}, fdt @ {:#x}\n\n",
+        kernel.as_ptr() as usize,
+        ramdisk.as_ptr() as usize,
+        fdt.as_ptr() as usize
+    );
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        let _ = exit_boot_services(entry, remains)?;
+        // SAFETY: We currently targets at Cuttlefish emulator where images are provided valid.
+        unsafe { boot::aarch64::jump_linux_el2_or_lower(kernel, fdt) };
+    }
+
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    {
+        let fdt = fdt::Fdt::new(&fdt[..])?;
+        let efi_mmap = exit_boot_services(entry, remains)?;
+        // SAFETY: We currently target at Cuttlefish emulator where images are provided valid.
+        unsafe {
+            boot::x86::boot_linux_bzimage(
+                kernel,
+                ramdisk,
+                fdt.get_property(
+                    "chosen",
+                    core::ffi::CStr::from_bytes_with_nul(b"bootargs\0").unwrap(),
+                )
+                .unwrap(),
+                |e820_entries| {
+                    // Convert EFI memory type to e820 memory type.
+                    if efi_mmap.len() > e820_entries.len() {
+                        return Err(boot::BootError::E820MemoryMapCallbackError(-1));
+                    }
+                    for (idx, mem) in efi_mmap.into_iter().enumerate() {
+                        e820_entries[idx] = boot::x86::e820entry {
+                            addr: mem.physical_start,
+                            size: mem.number_of_pages * 4096,
+                            type_: crate::utils::efi_to_e820_mem_type(mem.memory_type),
+                        };
+                    }
+                    Ok(efi_mmap.len().try_into().unwrap())
+                },
+                0x9_0000,
+            )?;
+        }
+        unreachable!();
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    {
+        let boot_hart_id = entry
+            .system_table()
+            .boot_services()
+            .find_first_and_open::<efi::RiscvBootProtocol>()?
+            .get_boot_hartid()?;
+        efi_print!(entry, "riscv boot_hart_id: {}\n", boot_hart_id);
+        let _ = exit_boot_services(entry, remains)?;
+        // SAFETY: We currently target at Cuttlefish emulator where images are provided valid.
+        unsafe { boot::riscv64::jump_linux(kernel, boot_hart_id, fdt) };
+    }
 }
