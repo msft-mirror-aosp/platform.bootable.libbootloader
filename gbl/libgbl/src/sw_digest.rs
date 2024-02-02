@@ -35,7 +35,9 @@ pub struct SwContext {
     ring_context: ring::digest::Context,
 }
 
-impl Context<SwDigest> for SwContext {
+impl Context for SwContext {
+    type Digest = SwDigest;
+
     fn new(algorithm: Algorithm) -> Self
     where
         Self: Sized,

@@ -34,7 +34,10 @@ pub trait Digest: AsRef<[u8]> {
 
 /// Context trait that implements digesting.
 /// Sha256 or Sha512.
-pub trait Context<D: Digest> {
+pub trait Context {
+    /// Digest type
+    type Digest: Digest;
+
     /// Create [Context] object that can calculate digest with requested algorithm.
     ///
     /// # Arguments
@@ -52,7 +55,7 @@ pub trait Context<D: Digest> {
     /// Finalise digest computation.
     ///
     /// Object is consumed to prevent reusing.
-    fn finish(self) -> D;
+    fn finish(self) -> Self::Digest;
 
     /// The algorithm that this context is using.
     fn algorithm(&self) -> &Algorithm;
