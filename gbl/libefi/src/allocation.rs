@@ -73,10 +73,38 @@ pub(crate) unsafe fn exit_efi_global_alloc() {
 }
 
 impl EfiAllocator {
+    /// Returns a reference to the EfiEntry.
     fn get_efi_entry(&self) -> Option<&EfiEntry> {
         match self {
             EfiAllocator::Initialized(ref entry) => Some(entry),
             _ => None,
+        }
+    }
+
+    /// Allocate memory via EFI_BOOT_SERVICES.
+    fn allocate(&self, size: usize) -> *mut u8 {
+        match self
+            .get_efi_entry()
+            .unwrap()
+            .system_table()
+            .boot_services()
+            .allocate_pool(EFI_MEMORY_TYPE_LOADER_DATA, size)
+        {
+            Ok(p) => p as *mut _,
+            _ => null_mut(),
+        }
+    }
+
+    /// Deallocate memory previously allocated by `Self::allocate()`. Passing invalid pointer will
+    /// cause the method to panic.
+    fn deallocate(&self, ptr: *mut u8) {
+        match self.get_efi_entry() {
+            Some(ref entry) => {
+                entry.system_table().boot_services().free_pool(ptr as *mut _).unwrap();
+            }
+            // After EFI_BOOT_SERVICES.ExitBootServices(), all allocated memory is considered
+            // leaked and under full ownership of subsequent OS loader code.
+            _ => {}
         }
     }
 }
@@ -90,26 +118,23 @@ unsafe impl GlobalAlloc for EfiAllocator {
         // `AllocatePool()` can be slow for allocating large buffers. In this case,
         // `AllocatePages()` is recommended.
         assert_eq!(8usize.checked_rem(align).unwrap(), 0);
-        match self
-            .get_efi_entry()
-            .unwrap()
-            .system_table()
-            .boot_services()
-            .allocate_pool(EFI_MEMORY_TYPE_LOADER_DATA, size)
-        {
-            Ok(p) => p as *mut _,
-            _ => null_mut(),
-        }
+        self.allocate(size)
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
-        match self.get_efi_entry() {
-            Some(ref entry) => {
-                entry.system_table().boot_services().free_pool(ptr as *mut _).unwrap();
-            }
-            // After EFI_BOOT_SERVICES.ExitBootServices(), all allocated memory is considered
-            // leaked and under full ownership of subsequent OS loader code.
-            _ => {}
-        }
+        self.deallocate(ptr);
     }
+}
+
+/// API for allocating raw memory via EFI_BOOT_SERVICES
+pub fn efi_malloc(size: usize) -> *mut u8 {
+    // SAFETY: See SAFETY of `internal_efi_entry()`.
+    unsafe { EFI_GLOBAL_ALLOCATOR.allocate(size) }
+}
+
+/// API for deallocating raw memory previously allocated by `efi_malloc()`. Passing invalid
+/// pointer will cause the function to panic.
+pub fn efi_free(ptr: *mut u8) {
+    // SAFETY: See SAFETY of `internal_efi_entry()`.
+    unsafe { EFI_GLOBAL_ALLOCATOR.deallocate(ptr) }
 }
