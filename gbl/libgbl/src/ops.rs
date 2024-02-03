@@ -19,17 +19,15 @@ extern crate alloc;
 #[cfg(test)]
 extern crate static_assertions;
 
-use crate::digest::{Algorithm, Context, Digest};
+use crate::digest::{Algorithm, Context};
 use crate::error::{Error, Result};
+#[cfg(feature = "sw_digest")]
+use crate::sw_digest::SwContext;
 #[cfg(feature = "alloc")]
 use alloc::ffi::CString;
-use avb::{IoError, Ops, PublicKeyForPartitionInfo};
-use core::{ffi::CStr, fmt::Debug, ptr::NonNull};
+use core::{fmt::Debug, ptr::NonNull};
 
 use super::slots;
-
-/// TODO: b/312607649 - Placeholder. Use result type from `avb` when it is stable and public
-pub type AvbResult<T> = core::result::Result<T, IoError>;
 
 // https://stackoverflow.com/questions/41081240/idiomatic-callbacks-in-rust
 // should we use traits for this? or optional/box FnMut?
@@ -40,19 +38,23 @@ missing:
 - key management => atx extension in callback =>  atx_ops: ptr::null_mut(), // support optional ATX.
 */
 /// Trait that defines callbacks that can be provided to Gbl.
-pub trait GblOps<D: Digest, C: Context<D>>: Ops + Debug {
+pub trait GblOps: Debug {
+    /// Digest context type
+    type Context: Context;
+
     /// Create digest object to use for hash computations.
     ///
     /// Context interface allows to update value adding more data to process.
     /// # Arguments
     ///
     /// * algorithm - algorithm to use for hash computation.
-    fn new_digest(&self, algorithm: Algorithm) -> C {
+    fn new_digest(&self, algorithm: Algorithm) -> Self::Context {
         Context::new(algorithm)
     }
+
     /// Calculate digest of provided data with requested algorithm. Single use unlike [new_digest]
     /// flow.
-    fn digest(&self, algorithm: Algorithm, data: &[u8]) -> D {
+    fn digest(&self, algorithm: Algorithm, data: &[u8]) -> <Self::Context as Context>::Digest {
         let mut ctx = self.new_digest(algorithm);
         ctx.update(data);
         ctx.finish()
@@ -66,67 +68,24 @@ pub trait GblOps<D: Digest, C: Context<D>>: Ops + Debug {
 
     /// TODO: b/312607649 - placeholder interface for Gbl specific callbacks that uses alloc.
     #[cfg(feature = "alloc")]
-    fn gbl_alloc_extra_action(&mut self, s: &str) -> Result<()>;
+    fn gbl_alloc_extra_action(&mut self, s: &str) -> Result<()> {
+        let _c_string = CString::new(s);
+        Err(Error::Error)
+    }
 
     /// Load and initialize a slot manager and return a cursor over the manager on success.
-    fn load_slot_interface(&mut self, boot_token: slots::BootToken) -> Result<slots::Cursor>;
+    fn load_slot_interface(&mut self, boot_token: slots::BootToken) -> Result<slots::Cursor> {
+        Err(Error::OperationProhibited)
+    }
 }
 
 /// Default [GblOps] implementation that returns errors and does nothing.
 #[derive(Debug)]
 pub struct DefaultGblOps {}
-impl Ops for DefaultGblOps {
-    fn validate_vbmeta_public_key(&mut self, _: &[u8], _: Option<&[u8]>) -> AvbResult<bool> {
-        Err(IoError::NotImplemented)
-    }
-    fn read_from_partition(&mut self, _: &CStr, _: i64, _: &mut [u8]) -> AvbResult<usize> {
-        Err(IoError::NotImplemented)
-    }
-    fn read_rollback_index(&mut self, _: usize) -> AvbResult<u64> {
-        Err(IoError::NotImplemented)
-    }
-    fn write_rollback_index(&mut self, _: usize, _: u64) -> AvbResult<()> {
-        Err(IoError::NotImplemented)
-    }
-    fn read_is_device_unlocked(&mut self) -> AvbResult<bool> {
-        Err(IoError::NotImplemented)
-    }
-    fn get_size_of_partition(&mut self, partition: &CStr) -> AvbResult<u64> {
-        Err(IoError::NotImplemented)
-    }
-    fn read_persistent_value(&mut self, name: &CStr, value: &mut [u8]) -> AvbResult<usize> {
-        Err(IoError::NotImplemented)
-    }
-    fn write_persistent_value(&mut self, name: &CStr, value: &[u8]) -> AvbResult<()> {
-        Err(IoError::NotImplemented)
-    }
-    fn erase_persistent_value(&mut self, name: &CStr) -> AvbResult<()> {
-        Err(IoError::NotImplemented)
-    }
-    fn validate_public_key_for_partition(
-        &mut self,
-        partition: &CStr,
-        public_key: &[u8],
-        public_key_metadata: Option<&[u8]>,
-    ) -> AvbResult<PublicKeyForPartitionInfo> {
-        Err(IoError::NotImplemented)
-    }
-}
 
-impl<D, C> GblOps<D, C> for DefaultGblOps
-where
-    D: Digest,
-    C: Context<D>,
-{
-    fn load_slot_interface(&mut self, boot_token: slots::BootToken) -> Result<slots::Cursor> {
-        Err(Error::OperationProhibited)
-    }
-
-    #[cfg(feature = "alloc")]
-    fn gbl_alloc_extra_action(&mut self, s: &str) -> Result<()> {
-        let _c_string = CString::new(s);
-        Err(Error::Error)
-    }
+#[cfg(feature = "sw_digest")]
+impl GblOps for DefaultGblOps {
+    type Context = SwContext;
 }
 
 #[cfg(test)]

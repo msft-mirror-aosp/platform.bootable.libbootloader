@@ -14,6 +14,8 @@
 
 //! Error types used in libgbl.
 
+use avb::{DescriptorError, SlotVerifyError};
+use core::ffi::FromBytesWithNulError;
 use core::fmt::{Debug, Display, Formatter};
 
 /// Helper type GBL functions will return.
@@ -30,18 +32,72 @@ pub enum Error {
     NotImplemented,
     /// Some combination of parameters and global state prohibits the operation
     OperationProhibited,
+    /// Internal error
+    Internal,
+    /// AvbOps were already borrowed. This would happen on second `load_and_verify_image()` call
+    /// unless `reuse()` is called before.
+    AvbOpsBusy,
+    /// Failed to get descriptor from AvbMeta
+    AvbDescriptorError(DescriptorError),
+    /// Avb slot verification failed.
+    /// SlotVerifyError is used without verify data.
+    AvbSlotVerifyError(SlotVerifyError<'static>),
 }
 
 // Unfortunately thiserror is not available in `no_std` world.
 // Thus `Display` implementation is required.
 impl Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        let str = match self {
-            Error::Error => "Generic error",
-            Error::MissingImage => "Missing image required to boot system",
-            Error::NotImplemented => "Functionality is not implemented",
-            Error::OperationProhibited => "Operation is prohibited",
-        };
-        write!(f, "{str}")
+        match self {
+            Error::Error => write!(f, "Generic error"),
+            Error::MissingImage => write!(f, "Missing image required to boot system"),
+            Error::NotImplemented => write!(f, "Functionality is not implemented"),
+            Error::OperationProhibited => write!(f, "Operation is prohibited"),
+            Error::Internal => write!(f, "Internal error"),
+            Error::AvbOpsBusy => write!(f, "AvbOps were already borrowed"),
+            Error::AvbDescriptorError(error) => {
+                write!(f, "Failed to get descriptor from AvbMeta: {:?}", error)
+            }
+            Error::AvbSlotVerifyError(error) => {
+                write!(f, "Avb slot verification failed: {}", error)
+            }
+        }
+    }
+}
+
+impl From<DescriptorError> for Error {
+    fn from(value: DescriptorError) -> Self {
+        Error::AvbDescriptorError(value)
+    }
+}
+
+impl<'a> From<SlotVerifyError<'a>> for Error {
+    fn from(value: SlotVerifyError<'a>) -> Self {
+        Error::AvbSlotVerifyError(value.without_verify_data())
+    }
+}
+
+impl From<FromBytesWithNulError> for Error {
+    fn from(e: FromBytesWithNulError) -> Self {
+        Error::Internal
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::*;
+    use avb::{DescriptorError, SlotVerifyError};
+
+    #[test]
+    fn test_error_output_formats() {
+        assert_eq!("Generic error", format!("{}", Error::Error));
+        assert_eq!(
+            format!("Avb slot verification failed: {}", SlotVerifyError::Io),
+            format!("{}", Error::AvbSlotVerifyError(SlotVerifyError::Io))
+        );
+        assert_eq!(
+            format!("Failed to get descriptor from AvbMeta: {:?}", DescriptorError::InvalidValue),
+            format!("{}", Error::AvbDescriptorError(DescriptorError::InvalidValue))
+        );
     }
 }
