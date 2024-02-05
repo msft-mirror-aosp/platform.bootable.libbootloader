@@ -17,8 +17,8 @@ extern crate crc32fast;
 extern crate zerocopy;
 
 use super::{
-    BootTarget, BootToken, Bootability, Error, Manager, OneShot, Slot, SlotIterator, Suffix,
-    UnbootableReason,
+    BootTarget, BootToken, Bootability, Error, Manager, OneShot, RecoveryTarget, Slot,
+    SlotIterator, Suffix, UnbootableReason,
 };
 use bitflags::bitflags;
 use core::mem::size_of;
@@ -80,32 +80,14 @@ bitflags! {
         const RECOVERY = 1 << 0;
         /// Oneshot boot to fastboot
         const BOOTLOADER = 1 << 1;
-
-        /// Slot mask
-        const SLOT = 1 << 2;
-
-        /// Oneshot boot to slot A
-        const SLOT_A = (1 << 4) | Self::SLOT.bits();
-        /// Oneshot boot to slot B
-        const SLOT_B = (1 << 5) | Self::SLOT.bits();
     }
 }
 
 impl From<OneShotFlags> for Option<OneShot> {
     fn from(flags: OneShotFlags) -> Self {
         match flags {
-            OneShotFlags::RECOVERY => Some(OneShot::Continue(BootTarget::Recovery(None))),
+            OneShotFlags::RECOVERY => Some(OneShot::Continue(RecoveryTarget::Dedicated)),
             OneShotFlags::BOOTLOADER => Some(OneShot::Bootloader),
-            OneShotFlags::SLOT_A => Some(OneShot::Continue(BootTarget::NormalBoot(Slot {
-                suffix: 'a'.into(),
-                priority: DEFAULT_PRIORITY.into(),
-                ..Default::default()
-            }))),
-            OneShotFlags::SLOT_B => Some(OneShot::Continue(BootTarget::NormalBoot(Slot {
-                suffix: 'b'.into(),
-                priority: DEFAULT_PRIORITY.into(),
-                ..Default::default()
-            }))),
             _ => None,
         }
     }
@@ -116,13 +98,7 @@ impl From<Option<OneShot>> for OneShotFlags {
         if let Some(target) = oneshot {
             match target {
                 OneShot::Bootloader => Self::BOOTLOADER,
-                OneShot::Continue(BootTarget::Recovery(None)) => Self::RECOVERY,
-                OneShot::Continue(BootTarget::NormalBoot(slot)) if slot.suffix == 'a'.into() => {
-                    Self::SLOT_A
-                }
-                OneShot::Continue(BootTarget::NormalBoot(slot)) if slot.suffix == 'b'.into() => {
-                    Self::SLOT_B
-                }
+                OneShot::Continue(RecoveryTarget::Dedicated) => Self::RECOVERY,
                 _ => Self::NONE,
             }
         } else {
@@ -280,7 +256,7 @@ impl Manager for SlotBlock {
         self.slots_iter()
             .filter(Slot::is_bootable)
             .max_by_key(|slot| (slot.priority, suffix_rank(slot.suffix)))
-            .map_or(BootTarget::Recovery(None), BootTarget::NormalBoot)
+            .map_or(BootTarget::Recovery(RecoveryTarget::Dedicated), BootTarget::NormalBoot)
     }
 
     fn get_slot_last_set_active(&self) -> Slot {
@@ -314,8 +290,8 @@ impl Manager for SlotBlock {
     fn mark_boot_attempt(&mut self, boot_target: BootTarget) -> Result<BootToken, Error> {
         let target_slot = match boot_target {
             BootTarget::NormalBoot(slot) => slot,
-            BootTarget::Recovery(Some(_)) => Err(Error::OperationProhibited)?,
-            BootTarget::Recovery(None) => {
+            BootTarget::Recovery(RecoveryTarget::Slotted(_)) => Err(Error::OperationProhibited)?,
+            BootTarget::Recovery(RecoveryTarget::Dedicated) => {
                 // Even though boot to recovery does not cause a metadata update,
                 // we still need to gate access to the boot token.
                 return self.boot_token.take().ok_or(Error::OperationProhibited);
@@ -370,8 +346,7 @@ impl Manager for SlotBlock {
         let oneshot_flag = OneShotFlags::from(Some(oneshot));
         if oneshot_flag == OneShotFlags::NONE {
             Err(match oneshot {
-                OneShot::Continue(BootTarget::NormalBoot(slot)) => Error::NoSuchSlot(slot.suffix),
-                OneShot::Continue(BootTarget::Recovery(Some(_))) => Error::OperationProhibited,
+                OneShot::Continue(RecoveryTarget::Slotted(_)) => Error::OperationProhibited,
                 _ => Error::Other,
             })
         } else {
@@ -442,8 +417,8 @@ mod test {
     #[test]
     fn test_suffix() {
         let slot = Slot { suffix: 'a'.into(), ..Default::default() };
-        assert_eq!(BootTarget::Recovery(None).suffix(), 'r'.into());
-        assert_eq!(BootTarget::Recovery(Some(slot)).suffix(), slot.suffix);
+        assert_eq!(BootTarget::Recovery(RecoveryTarget::Dedicated).suffix(), 'r'.into());
+        assert_eq!(BootTarget::Recovery(RecoveryTarget::Slotted(slot)).suffix(), slot.suffix);
         assert_eq!(BootTarget::NormalBoot(slot).suffix(), slot.suffix);
     }
 
@@ -556,7 +531,7 @@ mod test {
     #[test]
     fn test_slot_mark_tried_recovery() {
         let mut sb: SlotBlock = Default::default();
-        let recovery_tgt = BootTarget::Recovery(None);
+        let recovery_tgt = BootTarget::Recovery(RecoveryTarget::Dedicated);
         assert_eq!(sb.mark_boot_attempt(recovery_tgt), Ok(BootToken(())));
 
         // Make sure a second attempt fails due to the moved boot token
@@ -568,7 +543,7 @@ mod test {
         let mut sb: SlotBlock = Default::default();
         let slot: Slot = Default::default();
         assert_eq!(
-            sb.mark_boot_attempt(BootTarget::Recovery(Some(slot))),
+            sb.mark_boot_attempt(BootTarget::Recovery(RecoveryTarget::Slotted(slot))),
             Err(Error::OperationProhibited)
         );
     }
@@ -622,7 +597,7 @@ mod test {
                 Ok(())
             );
         }
-        assert_eq!(sb.get_boot_target(), BootTarget::Recovery(None));
+        assert_eq!(sb.get_boot_target(), BootTarget::Recovery(RecoveryTarget::Dedicated));
     }
 
     #[test]
@@ -681,20 +656,7 @@ mod test {
 
     set_oneshot_tests! {
         test_set_oneshot_bootloader: OneShot::Bootloader,
-        test_set_oneshot_recovery: OneShot::Continue(BootTarget::Recovery(None)),
-        test_set_oneshot_slot_a: OneShot::Continue(BootTarget::NormalBoot(
-            Slot{
-                suffix: 'a'.into(),
-                priority: DEFAULT_PRIORITY.into(),
-                bootability: Bootability::Retriable(DEFAULT_RETRIES.into()),
-            })),
-        test_set_oneshot_slot_b: OneShot::Continue(BootTarget::NormalBoot(
-            Slot{
-                suffix: 'b'.into(),
-                priority: DEFAULT_PRIORITY.into(),
-                bootability: Bootability::Retriable(DEFAULT_RETRIES.into()),
-            })),
-
+        test_set_oneshot_recovery: OneShot::Continue(RecoveryTarget::Dedicated),
     }
 
     #[test]
@@ -706,25 +668,11 @@ mod test {
     }
 
     #[test]
-    fn test_set_oneshot_no_such_slot() {
-        let mut sb: SlotBlock = Default::default();
-        let slot = Slot {
-            suffix: '$'.into(),
-            priority: DEFAULT_PRIORITY.into(),
-            bootability: Bootability::Retriable(DEFAULT_RETRIES.into()),
-        };
-        assert_eq!(
-            sb.set_oneshot_status(OneShot::Continue(BootTarget::NormalBoot(slot))),
-            Err(Error::NoSuchSlot(slot.suffix))
-        );
-    }
-
-    #[test]
     fn test_set_oneshot_mistaken_recovery_slotted() {
         let mut sb: SlotBlock = Default::default();
         let slot = sb.slots_iter().next().unwrap();
         assert_eq!(
-            sb.set_oneshot_status(OneShot::Continue(BootTarget::Recovery(Some(slot)))),
+            sb.set_oneshot_status(OneShot::Continue(RecoveryTarget::Slotted(slot))),
             Err(Error::OperationProhibited)
         );
     }
