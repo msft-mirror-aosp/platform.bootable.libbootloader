@@ -15,7 +15,7 @@
 //! Error types used in libgbl.
 
 use avb::{DescriptorError, SlotVerifyError};
-use core::ffi::FromBytesWithNulError;
+use core::ffi::{FromBytesUntilNulError, FromBytesWithNulError};
 use core::fmt::{Debug, Display, Formatter};
 
 /// Helper type GBL functions will return.
@@ -74,6 +74,12 @@ impl From<DescriptorError> for Error {
 impl<'a> From<SlotVerifyError<'a>> for Error {
     fn from(value: SlotVerifyError<'a>) -> Self {
         Error::AvbSlotVerifyError(value.without_verify_data())
+    }
+}
+
+impl From<FromBytesUntilNulError> for Error {
+    fn from(e: FromBytesUntilNulError) -> Self {
+        Error::Internal
     }
 }
 
