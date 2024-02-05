@@ -15,6 +15,8 @@
 /// Export the default implementation
 pub mod fuchsia;
 
+use core::mem::size_of;
+
 /// A type safe container for describing the number of retries a slot has left
 /// before it becomes unbootable.
 /// Slot tries can only be compared to, assigned to, or assigned from other
@@ -57,6 +59,25 @@ pub struct Suffix(pub(crate) char);
 impl From<char> for Suffix {
     fn from(c: char) -> Self {
         Self(c)
+    }
+}
+
+// Includes a null terminator
+const SUFFIX_CSTR_MAX_BYTES: usize = size_of::<Suffix>() + 1;
+
+/// A buffer large enough to contain the serialized representation of a Suffix.
+/// Can be turned into a &Cstr like so:
+///
+/// let suffix: Suffix = 'a'.into();
+/// let buffer: SuffixBytes = suffix.into();
+/// let cstr = CStr::from_bytes_until_nul(&buffer)?;
+pub type SuffixBytes = [u8; SUFFIX_CSTR_MAX_BYTES];
+
+impl From<Suffix> for SuffixBytes {
+    fn from(val: Suffix) -> Self {
+        let mut buffer: Self = Default::default();
+        let _ = val.0.encode_utf8(&mut buffer);
+        buffer
     }
 }
 
@@ -369,5 +390,31 @@ pub struct Cursor<'a> {
 impl<'a> Drop for Cursor<'a> {
     fn drop(&mut self) {
         self.ctx.write_back();
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use core::ffi::CStr;
+
+    #[test]
+    fn test_suffix_to_cstr() {
+        let normal: Suffix = 'a'.into();
+        let normal_buffer: SuffixBytes = normal.into();
+        let normal_cstr = CStr::from_bytes_until_nul(&normal_buffer);
+        assert!(normal_cstr.is_ok());
+
+        // All UTF-8 characters are at most 4 bytes.
+        // The in-memory representation as a chr or Suffix
+        // uses all 4 bytes regardless of the length of the serialized
+        // representation, but we need to make sure that buffer for
+        // the serialized suffix can handle that too.
+        // All emoji are 4 bytes when encoded as UTF-8,
+        // so they're a reasonable test.
+        let squid: Suffix = '🦑'.into();
+        let squid_buffer: SuffixBytes = squid.into();
+        let squid_cstr = CStr::from_bytes_until_nul(&squid_buffer);
+        assert!(squid_cstr.is_ok());
     }
 }
