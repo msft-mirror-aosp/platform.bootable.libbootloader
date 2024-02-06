@@ -518,7 +518,7 @@ where
 
         let boot_target = match oneshot_status {
             None | Some(OneShot::Bootloader) => slot_cursor.ctx.get_boot_target(),
-            Some(OneShot::Continue(target)) => target,
+            Some(OneShot::Continue(recovery)) => BootTarget::Recovery(recovery),
         };
 
         let mut verify_data = self
