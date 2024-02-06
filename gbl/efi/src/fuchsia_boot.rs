@@ -16,7 +16,7 @@ use crate::error::{EfiAppError, Result};
 use crate::utils::{aligned_subslice, find_gpt_devices, get_efi_fdt, usize_add};
 use core::fmt::Write;
 use core::mem::size_of;
-use efi::EfiEntry;
+use efi::{efi_print, EfiEntry};
 use fdt::Fdt;
 use libzbi::{ZbiContainer, ZbiFlags, ZbiHeader, ZbiType, ZBI_ALIGNMENT_USIZE};
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
