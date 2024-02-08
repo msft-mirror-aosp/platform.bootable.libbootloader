@@ -24,6 +24,7 @@ rust_defaults {
         "libavb_rs",
         "libbitflags",
         "libcrc32fast",
+        "libcstr",
         "liblazy_static",
         "libring",
         "libspin",
@@ -38,6 +39,7 @@ rust_defaults {
     srcs: ["src/lib.rs"],
     rlibs: [
         "libavb_rs_nostd",
+        "libcstr",
         "libcrc32fast",
         "liblazy_static_nostd",
         "libring_nostd",
