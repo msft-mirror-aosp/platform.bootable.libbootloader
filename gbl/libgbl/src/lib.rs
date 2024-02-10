@@ -31,6 +31,7 @@
 // TODO: b/312608163 - Adding ZBI library usage to check dependencies
 extern crate avb;
 extern crate core;
+extern crate cstr;
 extern crate lazy_static;
 extern crate spin;
 extern crate zbi;
@@ -38,6 +39,7 @@ extern crate zbi;
 use avb::{HashtreeErrorMode, SlotVerifyData, SlotVerifyError, SlotVerifyFlags, SlotVerifyResult};
 use core::ffi::CStr;
 use core::fmt::Debug;
+use cstr::cstr;
 use lazy_static::lazy_static;
 use spin::{Mutex, MutexGuard};
 
@@ -272,7 +274,7 @@ where
         let bytes: SuffixBytes =
             if let Some(tgt) = boot_target { tgt.suffix().into() } else { Default::default() };
 
-        let requested_partitions = [CStr::from_bytes_with_nul(b"\0")?];
+        let requested_partitions = [cstr!("")];
         let avb_suffix = CStr::from_bytes_until_nul(&bytes)?;
 
         let verified_data = VerifiedData((self.verify_slot)(
