@@ -29,6 +29,7 @@ cc_library(
         "defs/protocols/device_path_protocol.h",
         "defs/protocols/loaded_image_protocol.h",
         "defs/protocols/riscv_efi_boot_protocol.h",
+        "defs/protocols/simple_network_protocol.h",
         "defs/protocols/simple_text_output_protocol.h",
         "defs/system_table.h",
         "defs/types.h",
