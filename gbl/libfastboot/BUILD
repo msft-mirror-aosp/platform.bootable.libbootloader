@@ -1,4 +1,4 @@
-# Copyright (C) 2023 The Android Open Source Project
+# Copyright (C) 2024 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,18 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-test_suite(
-    name = "tests",
-    tests = [
-        "@gbl//libbootconfig:libbootconfig_test",
-        "@gbl//libbootimg:libbootimg_test",
-        "@gbl//libefi:libefi_test",
-        "@gbl//libfastboot:libfastboot_test",
-        "@gbl//libfdt:libfdt_test",
-        "@gbl//libstorage:gbl_libstorage_test",
-        "@gbl//third_party/libzbi:libzbi_test",
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
-        # Doc test doesn't work yet.
-        # "@gbl//libstorage:gbl_libstorage_doc_test",
-    ],
+package(
+    default_visibility = ["//visibility:public"],
+)
+
+rust_library(
+    name = "libfastboot",
+    srcs = ["src/lib.rs"],
+    crate_name = "fastboot",
+    edition = "2021",
+)
+
+rust_test(
+    name = "libfastboot_test",
+    crate = ":libfastboot",
 )
