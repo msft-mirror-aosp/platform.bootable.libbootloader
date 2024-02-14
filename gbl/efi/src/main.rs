@@ -26,7 +26,7 @@ extern crate alloc;
 use core::fmt::Write;
 
 use efi::defs::EfiSystemTable;
-use efi::initialize;
+use efi::{efi_print, initialize};
 
 #[macro_use]
 mod utils;
