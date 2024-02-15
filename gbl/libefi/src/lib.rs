@@ -89,7 +89,7 @@ mod error {
         EfiStatusError(EfiStatus),
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, PartialEq)]
     pub struct EfiError(ErrorTypes);
 
     impl EfiError {
@@ -158,8 +158,13 @@ pub unsafe fn initialize(
     systab_ptr: *const EfiSystemTable,
 ) -> EfiResult<EfiEntry> {
     let efi_entry = EfiEntry { image_handle, systab_ptr };
-    // Create another one for internal global allocator.
-    allocation::init_efi_global_alloc(EfiEntry { image_handle, systab_ptr })?;
+    // SAFETY: By safety requirement of this function, `initialize` is only called once upon
+    // entering EFI application, where there should be no event notify function that can be
+    // triggered.
+    unsafe {
+        // Create another one for internal global allocator.
+        allocation::init_efi_global_alloc(EfiEntry { image_handle, systab_ptr })?;
+    }
     Ok(efi_entry)
 }
 
@@ -384,6 +389,148 @@ impl<'a> BootServices<'a> {
             )
         }
     }
+
+    /// Wrapper of `EFI_BOOT_SERVICE.Stall()`.
+    pub fn stall(&self, micro: usize) -> EfiResult<()> {
+        // SAFETY: EFI_BOOT_SERVICES method call.
+        unsafe { efi_call!(self.boot_services.stall, micro) }
+    }
+
+    /// Wrapper of `EFI_BOOT_SERVICE.CreateEvent()`.
+    ///
+    /// Args:
+    ///
+    ///  * `event_type`: The EFI event type.
+    ///  * `cb`: An optional `&'e mut EventNotify`, which implements the event
+    ///          notification function and provides the task level priority setting.
+    pub fn create_event<'n, 'e: 'n>(
+        &self,
+        event_type: EventType,
+        mut cb: Option<&'n mut EventNotify<'e>>,
+    ) -> EfiResult<Event<'a, 'n>> {
+        let mut efi_event: EfiEvent = null_mut();
+        let (tpl, c_callback, cookie): (EfiTpl, EfiEventNotify, *mut core::ffi::c_void) = match cb {
+            Some(ref mut event_notify) => {
+                (event_notify.tpl as _, Some(efi_event_cb), *event_notify as *mut _ as _)
+            }
+            None => (0, None, null_mut()),
+        };
+        // SAFETY:
+        // Pointers passed are output/callback context pointers which will not be retained by the
+        // callback (`fn efi_event_cb()`).
+        // The returned `Event` enforces a borrow to `cb` for 'e. It closes the event when it
+        // goes out of scope. This ensures that `cb` lives at least as long as the event is in
+        // effect and there can be no other borrows to `cb`.
+        unsafe {
+            efi_call!(
+                self.boot_services.create_event,
+                event_type as u32,
+                tpl as usize,
+                c_callback,
+                cookie,
+                &mut efi_event
+            )?;
+        }
+        Ok(Event {
+            efi_entry: self.efi_entry,
+            efi_event: efi_event,
+            _cb: cb.map::<&'n mut dyn FnMut(EfiEvent), _>(|v| v.cb),
+        })
+    }
+
+    /// Wrapper of `EFI_BOOT_SERVICE.CloseEvent()`.
+    fn close_event(&self, event: &Event) -> EfiResult<()> {
+        // SAFETY: EFI_BOOT_SERVICES method call.
+        unsafe { efi_call!(self.boot_services.close_event, event.efi_event) }
+    }
+
+    /// Wrapper of `EFI_BOOT_SERVICE.CheckEvent()`.
+    ///
+    /// On success, returns true if the event is signaled, false if not.
+    pub fn check_event(&self, event: &Event) -> EfiResult<bool> {
+        // SAFETY: EFI_BOOT_SERVICES method call.
+        match unsafe { efi_call!(self.boot_services.check_event, event.efi_event) } {
+            Err(e) if e != EFI_STATUS_NOT_READY.into() => Err(e),
+            Ok(()) => Ok(true),
+            _ => Ok(false),
+        }
+    }
+
+    /// Wrapper of `EFI_BOOT_SERVICE.SetTimer()`.
+    pub fn set_timer(
+        &self,
+        event: &Event,
+        delay_type: EfiTimerDelay,
+        trigger_time: u64,
+    ) -> EfiResult<()> {
+        // SAFETY: EFI_BOOT_SERVICES method call.
+        unsafe {
+            efi_call!(self.boot_services.set_timer, event.efi_event, delay_type, trigger_time)
+        }
+    }
+}
+
+/// EFI Event type to pass to BootServicess::create_event;
+#[repr(u32)]
+pub enum EventType {
+    Timer = 0x80000000,
+    RunTime = 0x40000000,
+    NotifyWait = 0x00000100,
+    NotifySignal = 0x00000200,
+    SignalExitBootServices = 0x00000201,
+    SignalVirtualAddressChange = 0x60000202,
+}
+
+/// EFI task level priority setting for event notify function.
+#[repr(usize)]
+#[derive(Copy, Clone)]
+pub enum Tpl {
+    Application = 4,
+    Callback = 8,
+    Notify = 16,
+    HighLevel = 31,
+}
+
+/// `EventNotify` contains the task level priority setting and a mutable reference to a
+/// `EventNotifyImpl` trait object. It is passed as the context pointer to low level EFI event
+/// notification function entry (`unsafe extern "C" fn efi_event_cb(...)`).
+pub struct EventNotify<'e> {
+    tpl: Tpl,
+    cb: &'e mut dyn FnMut(EfiEvent),
+}
+
+impl<'e> EventNotify<'e> {
+    pub fn new(tpl: Tpl, cb: &'e mut dyn FnMut(EfiEvent)) -> Self {
+        Self { tpl, cb }
+    }
+}
+
+/// `Event` wraps the raw `EfiEvent` handle and internally enforces a borrow of the registered
+/// callback for the given life time `e. The event is automatically closed when going out of scope.
+pub struct Event<'a, 'n> {
+    efi_entry: &'a EfiEntry,
+    efi_event: EfiEvent,
+    _cb: Option<&'n mut dyn FnMut(EfiEvent)>,
+}
+
+impl Drop for Event<'_, '_> {
+    fn drop(&mut self) {
+        self.efi_entry.system_table().boot_services().close_event(self).unwrap();
+    }
+}
+
+/// Event notify function entry for EFI events.
+///
+/// Safety:
+///
+///   `ctx` must point to a `EventNotify` type object.
+///   `ctx` must live longer than the event.
+///   There should be no other references to `ctx`.
+unsafe extern "C" fn efi_event_cb(event: EfiEvent, ctx: *mut core::ffi::c_void) {
+    // SAFETY: By safety requirement of this function, ctx points to a valid `EventNotify` object,
+    // outlives the event/the function call, and there is no other borrows.
+    let event_cb = unsafe { (ctx as *mut EventNotify).as_mut() }.unwrap();
+    (event_cb.cb)(event);
 }
 
 /// A type for accessing memory map.
@@ -492,6 +639,15 @@ impl Drop for LocatedHandles<'_> {
     }
 }
 
+/// Helper macro for printing message via `EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL` in
+/// `EFI_SYSTEM_TABLE.ConOut`.
+#[macro_export]
+macro_rules! efi_print {
+    ( $efi_entry:expr, $( $x:expr ),* ) => {
+            write!($efi_entry.system_table().con_out().unwrap(), $($x,)*).unwrap()
+    };
+}
+
 /// Provides a builtin panic handler.
 /// In the long term, to improve flexibility, consider allowing application to install a custom
 /// handler into `EfiEntry` to be called here.
@@ -530,6 +686,9 @@ mod test {
         pub locate_handle_buffer_trace: LocateHandleBufferTrace,
         pub get_memory_map_trace: GetMemoryMapTrace,
         pub exit_boot_services_trace: ExitBootServicespTrace,
+        pub create_event_trace: CreateEventTrace,
+        pub close_event_trace: CloseEventTrace,
+        pub check_event_trace: CheckEventTrace,
     }
 
     // Declares a global instance of EfiCallTraces.
@@ -551,12 +710,7 @@ mod test {
     }
 
     /// Mock of the `EFI_BOOT_SERVICE.FreePool` C API in test environment.
-    ///
-    /// # Safety
-    ///
-    /// The function should not be called directly. It is called internally in the
-    /// `BootServices::free_pool()` wrapper where all parameters to pass are safely handled.
-    unsafe extern "C" fn free_pool(buf: *mut core::ffi::c_void) -> EfiStatus {
+    extern "C" fn free_pool(buf: *mut core::ffi::c_void) -> EfiStatus {
         EFI_CALL_TRACES.with(|traces| {
             traces.borrow_mut().free_pool_trace.inputs.push_back(buf);
             EFI_STATUS_SUCCESS
@@ -576,8 +730,7 @@ mod test {
     ///
     /// # Safety
     ///
-    /// The function should not be called directly. It is called internally in the
-    /// `BootServices::open_protocol()` wrapper where all parameters to pass are safely handled.
+    ///   Caller should guarantee that `intf` and `protocol_guid` point to valid memory locations.
     unsafe extern "C" fn open_protocol(
         handle: EfiHandle,
         protocol_guid: *const EfiGuid,
@@ -592,10 +745,7 @@ mod test {
             trace.inputs.push_back((DeviceHandle(handle), *protocol_guid, agent_handle));
 
             let (intf_handle, status) = trace.outputs.pop_front().unwrap();
-            // SAFETY:
-            // A correct implementation of BootServices::open_protocol guarantee to pass valid
-            // pointers here.
-            *unsafe { intf.as_mut() }.unwrap() = intf_handle;
+            *intf = intf_handle;
 
             status
         })
@@ -612,8 +762,7 @@ mod test {
     ///
     /// # Safety
     ///
-    /// The function should not be called directly. It is called internally in the
-    /// `BootServices::close_protocol()` wrapper where all parameters to pass are safely handled.
+    ///   Caller should guarantee that `protocol_guid` points to valid memory location.
     unsafe extern "C" fn close_protocol(
         handle: EfiHandle,
         protocol_guid: *const EfiGuid,
@@ -643,9 +792,7 @@ mod test {
     ///
     /// # Safety
     ///
-    /// The function should not be called directly. It is called internally in the
-    /// `BootServices::find_first_and_open()/locate_handle_buffer_by_protocol()` wrapper where
-    /// all parameters to pass are safely handled.
+    ///   Caller should guarantee that `num_handles` and `buf` point to valid memory locations.
     unsafe extern "C" fn locate_handle_buffer(
         search_type: EfiLocateHandleSearchType,
         protocol: *const EfiGuid,
@@ -660,13 +807,8 @@ mod test {
             trace.inputs.push_back(*protocol);
 
             let (num, handles) = trace.outputs.pop_front().unwrap();
-            // SAFETY:
-            // A correct implementation of BootServices::open_protocol guarantees to pass valid
-            // pointers here.
-            unsafe {
-                *num_handles = num as usize;
-                *buf = handles as *mut EfiHandle;
-            };
+            *num_handles = num as usize;
+            *buf = handles as *mut EfiHandle;
 
             EFI_STATUS_SUCCESS
         })
@@ -685,9 +827,8 @@ mod test {
     ///
     /// # Safety
     ///
-    /// The function should not be called directly. It is called internally in the
-    /// `BootServices::get_memory_map()` wrapper where all parameters to pass are safely
-    /// handled.
+    ///   Caller should guarantee that `memory_map_size`, `map_key` and `desc_size` point to valid
+    ///   memory locations.
     unsafe extern "C" fn get_memory_map(
         memory_map_size: *mut usize,
         memory_map: *mut EfiMemoryDescriptor,
@@ -712,17 +853,71 @@ mod test {
     }
 
     /// Mock of the `EFI_BOOT_SERVICE.ExitBootServices` C API in test environment.
-    ///
-    /// # Safety
-    ///
-    /// The function should not be called directly. It is called internally in the
-    /// `BootServices::exit_boot_services()` wrapper where all parameters to pass are safely
-    /// handled.
-    unsafe extern "C" fn exit_boot_services(image_handle: EfiHandle, map_key: usize) -> EfiStatus {
+    extern "C" fn exit_boot_services(image_handle: EfiHandle, map_key: usize) -> EfiStatus {
         EFI_CALL_TRACES.with(|traces| {
             let trace = &mut traces.borrow_mut().exit_boot_services_trace;
             trace.inputs.push_back((image_handle, map_key));
             EFI_STATUS_SUCCESS
+        })
+    }
+
+    /// EFI_BOOT_SERVICE.CreateEvent.
+    #[derive(Default)]
+    pub struct CreateEventTrace {
+        // Capture `type_`, `notify_tpl`, `notify_fn`, `notify_ctx`
+        pub inputs: VecDeque<(u32, EfiTpl, EfiEventNotify, *mut core::ffi::c_void)>,
+        // Output a EfiEvent.
+        pub outputs: VecDeque<EfiEvent>,
+    }
+
+    /// Mock of the `EFI_BOOT_SERVICE.CreateEvent` C API in test environment.
+    ///
+    /// # Safety
+    ///
+    ///   Caller should guarantee that `event` points to valid memory location.
+    unsafe extern "C" fn create_event(
+        type_: u32,
+        notify_tpl: EfiTpl,
+        notify_fn: EfiEventNotify,
+        notify_ctx: *mut core::ffi::c_void,
+        event: *mut EfiEvent,
+    ) -> EfiStatus {
+        EFI_CALL_TRACES.with(|traces| {
+            let trace = &mut traces.borrow_mut().create_event_trace;
+            trace.inputs.push_back((type_, notify_tpl, notify_fn, notify_ctx));
+            *event = trace.outputs.pop_front().unwrap();
+            EFI_STATUS_SUCCESS
+        })
+    }
+
+    /// EFI_BOOT_SERVICE.CloseEvent.
+    #[derive(Default)]
+    pub struct CloseEventTrace {
+        // Capture `event`
+        pub inputs: VecDeque<EfiEvent>,
+    }
+
+    /// Mock of the `EFI_BOOT_SERVICE.CloseEvent` C API in test environment.
+    extern "C" fn close_event(event: EfiEvent) -> EfiStatus {
+        EFI_CALL_TRACES.with(|traces| {
+            let trace = &mut traces.borrow_mut().close_event_trace;
+            trace.inputs.push_back(event);
+            EFI_STATUS_SUCCESS
+        })
+    }
+
+    /// EFI_BOOT_SERVICE.CheckEvent.
+    #[derive(Default)]
+    pub struct CheckEventTrace {
+        // EfiStatus for return.
+        pub outputs: VecDeque<EfiStatus>,
+    }
+
+    /// Mock of the `EFI_BOOT_SERVICE.CheckEvent` C API in test environment.
+    extern "C" fn check_event(_: EfiEvent) -> EfiStatus {
+        EFI_CALL_TRACES.with(|traces| {
+            let trace = &mut traces.borrow_mut().check_event_trace;
+            trace.outputs.pop_front().unwrap()
         })
     }
 
@@ -744,6 +939,9 @@ mod test {
         boot_services.locate_handle_buffer = Some(locate_handle_buffer);
         boot_services.get_memory_map = Some(get_memory_map);
         boot_services.exit_boot_services = Some(exit_boot_services);
+        boot_services.create_event = Some(create_event);
+        boot_services.close_event = Some(close_event);
+        boot_services.check_event = Some(check_event);
         systab.boot_services = &mut boot_services as *mut _;
         let image_handle: usize = 1234; // Don't care.
 
@@ -1047,6 +1245,87 @@ mod test {
             assert_eq!(desc.into_iter().map(|v| *v).collect::<Vec<_>>(), descriptors[..2].to_vec());
             // Validate that the returned `EfiMemoryMap` has the correct map_key.
             assert_eq!(desc.map_key(), map_key);
+        });
+    }
+
+    #[test]
+    fn test_create_event_with_notify_fn() {
+        run_test(|image_handle, systab_ptr| {
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+            let mut cb_impl = |_: EfiEvent| {};
+            let mut cb = EventNotify::new(Tpl::Callback, &mut cb_impl);
+            let event: EfiEvent = 1234usize as _;
+            EFI_CALL_TRACES.with(|traces| {
+                traces.borrow_mut().create_event_trace.outputs.push_back(event);
+            });
+            {
+                let _ = efi_entry
+                    .system_table()
+                    .boot_services()
+                    .create_event(EventType::Timer, Some(&mut cb))
+                    .unwrap();
+            }
+            let efi_cb: EfiEventNotify = Some(efi_event_cb);
+            EFI_CALL_TRACES.with(|traces| {
+                assert_eq!(
+                    traces.borrow_mut().create_event_trace.inputs,
+                    [(
+                        EventType::Timer as _,
+                        Tpl::Callback as _,
+                        efi_cb,
+                        &mut cb as *mut _ as *mut _
+                    )]
+                )
+            });
+            // Verify close_event is called.
+            EFI_CALL_TRACES
+                .with(|traces| assert_eq!(traces.borrow_mut().close_event_trace.inputs, [event]));
+        });
+    }
+
+    #[test]
+    fn test_create_event_wo_notify_fn() {
+        run_test(|image_handle, systab_ptr| {
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+            let event: EfiEvent = 1234usize as _;
+            EFI_CALL_TRACES.with(|traces| {
+                traces.borrow_mut().create_event_trace.outputs.push_back(event);
+            });
+            {
+                let _ = efi_entry
+                    .system_table()
+                    .boot_services()
+                    .create_event(EventType::Timer, None)
+                    .unwrap();
+            }
+            EFI_CALL_TRACES.with(|traces| {
+                assert_eq!(
+                    traces.borrow_mut().create_event_trace.inputs,
+                    [(EventType::Timer as _, 0, None, null_mut())]
+                )
+            });
+        });
+    }
+
+    #[test]
+    fn test_check_event() {
+        run_test(|image_handle, systab_ptr| {
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+            let event: EfiEvent = 1234usize as _;
+            EFI_CALL_TRACES.with(|traces| {
+                traces.borrow_mut().create_event_trace.outputs.push_back(event);
+                traces.borrow_mut().check_event_trace.outputs.push_back(EFI_STATUS_SUCCESS);
+                traces.borrow_mut().check_event_trace.outputs.push_back(EFI_STATUS_NOT_READY);
+                traces.borrow_mut().check_event_trace.outputs.push_back(EFI_STATUS_UNSUPPORTED);
+            });
+            let res = efi_entry
+                .system_table()
+                .boot_services()
+                .create_event(EventType::Timer, None)
+                .unwrap();
+            assert_eq!(efi_entry.system_table().boot_services().check_event(&res), Ok(true));
+            assert_eq!(efi_entry.system_table().boot_services().check_event(&res), Ok(false));
+            assert!(efi_entry.system_table().boot_services().check_event(&res).is_err());
         });
     }
 

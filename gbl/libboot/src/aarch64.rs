@@ -62,15 +62,19 @@ pub unsafe fn jump_linux_el2_or_lower(kernel: &[u8], fdt: &[u8]) -> ! {
     // additional initializations listed
     // https://www.kernel.org/doc/html/v5.11/arm64/booting.html that may need to be performed
     // explicitly for other platforms.
-    disable_cache_mmu();
-    asm!(
-        "mov x1, 0",
-        "mov x2, 0",
-        "mov x3, 0",
-        "br x4",
-        in("x4") kernel.as_ptr() as usize,
-        in("x0") fdt.as_ptr() as usize,
-    );
+    // SAFETY: The function only flushes/disable cache and MMU.
+    unsafe { disable_cache_mmu() };
+    // SAFETY: By safety requirement of this function, `kernel` contains a valid Linux kernel.
+    unsafe {
+        asm!(
+            "mov x1, 0",
+            "mov x2, 0",
+            "mov x3, 0",
+            "br x4",
+            in("x4") kernel.as_ptr() as usize,
+            in("x0") fdt.as_ptr() as usize,
+        );
+    }
 
     unreachable!();
 }
@@ -82,15 +86,19 @@ pub unsafe fn jump_linux_el2_or_lower(kernel: &[u8], fdt: &[u8]) -> ! {
 /// Caller must ensure that address at `kernel_entry` contains a valid zircon kernel.
 pub unsafe fn jump_zircon_el2_or_lower(kernel_entry: usize, zbi: &[u8]) -> ! {
     assert_ne!(current_el(), ExceptionLevel::EL3);
-    disable_cache_mmu();
-    asm!(
-        "mov x1, 0",
-        "mov x2, 0",
-        "mov x3, 0",
-        "br x4",
-        in("x4") kernel_entry,
-        in("x0") zbi.as_ptr() as usize,
-    );
+    // SAFETY: The function only flushes/disable cache and MMU.
+    unsafe { disable_cache_mmu() };
+    // SAFETY: By safety requirement of this function, `kernel` contains a valid zircon kernel.
+    unsafe {
+        asm!(
+            "mov x1, 0",
+            "mov x2, 0",
+            "mov x3, 0",
+            "br x4",
+            in("x4") kernel_entry,
+            in("x0") zbi.as_ptr() as usize,
+        );
+    }
 
     unreachable!();
 }
