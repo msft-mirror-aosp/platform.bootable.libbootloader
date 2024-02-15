@@ -182,19 +182,28 @@ where
 
     // low memory address greater than 0x9_0000 is bogus.
     assert!(low_mem_addr <= 0x9_0000);
-    let boot_param_buffer = from_raw_parts_mut(low_mem_addr as *mut _, BOOT_SETUP_LOAD_SIZE);
+    // SAFETY: By safety requirement of this function, `low_mem_addr` points to sufficiently large
+    // memory.
+    let boot_param_buffer =
+        unsafe { from_raw_parts_mut(low_mem_addr as *mut _, BOOT_SETUP_LOAD_SIZE) };
     // Note: We currently boot directly from protected mode kernel and bypass real-mode kernel.
     // Thus we omit the heap section. Revisit this if we encounter platforms that have to boot from
     // real-mode kernel.
     let cmdline_start = low_mem_addr + BOOT_SETUP_LOAD_SIZE;
     // Should not reach into I/O memory hole section.
     assert!(cmdline_start + cmdline.len() <= 0x0A0000);
-    let cmdline_buffer = from_raw_parts_mut(cmdline_start as *mut _, cmdline.len());
+    // SAFETY: By safety requirement of this function, `low_mem_addr` points to sufficiently large
+    // memory.
+    let cmdline_buffer = unsafe { from_raw_parts_mut(cmdline_start as *mut _, cmdline.len()) };
 
     let boot_sector_size = bootparam.kernel_off();
     // Copy protected mode kernel to load address
-    from_raw_parts_mut(LOAD_ADDR_HIGH as *mut u8, kernel[boot_sector_size..].len())
-        .clone_from_slice(&kernel[boot_sector_size..]);
+    // SAFETY: By safety requirement of this function, `LOAD_ADDR_HIGH` points to sufficiently
+    // large memory.
+    unsafe {
+        from_raw_parts_mut(LOAD_ADDR_HIGH as *mut u8, kernel[boot_sector_size..].len())
+            .clone_from_slice(&kernel[boot_sector_size..]);
+    }
 
     // Copy over boot params to boot sector to prepare for fix-up.
     boot_param_buffer.fill(0);
@@ -222,6 +231,7 @@ where
     bootparam_fixup.0.e820_entries = num_entries;
 
     // Clears stack pointers, interrupt and jumps to protected mode kernel.
+    // SAFETY: By safety requirement of this function, input contains a valid linux kernel.
     #[cfg(target_arch = "x86_64")]
     unsafe {
         asm!(
@@ -234,6 +244,7 @@ where
             in("rsi") low_mem_addr,
         );
     }
+    // SAFETY: By safety requirement of this function, input contains a valid linux kernel.
     #[cfg(target_arch = "x86")]
     unsafe {
         asm!(

@@ -41,6 +41,22 @@ typedef uint64_t EfiVirtualAddr;
 
 typedef void (*EfiEventNotify)(EfiEvent event, void* ctx);
 
+typedef enum EFI_EVENT_TYPE: uint32_t {
+  TIMER = 0x80000000,
+  RUNTIME = 0x40000000,
+  NOTIFY_WAIT = 0x00000100,
+  NOTIFY_SIGNAL = 0x00000200,
+  SIGNAL_EXIT_BOOT_SERVICES = 0x00000201,
+  SIGNAL_VIRTUAL_ADDRESS_CHANGE = 0x60000202,
+} EfiEventType;
+
+typedef enum EFI_TPL: size_t {
+  APPLICATION = 4,
+  CALLBACK = 8,
+  NOTIFY = 16,
+  HIGH_LEVEL = 31,
+} EfiTpl;
+
 typedef enum EFI_TIMER_DELAY { TIMER_CANCEL, TIMER_PERIODIC, TIMER_RELATIVE } EfiTimerDelay;
 
 typedef enum {
