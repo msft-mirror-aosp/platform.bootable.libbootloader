@@ -18,7 +18,7 @@ use core::fmt::Write;
 use core::mem::size_of;
 use efi::{efi_print, EfiEntry};
 use fdt::Fdt;
-use libzbi::{ZbiContainer, ZbiFlags, ZbiHeader, ZbiType, ZBI_ALIGNMENT_USIZE};
+use zbi::{ZbiContainer, ZbiFlags, ZbiHeader, ZbiType, ZBI_ALIGNMENT_USIZE};
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 
 /// A ZBI kernel is a ZBi container where the first ZBI item is a kernel type item.
