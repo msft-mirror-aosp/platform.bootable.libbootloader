@@ -33,8 +33,6 @@ typedef enum { EFI_NATIVE_INTERFACE } EFI_INTERFACE_TYPE;
 
 typedef EFI_INTERFACE_TYPE EfiInterfaceType;
 
-typedef size_t EfiTpl;
-
 typedef enum EFI_ALLOCATOR_TYPE {
   ALLOCATE_ANY_PAGES,
   ALLOCATE_MAX_ADDRESS,
@@ -133,7 +131,7 @@ typedef struct {
   EfiStatus (*calculate_crc32)(void* data, size_t len, uint32_t* crc32);
   void (*copy_mem)(void* dest, const void* src, size_t len);
   void (*set_mem)(void* buf, size_t len, uint8_t val);
-  EfiStatus (*create_event_ex)(uint32_t type, EfiTpl notify_tpl, EfiEventNotify notify_fn,
+  EfiStatus (*create_event_ex)(EfiEventType type, EfiTpl notify_tpl, EfiEventNotify notify_fn,
                                const void* notify_ctx, const EfiGuid* event_group, EfiEvent* event);
 } EfiBootService;
 

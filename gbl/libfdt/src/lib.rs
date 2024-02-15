@@ -138,10 +138,14 @@ impl FdtHeader {
     ///   1. `ptr` contains a valid FDT.
     ///   2. The buffer remains valid as long as the returned references are in use.
     pub unsafe fn from_raw(ptr: *const u8) -> Result<(&'static FdtHeader, &'static [u8])> {
-        map_result(unsafe { libfdt_c_def::fdt_check_header(ptr as *const _) })?;
-        let header_bytes = from_raw_parts(ptr, size_of::<FdtHeader>());
-        let header = Self::from_bytes_ref(header_bytes)?;
-        Ok((header, from_raw_parts(ptr, header.totalsize())))
+        // SAFETY: By safety requirement of this function, `ptr` points to a valid FDT and remains
+        // valid when in use.
+        unsafe {
+            map_result(libfdt_c_def::fdt_check_header(ptr as *const _))?;
+            let header_bytes = from_raw_parts(ptr, size_of::<FdtHeader>());
+            let header = Self::from_bytes_ref(header_bytes)?;
+            Ok((header, from_raw_parts(ptr, header.totalsize())))
+        }
     }
 }
 

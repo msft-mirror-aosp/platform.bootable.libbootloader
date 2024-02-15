@@ -27,15 +27,6 @@ use gbl_storage::{required_scratch_size, BlockDevice, Gpt, GptEntry};
 pub const EFI_DTB_TABLE_GUID: EfiGuid =
     EfiGuid::new(0xb1b621d5, 0xf19c, 0x41a5, [0x83, 0x0b, 0xd9, 0x15, 0x2c, 0x69, 0xaa, 0xe0]);
 
-/// Helper macro for printing message via `EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL` in
-/// `EFI_SYSTEM_TABLE.ConOut`.
-#[macro_export]
-macro_rules! efi_print {
-    ( $efi_entry:expr, $( $x:expr ),* ) => {
-        write!($efi_entry.system_table().con_out().unwrap(), $($x,)*).unwrap()
-    };
-}
-
 /// Checks and converts an integer into usize
 fn to_usize<T: TryInto<usize>>(val: T) -> Result<usize> {
     Ok(val.try_into().map_err(|_| EfiAppError::ArithmeticOverflow)?)
