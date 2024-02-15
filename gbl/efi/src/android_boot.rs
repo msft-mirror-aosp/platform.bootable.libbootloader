@@ -18,7 +18,7 @@ use core::str::from_utf8;
 
 use bootconfig::{BootConfigBuilder, BootConfigError};
 use bootimg::{BootImage, VendorImageHeader};
-use efi::{exit_boot_services, EfiEntry};
+use efi::{efi_print, exit_boot_services, EfiEntry};
 use fdt::Fdt;
 use libavb_rust::Ops;
 
