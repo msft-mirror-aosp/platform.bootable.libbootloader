@@ -20,7 +20,7 @@ load(
     "LLVM_PREBUILTS_C_INCLUDE",
     "gbl_llvm_tool_path",
 )
-load("@rules_rust//bindgen:bindgen.bzl", "rust_bindgen_toolchain")
+load("@rules_rust//bindgen:defs.bzl", "rust_bindgen_toolchain")
 load(
     "@rules_rust//rust:toolchain.bzl",
     "rust_stdlib_filegroup",
