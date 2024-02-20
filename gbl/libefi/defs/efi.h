@@ -30,6 +30,7 @@
 #include "protocols/device_path_protocol.h"
 #include "protocols/loaded_image_protocol.h"
 #include "protocols/riscv_efi_boot_protocol.h"
+#include "protocols/simple_network_protocol.h"
 #include "protocols/simple_text_output_protocol.h"
 
 #endif  // __EFI_H__
