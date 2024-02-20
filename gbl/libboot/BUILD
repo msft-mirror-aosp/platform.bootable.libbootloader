@@ -19,6 +19,21 @@ package(
     default_visibility = ["//visibility:public"],
 )
 
+# Newer version of `rust_bindgen` requires a `cc_library` target that actually produces a static
+# library and instead of only headers. Thus we generate a placeholder source file to meet the
+# requirement.
+genrule(
+    name = "bindgen_noop_cc",
+    outs = ["bindgen_noop_cc.cc"],
+    cmd = "touch $(OUTS)",
+)
+
+cc_library(
+    name = "bindgen_cc_lib",
+    srcs = [":bindgen_noop_cc"],
+    deps = ["@linux_x86_64_sysroot//:linux_x86_64_sysroot_include"],
+)
+
 CUSTOM_DERIVES = "AsBytes,FromBytes,FromZeroes"
 
 rust_bindgen(
@@ -39,7 +54,7 @@ rust_bindgen(
 #![cfg_attr(not(test), no_std)]
 use zerocopy::{AsBytes, FromBytes, FromZeroes};""",
     ],
-    cc_lib = "@linux_x86_64_sysroot//:linux_x86_64_sysroot_include",
+    cc_lib = ":bindgen_cc_lib",
     header = "@linux_x86_64_sysroot//:sysroot/usr/include/x86_64-linux-gnu/asm/bootparam.h",
 )
 
