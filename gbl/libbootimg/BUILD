@@ -19,8 +19,18 @@ package(
     default_visibility = ["//visibility:public"],
 )
 
+# Newer version of `rust_bindgen` requires a `cc_library` target that actually produces a static
+# library and instead of only headers. Thus we generate a placeholder source file to meet the
+# requirement.
+genrule(
+    name = "bindgen_noop_cc",
+    outs = ["bindgen_noop_cc.cc"],
+    cmd = "touch $(OUTS)",
+)
+
 cc_library(
     name = "bootimg_cc_header",
+    srcs = [":bindgen_noop_cc"],
     hdrs = ["@mkbootimg//:include/bootimg/bootimg.h"],
 )
 
