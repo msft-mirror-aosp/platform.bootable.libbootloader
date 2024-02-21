@@ -20,8 +20,18 @@ package(
     default_visibility = ["//visibility:public"],
 )
 
+# Newer version of `rust_bindgen` requires a `cc_library` target that actually produces a static
+# library and instead of only headers. Thus we generate a placeholder source file to meet the
+# requirement.
+genrule(
+    name = "bindgen_noop_cc",
+    outs = ["bindgen_noop_cc.cc"],
+    cmd = "touch $(OUTS)",
+)
+
 cc_library(
     name = "efi_c_headers",
+    srcs = [":bindgen_noop_cc"],
     hdrs = [
         "defs/boot_service.h",
         "defs/efi.h",
@@ -29,6 +39,7 @@ cc_library(
         "defs/protocols/device_path_protocol.h",
         "defs/protocols/loaded_image_protocol.h",
         "defs/protocols/riscv_efi_boot_protocol.h",
+        "defs/protocols/simple_network_protocol.h",
         "defs/protocols/simple_text_output_protocol.h",
         "defs/system_table.h",
         "defs/types.h",
