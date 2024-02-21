@@ -23,8 +23,18 @@ package(
 
 exports_files(glob(["**/*"]))
 
+# Newer version of `rust_bindgen` requires a `cc_library` target that actually produces a static
+# library and instead of only headers. Thus we generate a placeholder source file to meet the
+# requirement.
+genrule(
+    name = "bindgen_noop_cc",
+    outs = ["bindgen_noop_cc.cc"],
+    cmd = "touch $(OUTS)",
+)
+
 cc_library(
     name = "headers",
+    srcs = [":bindgen_noop_cc"],
     hdrs = [
         "libavb/avb_chain_partition_descriptor.h",
         "libavb/avb_cmdline.h",

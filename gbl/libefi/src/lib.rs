@@ -77,6 +77,7 @@ pub use protocol::LoadedImageProtocol;
 pub use protocol::Protocol;
 pub use protocol::ProtocolInfo;
 pub use protocol::RiscvBootProtocol;
+pub use protocol::SimpleNetworkProtocol;
 pub use protocol::SimpleTextOutputProtocol;
 
 mod error {
