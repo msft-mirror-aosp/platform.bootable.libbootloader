@@ -33,7 +33,7 @@ rust_library(
 )
 
 rust_test(
-    name = "gbl_libstorage_test",
+    name = "libstorage_test",
     compile_data = [
         "@gbl//libstorage/test:gpt_test.bin",
         "@gbl//libstorage/test:boot_a.bin",
@@ -43,6 +43,6 @@ rust_test(
 )
 
 rust_doc_test(
-    name = "gbl_libstorage_doc_test",
+    name = "libstorage_doc_test",
     crate = ":libstorage",
 )

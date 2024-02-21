@@ -30,7 +30,7 @@ filegroup(
 # sysroot prebuilts for x86_64_unknown-linux-gnu
 rust_stdlib_filegroup(
     name = "prebuilt_stdlibs",
-    srcs = glob(["lib/rustlib/x86_64_unknown-linux-gnu/*"]),
+    srcs = glob(["lib/rustlib/x86_64-unknown-linux-gnu/lib/*"]),
 )
 
 # sysroot prebuilts for aarch64_unknown-uefi
