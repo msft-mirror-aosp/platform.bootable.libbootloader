@@ -13,7 +13,7 @@
 # limitations under the License.
 
 load("@gbl_llvm_prebuilts//:info.bzl", "LLVM_PREBUILTS_C_INCLUDE")
-load("@rules_rust//bindgen:bindgen.bzl", "rust_bindgen")
+load("@rules_rust//bindgen:defs.bzl", "rust_bindgen")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(
