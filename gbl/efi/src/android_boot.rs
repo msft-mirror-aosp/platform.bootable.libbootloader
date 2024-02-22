@@ -20,7 +20,6 @@ use bootconfig::{BootConfigBuilder, BootConfigError};
 use bootimg::{BootImage, VendorImageHeader};
 use efi::{efi_print, exit_boot_services, EfiEntry};
 use fdt::Fdt;
-use libavb_rust::Ops;
 
 use crate::error::{EfiAppError, GblEfiError, Result};
 use crate::utils::{
@@ -29,7 +28,7 @@ use crate::utils::{
 };
 
 use crate::avb::GblEfiAvbOps;
-use libavb_rust::{slot_verify, HashtreeErrorMode, SlotVerifyFlags};
+use avb::{slot_verify, HashtreeErrorMode, Ops, SlotVerifyFlags};
 
 // Linux kernel requires 2MB alignment.
 const KERNEL_ALIGNMENT: usize = 2 * 1024 * 1024;
