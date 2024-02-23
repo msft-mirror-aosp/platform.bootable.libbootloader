@@ -1,4 +1,4 @@
-# Copyright (C) 2023 The Android Open Source Project
+# Copyright (C) 2024 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,26 +15,36 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 rust_library(
-    name = "libzbi",
-    srcs = [
-        "src/lib.rs",
-        "src/zbi_format.rs",
-    ],
-    crate_name = "zbi",
+    name = "libgbl",
+    srcs = glob(
+        ["**/*.rs"],
+        exclude = ["tests/**/*.rs"],
+    ),
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
+        "@avb",
         "@bitflags",
+        "@crc32fast",
+        "@cstr",
+        "@gbl//third_party/libzbi",
+        "@spin",
         "@zerocopy",
     ],
 )
 
 rust_test(
-    name = "libzbi_test",
-    crate = ":libzbi",
+    name = "libgbl_test",
+    crate = ":libgbl",
+    crate_features = ["uuid"],
+    data = [
+        "@gbl//libgbl/testdata:test_image.img",
+        "@gbl//libgbl/testdata:testkey_rsa4096.pem",
+        "@gbl//libgbl/testdata:testkey_rsa4096.pub.pem",
+    ],
     deps = [
-        "@bitflags",
-        "@hex",
-        "@zerocopy",
+        "@avb//:avb_test",
+        "@static_assertions",
+        "@uuid",
     ],
 )

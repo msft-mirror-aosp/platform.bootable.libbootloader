@@ -169,11 +169,8 @@ rust_library(
 )
 
 rust_library(
-    name = "libavb_rust",
-    srcs = glob(
-        include = ["rust/src/**/*.rs"],
-        exclude = ["rust/src/tests/**/*.rs"],
-    ),
+    name = "avb",
+    srcs = glob(["rust/src/**/*.rs"]),
     crate_features = ["uuid"],
     edition = "2021",
     deps = [
@@ -181,5 +178,16 @@ rust_library(
         ":libavb_c_staticlib",
         "@uuid",
         "@zerocopy",
+    ],
+)
+
+rust_library(
+    name = "avb_test",
+    srcs = ["rust/tests/test_ops.rs"],
+    crate_features = ["uuid"],
+    edition = "2021",
+    deps = [
+        ":avb",
+        "@uuid",
     ],
 )

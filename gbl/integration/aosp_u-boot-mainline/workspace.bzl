@@ -21,6 +21,39 @@ load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
 load("@gbl//toolchain:gbl_workspace_util.bzl", "android_rust_prebuilts", "gbl_llvm_prebuilts")
 load("@kernel_toolchain_info//:dict.bzl", "CLANG_VERSION")
 
+def rust_crate_build_file(name, deps = [], features = [], rustc_flags = []):
+    """Generate BUILD file content for a rust crate
+
+    This helper is suitable for crates that have straightforward build rules. Specifically, the
+    crate contains a single `rust_library` targets that includes all source files under the repo.
+    There is not any need of preprocessing, patching or source generation.
+
+    Args:
+        name (String): name of the rust_library target.
+        deps (List of strings): The `deps` field.
+        features (List of strings): The `features` field.
+        rustc_flags (List of strings): The `rustc_flags` field.
+
+    Returns:
+        A string for the BUILD file content.
+    """
+    deps = "[{}]".format(",".join(["\"{}\"".format(ele) for ele in deps]))
+    features = "[{}]".format(",".join(["\"{}\"".format(ele) for ele in features]))
+    rustc_flags = "[{}]".format(",".join(["\"{}\"".format(ele) for ele in rustc_flags]))
+    return """
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+rust_library(
+    name = \"{}\",
+    srcs = glob(["**/*.rs"]),
+    crate_features = {},
+    edition = "2021",
+    rustc_flags ={},
+    visibility = ["//visibility:public"],
+    deps = {},
+)
+""".format(name, features, rustc_flags, deps)
+
 def define_gbl_workspace(name = None):
     """Set up worksapce dependencies for GBL
 
@@ -118,7 +151,35 @@ cc_library(
     native.new_local_repository(
         name = "uuid",
         path = "external/rust/crates/uuid",
-        build_file = "@gbl//android_external_rust_crates:BUILD.uuid.bazel",
+        build_file_content = rust_crate_build_file("uuid"),
+    )
+
+    native.new_local_repository(
+        name = "cstr",
+        path = "packages/modules/Virtualization/libs/cstr",
+        build_file_content = rust_crate_build_file("cstr"),
+    )
+
+    native.new_local_repository(
+        name = "spin",
+        path = "external/rust/crates/spin",
+        build_file_content = rust_crate_build_file(
+            "spin",
+            features = [
+                "mutex",
+                "spin_mutex",
+            ],
+            rustc_flags = [
+                "-A",
+                "unused_imports",
+            ],
+        ),
+    )
+
+    native.new_local_repository(
+        name = "static_assertions",
+        path = "external/rust/crates/static_assertions",
+        build_file_content = rust_crate_build_file("static_assertions"),
     )
 
     # Following are third party rust crates dependencies.
