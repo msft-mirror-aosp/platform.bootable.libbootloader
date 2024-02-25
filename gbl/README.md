@@ -7,13 +7,13 @@ can be loaded directly from the firmware.
 ## Build
 
 The GBL project are intended to be built from the
-[Android Bootloader](https://source.android.com/docs/setup/create/cuttlefish-bootloader-dev#develop-bootloader)
-super project checkout.
+[Android UEFI Manifest](https://android.googlesource.com/kernel/manifest/+/refs/heads/uefi-gbl-mainline/default.xml)
+checkout.
 
 To build the EFI application:
 
 ```
-./tools/bazel run //u-boot:gbl_efi_dist --extra_toolchains=@gbl//toolchain:all
+./tools/bazel run //bootable/libbootloader:gbl_efi_dist --extra_toolchains=@gbl//toolchain:all
 ```
 The above builds the EFI application for all of `x86_64`, `x86_32`, `aarch64`
 and `riscv64` platforms.
