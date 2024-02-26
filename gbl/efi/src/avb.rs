@@ -20,8 +20,8 @@ use core::cmp::{min, Ord};
 use core::ffi::CStr;
 
 use crate::utils::MultiGptDevices;
+use avb::{IoError, IoResult, Ops, PublicKeyForPartitionInfo};
 use efi::{efi_free, efi_malloc};
-use libavb_rust::{IoError, IoResult, Ops, PublicKeyForPartitionInfo};
 use uuid::Uuid;
 
 pub struct GblEfiAvbOps<'a, 'b> {

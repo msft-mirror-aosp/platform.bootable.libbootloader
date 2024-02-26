@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use avb::{IoError, SlotVerifyError};
 use boot::BootError;
 use bootconfig::BootConfigError;
 use bootimg::ImageError;
 use efi::EfiError;
 use fdt::FdtError;
 use gbl_storage::StorageError;
-use libavb_rust::{IoError, SlotVerifyError};
-use libzbi::ZbiError;
+use zbi::ZbiError;
 
 /// Error types for EFI application.
 #[derive(Debug)]

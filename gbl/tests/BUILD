@@ -20,6 +20,7 @@ test_suite(
         "@gbl//libefi:libefi_test",
         "@gbl//libfastboot:libfastboot_test",
         "@gbl//libfdt:libfdt_test",
+        "@gbl//libgbl:libgbl_test",
         "@gbl//libstorage:libstorage_doc_test",
         "@gbl//libstorage:libstorage_test",
         "@gbl//third_party/libzbi:libzbi_test",
