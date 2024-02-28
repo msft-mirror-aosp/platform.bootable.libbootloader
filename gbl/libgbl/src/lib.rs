@@ -32,6 +32,7 @@
 extern crate avb;
 extern crate core;
 extern crate cstr;
+extern crate gbl_storage;
 extern crate spin;
 extern crate zbi;
 
@@ -218,7 +219,6 @@ where
         partitions_ram_map: &mut [PartitionRamMap],
         avb_verification_flags: AvbVerificationFlags,
         boot_target: Option<BootTarget>,
-        slot_cursor: &mut Cursor,
     ) -> Result<VerifiedData<'b>>
     where
         'a: 'b,
@@ -249,9 +249,14 @@ where
     ///
     /// * `Ok(Cursor)` - Cursor object that manages a Manager
     /// * `Err(Error)` - on failure
-    pub fn load_slot_interface(&mut self) -> Result<Cursor> {
+    pub fn load_slot_interface<B: gbl_storage::AsBlockDevice>(
+        &mut self,
+        block_device: B,
+    ) -> Result<Cursor<B>> {
         let boot_token = BOOT_TOKEN.lock().take().ok_or(Error::OperationProhibited)?;
-        self.ops.load_slot_interface(boot_token).map_err(|_| Error::OperationProhibited)
+        self.ops
+            .load_slot_interface(block_device, boot_token)
+            .map_err(|_| Error::OperationProhibited)
     }
 
     /// Info Load
@@ -397,19 +402,16 @@ where
     /// * `Err(Error)` - on failure
     // Nevertype could be used here when it is stable https://github.com/serde-rs/serde/issues/812
     #[allow(clippy::too_many_arguments)]
-    pub fn load_verify_boot<'b: 'c, 'c, 'd: 'b>(
+    pub fn load_verify_boot<'b: 'c, 'c, 'd: 'b, B: gbl_storage::AsBlockDevice>(
         &mut self,
         avb_ops: &'b mut impl avb::Ops,
         partitions_ram_map: &'d mut [PartitionRamMap<'b, 'c>],
         avb_verification_flags: AvbVerificationFlags,
-        slot_cursor: Cursor,
+        slot_cursor: Cursor<B>,
         kernel_load_buffer: &mut [u8],
         ramdisk_load_buffer: &mut [u8],
         fdt: &mut [u8],
     ) -> Result<()> {
-        // TODO(dovs):
-        // * Change the receiver of ops.load_slot_interface to be &mut self
-        // * Add partition write capabilites to slot manager
         let dtb = Dtb(&mut fdt[..]);
         let mut ramdisk = Ramdisk(ramdisk_load_buffer);
 
@@ -447,20 +449,20 @@ where
         false
     }
 
-    fn lvb_inner<'b: 'c, 'c, 'd: 'b, 'e>(
+    fn lvb_inner<'b: 'c, 'c, 'd: 'b, 'e, B: gbl_storage::AsBlockDevice>(
         &mut self,
         avb_ops: &'b mut impl avb::Ops,
         ramdisk: &mut Ramdisk,
         kernel_load_buffer: &'e mut [u8],
         partitions_ram_map: &'d mut [PartitionRamMap<'b, 'c>],
         avb_verification_flags: AvbVerificationFlags,
-        mut slot_cursor: Cursor,
+        mut slot_cursor: Cursor<B>,
     ) -> Result<(KernelImage<'e>, BootToken)> {
         let mut oneshot_status = slot_cursor.ctx.get_oneshot_status();
         slot_cursor.ctx.clear_oneshot_status();
 
         if oneshot_status == Some(OneShot::Bootloader) {
-            match self.ops.do_fastboot(&slot_cursor) {
+            match self.ops.do_fastboot(&mut slot_cursor) {
                 Ok(_) => oneshot_status = slot_cursor.ctx.get_oneshot_status(),
                 Err(Error::NotImplemented) => (),
                 Err(e) => return Err(e),
@@ -478,7 +480,6 @@ where
                 partitions_ram_map,
                 AvbVerificationFlags(0),
                 Some(boot_target),
-                &mut slot_cursor,
             )
             .map_err(|e: Error| {
                 if let BootTarget::NormalBoot(slot) = boot_target {
@@ -578,13 +579,11 @@ where
 #[cfg(test)]
 mod tests {
     extern crate avb_test;
-
     use super::*;
     use avb::IoError;
     use avb::IoResult as AvbIoResult;
     use avb::PublicKeyForPartitionInfo;
     use avb_test::TestOps;
-    use slots::fuchsia::SlotBlock;
     use std::fs;
 
     struct AvbOpsUnimplemented {}
@@ -637,13 +636,11 @@ mod tests {
         let mut avb_ops = AvbOpsUnimplemented {};
         let mut partitions_ram_map: [PartitionRamMap; 0] = [];
         let avb_verification_flags = AvbVerificationFlags(0);
-        let mut slot_cursor = Cursor { ctx: &mut SlotBlock::default() };
         let res = gbl.load_and_verify_image(
             &mut avb_ops,
             &mut partitions_ram_map,
             avb_verification_flags,
             None,
-            &mut slot_cursor,
         );
         assert_eq!(res.unwrap_err(), Error::AvbSlotVerifyError(SlotVerifyError::Io));
     }
@@ -659,7 +656,6 @@ mod tests {
     fn test_load_and_verify_image_stub() {
         let mut gbl = GblBuilder::new(DefaultGblOps::new()).build();
         let mut avb_ops = TestOps::default();
-        let mut slot_cursor = Cursor { ctx: &mut SlotBlock::default() };
 
         avb_ops.add_partition(TEST_PARTITION_NAME, fs::read(TEST_IMAGE_PATH).unwrap());
         avb_ops.add_partition("vbmeta", fs::read(TEST_VBMETA_PATH).unwrap());
@@ -674,7 +670,6 @@ mod tests {
             &mut partitions_ram_map,
             avb_verification_flags,
             None,
-            &mut slot_cursor,
         );
         assert!(res.is_ok());
     }
@@ -690,13 +685,11 @@ mod tests {
         let mut avb_ops = AvbOpsUnimplemented {};
         let mut partitions_ram_map: [PartitionRamMap; 0] = [];
         let avb_verification_flags = AvbVerificationFlags(0);
-        let mut slot_cursor = Cursor { ctx: &mut SlotBlock::default() };
         let res = gbl.load_and_verify_image(
             &mut avb_ops,
             &mut partitions_ram_map,
             avb_verification_flags,
             None,
-            &mut slot_cursor,
         );
         assert_eq!(res.unwrap_err(), Error::AvbSlotVerifyError(TEST_ERROR));
     }
