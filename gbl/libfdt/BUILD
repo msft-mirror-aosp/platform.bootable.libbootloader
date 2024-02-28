@@ -14,7 +14,7 @@
 
 load("@gbl//toolchain:gbl_toolchain.bzl", "link_static_cc_library")
 load("@gbl_llvm_prebuilts//:info.bzl", "LLVM_PREBUILTS_C_INCLUDE")
-load("@rules_rust//bindgen:bindgen.bzl", "rust_bindgen")
+load("@rules_rust//bindgen:defs.bzl", "rust_bindgen")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(
@@ -37,6 +37,7 @@ rust_bindgen(
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 #![allow(dead_code)]
+#![allow(unsafe_op_in_unsafe_fn)]
 #![cfg_attr(not(test), no_std)]
 
 use zerocopy::{AsBytes, FromBytes, FromZeroes};

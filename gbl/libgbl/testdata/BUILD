@@ -12,11 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@rules_rust//rust:defs.bzl", "rust_library")
-
-rust_library(
-    name = "uuid",
-    srcs = glob(["**/*.rs"]),
-    edition = "2021",
-    visibility = ["//visibility:public"],
-)
+exports_files(glob(["**/*"]))

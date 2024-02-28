@@ -12,15 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@rules_rust//bindgen:bindgen.bzl", "rust_bindgen")
+load("@rules_rust//bindgen:defs.bzl", "rust_bindgen")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(
     default_visibility = ["//visibility:public"],
 )
 
+# Newer version of `rust_bindgen` requires a `cc_library` target that actually produces a static
+# library and instead of only headers. Thus we generate a placeholder source file to meet the
+# requirement.
+genrule(
+    name = "bindgen_noop_cc",
+    outs = ["bindgen_noop_cc.cc"],
+    cmd = "touch $(OUTS)",
+)
+
 cc_library(
     name = "bootimg_cc_header",
+    srcs = [":bindgen_noop_cc"],
     hdrs = ["@mkbootimg//:include/bootimg/bootimg.h"],
 )
 

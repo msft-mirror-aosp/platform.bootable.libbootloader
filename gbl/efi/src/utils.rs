@@ -22,19 +22,10 @@ use efi::{
     EfiEntry, LoadedImageProtocol, Protocol,
 };
 use fdt::FdtHeader;
-use gbl_storage::{required_scratch_size, BlockDevice, Gpt, GptEntry};
+use gbl_storage::{required_scratch_size, AsBlockDevice, BlockIo, GptEntry};
 
 pub const EFI_DTB_TABLE_GUID: EfiGuid =
     EfiGuid::new(0xb1b621d5, 0xf19c, 0x41a5, [0x83, 0x0b, 0xd9, 0x15, 0x2c, 0x69, 0xaa, 0xe0]);
-
-/// Helper macro for printing message via `EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL` in
-/// `EFI_SYSTEM_TABLE.ConOut`.
-#[macro_export]
-macro_rules! efi_print {
-    ( $efi_entry:expr, $( $x:expr ),* ) => {
-        write!($efi_entry.system_table().con_out().unwrap(), $($x,)*).unwrap()
-    };
-}
 
 /// Checks and converts an integer into usize
 fn to_usize<T: TryInto<usize>>(val: T) -> Result<usize> {
@@ -67,9 +58,9 @@ pub fn aligned_subslice(bytes: &mut [u8], alignment: usize) -> Result<&mut [u8]>
 }
 
 // Implement a block device on top of BlockIoProtocol
-pub struct EfiBlockDevice<'a>(pub Protocol<'a, BlockIoProtocol>);
+pub struct EfiBlockIo<'a>(pub Protocol<'a, BlockIoProtocol>);
 
-impl BlockDevice for EfiBlockDevice<'_> {
+impl BlockIo for EfiBlockIo<'_> {
     fn block_size(&mut self) -> u64 {
         self.0.media().unwrap().block_size as u64
     }
@@ -91,71 +82,26 @@ impl BlockDevice for EfiBlockDevice<'_> {
     }
 }
 
-const MAX_GPT_ENTRIES: u64 = 128;
-
-/// A helper wrapper for managing GPT buffer.
-struct GptBuffer(Vec<u8>);
-
-impl GptBuffer {
-    pub fn new() -> Result<Self> {
-        let mut gpt_buffer = vec![0u8; Gpt::required_buffer_size(MAX_GPT_ENTRIES)?];
-        Gpt::new_from_buffer(MAX_GPT_ENTRIES, &mut gpt_buffer)?;
-        Ok(Self(gpt_buffer))
-    }
-
-    pub fn gpt(&mut self) -> Result<Gpt> {
-        Ok(Gpt::get_existing_from_buffer(&mut self.0[..])?)
-    }
-}
-
-/// A GPT block device type.
-/// It wraps `BlockDevice` APIs with internally maintained scratch and GPT buffers to simplify
-/// usage
+/// `EfiGptDevice` wraps a `EfiBlockIo` and implements `AsBlockDevice` interface.
 pub struct EfiGptDevice<'a> {
-    blk_dev: EfiBlockDevice<'a>,
+    io: EfiBlockIo<'a>,
     scratch: Vec<u8>,
-    gpt_buffer: GptBuffer,
 }
+
+const MAX_GPT_ENTRIES: u64 = 128;
 
 impl<'a> EfiGptDevice<'a> {
     /// Initialize from a `BlockIoProtocol` EFI protocol
     pub fn new(protocol: Protocol<'a, BlockIoProtocol>) -> Result<Self> {
-        let mut blk_dev = EfiBlockDevice(protocol);
-        let scratch = vec![0u8; required_scratch_size(&mut blk_dev)?];
-        let gpt_buffer = GptBuffer::new()?;
-        Ok(Self { blk_dev, scratch, gpt_buffer })
+        let mut io = EfiBlockIo(protocol);
+        let scratch = vec![0u8; required_scratch_size(&mut io, MAX_GPT_ENTRIES)?];
+        Ok(Self { io, scratch })
     }
+}
 
-    /// Returns the raw `BlockDevice` trait.
-    pub fn block_device<'b>(&'b mut self) -> &'b mut EfiBlockDevice<'a> {
-        &mut self.blk_dev
-    }
-
-    /// Wrapper of BlockDevice::sync_gpt()
-    pub fn sync_gpt(&mut self) -> Result<()> {
-        self.blk_dev.sync_gpt(&mut self.gpt_buffer.gpt()?, &mut self.scratch[..])?;
-        Ok(())
-    }
-
-    /// Returns the GPT.
-    pub fn gpt<'b>(&'b mut self) -> Result<Gpt<'b>> {
-        self.gpt_buffer.gpt()
-    }
-
-    /// Wrapper of BlockDevice::read_gpt_partition()
-    pub fn read_gpt_partition(
-        &mut self,
-        part_name: &str,
-        offset: u64,
-        out: &mut [u8],
-    ) -> Result<()> {
-        Ok(self.blk_dev.read_gpt_partition(
-            &self.gpt_buffer.gpt()?,
-            part_name,
-            offset,
-            out,
-            &mut self.scratch[..],
-        )?)
+impl AsBlockDevice for EfiGptDevice<'_> {
+    fn get(&mut self) -> (&mut dyn BlockIo, &mut [u8], u64) {
+        (&mut self.io, &mut self.scratch[..], MAX_GPT_ENTRIES)
     }
 }
 
@@ -198,7 +144,7 @@ impl<'a> MultiGptDevices<'a> {
     /// Finds size of a partition given by a set of possible aliases.
     pub fn partition_size_with_aliases(&mut self, aliases: &[&str]) -> Result<usize> {
         let (idx, part) = self.find_partition_with_aliases(aliases)?;
-        Ok(usize_mul(part.blocks()?, self.gpt_devices[idx].block_device().block_size())?)
+        Ok(usize_mul(part.blocks()?, self.gpt_devices[idx].block_io().block_size())?)
     }
 
     /// Returns the size of the target partition on the first match.
@@ -262,7 +208,7 @@ pub fn find_gpt_devices(efi_entry: &EfiEntry) -> Result<MultiGptDevices> {
     for handle in block_dev_handles.handles() {
         let mut gpt_dev = EfiGptDevice::new(bs.open_protocol::<BlockIoProtocol>(*handle)?)?;
         match gpt_dev.sync_gpt() {
-            Ok(()) => {
+            Ok(_) => {
                 gpt_devices.push(gpt_dev);
             }
             _ => {}
