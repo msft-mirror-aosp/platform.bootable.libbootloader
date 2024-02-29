@@ -20,7 +20,7 @@ load(
     "LLVM_PREBUILTS_C_INCLUDE",
     "gbl_llvm_tool_path",
 )
-load("@rules_rust//bindgen:bindgen.bzl", "rust_bindgen_toolchain")
+load("@rules_rust//bindgen:defs.bzl", "rust_bindgen_toolchain")
 load(
     "@rules_rust//rust:toolchain.bzl",
     "rust_stdlib_filegroup",
@@ -264,12 +264,16 @@ rust_stdlib_filegroup(
 common_lint_opts = [
     "-A",
     "deprecated",
-    "-D",
-    "unsafe_op_in_unsafe_fn",
+    # external/rust/crates/spin doesn't pass this lint check and there is not a way to make an
+    # exemption. Disable it until upstream is fixed or we figure out a workaround.
+    #"-D",
+    #"unsafe_op_in_unsafe_fn",
     "-D",
     "warnings",
     "-D",
     "clippy::undocumented_unsafe_blocks",
+    "-D",
+    "clippy::too-many-arguments",
 ]
 
 # Linux x86_64 Host toolchain

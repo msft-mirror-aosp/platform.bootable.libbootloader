@@ -32,7 +32,6 @@
 extern crate avb;
 extern crate core;
 extern crate cstr;
-extern crate lazy_static;
 extern crate spin;
 extern crate zbi;
 
@@ -40,8 +39,7 @@ use avb::{HashtreeErrorMode, SlotVerifyData, SlotVerifyError, SlotVerifyFlags, S
 use core::ffi::CStr;
 use core::fmt::Debug;
 use cstr::cstr;
-use lazy_static::lazy_static;
-use spin::{Mutex, MutexGuard};
+use spin::Mutex;
 
 pub mod boot_mode;
 pub mod boot_reason;
@@ -174,46 +172,6 @@ pub fn get_images<'a: 'b, 'b: 'c, 'c, 'd>(
     (boot_image, init_boot_image, vendor_boot_image, partitions_ram_map)
 }
 
-// TODO: b/312608785 - helper function that would track slices don't overlap
-// [core::slice::from_raw_parts_mut] is not stable for `const` so we have to use `lazy_static` for
-// initialization of constants.
-unsafe fn mutex_buffer(address: usize, size: usize) -> Mutex<&'static mut [u8]> {
-    // SAFETY: user should make sure that multiple function user doesn't use overlaping ranges.
-    // And (addr, size) pair is safe to convert to slice.
-    Mutex::new(unsafe { core::slice::from_raw_parts_mut(address as *mut u8, size) })
-}
-
-lazy_static! {
-    // SAFETY: `test_default_memory_regions()' tests that slices don't overlap
-    static ref BOOT_IMAGE: Mutex<&'static mut[u8]> = unsafe {
-        mutex_buffer(0x1000_0000, 0x1000_0000)
-    };
-    // SAFETY: `test_default_memory_regions()' tests that slices don't overlap
-    static ref KERNEL_IMAGE: Mutex<&'static mut[u8]> = unsafe {
-        mutex_buffer(0x8020_0000, 0x0100_0000)
-    };
-    // SAFETY: `test_default_memory_regions()' tests that slices don't overlap
-    static ref VENDOR_BOOT_IMAGE: Mutex<&'static mut[u8]> = unsafe {
-        mutex_buffer(0x3000_0000, 0x1000_0000)
-    };
-    // SAFETY: `test_default_memory_regions()' tests that slices don't overlap
-    static ref INIT_BOOT_IMAGE: Mutex<&'static mut[u8]> = unsafe {
-        mutex_buffer(0x4000_0000, 0x1000_0000)
-    };
-    // SAFETY: `test_default_memory_regions()' tests that slices don't overlap
-    static ref RAMDISK: Mutex<&'static mut[u8]> = unsafe {
-        mutex_buffer(0x8420_0000, 0x0100_0000)
-    };
-    // SAFETY: `test_default_memory_regions()' tests that slices don't overlap
-    static ref BOOTCONFIG: Mutex<&'static mut[u8]> = unsafe {
-        mutex_buffer(0x6000_0000, 0x1000_0000)
-    };
-    // SAFETY: `test_default_memory_regions()' tests that slices don't overlap
-    static ref DTB: Mutex<&'static mut[u8]> = unsafe {
-        mutex_buffer(0x8000_0000, 0x0010_0000)
-    };
-}
-
 static BOOT_TOKEN: Mutex<Option<BootToken>> = Mutex::new(Some(BootToken(())));
 
 type AvbVerifySlot = for<'b> fn(
@@ -265,12 +223,6 @@ where
     where
         'a: 'b,
     {
-        // TODO: b/312608785 - check that provided buffers don't overlap.
-        // Default addresses to use
-        let default_boot_image_buffer = BOOT_IMAGE.lock();
-        let default_vendor_boot_image_buffer = VENDOR_BOOT_IMAGE.lock();
-        let default_init_boot_image_buffer = INIT_BOOT_IMAGE.lock();
-
         let bytes: SuffixBytes =
             if let Some(tgt) = boot_target { tgt.suffix().into() } else { Default::default() };
 
@@ -356,10 +308,8 @@ where
     ///   * `info` - Info Struct from Info Load
     ///   * `vendor_boot_image` - Buffer that contains (Verified) Vendor Boot Image
     ///   * `init_boot_image` - Buffer that contains (Verified) Init Boot Image
-    ///   * `ramdisk_load_buffer` - Ramdisk Load buffer (not compressed)
-    ///   * `bootconfig_load_buffer` - Bootconfig Load buffer (not compressed). This bootconfig
-    ///   will have data added at the end to include bootloader specific options such as
-    ///   force_normal_boot and other other android specific details
+    ///   * `ramdisk_load_buffer` - Ramdisk Load buffer (not compressed). It will be filled with
+    ///     a concatenation of `vendor_boot_image`, `init_boot_image` and bootconfig at the end.
     ///
     /// # Returns
     ///
@@ -371,7 +321,6 @@ where
         vendor_boot_image: &VendorBootImage,
         init_boot_image: &InitBootImage,
         ramdisk: &mut Ramdisk,
-        bootconfig_load_buffer: &mut [u8],
     ) -> Result<&'static str> {
         unimplemented!();
     }
@@ -438,27 +387,31 @@ where
     ///   * `partitions_ram_map` - Partitions to verify and optional address for them to be loaded.
     ///   * `avb_verification_flags` - AVB verification flags/options
     ///   * `slot_cursor` - Cursor object that manages interactions with boot slot management
+    ///   * `kernel_load_buffer` - Buffer for loading the kernel.
+    ///   * `ramdisk_load_buffer` - Buffer for loading the ramdisk.
+    ///   * `fdt` - Buffer containing a flattened device tree blob.
     ///
     /// # Returns
     ///
     /// * doesn't return on success
     /// * `Err(Error)` - on failure
     // Nevertype could be used here when it is stable https://github.com/serde-rs/serde/issues/812
+    #[allow(clippy::too_many_arguments)]
     pub fn load_verify_boot<'b: 'c, 'c, 'd: 'b>(
         &mut self,
         avb_ops: &'b mut impl avb::Ops,
         partitions_ram_map: &'d mut [PartitionRamMap<'b, 'c>],
         avb_verification_flags: AvbVerificationFlags,
         slot_cursor: Cursor,
+        kernel_load_buffer: &mut [u8],
+        ramdisk_load_buffer: &mut [u8],
+        fdt: &mut [u8],
     ) -> Result<()> {
         // TODO(dovs):
         // * Change the receiver of ops.load_slot_interface to be &mut self
         // * Add partition write capabilites to slot manager
-        let mut dtb_load_buffer = DTB.lock();
-        let dtb = Dtb(&mut dtb_load_buffer);
-        let mut ramdisk_load_buffer = RAMDISK.lock();
-        let mut kernel_load_buffer = KERNEL_IMAGE.lock();
-        let mut ramdisk = Ramdisk(&mut ramdisk_load_buffer);
+        let dtb = Dtb(&mut fdt[..]);
+        let mut ramdisk = Ramdisk(ramdisk_load_buffer);
 
         // Call the inner method which consumes the cursor
         // in order to properly manager cursor lifetime
@@ -466,7 +419,7 @@ where
         let (kernel_image, token) = self.lvb_inner(
             avb_ops,
             &mut ramdisk,
-            &mut kernel_load_buffer,
+            kernel_load_buffer,
             partitions_ram_map,
             avb_verification_flags,
             slot_cursor,
@@ -498,7 +451,7 @@ where
         &mut self,
         avb_ops: &'b mut impl avb::Ops,
         ramdisk: &mut Ramdisk,
-        kernel_load_buffer: &'e mut MutexGuard<&'static mut [u8]>,
+        kernel_load_buffer: &'e mut [u8],
         partitions_ram_map: &'d mut [PartitionRamMap<'b, 'c>],
         avb_verification_flags: AvbVerificationFlags,
         mut slot_cursor: Cursor,
@@ -557,13 +510,11 @@ where
 
         let kernel_image = self.kernel_load(&info_struct, boot_image, kernel_load_buffer)?;
 
-        let mut bootconfig_load_buffer = BOOTCONFIG.lock();
         let cmd_line = self.ramdisk_bootconfig_load(
             &info_struct,
             &vendor_boot_image,
             &init_boot_image,
             ramdisk,
-            &mut bootconfig_load_buffer,
         )?;
 
         self.dtb_update_and_load(&info_struct, vendor_boot_image)?;
@@ -627,51 +578,14 @@ where
 #[cfg(test)]
 mod tests {
     extern crate avb_test;
-    extern crate itertools;
 
     use super::*;
     use avb::IoError;
     use avb::IoResult as AvbIoResult;
     use avb::PublicKeyForPartitionInfo;
     use avb_test::TestOps;
-    use itertools::Itertools;
     use slots::fuchsia::SlotBlock;
     use std::fs;
-
-    pub fn get_end(buf: &[u8]) -> Option<*const u8> {
-        Some((buf.as_ptr() as usize).checked_add(buf.len())? as *const u8)
-    }
-
-    // Check if ranges overlap
-    // Range is in form of [lower, upper)
-    fn is_overlap(a: &[u8], b: &[u8]) -> bool {
-        !((get_end(b).unwrap() <= a.as_ptr()) || (get_end(a).unwrap() <= b.as_ptr()))
-    }
-
-    #[test]
-    fn test_default_memory_regions() {
-        let memory_ranges = [
-            &BOOT_IMAGE.lock(),
-            &KERNEL_IMAGE.lock(),
-            &VENDOR_BOOT_IMAGE.lock(),
-            &INIT_BOOT_IMAGE.lock(),
-            &RAMDISK.lock(),
-            &BOOTCONFIG.lock(),
-            &DTB.lock(),
-        ];
-
-        for (r1, r2) in memory_ranges.into_iter().tuple_combinations() {
-            let overlap = is_overlap(r1, r2);
-            assert!(
-                !overlap,
-                "Following pair overlap: ({}..{}), ({}..{})",
-                r1.as_ptr() as usize,
-                get_end(r1).unwrap() as usize,
-                r2.as_ptr() as usize,
-                get_end(r2).unwrap() as usize
-            );
-        }
-    }
 
     struct AvbOpsUnimplemented {}
     impl avb::Ops for AvbOpsUnimplemented {
@@ -688,6 +602,10 @@ mod tests {
             Err(IoError::NotImplemented)
         }
         fn read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
+            Err(IoError::NotImplemented)
+        }
+        #[cfg(feature = "uuid")]
+        fn get_unique_guid_for_partition(&mut self, partition: &CStr) -> AvbIoResult<uuid::Uuid> {
             Err(IoError::NotImplemented)
         }
         fn get_size_of_partition(&mut self, partition: &CStr) -> AvbIoResult<u64> {

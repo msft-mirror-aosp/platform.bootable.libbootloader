@@ -14,7 +14,7 @@
 
 load("@gbl//toolchain:gbl_toolchain.bzl", "link_static_cc_library")
 load("@gbl_llvm_prebuilts//:info.bzl", "LLVM_PREBUILTS_C_INCLUDE")
-load("@rules_rust//bindgen:bindgen.bzl", "rust_bindgen")
+load("@rules_rust//bindgen:defs.bzl", "rust_bindgen")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 
 package(
@@ -23,8 +23,18 @@ package(
 
 exports_files(glob(["**/*"]))
 
+# Newer version of `rust_bindgen` requires a `cc_library` target that actually produces a static
+# library and instead of only headers. Thus we generate a placeholder source file to meet the
+# requirement.
+genrule(
+    name = "bindgen_noop_cc",
+    outs = ["bindgen_noop_cc.cc"],
+    cmd = "touch $(OUTS)",
+)
+
 cc_library(
     name = "headers",
+    srcs = [":bindgen_noop_cc"],
     hdrs = [
         "libavb/avb_chain_partition_descriptor.h",
         "libavb/avb_cmdline.h",
@@ -159,11 +169,8 @@ rust_library(
 )
 
 rust_library(
-    name = "libavb_rust",
-    srcs = glob(
-        include = ["rust/src/**/*.rs"],
-        exclude = ["rust/src/tests/**/*.rs"],
-    ),
+    name = "avb",
+    srcs = glob(["rust/src/**/*.rs"]),
     crate_features = ["uuid"],
     edition = "2021",
     deps = [
@@ -171,5 +178,16 @@ rust_library(
         ":libavb_c_staticlib",
         "@uuid",
         "@zerocopy",
+    ],
+)
+
+rust_library(
+    name = "avb_test",
+    srcs = ["rust/tests/test_ops.rs"],
+    crate_features = ["uuid"],
+    edition = "2021",
+    deps = [
+        ":avb",
+        "@uuid",
     ],
 )
