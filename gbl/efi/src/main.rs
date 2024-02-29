@@ -46,7 +46,9 @@ fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -
     let entry = unsafe { initialize(image_handle, systab_ptr)? };
 
     efi_println!(entry, "****Rust EFI Application****");
-    efi_println!(entry, "Image path: {}", loaded_image_path(&entry)?);
+    if let Ok(v) = loaded_image_path(&entry) {
+        efi_println!(entry, "Image path: {}", v);
+    }
 
     // For simplicity, we pick bootflow based on GPT layout.
     if fuchsia_boot::is_fuchsia_gpt(&entry).is_ok() {
