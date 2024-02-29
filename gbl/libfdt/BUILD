@@ -48,7 +48,10 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes};
     clang_flags = select({
         "@gbl//toolchain:gbl_rust_uefi_x86_32": ["-m32"],
         "//conditions:default": ["-m64"],
-    }) + ["-I{}".format(LLVM_PREBUILTS_C_INCLUDE)],
+    }) + [
+        "-I{}".format(LLVM_PREBUILTS_C_INCLUDE),
+        "-nostdinc",
+    ],
     header = "@libfdt_c//:libfdt.h",
 )
 

@@ -71,6 +71,7 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes};""",
     }) + [
         "-x",
         "c++",
+        "-nostdinc",
     ],
     header = "@mkbootimg//:include/bootimg/bootimg.h",
 )
