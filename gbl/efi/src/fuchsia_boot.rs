@@ -16,7 +16,7 @@ use crate::error::{EfiAppError, Result};
 use crate::utils::{aligned_subslice, find_gpt_devices, get_efi_fdt, usize_add};
 use core::fmt::Write;
 use core::mem::size_of;
-use efi::{efi_print, EfiEntry};
+use efi::{efi_print, efi_println, EfiEntry};
 use fdt::Fdt;
 use zbi::{ZbiContainer, ZbiFlags, ZbiHeader, ZbiType, ZBI_ALIGNMENT_USIZE};
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
@@ -182,7 +182,7 @@ pub fn is_fuchsia_gpt(efi_entry: &EfiEntry) -> Result<()> {
 // flow in libgbl, which will eventually replace this demo. The demo is currently used as an
 // end-to-end test for libraries developed so far.
 pub fn fuchsia_boot_demo(efi_entry: EfiEntry) -> Result<()> {
-    efi_print!(efi_entry, "Try booting as Fuchsia/Zircon\n");
+    efi_println!(efi_entry, "Try booting as Fuchsia/Zircon");
 
     // Allocate buffer for load.
     let mut load_buffer = vec![0u8; 128 * 1024 * 1024]; // 128MB
