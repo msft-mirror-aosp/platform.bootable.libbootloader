@@ -167,12 +167,12 @@ impl<'a> Gpt<'a> {
     /// * `buffer`: Buffer for creating the object. Must have a size at least
     ///   `Gpt::required_buffer_size(max_entries)`.
     pub(crate) fn new_from_buffer(max_entries: u64, buffer: &'a mut [u8]) -> Result<Gpt<'a>> {
-        let buffer = aligned_subslice(buffer, GPT_ENTRY_ALIGNMENT)?;
         if max_entries > GPT_MAX_NUM_ENTRIES
             || buffer.len() < Self::required_buffer_size(max_entries)?
         {
             return Err(StorageError::InvalidInput);
         }
+        let buffer = aligned_subslice(buffer, GPT_ENTRY_ALIGNMENT)?;
         *GptInfo::from_bytes(buffer) =
             GptInfo { num_valid_entries: None, max_entries: max_entries };
         Self::from_existing(buffer)
@@ -431,7 +431,7 @@ mod test {
     use crate::AsBlockDevice;
 
     fn gpt_block_device(max_entries: u64, data: &[u8]) -> TestBlockDevice {
-        TestBlockDevice::new_with_data(1, 512, max_entries, data)
+        TestBlockDevice::new_with_data(512, 512, max_entries, data)
     }
 
     #[test]
