@@ -22,7 +22,9 @@
 //! # Examples
 //!
 //! ```rust
-//! use gbl_storage::{AsBlockDevice, BlockIo, BlockDevice, required_scratch_size};
+//! use gbl_storage::{
+//!     AsBlockDevice, BlockIo, BlockDevice, required_scratch_size, BlockDeviceWrite,
+//! };
 //!
 //! /// Mocks a block device using a buffer.
 //! pub struct RamBlockIo {
@@ -110,6 +112,7 @@ use core::cmp::min;
 mod gpt;
 pub use gpt::Gpt;
 pub use gpt::GptEntry;
+pub use gpt::{MultiGptDevices, MultiGptDevicesWrite};
 
 /// The type of Result used in this library.
 pub type Result<T> = core::result::Result<T, StorageError>;
@@ -192,8 +195,9 @@ pub trait BlockIo {
     fn write_blocks(&mut self, blk_offset: u64, data: &[u8]) -> bool;
 }
 
-/// `AsBlockDevice` provides APIs for reading/writing raw block content and GPT partitions with
-/// arbirary offset, size and input/output buffer.
+/// `AsBlockDevice` provides APIs for reading raw block content and GPT partitions with
+/// arbirary offset, size and input/output buffer. Write APIs are available in trait
+/// `BlockDeviceWrite`, which is automatically implemented for all `AsBlockDevice` types.
 pub trait AsBlockDevice {
     /// Returns a tuple containing the following information:
     ///
@@ -241,34 +245,6 @@ pub trait AsBlockDevice {
         read(io, offset, out, alignment)
     }
 
-    /// Write data to the device.
-    ///
-    /// # Args
-    ///
-    /// * `offset`: Offset in number of bytes.
-    ///
-    /// * `data`: Data to write. It can be `&[u8]`, `&mut [u8]` or other types that implement the
-    ///   `WriteBuffer` trait.
-    ///
-    /// * If `data` is an immutable bytes slice `&[u8]` or doesn't support
-    ///   `WriteBuffer::as_mut_slice()`, when offset`/`data.len()` is not aligned to
-    ///   `Self::block_size()` or data.as_ptr() is not aligned to `Self::alignment()`, the API may
-    ///   reduce to a block by block read-modify-write in the worst case, which can be inefficient.
-    ///
-    /// * If `data` is a mutable bytes slice `&mut [u8]`, or support `WriteBuffer::as_mut_slice()`.
-    ///   The API enables optimization which temporarily changes `data` layout internally and
-    ///   reduces the number of calls to `Self::write_blocks()` down to O(1) regardless of inputs
-    ///   alignment. This is the recommended usage.
-    ///
-    /// * Returns success when exactly `data.len()` number of bytes are written.
-    fn write<B>(&mut self, offset: u64, data: B) -> Result<()>
-    where
-        B: WriteBuffer,
-    {
-        let (io, alignment_scratch, _, _) = get_with_partitioned_scratch(self)?;
-        write(io, offset, data, alignment_scratch)
-    }
-
     /// Parse and sync GPT from a block device.
     ///
     /// The API validates and restores primary/secondary GPT header.
@@ -307,6 +283,49 @@ pub trait AsBlockDevice {
         )
     }
 
+    /// Returns the GPT header.
+    fn gpt(&mut self) -> Result<Gpt> {
+        let (_, _, gpt_buffer, _) = get_with_partitioned_scratch(self)?;
+        Gpt::from_existing(gpt_buffer)
+    }
+
+    /// Returns the `BlockIo` implementation.
+    fn block_io(&mut self) -> &mut dyn BlockIo {
+        self.get().0
+    }
+}
+
+/// `BlockDeviceWrite` provides raw/GPT partition write APIs for a `AsBlockDevice`.
+/// The input data needs to implement `WriteBuffer` which tells the API whether input data is
+/// mutable. Mutable input data allows additional internal optimization which makes write more
+/// efficient. In most cases, B should either be a `&mut [u8]` or `&[u8]`. See `write()` for more
+/// details.
+pub trait BlockDeviceWrite<B: WriteBuffer>: AsBlockDevice {
+    /// Write data to the device.
+    ///
+    /// # Args
+    ///
+    /// * `offset`: Offset in number of bytes.
+    ///
+    /// * `data`: Data to write. It can be `&[u8]`, `&mut [u8]` or other types that implement the
+    ///   `WriteBuffer` trait.
+    ///
+    /// * If `data` is an immutable bytes slice `&[u8]` or doesn't support
+    ///   `WriteBuffer::as_mut_slice()`, when offset`/`data.len()` is not aligned to
+    ///   `Self::block_size()` or data.as_ptr() is not aligned to `Self::alignment()`, the API may
+    ///   reduce to a block by block read-modify-write in the worst case, which can be inefficient.
+    ///
+    /// * If `data` is a mutable bytes slice `&mut [u8]`, or support `WriteBuffer::as_mut_slice()`.
+    ///   The API enables optimization which temporarily changes `data` layout internally and
+    ///   reduces the number of calls to `Self::write_blocks()` down to O(1) regardless of inputs
+    ///   alignment. This is the recommended usage.
+    ///
+    /// * Returns success when exactly `data.len()` number of bytes are written.
+    fn write(&mut self, offset: u64, data: B) -> Result<()> {
+        let (io, alignment_scratch, _, _) = get_with_partitioned_scratch(self)?;
+        write(io, offset, data, alignment_scratch)
+    }
+
     /// Write a GPT partition on a block device
     ///
     /// # Args
@@ -320,10 +339,7 @@ pub trait AsBlockDevice {
     /// # Returns
     ///
     /// Returns success when exactly `data.len()` of bytes are written successfully.
-    fn write_gpt_partition<B>(&mut self, part_name: &str, offset: u64, data: B) -> Result<()>
-    where
-        B: WriteBuffer,
-    {
+    fn write_gpt_partition(&mut self, part_name: &str, offset: u64, data: B) -> Result<()> {
         let (io, alignment_scratch, gpt_buffer, _) = get_with_partitioned_scratch(self)?;
         gpt::write_gpt_partition(
             io,
@@ -334,18 +350,15 @@ pub trait AsBlockDevice {
             alignment_scratch,
         )
     }
+}
 
-    /// Returns the GPT header.
-    fn gpt(&mut self) -> Result<Gpt> {
-        let (_, _, gpt_buffer, _) = get_with_partitioned_scratch(self)?;
-        Gpt::from_existing(gpt_buffer)
-    }
-
-    /// Returns the `BlockIo` implementation.
-    fn block_io(&mut self) -> &mut dyn BlockIo {
-        self.get().0
+impl<T: ?Sized + AsBlockDevice> AsBlockDevice for &mut T {
+    fn get(&mut self) -> (&mut dyn BlockIo, &mut [u8], u64) {
+        (*self).get()
     }
 }
+
+impl<T: ?Sized + AsBlockDevice, B: WriteBuffer> BlockDeviceWrite<B> for T {}
 
 /// `BlockDevice` borrows a `BlockIo`, scratch buffer and implements `AsBlockDevice`.
 pub struct BlockDevice<'a, 'b> {
@@ -888,6 +901,16 @@ impl WriteBuffer for &mut [u8] {
 
     fn as_slice(&mut self) -> Option<&[u8]> {
         None
+    }
+}
+
+impl<T: WriteBuffer> WriteBuffer for &mut T {
+    fn as_mut_slice(&mut self) -> Option<&mut [u8]> {
+        (*self).as_mut_slice()
+    }
+
+    fn as_slice(&mut self) -> Option<&[u8]> {
+        (*self).as_slice()
     }
 }
 
