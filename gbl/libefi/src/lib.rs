@@ -644,8 +644,16 @@ impl Drop for LocatedHandles<'_> {
 /// `EFI_SYSTEM_TABLE.ConOut`.
 #[macro_export]
 macro_rules! efi_print {
-    ( $efi_entry:expr, $( $x:expr ),* ) => {
+    ( $efi_entry:expr, $( $x:expr ),* $(,)? ) => {
             write!($efi_entry.system_table().con_out().unwrap(), $($x,)*).unwrap()
+    };
+}
+
+#[macro_export]
+macro_rules! efi_println {
+    ( $efi_entry:expr, $( $x:expr ),* ) => {
+        efi_print!($efi_entry, $($x,)*);
+        efi_print!($efi_entry, "\r\n");
     };
 }
 
@@ -660,7 +668,7 @@ fn panic(panic: &PanicInfo) -> ! {
     if let Some(e) = entry {
         match e.system_table().con_out() {
             Ok(mut con_out) => {
-                let _ = write!(con_out, "Panics! {}\n", panic);
+                let _ = write!(con_out, "Panics! {}\r\n", panic);
             }
             _ => {}
         }
