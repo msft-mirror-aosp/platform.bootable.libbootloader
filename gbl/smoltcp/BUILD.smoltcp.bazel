@@ -1,0 +1,130 @@
+# Copyright (C) 2024 The Android Open Source Project
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+package(
+    default_visibility = ["//visibility:public"],
+)
+
+# Upstream smoltcp uses a custom script in the cargo build flow to generate a `config.rs`
+# containing a set of configurations. We don't use cargo. Thus we use a pre-generated
+# one.
+genrule(
+    name = "gen_config",
+    outs = ["src/config.rs"],
+    cmd = """cat <<EOT > $@
+    pub const IFACE_MAX_ADDR_COUNT: usize = 2;
+    pub const IFACE_MAX_MULTICAST_GROUP_COUNT: usize = 4;
+    pub const IFACE_MAX_SIXLOWPAN_ADDRESS_CONTEXT_COUNT: usize = 4;
+    pub const IFACE_NEIGHBOR_CACHE_COUNT: usize = 16;
+    pub const IFACE_MAX_ROUTE_COUNT: usize = 2;
+    pub const FRAGMENTATION_BUFFER_SIZE: usize = 1500;
+    pub const ASSEMBLER_MAX_SEGMENT_COUNT: usize = 4;
+    pub const REASSEMBLY_BUFFER_SIZE: usize = 1500;
+    pub const REASSEMBLY_BUFFER_COUNT: usize = 1;
+    pub const IPV6_HBH_MAX_OPTIONS: usize = 1;
+    pub const DNS_MAX_RESULT_COUNT: usize = 1;
+    pub const DNS_MAX_SERVER_COUNT: usize = 1;
+    pub const DNS_MAX_NAME_SIZE: usize = 255;
+    pub const RPL_RELATIONS_BUFFER_COUNT: usize = 16;
+    pub const RPL_PARENTS_BUFFER_COUNT: usize = 8;
+EOT
+    """,
+)
+
+# `smoltcp` depends on crate `heapless`, which is still in the process of being imported to Android
+# (or possibly abandoned http://ag/22200123). For now we use a custom implementation of the APIs as
+# a workaround.
+genrule(
+    name = "heapless_src",
+    srcs = ["@gbl//smoltcp:heapless.rs"],
+    outs = ["src/heapless.rs"],
+    cmd = "cp $(SRCS) $(OUTS)",
+)
+
+rust_library(
+    name = "heapless",
+    srcs = ["src/heapless.rs"],
+    crate_root = "src/heapless.rs",
+    edition = "2021",
+)
+
+# Add fixup.rs to build and use our own crate root that imports it.
+genrule(
+    name = "smoltcp_fixup",
+    srcs = [
+        "@gbl//smoltcp:fixup.rs",
+        "src/lib.rs",
+    ],
+    outs = [
+        "src/fixup.rs",
+        "src/crate_root.rs",
+    ],
+    cmd = """
+        IFS=" " read -a srcs <<< "$(SRCS)" && \
+        IFS=" " read -a outs <<< "$(OUTS)" && \
+        for index in $${!srcs[@]}; do cp $${srcs[$$index]} $${outs[$$index]}; done && \
+        echo "mod fixup;" >> $${outs[1]}
+""",
+)
+
+rust_library(
+    name = "smoltcp",
+    srcs = glob(
+        ["**/*.rs"],
+        exclude = ["src/lib.rs"],
+    ) + [
+        "src/config.rs",
+        "src/crate_root.rs",
+        "src/fixup.rs",
+    ],
+    crate_features = [
+        "medium-ethernet",
+        "proto-ipv4",
+        "proto-ipv6",
+        "socket",
+        "socket-tcp",
+        "socket-icmp",
+    ],
+    crate_root = "src/crate_root.rs",
+    data = [
+        ":gen_config",
+        ":heapless_src",
+        ":smoltcp_fixup",
+    ],
+    edition = "2021",
+    rustc_env = {
+        "OUT_DIR": ".",
+    },
+    rustc_flags = [
+        # Always compile this crate in release mode. Otherwise it is too slow.
+        "-O",
+        "-A",
+        "unused_imports",
+        "-A",
+        "dead_code",
+        "-A",
+        "unreachable_patterns",
+        "-A",
+        "unused_variables",
+    ],
+    deps = [
+        ":heapless",
+        "@bitflags",
+        "@byteorder",
+        "@cfg-if",
+        "@managed",
+    ],
+)
