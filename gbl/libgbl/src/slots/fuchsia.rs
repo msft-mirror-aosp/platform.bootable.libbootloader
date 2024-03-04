@@ -222,13 +222,11 @@ impl Default for SlotBlock {
 
 impl super::private::SlotGet for SlotBlock {
     fn get_slot_by_number(&self, number: usize) -> Result<Slot, Error> {
-        let abr_slot = self.abr_data.slot_data.get(number).ok_or(Error::Other)?;
-
-        let suffix = match number {
-            0 => 'a'.into(),
-            1 => 'b'.into(),
-            _ => Err(Error::Other)?,
-        };
+        let lower_ascii = 'a'..='z';
+        let (suffix, &abr_slot) = core::iter::zip(lower_ascii, self.get_data().slot_data.iter())
+            .nth(number)
+            .map(|(c, s)| (Suffix(c), s))
+            .ok_or_else(|| Suffix::try_from(number).map_or(Error::Other, Error::NoSuchSlot))?;
 
         let bootability = match (abr_slot.successful, abr_slot.tries) {
             (s, _) if s != 0 => Bootability::Successful,
@@ -321,7 +319,7 @@ impl Manager for SlotBlock {
     fn set_active_slot(&mut self, slot_suffix: Suffix) -> Result<(), Error> {
         let (idx, _) = self.get_index_and_slot_with_suffix(slot_suffix)?;
 
-        let abr_data = &mut self.get_mut_data();
+        let abr_data = self.get_mut_data();
         for (i, slot) in abr_data.slot_data.iter_mut().enumerate() {
             if i == idx {
                 *slot = Default::default();
@@ -337,8 +335,6 @@ impl Manager for SlotBlock {
     }
 
     fn set_oneshot_status(&mut self, oneshot: OneShot) -> Result<(), Error> {
-        // TODO(dovs): gate behind avb unlock status
-
         if Some(oneshot) == self.get_oneshot_status() {
             return Ok(());
         }
