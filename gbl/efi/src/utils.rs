@@ -170,8 +170,8 @@ pub fn get_device_path<'a>(
     handle: DeviceHandle,
 ) -> Result<DevicePathText<'a>> {
     let bs = entry.system_table().boot_services();
-    let path = bs.open_protocol::<DevicePathProtocol>(handle).unwrap();
-    let path_to_text = bs.find_first_and_open::<DevicePathToTextProtocol>().unwrap();
+    let path = bs.open_protocol::<DevicePathProtocol>(handle)?;
+    let path_to_text = bs.find_first_and_open::<DevicePathToTextProtocol>()?;
     Ok(path_to_text.convert_device_path_to_text(&path, false, false)?)
 }
 

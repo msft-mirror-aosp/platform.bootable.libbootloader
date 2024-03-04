@@ -62,6 +62,14 @@ impl From<char> for Suffix {
     }
 }
 
+impl TryFrom<usize> for Suffix {
+    type Error = Error;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        u32::try_from(value).ok().and_then(char::from_u32).ok_or(Error::Other).map(Self)
+    }
+}
+
 // Includes a null terminator
 const SUFFIX_CSTR_MAX_BYTES: usize = size_of::<Suffix>() + 1;
 
@@ -224,6 +232,7 @@ impl BootTarget {
 #[doc(hidden)]
 pub mod private {
     use super::*;
+
     #[doc(hidden)]
     pub trait SlotGet {
         /// Given an index, returns the Slot that corresponds to that index,
