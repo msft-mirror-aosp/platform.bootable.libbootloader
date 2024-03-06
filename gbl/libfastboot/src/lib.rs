@@ -74,7 +74,11 @@ const MAX_RESPONSE_SIZE: usize = 256;
 const OKAY: &'static str = "OKAY";
 
 /// Transport errors.
+#[derive(Debug, PartialEq, Eq)]
 pub enum TransportError {
+    InvalidHanshake,
+    PacketSizeOverflow,
+    PacketSizeExceedMaximum,
     Others(&'static str),
 }
 
@@ -94,6 +98,48 @@ pub trait Transport {
     /// The method assumes `packet` is sent or at least copied to queue after it returns, where
     /// the buffer can go out of scope without affecting anything.
     fn send_packet(&mut self, packet: &[u8]) -> Result<(), TransportError>;
+}
+
+/// For now, we hardcode the expected version, until we need to distinguish between multiple
+/// versions.
+const TCP_HANDSHAKE_MESSAGE: &[u8] = b"FB01";
+
+/// A trait representing a TCP stream reader/writer. Fastboot over TCP has additional handshake
+/// process and uses a length-prefixed wire message format. It is recommended that caller
+/// implements this trait instead of `Transport`, and uses the API `Fastboot::run_tcp_session()`
+/// to perform fastboot over TCP. It internally handles handshake and wire message parsing.
+pub trait TcpStream {
+    /// Reads to `out` for exactly `out.len()` number bytes from the TCP connection.
+    fn read_exact(&mut self, out: &mut [u8]) -> Result<(), TransportError>;
+
+    /// Sends exactly `data.len()` number bytes from `data` to the TCP connection.
+    fn write_exact(&mut self, data: &[u8]) -> Result<(), TransportError>;
+}
+
+impl Transport for &mut dyn TcpStream {
+    fn receive_packet(&mut self, out: &mut [u8]) -> Result<usize, TransportError> {
+        let mut length_prefix = [0u8; 8];
+        self.read_exact(&mut length_prefix[..])?;
+        let packet_size: usize = u64::from_be_bytes(length_prefix)
+            .try_into()
+            .map_err(|_| TransportError::PacketSizeOverflow)?;
+        match out.len() < packet_size {
+            true => Err(TransportError::PacketSizeExceedMaximum),
+            _ => {
+                self.read_exact(&mut out[..packet_size])?;
+                Ok(packet_size)
+            }
+        }
+    }
+
+    fn send_packet(&mut self, packet: &[u8]) -> Result<(), TransportError> {
+        self.write_exact(
+            &mut u64::try_from(packet.len())
+                .map_err(|_| TransportError::PacketSizeOverflow)?
+                .to_be_bytes()[..],
+        )?;
+        self.write_exact(packet)
+    }
 }
 
 const COMMAND_ERROR_LENGTH: usize = MAX_RESPONSE_SIZE - 4;
@@ -299,6 +345,23 @@ impl<'a> Fastboot<'a> {
                     }
                 }
             }
+        }
+    }
+
+    /// Runs a fastboot over TCP session.
+    ///
+    /// The method performs fastboot over TCP handshake and then call `Self::run(...)`.
+    pub fn run_tcp_session(
+        &mut self,
+        mut tcp_stream: &mut dyn TcpStream,
+        fb_impl: &mut impl FastbootImplementation,
+    ) -> Result<(), TransportError> {
+        let mut handshake = [0u8; 4];
+        tcp_stream.write_exact(TCP_HANDSHAKE_MESSAGE)?;
+        tcp_stream.read_exact(&mut handshake[..])?;
+        match handshake == *TCP_HANDSHAKE_MESSAGE {
+            true => self.run(&mut tcp_stream, fb_impl),
+            _ => Err(TransportError::InvalidHanshake),
         }
     }
 
@@ -551,6 +614,39 @@ mod test {
         }
     }
 
+    #[derive(Default)]
+    struct TestTcpStream {
+        in_queue: VecDeque<u8>,
+        out_queue: VecDeque<u8>,
+    }
+
+    impl TestTcpStream {
+        /// Adds bytes to input stream.
+        fn add_input(&mut self, data: &[u8]) {
+            data.iter().for_each(|v| self.in_queue.push_back(*v));
+        }
+
+        /// Adds a length pre-fixed bytes stream.
+        fn add_length_prefixed_input(&mut self, data: &[u8]) {
+            self.add_input(&(data.len() as u64).to_be_bytes());
+            self.add_input(data);
+        }
+    }
+
+    impl TcpStream for TestTcpStream {
+        fn read_exact(&mut self, out: &mut [u8]) -> Result<(), TransportError> {
+            for ele in out {
+                *ele = self.in_queue.pop_front().ok_or(TransportError::Others("No more data"))?;
+            }
+            Ok(())
+        }
+
+        fn write_exact(&mut self, data: &[u8]) -> Result<(), TransportError> {
+            data.iter().for_each(|v| self.out_queue.push_back(*v));
+            Ok(())
+        }
+    }
+
     #[test]
     fn test_non_exist_command() {
         let mut fastboot_impl = FastbootTest { vars: BTreeMap::new() };
@@ -731,6 +827,59 @@ mod test {
                 b"FAILMore data received then expected".into(),
                 b"OKAY0x400".into(),
             ])
+        );
+    }
+
+    #[test]
+    fn test_fastboot_tcp() {
+        let mut fastboot_impl = FastbootTest { vars: BTreeMap::new() };
+        let mut download_buffer = vec![0u8; 1024];
+        let download_content: Vec<u8> =
+            (0..download_buffer.len()).into_iter().map(|v| v as u8).collect();
+        let mut fastboot = Fastboot::new(&mut download_buffer[..]);
+        let mut tcp_stream: TestTcpStream = Default::default();
+        tcp_stream.add_input(TCP_HANDSHAKE_MESSAGE);
+        // Add two commands and verify both are executed.
+        tcp_stream.add_length_prefixed_input(b"getvar:max-download-size");
+        tcp_stream.add_length_prefixed_input(
+            format!("download:{:#x}", download_content.len()).as_bytes(),
+        );
+        tcp_stream.add_length_prefixed_input(&download_content[..]);
+        let _ = fastboot.run_tcp_session(&mut tcp_stream, &mut fastboot_impl);
+        let expected: &[&[u8]] = &[
+            b"FB01",
+            b"\x00\x00\x00\x00\x00\x00\x00\x09OKAY0x400",
+            b"\x00\x00\x00\x00\x00\x00\x00\x09DATA0x400",
+            b"\x00\x00\x00\x00\x00\x00\x00\x04OKAY",
+        ];
+        assert_eq!(tcp_stream.out_queue, VecDeque::from(expected.concat()));
+        assert_eq!(download_buffer, download_content);
+    }
+
+    #[test]
+    fn test_fastboot_tcp_invalid_handshake() {
+        let mut fastboot_impl = FastbootTest { vars: BTreeMap::new() };
+        let mut download_buffer = vec![0u8; 1024];
+        let mut fastboot = Fastboot::new(&mut download_buffer[..]);
+        let mut tcp_stream: TestTcpStream = Default::default();
+        tcp_stream.add_input(b"ABCD");
+        assert_eq!(
+            fastboot.run_tcp_session(&mut tcp_stream, &mut fastboot_impl).unwrap_err(),
+            TransportError::InvalidHanshake
+        );
+    }
+
+    #[test]
+    fn test_fastboot_tcp_packet_size_exceeds_maximum() {
+        let mut fastboot_impl = FastbootTest { vars: BTreeMap::new() };
+        let mut download_buffer = vec![0u8; 1024];
+        let mut fastboot = Fastboot::new(&mut download_buffer[..]);
+        let mut tcp_stream: TestTcpStream = Default::default();
+        tcp_stream.add_input(TCP_HANDSHAKE_MESSAGE);
+        tcp_stream.add_input(&(MAX_COMMAND_SIZE + 1).to_be_bytes());
+        assert_eq!(
+            fastboot.run_tcp_session(&mut tcp_stream, &mut fastboot_impl).unwrap_err(),
+            TransportError::PacketSizeExceedMaximum
         );
     }
 }
