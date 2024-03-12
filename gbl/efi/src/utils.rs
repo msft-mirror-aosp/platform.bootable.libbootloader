@@ -16,10 +16,10 @@ use alloc::vec::Vec;
 use core::ffi::CStr;
 
 use crate::error::{EfiAppError, Result};
-use efi::defs::EfiGuid;
+use efi::defs::{EfiGuid, EFI_TIMER_DELAY_TIMER_RELATIVE};
 use efi::{
     BlockIoProtocol, DeviceHandle, DevicePathProtocol, DevicePathText, DevicePathToTextProtocol,
-    EfiEntry, LoadedImageProtocol, Protocol,
+    EfiEntry, EventType, LoadedImageProtocol, Protocol, SimpleTextInputProtocol,
 };
 use fdt::FdtHeader;
 use gbl_storage::{required_scratch_size, AsBlockDevice, BlockIo};
@@ -181,4 +181,57 @@ pub fn cstr_bytes_to_str(data: &[u8]) -> Result<&str> {
         .map_err(|_| EfiAppError::InvalidString)?
         .to_str()
         .map_err(|_| EfiAppError::InvalidString)?)
+}
+
+/// Converts 1 ms to number of 100 nano seconds
+fn ms_to_100ns(ms: u64) -> Result<u64> {
+    Ok(ms.checked_mul(1000 * 10).ok_or(EfiAppError::ArithmeticOverflow)?)
+}
+
+/// Repetitively runs a closure until it signals completion or timeout.
+///
+/// * If `f` returns `Ok(R)`, an `Ok(Some(R))` is returned immediately.
+/// * If `f` has been repetitively called and returning `Err(false)` for `timeout_ms`,  an
+///   `Ok(None)` is returned. This is the time out case.
+/// * If `f` returns `Err(true)` the timeout is reset.
+pub fn loop_with_timeout<F, R>(efi_entry: &EfiEntry, timeout_ms: u64, mut f: F) -> Result<Option<R>>
+where
+    F: FnMut() -> core::result::Result<R, bool>,
+{
+    let bs = efi_entry.system_table().boot_services();
+    let timer = bs.create_event(EventType::Timer, None)?;
+    bs.set_timer(&timer, EFI_TIMER_DELAY_TIMER_RELATIVE, ms_to_100ns(timeout_ms)?)?;
+    while !bs.check_event(&timer)? {
+        match f() {
+            Ok(v) => {
+                return Ok(Some(v));
+            }
+            Err(true) => {
+                bs.set_timer(&timer, EFI_TIMER_DELAY_TIMER_RELATIVE, ms_to_100ns(timeout_ms)?)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
+/// Waits for a key stroke value from simple text input.
+///
+/// Returns `Ok(true)` if the expected key stroke is read, `Ok(false)` if timeout, `Err` otherwise.
+pub fn wait_key_stroke(efi_entry: &EfiEntry, expected: char, timeout_ms: u64) -> Result<bool> {
+    let input = efi_entry
+        .system_table()
+        .boot_services()
+        .find_first_and_open::<SimpleTextInputProtocol>()?;
+    loop_with_timeout(efi_entry, timeout_ms, || -> core::result::Result<Result<bool>, bool> {
+        match input.read_key_stroke() {
+            Ok(Some(key)) => match char::decode_utf16([key.unicode_char]).next().unwrap() {
+                Ok(ch) if ch == expected => Ok(Ok(true)),
+                _ => Err(false),
+            },
+            Ok(None) => Err(false),
+            Err(e) => Ok(Err(e.into())),
+        }
+    })?
+    .unwrap_or(Ok(false))
 }
