@@ -23,14 +23,14 @@
 #include <stdint.h>
 
 #include "boot_service.h"
-#include "system_table.h"
-#include "types.h"
-
 #include "protocols/block_io_protocol.h"
 #include "protocols/device_path_protocol.h"
 #include "protocols/loaded_image_protocol.h"
 #include "protocols/riscv_efi_boot_protocol.h"
 #include "protocols/simple_network_protocol.h"
+#include "protocols/simple_text_input_protocol.h"
 #include "protocols/simple_text_output_protocol.h"
+#include "system_table.h"
+#include "types.h"
 
 #endif  // __EFI_H__

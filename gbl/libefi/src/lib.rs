@@ -78,6 +78,7 @@ pub use protocol::Protocol;
 pub use protocol::ProtocolInfo;
 pub use protocol::RiscvBootProtocol;
 pub use protocol::SimpleNetworkProtocol;
+pub use protocol::SimpleTextInputProtocol;
 pub use protocol::SimpleTextOutputProtocol;
 
 mod error {
@@ -96,6 +97,11 @@ mod error {
     impl EfiError {
         pub fn err(&self) -> ErrorTypes {
             self.0
+        }
+
+        /// Checks if the error is a particular EFI error.
+        pub fn is_efi_err(&self, code: EfiStatus) -> bool {
+            *self == code.into()
         }
     }
 
@@ -474,12 +480,15 @@ impl<'a> BootServices<'a> {
 /// EFI Event type to pass to BootServicess::create_event;
 #[repr(u32)]
 pub enum EventType {
-    Timer = 0x80000000,
-    RunTime = 0x40000000,
-    NotifyWait = 0x00000100,
-    NotifySignal = 0x00000200,
-    SignalExitBootServices = 0x00000201,
-    SignalVirtualAddressChange = 0x60000202,
+    Timer = EFI_EVENT_TYPE_TIMER,
+    RunTime = EFI_EVENT_TYPE_RUNTIME,
+    NotifyWait = EFI_EVENT_TYPE_NOTIFY_WAIT,
+    NotifySignal = EFI_EVENT_TYPE_NOTIFY_SIGNAL,
+    SignalExitBootServices = EFI_EVENT_TYPE_SIGNAL_EXIT_BOOT_SERVICES,
+    SignalVirtualAddressChange = EFI_EVENT_TYPE_SIGNAL_VIRTUAL_ADDRESS_CHANGE,
+
+    // Valid combinations:
+    TimerNotifySignal = EFI_EVENT_TYPE_TIMER | EFI_EVENT_TYPE_NOTIFY_SIGNAL,
 }
 
 /// EFI task level priority setting for event notify function.
@@ -493,7 +502,7 @@ pub enum Tpl {
 }
 
 /// `EventNotify` contains the task level priority setting and a mutable reference to a
-/// `EventNotifyImpl` trait object. It is passed as the context pointer to low level EFI event
+/// closure for the callback. It is passed as the context pointer to low level EFI event
 /// notification function entry (`unsafe extern "C" fn efi_event_cb(...)`).
 pub struct EventNotify<'e> {
     tpl: Tpl,
