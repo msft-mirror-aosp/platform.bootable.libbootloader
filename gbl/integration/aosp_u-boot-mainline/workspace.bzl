@@ -182,6 +182,27 @@ cc_library(
         build_file_content = rust_crate_build_file("static_assertions"),
     )
 
+    native.new_local_repository(
+        name = "managed",
+        path = "external/rust/crates/managed",
+        build_file_content = rust_crate_build_file(
+            "managed",
+            features = ["map"],
+            rustc_flags = [
+                "-A",
+                "unused_macros",
+                "-A",
+                "redundant_semicolons",
+            ],
+        ),
+    )
+
+    native.new_local_repository(
+        name = "smoltcp",
+        path = "external/rust/crates/smoltcp",
+        build_file = "@gbl//smoltcp:BUILD.smoltcp.bazel",
+    )
+
     # Following are third party rust crates dependencies.
 
     THIRD_PARTY_CRATES = [

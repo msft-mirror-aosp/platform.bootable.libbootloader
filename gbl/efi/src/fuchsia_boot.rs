@@ -16,8 +16,9 @@ use crate::error::{EfiAppError, Result};
 use crate::utils::{aligned_subslice, find_gpt_devices, get_efi_fdt, usize_add};
 use core::fmt::Write;
 use core::mem::size_of;
-use efi::{efi_print, EfiEntry};
+use efi::{efi_print, efi_println, EfiEntry};
 use fdt::Fdt;
+use gbl_storage::MultiGptDevices;
 use zbi::{ZbiContainer, ZbiFlags, ZbiHeader, ZbiType, ZBI_ALIGNMENT_USIZE};
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 
@@ -92,7 +93,7 @@ fn relocate_to_tail(kernel: &mut [u8]) -> Result<(&mut [u8], &mut [u8], usize)> 
 fn load_fuchsia_simple<'a>(efi_entry: &EfiEntry, load: &'a mut [u8]) -> Result<&'a mut [u8]> {
     let load = aligned_subslice(load, ZBI_ALIGNMENT_USIZE)?;
 
-    let mut gpt_devices = find_gpt_devices(&efi_entry)?;
+    let mut gpt_devices = &mut find_gpt_devices(&efi_entry)?[..];
 
     // Gets FDT from EFI configuration table.
     let (_, fdt_bytes) = get_efi_fdt(&efi_entry).ok_or_else(|| EfiAppError::NoFdt).unwrap();
@@ -147,7 +148,7 @@ fn load_fuchsia_simple<'a>(efi_entry: &EfiEntry, load: &'a mut [u8]) -> Result<&
 
 /// Check if the disk GPT layout is a Fuchsia device layout.
 pub fn is_fuchsia_gpt(efi_entry: &EfiEntry) -> Result<()> {
-    let mut gpt_devices = find_gpt_devices(&efi_entry)?;
+    let mut gpt_devices = &mut find_gpt_devices(&efi_entry)?[..];
     let partitions: [&[&str]; 8] = [
         &["zircon_a"],
         &["zircon_b"],
@@ -159,7 +160,9 @@ pub fn is_fuchsia_gpt(efi_entry: &EfiEntry) -> Result<()> {
         &["fvm"],
     ];
     for partition in partitions {
-        gpt_devices.partition_size_with_aliases(partition)?;
+        if !partition.iter().any(|v| gpt_devices.partition_size(*v).is_ok()) {
+            return Err(EfiAppError::NotFound.into());
+        }
     }
     Ok(())
 }
@@ -182,7 +185,7 @@ pub fn is_fuchsia_gpt(efi_entry: &EfiEntry) -> Result<()> {
 // flow in libgbl, which will eventually replace this demo. The demo is currently used as an
 // end-to-end test for libraries developed so far.
 pub fn fuchsia_boot_demo(efi_entry: EfiEntry) -> Result<()> {
-    efi_print!(efi_entry, "Try booting as Fuchsia/Zircon\n");
+    efi_println!(efi_entry, "Try booting as Fuchsia/Zircon");
 
     // Allocate buffer for load.
     let mut load_buffer = vec![0u8; 128 * 1024 * 1024]; // 128MB

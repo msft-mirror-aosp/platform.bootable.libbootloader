@@ -35,9 +35,12 @@ rust_library(
 rust_test(
     name = "libstorage_test",
     compile_data = [
-        "@gbl//libstorage/test:gpt_test.bin",
+        "@gbl//libstorage/test:gpt_test_1.bin",
+        "@gbl//libstorage/test:gpt_test_2.bin",
         "@gbl//libstorage/test:boot_a.bin",
         "@gbl//libstorage/test:boot_b.bin",
+        "@gbl//libstorage/test:vendor_boot_a.bin",
+        "@gbl//libstorage/test:vendor_boot_b.bin",
     ],
     crate = ":libstorage",
 )

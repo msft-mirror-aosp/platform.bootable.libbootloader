@@ -50,6 +50,7 @@ rust_binary(
         "@gbl//libgbl",
         "@gbl//libstorage",
         "@gbl//third_party/libzbi",
+        "@smoltcp",
         "@uuid",
         "@zerocopy",
     ] + select({

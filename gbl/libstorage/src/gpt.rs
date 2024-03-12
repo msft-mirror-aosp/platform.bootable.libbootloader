@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::{
-    add, aligned_subslice, div, mul, read, sub, to_usize, write, BlockIo, Result, StorageError,
-    WriteBuffer,
+    add, aligned_subslice, div, mul, read, sub, to_usize, write, AsBlockDevice, BlockDeviceWrite,
+    BlockIo, Result, StorageError, WriteBuffer,
 };
 use core::default::Default;
 use core::mem::{align_of, size_of};
@@ -167,12 +167,12 @@ impl<'a> Gpt<'a> {
     /// * `buffer`: Buffer for creating the object. Must have a size at least
     ///   `Gpt::required_buffer_size(max_entries)`.
     pub(crate) fn new_from_buffer(max_entries: u64, buffer: &'a mut [u8]) -> Result<Gpt<'a>> {
-        let buffer = aligned_subslice(buffer, GPT_ENTRY_ALIGNMENT)?;
         if max_entries > GPT_MAX_NUM_ENTRIES
             || buffer.len() < Self::required_buffer_size(max_entries)?
         {
             return Err(StorageError::InvalidInput);
         }
+        let buffer = aligned_subslice(buffer, GPT_ENTRY_ALIGNMENT)?;
         *GptInfo::from_bytes(buffer) =
             GptInfo { num_valid_entries: None, max_entries: max_entries };
         Self::from_existing(buffer)
@@ -424,19 +424,107 @@ fn crc32(data: &[u8]) -> u32 {
     hasher.finalize()
 }
 
+/// `MultiGptDevices` provides APIs for finding/reading partitions from multiple block devices.
+///
+/// The APIs use first match when searching for a partition. The caller should ensure that the
+/// partition of interest is unique among all devices. Otherwise it may lead to unexpected behavor.
+/// The intended use of this trait is for cases where a single collection of functional/bootable
+/// partitions are scattered on multiple GPT devices due to design constraint such as storage size,
+/// or GPT A/B etc. It should not be used to handle multiple GPT devices that contains multiple
+/// collections or copipes of functional/bootable partitions.
+pub trait MultiGptDevices {
+    /// Calls closure `f` for each `AsBlockDevice` object until reaching end or `f` returns true.
+    fn for_each_until(&mut self, f: &mut dyn FnMut(&mut dyn AsBlockDevice) -> bool);
+
+    /// Calls AsBlockDevice::sync_gpt() for all block devices.
+    fn sync_gpt(&mut self) -> Result<()> {
+        let mut res: Result<()> = Ok(());
+        self.for_each_until(&mut |v| {
+            res = v.sync_gpt().map(|_| ());
+            res.is_err()
+        });
+        res
+    }
+
+    /// Checks if there is exactly one partition with the given name among all devices.
+    fn check_unique(&mut self, part: &str) -> bool {
+        let mut count = 0usize;
+        self.for_each_until(&mut |v| {
+            count += (|| -> Result<bool> { Ok(v.gpt()?.find_partition(part)?.is_some()) })()
+                .unwrap_or(false) as usize;
+            count > 1
+        });
+        count == 1
+    }
+
+    /// Returns the block size and `GptEntry` for a partition on the first match.
+    fn find_partition(&mut self, part: &str) -> Result<(u64, GptEntry)> {
+        let mut res = Err(StorageError::NotExist);
+        self.for_each_until(&mut |v| {
+            res = (|| match v.gpt()?.find_partition(part)?.map(|v| *v) {
+                Some(p) => Ok((v.block_io().block_size(), p)),
+                _ => res,
+            })();
+            res.is_ok()
+        });
+        res
+    }
+
+    /// Returns the size of a partition on the first match.
+    fn partition_size(&mut self, part: &str) -> Result<u64> {
+        let (block_size, entry) = self.find_partition(part)?;
+        Ok(mul(block_size, entry.blocks()?)?)
+    }
+
+    /// Reads a GPT partition on the first match.
+    fn read_gpt_partition(&mut self, part_name: &str, offset: u64, out: &mut [u8]) -> Result<()> {
+        let mut res = Err(StorageError::NotExist);
+        self.for_each_until(&mut |v| {
+            res = v.read_gpt_partition(part_name, offset, out);
+            res.is_ok()
+        });
+        res
+    }
+}
+
+/// `MultiGptDevicesWrite` provides partition write APIs for a `MultiGptDevices`
+pub trait MultiGptDevicesWrite<B: WriteBuffer>: MultiGptDevices {
+    /// Writes a GPT partition on the first match.
+    fn write_gpt_partition(&mut self, part_name: &str, offset: u64, mut data: B) -> Result<()> {
+        let mut res = Err(StorageError::NotExist);
+        self.for_each_until(&mut |v| {
+            res = v.write_gpt_partition(part_name, offset, &mut data);
+            res.is_ok()
+        });
+        res
+    }
+}
+
+impl<T: ?Sized + MultiGptDevices, B: WriteBuffer> MultiGptDevicesWrite<B> for T {}
+
+impl<B: AsBlockDevice> MultiGptDevices for &mut [B] {
+    fn for_each_until(&mut self, f: &mut dyn FnMut(&mut dyn AsBlockDevice) -> bool) {
+        for ele in self.iter_mut() {
+            if f(ele) {
+                return;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
     use crate::test::TestBlockDevice;
-    use crate::AsBlockDevice;
+    use crate::BlockDeviceWrite;
 
     fn gpt_block_device(max_entries: u64, data: &[u8]) -> TestBlockDevice {
-        TestBlockDevice::new_with_data(1, 512, max_entries, data)
+        TestBlockDevice::new_with_data(512, 512, max_entries, data)
     }
 
     #[test]
     fn test_new_from_buffer() {
-        let disk = include_bytes!("../test/gpt_test.bin").to_vec();
+        let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
         let mut dev = gpt_block_device(128, &disk);
         let gpt = dev.sync_gpt().unwrap();
 
@@ -448,7 +536,7 @@ mod test {
 
     #[test]
     fn test_gpt_buffer_too_small() {
-        let disk = include_bytes!("../test/gpt_test.bin").to_vec();
+        let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
         let mut dev = gpt_block_device(128, &disk);
         dev.scratch = vec![0u8; dev.scratch.len() - 1];
         assert!(dev.sync_gpt().is_err());
@@ -456,14 +544,14 @@ mod test {
 
     #[test]
     fn test_gpt_too_many_entries() {
-        let disk = include_bytes!("../test/gpt_test.bin").to_vec();
+        let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
         let mut dev = gpt_block_device(129, &disk);
         assert!(dev.sync_gpt().is_err());
     }
 
     #[test]
     fn test_load_gpt_primary() {
-        let disk = include_bytes!("../test/gpt_test.bin").to_vec();
+        let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
         let mut dev = gpt_block_device(128, &disk);
 
         // Corrupt secondary.
@@ -481,7 +569,7 @@ mod test {
 
     #[test]
     fn test_load_gpt_secondary() {
-        let disk = include_bytes!("../test/gpt_test.bin").to_vec();
+        let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
         let mut dev = gpt_block_device(128, &disk);
 
         // Corrupt primary.
@@ -498,7 +586,7 @@ mod test {
 
     #[test]
     fn test_good_gpt_no_repair_write() {
-        let disk = include_bytes!("../test/gpt_test.bin").to_vec();
+        let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
         let mut dev = gpt_block_device(128, &disk);
         let _ = dev.sync_gpt().unwrap();
 
@@ -507,7 +595,7 @@ mod test {
 
     #[test]
     fn test_load_gpt_incorrect_magic() {
-        let disk = include_bytes!("../test/gpt_test.bin").to_vec();
+        let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
         let mut dev = gpt_block_device(128, &disk);
         let gpt = dev.sync_gpt().unwrap();
 
@@ -526,14 +614,14 @@ mod test {
 
     #[test]
     fn test_load_gpt_exceeds_max_entries() {
-        let disk = include_bytes!("../test/gpt_test.bin").to_vec();
+        let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
         assert!(gpt_block_device(127, &disk).sync_gpt().is_err());
     }
 
     #[test]
     fn test_load_gpt_non_max_entries() {
         // Create a header with non-max entries_count
-        let disk = include_bytes!("../test/gpt_test.bin").to_vec();
+        let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
         let mut dev = gpt_block_device(128, &disk);
         let gpt = dev.sync_gpt().unwrap();
 
@@ -560,7 +648,7 @@ mod test {
     #[test]
     fn test_uninitialized_gpt() {
         // Load a good GPT first.
-        let disk = include_bytes!("../test/gpt_test.bin").to_vec();
+        let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
         let mut dev = gpt_block_device(128, &disk);
         let _ = dev.sync_gpt().unwrap();
         dev.io.storage[..64 * 1024].fill(0);
@@ -572,7 +660,7 @@ mod test {
 
     #[test]
     fn test_gpt_read() {
-        let mut dev = gpt_block_device(128, include_bytes!("../test/gpt_test.bin"));
+        let mut dev = gpt_block_device(128, include_bytes!("../test/gpt_test_1.bin"));
         let _ = dev.sync_gpt().unwrap();
 
         let expect_boot_a = include_bytes!("../test/boot_a.bin");
@@ -598,7 +686,7 @@ mod test {
 
     #[test]
     fn test_gpt_write() {
-        let mut dev = gpt_block_device(128, include_bytes!("../test/gpt_test.bin"));
+        let mut dev = gpt_block_device(128, include_bytes!("../test/gpt_test_1.bin"));
         let _ = dev.sync_gpt().unwrap();
 
         let mut expect_boot_a = include_bytes!("../test/boot_a.bin").to_vec();
@@ -648,7 +736,7 @@ mod test {
 
     #[test]
     fn test_gpt_rw_overflow() {
-        let mut dev = gpt_block_device(128, include_bytes!("../test/gpt_test.bin"));
+        let mut dev = gpt_block_device(128, include_bytes!("../test/gpt_test_1.bin"));
         let _ = dev.sync_gpt().unwrap();
 
         let mut boot_a = [0u8; include_bytes!("../test/boot_a.bin").len()];
@@ -661,5 +749,91 @@ mod test {
         assert!(dev.read_gpt_partition("boot_b", 1, &mut boot_b).is_err());
         assert!(dev.write_gpt_partition("boot_b", 1, &mut boot_b[..]).is_err());
         assert!(dev.write_gpt_partition("boot_b", 1, &boot_b[..]).is_err());
+    }
+
+    #[test]
+    fn test_multi_gpt_check_unique() {
+        let mut devs = &mut vec![
+            gpt_block_device(128, include_bytes!("../test/gpt_test_1.bin")),
+            gpt_block_device(128, include_bytes!("../test/gpt_test_1.bin")),
+            gpt_block_device(128, include_bytes!("../test/gpt_test_2.bin")),
+        ][..];
+
+        devs.sync_gpt().unwrap();
+        assert!(!devs.check_unique("boot_a"));
+        assert!(!devs.check_unique("boot_b"));
+        assert!(devs.check_unique("vendor_boot_a"));
+        assert!(devs.check_unique("vendor_boot_b"));
+    }
+
+    #[test]
+    fn test_multi_gpt_read() {
+        let mut devs = &mut vec![
+            gpt_block_device(128, include_bytes!("../test/gpt_test_1.bin")),
+            gpt_block_device(128, include_bytes!("../test/gpt_test_2.bin")),
+        ][..];
+
+        devs.sync_gpt().unwrap();
+        assert_eq!(devs.partition_size("boot_a").unwrap(), 8 * 1024);
+        assert_eq!(devs.partition_size("boot_b").unwrap(), 12 * 1024);
+        assert_eq!(devs.partition_size("vendor_boot_a").unwrap(), 4 * 1024);
+        assert_eq!(devs.partition_size("vendor_boot_b").unwrap(), 6 * 1024);
+
+        let expect_boot_a = include_bytes!("../test/boot_a.bin");
+        let expect_boot_b = include_bytes!("../test/boot_b.bin");
+        let mut actual_boot_a = vec![0u8; expect_boot_a.len()];
+        let mut actual_boot_b = vec![0u8; expect_boot_b.len()];
+
+        devs.read_gpt_partition("boot_a", 0, &mut actual_boot_a).unwrap();
+        assert_eq!(expect_boot_a.to_vec(), actual_boot_a);
+        devs.read_gpt_partition("boot_b", 0, &mut actual_boot_b).unwrap();
+        assert_eq!(expect_boot_b.to_vec(), actual_boot_b);
+
+        let expect_vendor_boot_a = include_bytes!("../test/vendor_boot_a.bin");
+        let expect_vendor_boot_b = include_bytes!("../test/vendor_boot_b.bin");
+        let mut actual_vendor_boot_a = vec![0u8; expect_vendor_boot_a.len()];
+        let mut actual_vendor_boot_b = vec![0u8; expect_vendor_boot_b.len()];
+
+        devs.read_gpt_partition("vendor_boot_a", 0, &mut actual_vendor_boot_a).unwrap();
+        assert_eq!(expect_vendor_boot_a.to_vec(), actual_vendor_boot_a);
+        devs.read_gpt_partition("vendor_boot_b", 0, &mut actual_vendor_boot_b).unwrap();
+        assert_eq!(expect_vendor_boot_b.to_vec(), actual_vendor_boot_b);
+    }
+
+    #[test]
+    fn test_multi_gpt_write() {
+        let mut devs = &mut vec![
+            gpt_block_device(128, include_bytes!("../test/gpt_test_1.bin")),
+            gpt_block_device(128, include_bytes!("../test/gpt_test_2.bin")),
+        ][..];
+        devs.sync_gpt().unwrap();
+
+        let mut expect_boot_a = include_bytes!("../test/boot_a.bin").to_vec();
+        expect_boot_a.reverse();
+        let mut expect_boot_b = include_bytes!("../test/boot_b.bin").to_vec();
+        expect_boot_b.reverse();
+        let mut actual_boot_a = vec![0u8; expect_boot_a.len()];
+        let mut actual_boot_b = vec![0u8; expect_boot_b.len()];
+
+        devs.write_gpt_partition("boot_a", 0, &mut expect_boot_a[..]).unwrap();
+        devs.read_gpt_partition("boot_a", 0, &mut actual_boot_a).unwrap();
+        assert_eq!(expect_boot_a.to_vec(), actual_boot_a);
+        devs.write_gpt_partition("boot_b", 0, &mut expect_boot_b[..]).unwrap();
+        devs.read_gpt_partition("boot_b", 0, &mut actual_boot_b).unwrap();
+        assert_eq!(expect_boot_b.to_vec(), actual_boot_b);
+
+        let mut expect_vendor_boot_a = include_bytes!("../test/vendor_boot_a.bin").to_vec();
+        expect_vendor_boot_a.reverse();
+        let mut expect_vendor_boot_b = include_bytes!("../test/vendor_boot_b.bin").to_vec();
+        expect_vendor_boot_b.reverse();
+        let mut actual_vendor_boot_a = vec![0u8; expect_vendor_boot_a.len()];
+        let mut actual_vendor_boot_b = vec![0u8; expect_vendor_boot_b.len()];
+
+        devs.write_gpt_partition("boot_a", 0, &mut expect_vendor_boot_a[..]).unwrap();
+        devs.read_gpt_partition("boot_a", 0, &mut actual_vendor_boot_a).unwrap();
+        assert_eq!(expect_vendor_boot_a.to_vec(), actual_vendor_boot_a);
+        devs.write_gpt_partition("boot_b", 0, &mut expect_vendor_boot_b[..]).unwrap();
+        devs.read_gpt_partition("boot_b", 0, &mut actual_vendor_boot_b).unwrap();
+        assert_eq!(expect_vendor_boot_b.to_vec(), actual_vendor_boot_b);
     }
 }

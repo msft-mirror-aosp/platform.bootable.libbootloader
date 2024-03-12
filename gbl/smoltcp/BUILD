@@ -12,14 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Remaining repositories not yet migrated to bzlmod."""
-
-local_repository(
-    name = "gbl",
-    path = "bootable/libbootloader/gbl",
+package(
+    default_visibility = ["//visibility:public"],
 )
 
-# buildifier: disable=load-on-top
-load("@gbl//integration/aosp_u-boot-mainline:workspace.bzl", "define_gbl_workspace")
-
-define_gbl_workspace()
+exports_files(glob(["**/*"]))
