@@ -29,6 +29,22 @@ BOOT_B_PART_FILE="${SCRIPT_DIR}/${BOOT_B_NAME}.bin"
 dd if=/dev/urandom bs=1024 count=${BOOT_A_SIZE_KB} > ${BOOT_A_PART_FILE}
 dd if=/dev/urandom bs=1024 count=${BOOT_B_SIZE_KB} > ${BOOT_B_PART_FILE}
 
-python3 ${SCRIPT_DIR}/../../tools/gen_gpt_disk.py ${SCRIPT_DIR}/gpt_test.bin 64K \
+python3 ${SCRIPT_DIR}/../../tools/gen_gpt_disk.py ${SCRIPT_DIR}/gpt_test_1.bin 64K \
     --partition "${BOOT_A_NAME},${BOOT_A_SIZE_KB}k,${BOOT_A_PART_FILE}" \
     --partition "${BOOT_B_NAME},${BOOT_B_SIZE_KB}k,${BOOT_B_PART_FILE}"
+
+
+VENDOR_BOOT_A_NAME="vendor_boot_a"
+VENDOR_BOOT_A_SIZE_KB="4"
+VENDOR_BOOT_A_PART_FILE="${SCRIPT_DIR}/${VENDOR_BOOT_A_NAME}.bin"
+
+VENDOR_BOOT_B_NAME="vendor_boot_b"
+VENDOR_BOOT_B_SIZE_KB="6"
+VENDOR_BOOT_B_PART_FILE="${SCRIPT_DIR}/${VENDOR_BOOT_B_NAME}.bin"
+
+dd if=/dev/urandom bs=1024 count=${VENDOR_BOOT_A_SIZE_KB} > ${VENDOR_BOOT_A_PART_FILE}
+dd if=/dev/urandom bs=1024 count=${VENDOR_BOOT_B_SIZE_KB} > ${VENDOR_BOOT_B_PART_FILE}
+
+python3 ${SCRIPT_DIR}/../../tools/gen_gpt_disk.py ${SCRIPT_DIR}/gpt_test_2.bin 128K \
+    --partition "${VENDOR_BOOT_A_NAME},${VENDOR_BOOT_A_SIZE_KB}k,${VENDOR_BOOT_A_PART_FILE}" \
+    --partition "${VENDOR_BOOT_B_NAME},${VENDOR_BOOT_B_SIZE_KB}k,${VENDOR_BOOT_B_PART_FILE}"

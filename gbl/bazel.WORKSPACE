@@ -12,15 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build/kernel/kleaf:workspace.bzl", "define_kleaf_workspace")
+"""Remaining repositories not yet migrated to bzlmod."""
 
 local_repository(
     name = "gbl",
     path = "bootable/libbootloader/gbl",
 )
 
-define_kleaf_workspace(common_kernel_package = "@gbl//")
-
+# buildifier: disable=load-on-top
 load("@gbl//integration/aosp_u-boot-mainline:workspace.bzl", "define_gbl_workspace")
 
 define_gbl_workspace()
