@@ -39,7 +39,9 @@ mod riscv64;
 mod android_boot;
 mod avb;
 mod error;
+mod fastboot;
 mod fuchsia_boot;
+mod net;
 
 fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -> Result<()> {
     // SAFETY: Called only once here upon EFI app entry.
@@ -54,7 +56,7 @@ fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -
     match wait_key_stroke(&entry, 'f', 2000) {
         Ok(true) => {
             efi_println!(entry, "'f' pressed.");
-            // TODO(b/328786603): Implement fastboot.
+            fastboot::run_fastboot(&entry)?;
         }
         _ => {}
     }
