@@ -27,13 +27,13 @@ sw_digest = []
 
 [dependencies]
 zbi = {version = "0.1", path = "../third_party/libzbi"}
+gbl_storage = {version = "0.1", path = "../libstorage"}
 ring = "0.17"
 spin = "0.9"
 static_assertions = "0"
 lazy_static = "1"
-zerocopy = {version = "=0.7.0-alpha.5"}
+zerocopy = {version = "=0.7.32"}
 crc32fast = "1.3"
 
 [dev-dependencies]
 itertools = "0"
-
