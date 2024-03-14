@@ -132,6 +132,23 @@ impl AbrData {
         hasher.update(&self.as_bytes()[..(size_of::<Self>() - size_of::<BigEndianU32>())]);
         hasher.finalize()
     }
+
+    fn validate<B: ByteSlice>(buffer: B) -> Result<Ref<B, AbrData>, AbrSlotError> {
+        let abr_data =
+            Ref::<B, AbrData>::new_from_prefix(buffer).ok_or(AbrSlotError::BufferTooSmall)?.0;
+
+        if abr_data.magic != *ABR_MAGIC {
+            return Err(AbrSlotError::BadMagic);
+        }
+        if abr_data.version_major > ABR_VERSION_MAJOR {
+            return Err(AbrSlotError::BadVersion);
+        }
+        if abr_data.crc32.get() != abr_data.calculate_crc32() {
+            return Err(AbrSlotError::BadCrc);
+        }
+
+        Ok(abr_data)
+    }
 }
 
 impl Default for AbrData {
@@ -157,13 +174,15 @@ impl Default for AbrData {
 /// a special recovery partition, R, and support for oneshot boot.
 /// Includes an Option<BootToken> to support `mark_boot_attempt`
 /// and a cache status to support lazy write-back on destruction.
-pub struct SlotBlock {
+pub struct SlotBlock<'a> {
     cache_status: CacheStatus,
     boot_token: Option<BootToken>,
     abr_data: AbrData,
+    partition: &'a str,
+    partition_offset: u64,
 }
 
-impl SlotBlock {
+impl<'a> SlotBlock<'a> {
     fn get_mut_data(&mut self) -> &mut AbrData {
         self.cache_status = CacheStatus::Dirty;
         &mut self.abr_data
@@ -176,51 +195,37 @@ impl SlotBlock {
     /// Attempt to deserialize a slot control block
     ///
     /// # Returns
-    /// * `Ok(SlotBlock)` - on success returns a SlotBlock that wraps a copy of the serialized data
-    /// * `Err(AbrSlotError)` - on failure
+    /// * `SlotBlock` - returns either the deserialized representation of the slot control block
+    ///                 OR a fresh, default valued slot control block if there was an internal error.
+    ///
+    ///                 TODO(b/329116902): errors are logged
     pub fn deserialize<B: ByteSlice>(
         buffer: B,
+        partition: &'a str,
+        partition_offset: u64,
         boot_token: BootToken,
-    ) -> Result<Self, AbrSlotError> {
-        let abr_data =
-            Ref::<B, AbrData>::new_from_prefix(buffer).ok_or(AbrSlotError::BufferTooSmall)?.0;
+    ) -> Self {
+        // TODO(b/329116902): log failures
+        // validate(buffer)
+        // .inspect_err(|e| {
+        //     eprintln!("ABR metadata failed verification, using metadata defaults: {e}")
+        // })
+        let (abr_data, cache_status) = match AbrData::validate(buffer) {
+            Ok(data) => (*data, CacheStatus::Clean),
+            Err(_) => (Default::default(), CacheStatus::Dirty),
+        };
 
-        if abr_data.magic != *ABR_MAGIC {
-            return Err(AbrSlotError::BadMagic);
-        }
-        if abr_data.version_major > ABR_VERSION_MAJOR {
-            return Err(AbrSlotError::BadVersion);
-        }
-
-        if abr_data.crc32.get() != abr_data.calculate_crc32() {
-            return Err(AbrSlotError::BadCrc);
-        }
-
-        Ok(SlotBlock {
-            cache_status: CacheStatus::Clean,
+        SlotBlock {
+            cache_status,
             boot_token: Some(boot_token),
-            abr_data: *abr_data,
-        })
-    }
-
-    pub(crate) fn new(boot_token: BootToken) -> Self {
-        Self { boot_token: Some(boot_token), ..Default::default() }
-    }
-}
-
-impl Default for SlotBlock {
-    /// Returns a default valued SlotBlock.
-    /// Only used in tests because BootToken cannot be constructed out of crate.
-    fn default() -> Self {
-        Self {
-            cache_status: CacheStatus::Clean,
-            boot_token: Some(BootToken(())),
-            abr_data: Default::default(),
+            abr_data,
+            partition,
+            partition_offset,
         }
     }
 }
 
-impl super::private::SlotGet for SlotBlock {
+impl super::private::SlotGet for SlotBlock<'_> {
     fn get_slot_by_number(&self, number: usize) -> Result<Slot, Error> {
         let lower_ascii = 'a'..='z';
         let (suffix, &abr_slot) = core::iter::zip(lower_ascii, self.get_data().slot_data.iter())
@@ -249,7 +254,7 @@ fn suffix_rank(s: Suffix) -> i64 {
     -i64::from(u32::from(s.0))
 }
 
-impl Manager for SlotBlock {
+impl Manager for SlotBlock<'_> {
     fn get_boot_target(&self) -> BootTarget {
         self.slots_iter()
             .filter(Slot::is_bootable)
@@ -357,20 +362,26 @@ impl Manager for SlotBlock {
         }
     }
 
-    fn write_back(&mut self) {
+    fn write_back(&mut self, block_dev: &mut dyn gbl_storage::AsBlockDevice) {
         if self.cache_status == CacheStatus::Clean {
             return;
         }
+
+        let part = self.partition;
+        let offset = self.partition_offset;
 
         let data = self.get_mut_data();
         data.version_minor = ABR_VERSION_MINOR;
         data.crc32 = data.calculate_crc32().into();
 
-        // TODO(dovs): write data back to partition
+        match block_dev.write_gpt_partition_mut(part, offset, data.as_bytes_mut()) {
+            Ok(_) => self.cache_status = CacheStatus::Clean,
+            Err(e) => panic!("{}", e),
+        };
     }
 }
 
-impl SlotBlock {
+impl<'a> SlotBlock<'a> {
     fn get_index_and_slot_with_suffix(&self, slot_suffix: Suffix) -> Result<(usize, Slot), Error> {
         self.slots_iter()
             .enumerate()
@@ -381,7 +392,23 @@ impl SlotBlock {
 
 #[cfg(test)]
 mod test {
+    use super::super::Cursor;
     use super::*;
+    use gbl_storage::AsBlockDevice;
+
+    impl Default for SlotBlock<'_> {
+        /// Returns a default valued SlotBlock.
+        /// Only used in tests because BootToken cannot be constructed out of crate.
+        fn default() -> Self {
+            Self {
+                cache_status: CacheStatus::Clean,
+                boot_token: Some(BootToken(())),
+                abr_data: Default::default(),
+                partition: "",
+                partition_offset: 0,
+            }
+        }
+    }
 
     #[test]
     fn test_slot_block_defaults() {
@@ -404,13 +431,6 @@ mod test {
     }
 
     #[test]
-    fn test_slot_block_new() {
-        let new = SlotBlock::new(BootToken(()));
-        let default: SlotBlock = Default::default();
-        assert_eq!(new, default);
-    }
-
-    #[test]
     fn test_suffix() {
         let slot = Slot { suffix: 'a'.into(), ..Default::default() };
         assert_eq!(BootTarget::Recovery(RecoveryTarget::Dedicated).suffix(), 'r'.into());
@@ -420,37 +440,28 @@ mod test {
 
     #[test]
     fn test_slot_block_parse() {
-        let sb: SlotBlock = Default::default();
-        assert_eq!(SlotBlock::deserialize(sb.get_data().as_bytes(), BootToken(())), Ok(sb));
+        let abr: AbrData = Default::default();
+        assert_eq!(AbrData::validate(abr.as_bytes()), Ok(Ref::new(abr.as_bytes()).unwrap()));
     }
 
     #[test]
     fn test_slot_block_parse_buffer_too_small() {
         let buffer: [u8; 0] = Default::default();
-        assert_eq!(
-            SlotBlock::deserialize::<&[u8]>(&buffer, BootToken(())),
-            Err(AbrSlotError::BufferTooSmall),
-        );
+        assert_eq!(AbrData::validate(&buffer[..]), Err(AbrSlotError::BufferTooSmall),);
     }
 
     #[test]
     fn test_slot_block_parse_bad_magic() {
         let mut sb: SlotBlock = Default::default();
         sb.get_mut_data().magic[0] += 1;
-        assert_eq!(
-            SlotBlock::deserialize(sb.get_data().as_bytes(), BootToken(())),
-            Err(AbrSlotError::BadMagic)
-        );
+        assert_eq!(AbrData::validate(sb.get_data().as_bytes()), Err(AbrSlotError::BadMagic));
     }
 
     #[test]
     fn test_slot_block_parse_bad_version_major() {
         let mut sb: SlotBlock = Default::default();
         sb.get_mut_data().version_major = 15;
-        assert_eq!(
-            SlotBlock::deserialize(sb.get_data().as_bytes(), BootToken(())),
-            Err(AbrSlotError::BadVersion)
-        );
+        assert_eq!(AbrData::validate(sb.get_data().as_bytes()), Err(AbrSlotError::BadVersion));
     }
 
     #[test]
@@ -458,10 +469,7 @@ mod test {
         let mut sb: SlotBlock = Default::default();
         let bad_crc = sb.get_data().crc32.get() ^ BigEndianU32::MAX_VALUE.get();
         sb.get_mut_data().crc32 = bad_crc.into();
-        assert_eq!(
-            SlotBlock::deserialize(sb.get_data().as_bytes(), BootToken(())),
-            Err(AbrSlotError::BadCrc)
-        );
+        assert_eq!(AbrData::validate(sb.get_data().as_bytes()), Err(AbrSlotError::BadCrc));
     }
 
     #[test]
@@ -671,5 +679,146 @@ mod test {
             sb.set_oneshot_status(OneShot::Continue(RecoveryTarget::Slotted(slot))),
             Err(Error::OperationProhibited)
         );
+    }
+
+    #[test]
+    fn test_deserialize_default_to_dirty_cache() {
+        let mut abr_data: AbrData = Default::default();
+        // Changing the success both invalidates the crc
+        // and lets us verify that the deserialized slot block
+        // uses defaulted backing bytes instead of the provided bytes.
+        abr_data.slot_data[0].successful = 1;
+        let sb = SlotBlock::deserialize(abr_data.as_bytes(), "partition_moniker", 0, BootToken(()));
+        assert_eq!(sb.cache_status, CacheStatus::Dirty);
+        assert_eq!(
+            sb.slots_iter().next().unwrap().bootability,
+            Bootability::Retriable(DEFAULT_RETRIES.into())
+        );
+    }
+
+    #[test]
+    fn test_deserialize_modified_to_clean_cache() {
+        let mut abr_data: AbrData = Default::default();
+        abr_data.slot_data[0].successful = 1;
+        // If we recalculate the crc,
+        // that just means we have a metadata block that stores
+        // relevant, non-default information.
+        abr_data.crc32.set(abr_data.calculate_crc32());
+        let sb = SlotBlock::deserialize(abr_data.as_bytes(), "partition_moniker", 0, BootToken(()));
+        assert_eq!(sb.cache_status, CacheStatus::Clean);
+        assert_eq!(sb.slots_iter().next().unwrap().bootability, Bootability::Successful);
+    }
+
+    /// Mocks a block device with content from buffer.
+    /// Copied from libstorage test
+    pub struct TestBlockIo {
+        pub storage: Vec<u8>,
+    }
+
+    const BLOCK_SIZE: u64 = 512;
+    const ALIGNMENT: u64 = 512;
+
+    impl gbl_storage::BlockIo for TestBlockIo {
+        fn block_size(&mut self) -> u64 {
+            BLOCK_SIZE
+        }
+
+        fn num_blocks(&mut self) -> u64 {
+            self.storage.len() as u64 / self.block_size()
+        }
+
+        fn alignment(&mut self) -> u64 {
+            ALIGNMENT
+        }
+
+        fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> bool {
+            let start = blk_offset * self.block_size();
+            let end = start + out.len() as u64;
+            out.clone_from_slice(&self.storage[start as usize..end as usize]);
+            true
+        }
+
+        fn write_blocks(&mut self, blk_offset: u64, data: &[u8]) -> bool {
+            let start = blk_offset * self.block_size();
+            let end = start + data.len() as u64;
+            self.storage[start as usize..end as usize].clone_from_slice(&data);
+            true
+        }
+    }
+
+    pub struct TestBlockDevice {
+        pub io: TestBlockIo,
+        pub scratch: Vec<u8>,
+    }
+
+    impl TestBlockDevice {
+        const GPT_ENTRIES: u64 = 128;
+
+        /// Creates an instance with provided storage content.
+        pub fn new_with_data(data: &[u8]) -> Self {
+            let mut io = TestBlockIo { storage: Vec::from(data) };
+            let scratch_size =
+                gbl_storage::required_scratch_size(&mut io, Self::GPT_ENTRIES).unwrap();
+            Self { io, scratch: vec![0u8; scratch_size] }
+        }
+    }
+
+    impl gbl_storage::AsBlockDevice for TestBlockDevice {
+        fn get(&mut self) -> (&mut dyn gbl_storage::BlockIo, &mut [u8], u64) {
+            (&mut self.io, &mut self.scratch[..], Self::GPT_ENTRIES)
+        }
+    }
+
+    #[test]
+    fn test_writeback() {
+        const PARTITION: &str = "test_partition";
+        const OFFSET: u64 = 2112; // Deliberately wrong to test propagation of parameter.
+        let disk = include_bytes!("../../testdata/writeback_test_disk.bin");
+        let mut block_dev = TestBlockDevice::new_with_data(disk);
+        assert!(block_dev.sync_gpt().is_ok());
+        let mut sb =
+            SlotBlock { partition: PARTITION, partition_offset: OFFSET, ..Default::default() };
+
+        let mut read_buffer: [u8; size_of::<AbrData>()] = Default::default();
+
+        // Clean cache, write_back is a no-op
+        sb.write_back(&mut block_dev);
+        let res = block_dev.read_gpt_partition(PARTITION, OFFSET, &mut read_buffer);
+        assert!(res.is_ok());
+        assert_eq!(read_buffer, [0; std::mem::size_of::<AbrData>()]);
+
+        // Make a change, write_back writes back to the defined partition
+        // at the defined offset.
+        assert_eq!(sb.set_oneshot_status(OneShot::Bootloader), Ok(()));
+        assert_eq!(sb.cache_status, CacheStatus::Dirty);
+
+        sb.write_back(&mut block_dev);
+        let res = block_dev.read_gpt_partition(PARTITION, OFFSET, &mut read_buffer);
+        assert!(res.is_ok());
+        assert_eq!(read_buffer, sb.abr_data.as_bytes());
+        assert_eq!(sb.cache_status, CacheStatus::Clean);
+    }
+
+    #[test]
+    fn test_writeback_with_cursor() {
+        const PARTITION: &str = "test_partition";
+        const OFFSET: u64 = 2112; // Deliberately wrong to test propagation of parameter.
+        let disk = include_bytes!("../../testdata/writeback_test_disk.bin");
+
+        let mut block_dev = TestBlockDevice::new_with_data(disk);
+        assert!(block_dev.sync_gpt().is_ok());
+        let mut sb =
+            SlotBlock { partition: PARTITION, partition_offset: OFFSET, ..Default::default() };
+
+        let mut read_buffer: [u8; size_of::<AbrData>()] = Default::default();
+
+        {
+            let cursor = Cursor { ctx: &mut sb, block_dev: &mut block_dev };
+            assert!(cursor.ctx.set_active_slot('b'.into()).is_ok());
+        }
+
+        let res = block_dev.read_gpt_partition(PARTITION, OFFSET, &mut read_buffer);
+        assert!(res.is_ok());
+        assert_eq!(read_buffer, sb.abr_data.as_bytes());
     }
 }
