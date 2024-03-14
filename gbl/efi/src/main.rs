@@ -31,7 +31,7 @@ use efi::{efi_print, efi_println, initialize};
 #[macro_use]
 mod utils;
 use error::Result;
-use utils::loaded_image_path;
+use utils::{loaded_image_path, wait_key_stroke};
 
 #[cfg(target_arch = "riscv64")]
 mod riscv64;
@@ -48,6 +48,15 @@ fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -
     efi_println!(entry, "****Rust EFI Application****");
     if let Ok(v) = loaded_image_path(&entry) {
         efi_println!(entry, "Image path: {}", v);
+    }
+
+    efi_println!(entry, "Press 'f' to enter fastboot. TODO(b/328786603)");
+    match wait_key_stroke(&entry, 'f', 2000) {
+        Ok(true) => {
+            efi_println!(entry, "'f' pressed.");
+            // TODO(b/328786603): Implement fastboot.
+        }
+        _ => {}
     }
 
     // For simplicity, we pick bootflow based on GPT layout.
