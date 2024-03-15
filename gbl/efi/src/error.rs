@@ -20,6 +20,7 @@ use efi::EfiError;
 use fastboot::TransportError;
 use fdt::FdtError;
 use gbl_storage::StorageError;
+use misc::BcbError;
 use smoltcp::socket::tcp::{ListenError, RecvError, SendError};
 use zbi::ZbiError;
 
@@ -112,6 +113,7 @@ composite_enum! {
     #[derive(Debug)]
     pub enum GblEfiError {
         AvbIoError(IoError),
+        BcbError(BcbError),
         BootConfigError(BootConfigError),
         BootError(BootError),
         EfiAppError(EfiAppError),
