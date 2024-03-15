@@ -184,7 +184,7 @@ pub fn cstr_bytes_to_str(data: &[u8]) -> Result<&str> {
 }
 
 /// Converts 1 ms to number of 100 nano seconds
-fn ms_to_100ns(ms: u64) -> Result<u64> {
+pub fn ms_to_100ns(ms: u64) -> Result<u64> {
     Ok(ms.checked_mul(1000 * 10).ok_or(EfiAppError::ArithmeticOverflow)?)
 }
 
