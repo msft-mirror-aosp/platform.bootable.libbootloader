@@ -51,6 +51,7 @@ rust_binary(
         "@gbl//libfastboot",
         "@gbl//libfdt",
         "@gbl//libgbl",
+        "@gbl//libmisc",
         "@gbl//libstorage",
         "@gbl//third_party/libzbi",
         "@smoltcp",

@@ -21,6 +21,7 @@ use bootimg::{BootImage, VendorImageHeader};
 use efi::{efi_print, efi_println, exit_boot_services, EfiEntry};
 use fdt::Fdt;
 use gbl_storage::MultiGptDevices;
+use misc::{AndroidBootMode, BootloaderMessage};
 
 use crate::error::{EfiAppError, GblEfiError, Result};
 use crate::utils::{
@@ -86,6 +87,7 @@ fn avb_verify_slot<'a, 'b, 'c>(
 ///   * No A/B slot switching is performed. It always boot from *_a slot.
 ///   * No dynamic partitions.
 ///   * Only support V3/V4 image and Android 13+ (generic ramdisk from the "init_boot" partition)
+///   * Only support booting recovery from boot image
 ///
 /// # Returns
 ///
@@ -98,6 +100,12 @@ pub fn load_android_simple<'a>(
     let mut gpt_devices = &mut find_gpt_devices(efi_entry)?[..];
 
     const PAGE_SIZE: usize = 4096; // V3/V4 image has fixed page size 4096;
+
+    let (bcb_buffer, load) = load.split_at_mut(BootloaderMessage::SIZE_BYTES);
+    gpt_devices.read_gpt_partition("misc", 0, bcb_buffer)?;
+    let bcb = BootloaderMessage::from_bytes_ref(bcb_buffer)?;
+    let boot_mode = bcb.boot_mode()?;
+    efi_println!(efi_entry, "boot mode from BCB: {}", boot_mode);
 
     // Parse boot header.
     let (boot_header_buffer, load) = load.split_at_mut(PAGE_SIZE);
@@ -204,8 +212,15 @@ pub fn load_android_simple<'a>(
     // Add slot index
     bootconfig_builder.add("androidboot.slot_suffix=_a\n")?;
 
-    // Boot into Android
-    bootconfig_builder.add("androidboot.force_normal_boot=1\n")?;
+    match boot_mode {
+        // TODO(b/329716686): Support bootloader mode
+        AndroidBootMode::Normal | AndroidBootMode::BootloaderBootOnce => {
+            bootconfig_builder.add("androidboot.force_normal_boot=1\n")?
+        }
+        _ => {
+            // Do nothing
+        }
+    }
 
     // V4 image has vendor bootconfig.
     if let VendorImageHeader::V4(ref hdr) = vendor_boot_header {
