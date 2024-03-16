@@ -486,19 +486,21 @@ impl<'a> Protocol<'a, SimpleNetworkProtocol> {
     ///
     /// # Safety
     ///
-    /// Caller must ensure that `buf` remains valid until either 1) the buffer address re-appears
-    /// in `recycled_buffer` from `Self::get_status()`, or 2) Self::Shutdown() is called and
-    /// returns either Ok(()) or EFI_STATUS_NOT_STARTED. Otherwise, the driver may still have
-    /// modifiable access to the buffer and causes undefined behavior if the buffer goes out of
-    /// scope earlier.
+    /// * `buf` needs to be a valid buffer.
+    /// * There should not be any existing references to memory pointed by `buf`.
+    /// * Because `buf` is internally retained by the network. `buf` should remain valid and not
+    ///   dereferenced until either 1) the buffer address re-appears in `recycled_buffer` from
+    ///   `Self::get_status()` or 2) Self::Shutdown() is called and returns either Ok(()) or
+    ///   EFI_STATUS_NOT_STARTED.
     pub unsafe fn transmit(
         &self,
         header_size: usize,
-        buf: &mut [u8],
+        buf: *mut [u8],
         mut src: EfiMacAddress,
         mut dest: EfiMacAddress,
         mut protocol: u16,
     ) -> EfiResult<()> {
+        let buf = buf.as_mut().unwrap();
         // SAFETY:
         // See safety reasoning of `start()`.
         // All pointers passed are valid, outlive the call and are not retained by the call.
