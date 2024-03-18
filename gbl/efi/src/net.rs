@@ -432,8 +432,8 @@ where
     )?;
 
     // Creates and initializes simple network protocol.
-    let snp_dev = find_net_device(efi_entry).unwrap();
-    let snp = bs.open_protocol::<SimpleNetworkProtocol>(snp_dev).unwrap();
+    let snp_dev = find_net_device(efi_entry)?;
+    let snp = bs.open_protocol::<SimpleNetworkProtocol>(snp_dev)?;
     reset_simple_network(&snp)?;
 
     // Gets our MAC address and IPv6 address.
