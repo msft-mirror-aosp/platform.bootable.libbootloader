@@ -764,8 +764,8 @@ mod test {
     }
 
     impl gbl_storage::AsBlockDevice for TestBlockDevice {
-        fn get(&mut self) -> (&mut dyn gbl_storage::BlockIo, &mut [u8], u64) {
-            (&mut self.io, &mut self.scratch[..], Self::GPT_ENTRIES)
+        fn with(&mut self, f: &mut dyn FnMut(&mut dyn gbl_storage::BlockIo, &mut [u8], u64)) {
+            f(&mut self.io, &mut self.scratch[..], Self::GPT_ENTRIES)
         }
     }
 

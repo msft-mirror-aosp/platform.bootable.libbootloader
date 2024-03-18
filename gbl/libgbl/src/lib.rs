@@ -583,7 +583,9 @@ mod tests {
     use avb::IoError;
     use avb::IoResult as AvbIoResult;
     use avb::PublicKeyForPartitionInfo;
+    #[cfg(feature = "sw_digest")]
     use avb_test::TestOps;
+    #[cfg(feature = "sw_digest")]
     use std::fs;
 
     struct AvbOpsUnimplemented {}
