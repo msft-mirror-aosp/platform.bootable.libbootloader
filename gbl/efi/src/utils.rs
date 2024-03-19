@@ -22,7 +22,7 @@ use efi::{
     EfiEntry, EventType, LoadedImageProtocol, Protocol, SimpleTextInputProtocol,
 };
 use fdt::FdtHeader;
-use gbl_storage::{required_scratch_size, AsBlockDevice, BlockIo};
+use gbl_storage::{required_scratch_size, AsBlockDevice, AsMultiBlockDevices, BlockIo};
 
 pub const EFI_DTB_TABLE_GUID: EfiGuid =
     EfiGuid::new(0xb1b621d5, 0xf19c, 0x41a5, [0x83, 0x0b, 0xd9, 0x15, 0x2c, 0x69, 0xaa, 0xe0]);
@@ -95,13 +95,25 @@ impl<'a> EfiGptDevice<'a> {
 }
 
 impl AsBlockDevice for EfiGptDevice<'_> {
-    fn get(&mut self) -> (&mut dyn BlockIo, &mut [u8], u64) {
-        (&mut self.io, &mut self.scratch[..], MAX_GPT_ENTRIES)
+    fn with(&mut self, f: &mut dyn FnMut(&mut dyn BlockIo, &mut [u8], u64)) {
+        f(&mut self.io, &mut self.scratch[..], MAX_GPT_ENTRIES)
+    }
+}
+
+pub struct EfiMultiBlockDevices<'a>(pub alloc::vec::Vec<EfiGptDevice<'a>>);
+
+impl AsMultiBlockDevices for EfiMultiBlockDevices<'_> {
+    fn for_each_until(&mut self, f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64) -> bool) {
+        for (idx, ele) in self.0.iter_mut().enumerate() {
+            if f(ele, u64::try_from(idx).unwrap()) {
+                return;
+            }
+        }
     }
 }
 
 /// Finds and returns all block devices that have a valid GPT.
-pub fn find_gpt_devices(efi_entry: &EfiEntry) -> Result<Vec<EfiGptDevice>> {
+pub fn find_gpt_devices(efi_entry: &EfiEntry) -> Result<EfiMultiBlockDevices> {
     let bs = efi_entry.system_table().boot_services();
     let block_dev_handles = bs.locate_handle_buffer_by_protocol::<BlockIoProtocol>()?;
     let mut gpt_devices = Vec::<EfiGptDevice>::new();
@@ -114,7 +126,7 @@ pub fn find_gpt_devices(efi_entry: &EfiEntry) -> Result<Vec<EfiGptDevice>> {
             _ => {}
         };
     }
-    Ok(gpt_devices)
+    Ok(EfiMultiBlockDevices(gpt_devices))
 }
 
 /// Helper function to get the `DevicePathText` from a `DeviceHandle`.
@@ -184,7 +196,7 @@ pub fn cstr_bytes_to_str(data: &[u8]) -> Result<&str> {
 }
 
 /// Converts 1 ms to number of 100 nano seconds
-fn ms_to_100ns(ms: u64) -> Result<u64> {
+pub fn ms_to_100ns(ms: u64) -> Result<u64> {
     Ok(ms.checked_mul(1000 * 10).ok_or(EfiAppError::ArithmeticOverflow)?)
 }
 
