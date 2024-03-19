@@ -31,6 +31,7 @@ rust_library(
         "@gbl//libstorage",
         "@gbl//third_party/libzbi",
         "@spin",
+        "@static_assertions",
         "@zerocopy",
     ],
 )
