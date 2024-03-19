@@ -20,13 +20,13 @@ use bootconfig::{BootConfigBuilder, BootConfigError};
 use bootimg::{BootImage, VendorImageHeader};
 use efi::{efi_print, efi_println, exit_boot_services, EfiEntry};
 use fdt::Fdt;
-use gbl_storage::MultiGptDevices;
+use gbl_storage::AsMultiBlockDevices;
 use misc::{AndroidBootMode, BootloaderMessage};
 
 use crate::error::{EfiAppError, GblEfiError, Result};
 use crate::utils::{
     aligned_subslice, cstr_bytes_to_str, find_gpt_devices, get_efi_fdt, usize_add, usize_roundup,
-    EfiGptDevice,
+    EfiMultiBlockDevices,
 };
 
 use crate::avb::GblEfiAvbOps;
@@ -46,7 +46,7 @@ macro_rules! cstr_literal {
 
 /// Helper function for performing libavb verification.
 fn avb_verify_slot<'a, 'b, 'c>(
-    gpt_dev: &'b mut [EfiGptDevice<'a>],
+    gpt_dev: &'b mut EfiMultiBlockDevices,
     kernel: &'b [u8],
     vendor_boot: &'b [u8],
     init_boot: &'b [u8],
@@ -97,7 +97,7 @@ pub fn load_android_simple<'a>(
     efi_entry: &EfiEntry,
     load: &'a mut [u8],
 ) -> Result<(&'a mut [u8], &'a mut [u8], &'a mut [u8], &'a mut [u8])> {
-    let mut gpt_devices = &mut find_gpt_devices(efi_entry)?[..];
+    let mut gpt_devices = find_gpt_devices(efi_entry)?;
 
     const PAGE_SIZE: usize = 4096; // V3/V4 image has fixed page size 4096;
 
