@@ -52,7 +52,7 @@ pub mod ops;
 /// querying and modifying slotted boot behavior.
 pub mod slots;
 
-use slots::{BootTarget, BootToken, Cursor, OneShot, SuffixBytes, UnbootableReason};
+use slots::{BootTarget, BootToken, Cursor, Manager, OneShot, SuffixBytes, UnbootableReason};
 
 #[cfg(feature = "sw_digest")]
 pub mod sw_digest;
@@ -187,7 +187,10 @@ type AvbVerifySlot = for<'b> fn(
 /// GBL object that provides implementation of helpers for boot process.
 ///
 /// To create this object use [GblBuilder].
-pub struct Gbl<'a, G> {
+pub struct Gbl<'a, G>
+where
+    G: GblOps,
+{
     ops: &'a mut G,
     image_verification: bool,
     verify_slot: AvbVerifySlot,
@@ -249,13 +252,13 @@ where
     ///
     /// * `Ok(Cursor)` - Cursor object that manages a Manager
     /// * `Err(Error)` - on failure
-    pub fn load_slot_interface<B: gbl_storage::AsBlockDevice>(
+    pub fn load_slot_interface<B: gbl_storage::AsBlockDevice, M: Manager>(
         &mut self,
         block_device: B,
-    ) -> Result<Cursor<B>> {
+    ) -> Result<Cursor<B, M>> {
         let boot_token = BOOT_TOKEN.lock().take().ok_or(Error::OperationProhibited)?;
         self.ops
-            .load_slot_interface(block_device, boot_token)
+            .load_slot_interface::<B, M>(block_device, boot_token)
             .map_err(|_| Error::OperationProhibited)
     }
 
@@ -407,7 +410,7 @@ where
         avb_ops: &'b mut impl avb::Ops,
         partitions_ram_map: &'d mut [PartitionRamMap<'b, 'c>],
         avb_verification_flags: AvbVerificationFlags,
-        slot_cursor: Cursor<B>,
+        slot_cursor: Cursor<B, impl Manager>,
         kernel_load_buffer: &mut [u8],
         ramdisk_load_buffer: &mut [u8],
         fdt: &mut [u8],
@@ -456,7 +459,7 @@ where
         kernel_load_buffer: &'e mut [u8],
         partitions_ram_map: &'d mut [PartitionRamMap<'b, 'c>],
         avb_verification_flags: AvbVerificationFlags,
-        mut slot_cursor: Cursor<B>,
+        mut slot_cursor: Cursor<B, impl Manager>,
     ) -> Result<(KernelImage<'e>, BootToken)> {
         let mut oneshot_status = slot_cursor.ctx.get_oneshot_status();
         slot_cursor.ctx.clear_oneshot_status();
@@ -538,7 +541,10 @@ impl<'a> Default for Gbl<'a, DefaultGblOps> {
 
 /// Builder for GBL object
 #[derive(Debug)]
-pub struct GblBuilder<'a, G> {
+pub struct GblBuilder<'a, G>
+where
+    G: GblOps,
+{
     ops: &'a mut G,
     image_verification: bool,
     verify_slot: AvbVerifySlot,

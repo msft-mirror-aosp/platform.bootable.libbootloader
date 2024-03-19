@@ -15,6 +15,9 @@
 /// Export the default implementation
 pub mod fuchsia;
 
+/// Generic functionality for partition backed ABR schemes
+pub mod partition;
+
 use core::mem::size_of;
 
 /// A type safe container for describing the number of retries a slot has left
@@ -55,6 +58,19 @@ impl From<u8> for Priority {
 /// A type safe container for describing a slot's suffix.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Suffix(pub(crate) char);
+
+impl Suffix {
+    // We want lexigraphically lower suffixes
+    // to have higher priority.
+    // A cheater way to do this is to compare
+    // their negative values.
+    // A char is 4 bytes, and a signed 64 bit int
+    // can comfortably contain the negative of a
+    // number represented by an unsigned 32 bit int.
+    fn rank(&self) -> i64 {
+        -i64::from(u32::from(self.0))
+    }
+}
 
 impl From<char> for Suffix {
     fn from(c: char) -> Self {
@@ -315,7 +331,10 @@ pub trait Manager: private::SlotGet {
     /// Returns the slot last set active.
     /// Note that this is different from get_boot_target in that
     /// the slot last set active cannot be Recovery.
-    fn get_slot_last_set_active(&self) -> Slot;
+    fn get_slot_last_set_active(&self) -> Slot {
+        // We can safely assume that we have at least one slot.
+        self.slots_iter().max_by_key(|slot| (slot.priority, slot.suffix.rank())).unwrap()
+    }
 
     /// Given a boot target, updates internal metadata (usually the retry count)
     /// indicating that the system will have tried to boot the slot.
@@ -386,19 +405,19 @@ pub trait Manager: private::SlotGet {
     /// This is useful for partition based slot setups,
     /// where we do not write back every interaction in order to coalesce writes
     /// and preserve disk lifetime.
-    fn write_back(&mut self, block_dev: &mut dyn gbl_storage::AsBlockDevice) {}
+    fn write_back<B: gbl_storage::AsBlockDevice>(&mut self, block_dev: &mut B) {}
 }
 
 /// RAII helper object for coalescing changes.
-pub struct Cursor<'a, B: gbl_storage::AsBlockDevice> {
+pub struct Cursor<'a, B: gbl_storage::AsBlockDevice, M: Manager> {
     /// The backing manager for slot metadata.
-    pub ctx: &'a mut dyn Manager,
+    pub ctx: M,
     /// The backing disk. Used for partition-backed metadata implementations
     /// and for fastboot.
-    pub block_dev: B,
+    pub block_dev: &'a mut B,
 }
 
-impl<'a, Block: gbl_storage::AsBlockDevice> Drop for Cursor<'a, Block> {
+impl<'a, B: gbl_storage::AsBlockDevice, M: Manager> Drop for Cursor<'a, B, M> {
     fn drop(&mut self) {
         self.ctx.write_back(&mut self.block_dev);
     }
