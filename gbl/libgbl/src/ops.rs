@@ -64,7 +64,7 @@ pub trait GblOps: Debug {
     // Nevertype could be used here when it is stable https://github.com/serde-rs/serde/issues/812
     fn do_fastboot<B: gbl_storage::AsBlockDevice>(
         &self,
-        cursor: &mut slots::Cursor<B>,
+        cursor: &mut slots::Cursor<B, impl slots::Manager>,
     ) -> Result<()> {
         Err(Error::NotImplemented)
     }
@@ -77,11 +77,11 @@ pub trait GblOps: Debug {
     }
 
     /// Load and initialize a slot manager and return a cursor over the manager on success.
-    fn load_slot_interface<B: gbl_storage::AsBlockDevice>(
+    fn load_slot_interface<B: gbl_storage::AsBlockDevice, M: slots::Manager>(
         &mut self,
         block_device: B,
         boot_token: slots::BootToken,
-    ) -> Result<slots::Cursor<B>> {
+    ) -> Result<slots::Cursor<B, M>> {
         Err(Error::OperationProhibited)
     }
 }

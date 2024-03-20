@@ -19,20 +19,20 @@
 use core::cmp::{min, Ord};
 use core::ffi::CStr;
 
-use crate::utils::EfiGptDevice;
+use crate::utils::EfiMultiBlockDevices;
 use avb::{IoError, IoResult, Ops, PublicKeyForPartitionInfo};
 use efi::{efi_free, efi_malloc};
-use gbl_storage::MultiGptDevices;
+use gbl_storage::AsMultiBlockDevices;
 use uuid::Uuid;
 
 pub struct GblEfiAvbOps<'a, 'b> {
-    gpt_dev: &'b mut [EfiGptDevice<'a>],
+    gpt_dev: &'b mut EfiMultiBlockDevices<'a>,
     preloaded_partitions: Option<&'b [(&'b str, &'b [u8])]>,
 }
 
 impl<'a, 'b> GblEfiAvbOps<'a, 'b> {
     pub fn new(
-        gpt_dev: &'b mut [EfiGptDevice<'a>],
+        gpt_dev: &'b mut EfiMultiBlockDevices<'a>,
         preloaded_partitions: Option<&'b [(&'b str, &'b [u8])]>,
     ) -> Self {
         Self { gpt_dev, preloaded_partitions }
