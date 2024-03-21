@@ -46,6 +46,7 @@ pub mod boot_mode;
 pub mod boot_reason;
 pub mod digest;
 pub mod error;
+pub mod fastboot;
 pub mod ops;
 
 /// The 'slots' module, containing types and traits for
