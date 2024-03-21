@@ -19,10 +19,11 @@
 
 use crate::error::Result;
 use crate::net::{with_efi_network, EfiTcpSocket};
+use crate::utils::find_gpt_devices;
 use core::fmt::Write;
-use core::str::Split;
 use efi::{efi_print, efi_println, EfiEntry};
-use fastboot::{CommandError, Fastboot, FastbootImplementation, TcpStream, TransportError};
+use fastboot::{Fastboot, TcpStream, TransportError};
+use libgbl::fastboot::GblFastboot;
 
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 const FASTBOOT_TCP_PORT: u16 = 5554;
@@ -48,35 +49,14 @@ impl TcpStream for EfiFastbootTcpTransport<'_, '_, '_> {
     }
 }
 
-/// TODO(b/328786603): Placeholder only. It'll be replaced by a generic GBL Fastboot implementation
-/// in a separate library.
-pub struct GblFastboot {}
-
-impl FastbootImplementation for GblFastboot {
-    fn get_var(
-        &mut self,
-        _: &str,
-        _: Split<char>,
-        _: &mut [u8],
-    ) -> core::result::Result<usize, CommandError> {
-        Err("Not found".into())
-    }
-
-    fn get_var_all<F>(&mut self, _: F) -> core::result::Result<(), CommandError>
-    where
-        F: FnMut(&str, &[&str], &str),
-    {
-        Ok(())
-    }
-}
-
 /// Internal helper for performing Fastboot over TCP.
 fn fastboot_tcp_usb(
     socket: &mut EfiTcpSocket,
     efi_entry: &EfiEntry,
     download_buffer: &mut [u8],
 ) -> Result<()> {
-    let mut gbl_fastboot = GblFastboot {};
+    let mut gpt_devices = find_gpt_devices(efi_entry)?;
+    let mut gbl_fastboot = GblFastboot::new(&mut gpt_devices);
     efi_println!(efi_entry, "Listening for Fastboot over TCP...");
     efi_println!(efi_entry, "IP addresses:");
     socket.interface().ip_addrs().iter().for_each(|v| {

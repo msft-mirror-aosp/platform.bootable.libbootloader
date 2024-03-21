@@ -111,7 +111,7 @@ use core::cmp::min;
 // Selective export of submodule types.
 mod gpt;
 use gpt::Gpt;
-pub use gpt::GptEntry;
+pub use gpt::{GptEntry, GPT_NAME_LEN_U16};
 
 mod multi_blocks;
 pub use multi_blocks::{with_id, AsMultiBlockDevices};
