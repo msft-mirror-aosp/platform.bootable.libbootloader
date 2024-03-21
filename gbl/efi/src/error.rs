@@ -17,8 +17,11 @@ use boot::BootError;
 use bootconfig::BootConfigError;
 use bootimg::ImageError;
 use efi::EfiError;
+use fastboot::TransportError;
 use fdt::FdtError;
 use gbl_storage::StorageError;
+use misc::BcbError;
+use smoltcp::socket::tcp::{ListenError, RecvError, SendError};
 use zbi::ZbiError;
 
 /// Error types for EFI application.
@@ -32,6 +35,8 @@ pub enum EfiAppError {
     NoFdt,
     NotFound,
     NoZbiImage,
+    PeerClosed,
+    Timeout,
     Unsupported,
 }
 
@@ -108,14 +113,19 @@ composite_enum! {
     #[derive(Debug)]
     pub enum GblEfiError {
         AvbIoError(IoError),
+        BcbError(BcbError),
         BootConfigError(BootConfigError),
         BootError(BootError),
         EfiAppError(EfiAppError),
         EfiError(EfiError),
         FdtError(FdtError),
         ImageError(ImageError),
+        ListenError(ListenError),
+        RecvError(RecvError),
+        SendError(SendError),
         SlotVerifyError(SlotVerifyError<'static>),
         StorageError(StorageError),
+        TransportError(TransportError),
         ZbiError(ZbiError),
     }
 }

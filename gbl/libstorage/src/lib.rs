@@ -23,7 +23,7 @@
 //!
 //! ```rust
 //! use gbl_storage::{
-//!     AsBlockDevice, BlockIo, BlockDevice, required_scratch_size, BlockDeviceWrite,
+//!     AsBlockDevice, BlockIo, BlockDevice, required_scratch_size,
 //! };
 //!
 //! /// Mocks a block device using a buffer.
@@ -74,17 +74,17 @@
 //! ram_block_dev.read(4321, &mut out[..]).unwrap();
 //! let mut data = vec![0u8; 5678];
 //! // Mutable input. More efficient
-//! ram_block_dev.write(8765, &mut data[..]).unwrap();
+//! ram_block_dev.write_mut(8765, data.as_mut_slice()).unwrap();
 //! // Immutable input. Works too but not as efficient.
-//! ram_block_dev.write(8765, &data[..]).unwrap();
+//! ram_block_dev.write(8765, &data).unwrap();
 //!
 //! // Sync GPT
 //! let _ = ram_block_dev.sync_gpt();
 //! // Access GPT entries
-//! let _ = ram_block_dev.gpt();
+//! let _ = ram_block_dev.find_partition("some-partition");
 //! // Read/Write GPT partitions with arbitrary offset, size, buffer
 //! let _ = ram_block_dev.read_gpt_partition("partition", 4321, &mut out[..]);
-//! let _ = ram_block_dev.write_gpt_partition("partition", 8765, &mut data[..]);
+//! let _ = ram_block_dev.write_gpt_partition_mut("partition", 8765, data.as_mut_slice());
 //!
 //! // Alterantively, you can also define a custom type that internally owns and binds the
 //! // implementation of `BlockIo` and scratch buffer together, and then implement the
@@ -95,8 +95,8 @@
 //! }
 //!
 //! impl AsBlockDevice for OwnedBlockDevice {
-//!     fn get(&mut self) -> (&mut dyn BlockIo, &mut [u8], u64) {
-//!         (&mut self.io, &mut self.scratch[..], MAX_GPT_ENTRIES)
+//!     fn with(&mut self, f: &mut dyn FnMut(&mut dyn BlockIo, &mut [u8], u64)) {
+//!         f(&mut self.io, &mut self.scratch[..], MAX_GPT_ENTRIES)
 //!     }
 //! }
 //!
@@ -110,9 +110,11 @@ use core::cmp::min;
 
 // Selective export of submodule types.
 mod gpt;
-pub use gpt::Gpt;
+use gpt::Gpt;
 pub use gpt::GptEntry;
-pub use gpt::{MultiGptDevices, MultiGptDevicesWrite};
+
+mod multi_blocks;
+pub use multi_blocks::{with_id, AsMultiBlockDevices};
 
 /// The type of Result used in this library.
 pub type Result<T> = core::result::Result<T, StorageError>;
@@ -123,10 +125,13 @@ pub enum StorageError {
     ArithmeticOverflow,
     OutOfRange,
     ScratchTooSmall,
+    BlockDeviceNotFound,
     BlockIoError,
+    BlockIoNotProvided,
     InvalidInput,
     NoValidGpt,
     NotExist,
+    PartitionNotUnique,
     U64toUSizeOverflow,
 }
 
@@ -136,10 +141,13 @@ impl Into<&'static str> for StorageError {
             StorageError::ArithmeticOverflow => "Arithmetic overflow",
             StorageError::OutOfRange => "Out of range",
             StorageError::ScratchTooSmall => "Not enough scratch buffer",
+            StorageError::BlockDeviceNotFound => "Block device not found",
             StorageError::BlockIoError => "Block IO error",
+            StorageError::BlockIoNotProvided => "Block IO is not provided",
             StorageError::InvalidInput => "Invalid input",
             StorageError::NoValidGpt => "GPT not found",
-            StorageError::NotExist => "Not exists",
+            StorageError::NotExist => "The specified partition could not be found",
+            StorageError::PartitionNotUnique => "Partition is found on multiple block devices",
             StorageError::U64toUSizeOverflow => "u64 to usize fails",
         }
     }
@@ -195,11 +203,32 @@ pub trait BlockIo {
     fn write_blocks(&mut self, blk_offset: u64, data: &[u8]) -> bool;
 }
 
+/// `GptEntryIterator` is returned by `AsBlockDevice::partition_iter()` and can be used to iterate
+/// all GPT partition entries.
+pub struct GptEntryIterator<'a> {
+    dev: &'a mut dyn AsBlockDevice,
+    idx: usize,
+}
+
+impl Iterator for GptEntryIterator<'_> {
+    type Item = GptEntry;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let res =
+            with_partitioned_scratch(self.dev, |_, _, gpt_buffer, _| -> Result<Option<GptEntry>> {
+                Ok(Gpt::from_existing(gpt_buffer)?.entries()?.get(self.idx).map(|v| *v))
+            })
+            .ok()?
+            .ok()??;
+        self.idx += 1;
+        Some(res)
+    }
+}
+
 /// `AsBlockDevice` provides APIs for reading raw block content and GPT partitions with
-/// arbirary offset, size and input/output buffer. Write APIs are available in trait
-/// `BlockDeviceWrite`, which is automatically implemented for all `AsBlockDevice` types.
+/// arbirary offset, size and input/output buffer.
 pub trait AsBlockDevice {
-    /// Returns a tuple containing the following information:
+    /// Runs the provided closure `f` with the following parameters:
     ///
     ///   1. An implementation of block IO `&mut dyn BlockIo`.
     ///   2. A scratch buffer `&mut [u8]`.
@@ -217,11 +246,11 @@ pub trait AsBlockDevice {
     ///   total required scratch size is 0.
     ///
     /// * GPT headers will be cached in the scratch buffer after calling `Self::sync_gpt()` and
-    ///   returning success. Subsequent call of `Self:read_gpt_partiton()` and
-    ///   `Self::write_gpt_partition()` will look up partition entries from the cached GPT header.
+    ///   returning success. Subsequent call of `Self:read_gpt_partiton()`,
+    ///   `Self::write_gpt_partition()`, and `Self::write_gpt_partition_mut()`
+    ///   will look up partition entries from the cached GPT header.
     ///   Thus callers should make sure to always return the same scratch buffer and avoid
-    ///   modifying its content. `Self::gpt()` returns a `Gpt` type that provides APIs for
-    ///   accessing the content of the GPT header.
+    ///   modifying its content.
     ///
     /// * A smaller value of maximum allowed GPT entries gives smaller required scratch buffer
     ///   size. However if the `entries_count` field in the GPT header is greater than this value,
@@ -229,7 +258,17 @@ pub trait AsBlockDevice {
     ///   max value 128 regardless of the actual number of partition entries used. Thus unless you
     ///   have full control of GPT generation in your entire system where you can always ensure a
     ///   smaller bound on it, it is recommended to always return 128.
-    fn get(&mut self) -> (&mut dyn BlockIo, &mut [u8], u64);
+    fn with(&mut self, f: &mut dyn FnMut(&mut dyn BlockIo, &mut [u8], u64));
+
+    // Returns the block size of the underlying `BlockIo`
+    fn block_size(&mut self) -> Result<u64> {
+        with_partitioned_scratch(self, |io, _, _, _| io.block_size())
+    }
+
+    // Returns the number of blocks of the underlying `BlockIo`
+    fn num_blocks(&mut self) -> Result<u64> {
+        with_partitioned_scratch(self, |io, _, _, _| io.num_blocks())
+    }
 
     /// Read data from the block device.
     ///
@@ -241,8 +280,45 @@ pub trait AsBlockDevice {
     ///
     /// * Returns success when exactly `out.len()` number of bytes are read.
     fn read(&mut self, offset: u64, out: &mut [u8]) -> Result<()> {
-        let (io, alignment, _, _) = get_with_partitioned_scratch(self)?;
-        read(io, offset, out, alignment)
+        with_partitioned_scratch(self, |io, alignment, _, _| read(io, offset, out, alignment))?
+    }
+
+    /// Write data to the device.
+    ///
+    /// # Args
+    ///
+    /// * `offset`: Offset in number of bytes.
+    ///
+    /// * `data`: Data to write.
+    ///
+    /// * If offset`/`data.len()` is not aligned to `Self::block_size()`
+    ///   or data.as_ptr() is not aligned to `Self::alignment()`, the API may
+    ///   reduce to a block by block read-modify-write in the worst case, which can be inefficient.
+    ///
+    /// * Returns success when exactly `data.len()` number of bytes are written.
+    fn write(&mut self, offset: u64, data: &[u8]) -> Result<()> {
+        with_partitioned_scratch(self, |io, alignment_scratch, _, _| {
+            write_bytes(io, offset, data, alignment_scratch)
+        })?
+    }
+
+    /// Write data to the device.
+    ///
+    /// # Args
+    ///
+    /// * `offset`: Offset in number of bytes.
+    ///
+    /// * `data`: Data to write.
+    ///
+    /// * The API enables an optimization which temporarily changes `data` layout internally and
+    ///   reduces the number of calls to `Self::write_blocks()` down to O(1) regardless of input's
+    ///   alignment. This is the recommended usage.
+    ///
+    /// * Returns success when exactly `data.len()` number of bytes are written.
+    fn write_mut(&mut self, offset: u64, data: &mut [u8]) -> Result<()> {
+        with_partitioned_scratch(self, |io, alignment_scratch, _, _| {
+            write_bytes_mut(io, offset, data, alignment_scratch)
+        })?
     }
 
     /// Parse and sync GPT from a block device.
@@ -252,10 +328,44 @@ pub trait AsBlockDevice {
     /// # Returns
     ///
     /// Returns success if GPT is loaded/restored successfully.
-    fn sync_gpt(&mut self) -> Result<Gpt> {
-        let (io, alignment_scratch, gpt_buffer, max_entries) = get_with_partitioned_scratch(self)?;
-        gpt::gpt_sync(io, &mut Gpt::new_from_buffer(max_entries, gpt_buffer)?, alignment_scratch)?;
-        self.gpt()
+    fn sync_gpt(&mut self) -> Result<()> {
+        with_partitioned_scratch(self, |io, alignment_scratch, gpt_buffer, max_entries| {
+            gpt::gpt_sync(
+                io,
+                &mut Gpt::new_from_buffer(max_entries, gpt_buffer)?,
+                alignment_scratch,
+            )
+        })?
+    }
+
+    /// Returns an iterator to GPT partition entries.
+    fn partition_iter(&mut self) -> GptEntryIterator
+    where
+        Self: Sized,
+    {
+        GptEntryIterator { dev: self, idx: 0 }
+    }
+
+    /// Returns the `GptEntry` for a partition.
+    ///
+    /// # Args
+    ///
+    /// * `part`: Name of the partition.
+    fn find_partition(&mut self, part: &str) -> Result<GptEntry> {
+        with_partitioned_scratch(self, |_, _, gpt_buffer, _| {
+            Ok(Gpt::from_existing(gpt_buffer)?.find_partition(part).map(|v| *v)?)
+        })?
+    }
+
+    /// Returns the size of a partition.
+    ///
+    /// # Args
+    ///
+    /// * `part`: Name of the partition.
+    fn partition_size(&mut self, part: &str) -> Result<u64> {
+        let blk_sz = self.block_size()?;
+        let entry = self.find_partition(part)?;
+        mul(blk_sz, entry.blocks()?)
     }
 
     /// Read a GPT partition on a block device
@@ -272,58 +382,16 @@ pub trait AsBlockDevice {
     ///
     /// Returns success when exactly `out.len()` of bytes are read successfully.
     fn read_gpt_partition(&mut self, part_name: &str, offset: u64, out: &mut [u8]) -> Result<()> {
-        let (io, alignment_scratch, gpt_buffer, _) = get_with_partitioned_scratch(self)?;
-        gpt::read_gpt_partition(
-            io,
-            &mut Gpt::from_existing(gpt_buffer)?,
-            part_name,
-            offset,
-            out,
-            alignment_scratch,
-        )
-    }
-
-    /// Returns the GPT header.
-    fn gpt(&mut self) -> Result<Gpt> {
-        let (_, _, gpt_buffer, _) = get_with_partitioned_scratch(self)?;
-        Gpt::from_existing(gpt_buffer)
-    }
-
-    /// Returns the `BlockIo` implementation.
-    fn block_io(&mut self) -> &mut dyn BlockIo {
-        self.get().0
-    }
-}
-
-/// `BlockDeviceWrite` provides raw/GPT partition write APIs for a `AsBlockDevice`.
-/// The input data needs to implement `WriteBuffer` which tells the API whether input data is
-/// mutable. Mutable input data allows additional internal optimization which makes write more
-/// efficient. In most cases, B should either be a `&mut [u8]` or `&[u8]`. See `write()` for more
-/// details.
-pub trait BlockDeviceWrite<B: WriteBuffer>: AsBlockDevice {
-    /// Write data to the device.
-    ///
-    /// # Args
-    ///
-    /// * `offset`: Offset in number of bytes.
-    ///
-    /// * `data`: Data to write. It can be `&[u8]`, `&mut [u8]` or other types that implement the
-    ///   `WriteBuffer` trait.
-    ///
-    /// * If `data` is an immutable bytes slice `&[u8]` or doesn't support
-    ///   `WriteBuffer::as_mut_slice()`, when offset`/`data.len()` is not aligned to
-    ///   `Self::block_size()` or data.as_ptr() is not aligned to `Self::alignment()`, the API may
-    ///   reduce to a block by block read-modify-write in the worst case, which can be inefficient.
-    ///
-    /// * If `data` is a mutable bytes slice `&mut [u8]`, or support `WriteBuffer::as_mut_slice()`.
-    ///   The API enables optimization which temporarily changes `data` layout internally and
-    ///   reduces the number of calls to `Self::write_blocks()` down to O(1) regardless of inputs
-    ///   alignment. This is the recommended usage.
-    ///
-    /// * Returns success when exactly `data.len()` number of bytes are written.
-    fn write(&mut self, offset: u64, data: B) -> Result<()> {
-        let (io, alignment_scratch, _, _) = get_with_partitioned_scratch(self)?;
-        write(io, offset, data, alignment_scratch)
+        with_partitioned_scratch(self, |io, alignment_scratch, gpt_buffer, _| {
+            gpt::read_gpt_partition(
+                io,
+                &mut Gpt::from_existing(gpt_buffer)?,
+                part_name,
+                offset,
+                out,
+                alignment_scratch,
+            )
+        })?
     }
 
     /// Write a GPT partition on a block device
@@ -339,26 +407,59 @@ pub trait BlockDeviceWrite<B: WriteBuffer>: AsBlockDevice {
     /// # Returns
     ///
     /// Returns success when exactly `data.len()` of bytes are written successfully.
-    fn write_gpt_partition(&mut self, part_name: &str, offset: u64, data: B) -> Result<()> {
-        let (io, alignment_scratch, gpt_buffer, _) = get_with_partitioned_scratch(self)?;
-        gpt::write_gpt_partition(
-            io,
-            &mut Gpt::from_existing(gpt_buffer)?,
-            part_name,
-            offset,
-            data,
-            alignment_scratch,
-        )
+    fn write_gpt_partition(&mut self, part_name: &str, offset: u64, data: &[u8]) -> Result<()> {
+        with_partitioned_scratch(self, |io, alignment_scratch, gpt_buffer, _| {
+            gpt::write_gpt_partition(
+                io,
+                &mut Gpt::from_existing(gpt_buffer)?,
+                part_name,
+                offset,
+                data,
+                alignment_scratch,
+            )
+        })?
+    }
+
+    /// Write a GPT partition on a block device.
+    /// Optimization for mutable buffers.
+    /// See `AsBlockDevice::write_mut` for details on alignment requirements
+    /// for optimized performance.
+    ///
+    /// # Args
+    ///
+    /// * `part_name`: Name of the partition.
+    ///
+    /// * `offset`: Offset in number of bytes into the partition.
+    ///
+    /// * `data`: Data to write. See `data` passed to `BlockIo::write()` for details.
+    ///
+    /// # Returns
+    ///
+    /// Returns success when exactly `data.len()` of bytes are written successfully.
+    fn write_gpt_partition_mut(
+        &mut self,
+        part_name: &str,
+        offset: u64,
+        data: &mut [u8],
+    ) -> Result<()> {
+        with_partitioned_scratch(self, |io, alignment_scratch, gpt_buffer, _| {
+            gpt::write_gpt_partition_mut(
+                io,
+                &mut Gpt::from_existing(gpt_buffer)?,
+                part_name,
+                offset,
+                data.into(),
+                alignment_scratch,
+            )
+        })?
     }
 }
 
 impl<T: ?Sized + AsBlockDevice> AsBlockDevice for &mut T {
-    fn get(&mut self) -> (&mut dyn BlockIo, &mut [u8], u64) {
-        (*self).get()
+    fn with(&mut self, f: &mut dyn FnMut(&mut dyn BlockIo, &mut [u8], u64)) {
+        (*self).with(f)
     }
 }
-
-impl<T: ?Sized + AsBlockDevice, B: WriteBuffer> BlockDeviceWrite<B> for T {}
 
 /// `BlockDevice` borrows a `BlockIo`, scratch buffer and implements `AsBlockDevice`.
 pub struct BlockDevice<'a, 'b> {
@@ -374,8 +475,8 @@ impl<'a, 'b> BlockDevice<'a, 'b> {
 }
 
 impl AsBlockDevice for BlockDevice<'_, '_> {
-    fn get(&mut self) -> (&mut dyn BlockIo, &mut [u8], u64) {
-        (self.io, self.scratch, self.max_gpt_entries)
+    fn with(&mut self, f: &mut dyn FnMut(&mut dyn BlockIo, &mut [u8], u64)) {
+        f(self.io, self.scratch, self.max_gpt_entries)
     }
 }
 
@@ -392,17 +493,26 @@ pub fn required_scratch_size(
     alignment_size.checked_add(gpt_buffer_size).ok_or(StorageError::ArithmeticOverflow)
 }
 
-/// The helper calls `AsBlockDevice:get()`, partitions the scratch buffer into alignment scratch and
-/// GPT buffers, and returns them.
-fn get_with_partitioned_scratch(
+/// A helper that wraps `AsBlockDevice::with` and additionally partitions the scratch buffer into
+/// alignment scratch and GPT buffers.
+pub(crate) fn with_partitioned_scratch<F, R>(
     dev: &mut (impl AsBlockDevice + ?Sized),
-) -> Result<(&mut dyn BlockIo, &mut [u8], &mut [u8], u64)> {
-    let (io, scratch, max_entries) = dev.get();
-    if scratch.len() < required_scratch_size(io, max_entries)? {
-        return Err(StorageError::ScratchTooSmall);
-    }
-    let (alignment, gpt) = scratch.split_at_mut(alignment_scratch_size(io)?);
-    Ok((io, alignment, gpt, max_entries))
+    mut f: F,
+) -> Result<R>
+where
+    F: FnMut(&mut dyn BlockIo, &mut [u8], &mut [u8], u64) -> R,
+{
+    let mut res: Result<R> = Err(StorageError::BlockIoNotProvided);
+    dev.with(&mut |io, scratch, max_entries| {
+        res = (|| {
+            if scratch.len() < required_scratch_size(io, max_entries)? {
+                return Err(StorageError::ScratchTooSmall);
+            }
+            let (alignment, gpt) = scratch.split_at_mut(alignment_scratch_size(io)?);
+            Ok(f(io, alignment, gpt, max_entries))
+        })();
+    });
+    res
 }
 
 /// Add two u64 integers and check overflow
@@ -843,82 +953,10 @@ fn write_bytes_mut(
     )
 }
 
-/// Top level write API that accept mutable/immutable bytes slice
-fn write<B>(
-    blk_io: &mut (impl BlockIo + ?Sized),
-    offset: u64,
-    mut data: B,
-    scratch: &mut [u8],
-) -> Result<()>
-where
-    B: WriteBuffer,
-{
-    if let Some(slice) = data.as_mut_slice() {
-        return write_bytes_mut(blk_io, offset, slice, scratch);
-    } else if let Some(slice) = data.as_slice() {
-        return write_bytes(blk_io, offset, slice, scratch);
-    }
-
-    Err(StorageError::InvalidInput)
-}
-
-/// The trait is for abstracting the representation of bytes data. The `AsBlockDevice::write()` API
-/// will choose different algorithm based on the return result of the methods. The library
-/// provides native implementation for `&[u8]` and `&mut [u8]`. It's technically possilbe for users
-/// to implement other types such as `Vec<u8>` etc.
-pub trait WriteBuffer {
-    /// Return a mutable bytes slice for the data. If the data cannot be mutable, returns None.
-    fn as_mut_slice(&mut self) -> Option<&mut [u8]>;
-
-    /// Return a bytes slice for the data. Return None if not supported.
-    fn as_slice(&mut self) -> Option<&[u8]>;
-
-    // Provided methods
-
-    /// Return the length of the data.
-    fn data_len(&mut self) -> Result<usize> {
-        self.as_slice()
-            .map(|v| v.len())
-            .or(self.as_mut_slice().map(|v| v.len()))
-            .ok_or(StorageError::InvalidInput)
-    }
-}
-
-impl WriteBuffer for &[u8] {
-    fn as_mut_slice(&mut self) -> Option<&mut [u8]> {
-        None
-    }
-
-    fn as_slice(&mut self) -> Option<&[u8]> {
-        Some(*self)
-    }
-}
-
-impl WriteBuffer for &mut [u8] {
-    fn as_mut_slice(&mut self) -> Option<&mut [u8]> {
-        Some(*self)
-    }
-
-    fn as_slice(&mut self) -> Option<&[u8]> {
-        None
-    }
-}
-
-impl<T: WriteBuffer> WriteBuffer for &mut T {
-    fn as_mut_slice(&mut self) -> Option<&mut [u8]> {
-        (*self).as_mut_slice()
-    }
-
-    fn as_slice(&mut self) -> Option<&[u8]> {
-        (*self).as_slice()
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
     use core::mem::size_of;
-    use Vec;
 
     /// Mocks a block device with content from buffer.
     pub struct TestBlockIo {
@@ -999,11 +1037,17 @@ mod test {
             let storage: Vec<u8> = (0..storage_size).map(|x| x as u8).collect();
             Self::new_with_data(alignment, block_size, max_gpt_entries, &storage)
         }
+
+        /// Extract the internal Gpt structure for examination by test.
+        pub fn gpt(&mut self) -> Gpt {
+            let (_, gpt) = self.scratch.split_at_mut(alignment_scratch_size(&mut self.io).unwrap());
+            Gpt::from_existing(gpt).unwrap()
+        }
     }
 
     impl AsBlockDevice for TestBlockDevice {
-        fn get(&mut self) -> (&mut dyn BlockIo, &mut [u8], u64) {
-            (&mut self.io, &mut self.scratch[..], self.max_gpt_entries)
+        fn with(&mut self, f: &mut dyn FnMut(&mut dyn BlockIo, &mut [u8], u64)) {
+            f(&mut self.io, &mut self.scratch[..], self.max_gpt_entries)
         }
     }
 
@@ -1133,7 +1177,7 @@ mod test {
                 #[test]
                 fn write_test() {
                     let func = |blk: &mut TestBlockDevice, offset: u64, data: &mut [u8]| {
-                        blk.write(offset, data as &[u8]).unwrap();
+                        blk.write(offset, data).unwrap();
                     };
                     write_test_helper(&TestCase::new($x0, $x1, $x2, $x3, $x4, $x5), func);
                 }
@@ -1142,7 +1186,7 @@ mod test {
                 fn write_scaled_test() {
                     // Scaled all parameters by double and test again.
                     let func = |blk: &mut TestBlockDevice, offset: u64, data: &mut [u8]| {
-                        blk.write(offset, data as &[u8]).unwrap();
+                        blk.write(offset, data).unwrap();
                     };
                     let (x0, x1, x2, x3, x4, x5) =
                         (2 * $x0, 2 * $x1, 2 * $x2, 2 * $x3, 2 * $x4, 2 * $x5);
@@ -1153,7 +1197,7 @@ mod test {
                 #[test]
                 fn write_mut_test() {
                     let func = |blk: &mut TestBlockDevice, offset: u64, data: &mut [u8]| {
-                        blk.write(offset, data).unwrap();
+                        blk.write_mut(offset, data).unwrap();
                         assert!(blk.io.num_reads <= READ_WRITE_BLOCKS_UPPER_BOUND);
                         assert!(blk.io.num_writes <= READ_WRITE_BLOCKS_UPPER_BOUND);
                     };
@@ -1166,7 +1210,7 @@ mod test {
                     let (x0, x1, x2, x3, x4, x5) =
                         (2 * $x0, 2 * $x1, 2 * $x2, 2 * $x3, 2 * $x4, 2 * $x5);
                     let func = |blk: &mut TestBlockDevice, offset: u64, data: &mut [u8]| {
-                        blk.write(offset, data).unwrap();
+                        blk.write_mut(offset, data).unwrap();
                         assert!(blk.io.num_reads <= READ_WRITE_BLOCKS_UPPER_BOUND);
                         assert!(blk.io.num_writes <= READ_WRITE_BLOCKS_UPPER_BOUND);
                     };
@@ -1402,7 +1446,7 @@ mod test {
     #[test]
     fn test_no_alignment_require_zero_size_scratch() {
         let mut blk = TestBlockDevice::new(1, 1, 0, 1);
-        assert_eq!(required_scratch_size(blk.block_io(), 0).unwrap(), 0);
+        assert_eq!(required_scratch_size(&mut blk.io, 0).unwrap(), 0);
     }
 
     #[test]
@@ -1430,18 +1474,18 @@ mod test {
     #[test]
     fn test_write_overflow() {
         let mut blk = TestBlockDevice::new(1, 1, 0, 512);
-        assert!(blk.write(512, vec![0u8; 1].as_mut_slice()).is_err());
-        assert!(blk.write(0, vec![0u8; 513].as_mut_slice()).is_err());
+        assert!(blk.write_mut(512, vec![0u8; 1].as_mut_slice()).is_err());
+        assert!(blk.write_mut(0, vec![0u8; 513].as_mut_slice()).is_err());
 
-        assert!(blk.write(512, vec![0u8; 1].as_slice()).is_err());
-        assert!(blk.write(0, vec![0u8; 513].as_slice()).is_err());
+        assert!(blk.write(512, &vec![0u8; 1]).is_err());
+        assert!(blk.write(0, &vec![0u8; 513]).is_err());
     }
 
     #[test]
     fn test_write_arithmetic_overflow() {
         let mut blk = TestBlockDevice::new(1, 1, 0, 512);
-        assert!(blk.write(u64::MAX, vec![0u8; 1].as_mut_slice()).is_err());
-        assert!(blk.write(u64::MAX, vec![0u8; 1].as_slice()).is_err());
+        assert!(blk.write_mut(u64::MAX, vec![0u8; 1].as_mut_slice()).is_err());
+        assert!(blk.write(u64::MAX, &vec![0u8; 1]).is_err());
     }
 
     #[test]

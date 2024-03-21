@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::{
-    add, aligned_subslice, div, mul, read, sub, to_usize, write, AsBlockDevice, BlockDeviceWrite,
-    BlockIo, Result, StorageError, WriteBuffer,
+    add, aligned_subslice, div, mul, read, sub, to_usize, write_bytes, write_bytes_mut, BlockIo,
+    Result, StorageError,
 };
 use core::default::Default;
 use core::mem::{align_of, size_of};
@@ -23,7 +23,7 @@ use crc32fast::Hasher;
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 
 const GPT_GUID_LEN: usize = 16;
-const GPT_NAME_LEN: usize = 36;
+pub(crate) const GPT_NAME_LEN: usize = 36;
 
 #[repr(C, packed)]
 #[derive(Debug, Default, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
@@ -145,7 +145,7 @@ impl GptInfo {
 }
 
 /// An object that contains the GPT header/entries information.
-pub struct Gpt<'a> {
+pub(crate) struct Gpt<'a> {
     info: &'a mut GptInfo,
     /// Raw bytes of primary GPT header.
     primary_header: &'a mut [u8],
@@ -217,7 +217,7 @@ impl<'a> Gpt<'a> {
     /// Return the list of GPT entries.
     ///
     /// If the object does not contain a valid GPT, the method returns Error.
-    pub fn entries(&self) -> Result<&[GptEntry]> {
+    pub(crate) fn entries(&self) -> Result<&[GptEntry]> {
         self.check_valid()?;
         Ok(&Ref::<_, [GptEntry]>::new_slice(&self.primary_entries[..]).unwrap().into_slice()
             [..to_usize(self.info.num_valid_entries()?)?])
@@ -228,15 +228,15 @@ impl<'a> Gpt<'a> {
     /// If partition doesn't exist, the method returns `Ok(None)`.
     ///
     /// If the object does not contain a valid GPT, the method returns Error.
-    pub fn find_partition(&self, part: &str) -> Result<Option<&GptEntry>> {
+    pub(crate) fn find_partition(&self, part: &str) -> Result<&GptEntry> {
         for entry in self.entries()? {
             let mut name_conversion_buffer = [0u8; GPT_NAME_LEN * 2];
             if entry.name_to_str(&mut name_conversion_buffer)? != part {
                 continue;
             }
-            return Ok(Some(entry));
+            return Ok(entry);
         }
-        Ok(None)
+        Err(StorageError::NotExist)
     }
 
     /// Check whether the Gpt has been initialized.
@@ -318,7 +318,7 @@ impl<'a> Gpt<'a> {
         let primary_valid = self.validate_gpt(blk_dev, scratch, HeaderType::Primary)?;
         let secondary_valid = self.validate_gpt(blk_dev, scratch, HeaderType::Secondary)?;
 
-        let primary_header = GptHeader::from_bytes(&mut self.primary_header[..]);
+        let primary_header = GptHeader::from_bytes(self.primary_header);
         let secondary_header = GptHeader::from_bytes(&mut self.secondary_header[..]);
         if !primary_valid {
             if !secondary_valid {
@@ -331,8 +331,8 @@ impl<'a> Gpt<'a> {
             primary_header.backup = secondary_header_blk;
             primary_header.entries = primary_entries_blk;
             primary_header.update_crc();
-            write(blk_dev, primary_header_pos, primary_header.as_bytes_mut(), scratch)?;
-            write(blk_dev, primary_entries_pos, &mut self.primary_entries[..], scratch)?
+            write_bytes_mut(blk_dev, primary_header_pos, primary_header.as_bytes_mut(), scratch)?;
+            write_bytes_mut(blk_dev, primary_entries_pos, self.primary_entries, scratch)?
         } else if !secondary_valid {
             // Restore to secondary
             secondary_header.as_bytes_mut().clone_from_slice(primary_header.as_bytes());
@@ -341,8 +341,13 @@ impl<'a> Gpt<'a> {
             secondary_header.backup = primary_header_blk;
             secondary_header.entries = secondary_entries_blk;
             secondary_header.update_crc();
-            write(blk_dev, secondary_header_pos, secondary_header.as_bytes_mut(), scratch)?;
-            write(blk_dev, secondary_entries_pos, &mut self.secondary_entries[..], scratch)?;
+            write_bytes_mut(
+                blk_dev,
+                secondary_header_pos,
+                secondary_header.as_bytes_mut(),
+                scratch,
+            )?;
+            write_bytes_mut(blk_dev, secondary_entries_pos, self.secondary_entries, scratch)?;
         }
 
         // Calculate actual number of GPT entries by finding the first invalid entry.
@@ -388,34 +393,38 @@ pub(crate) fn read_gpt_partition(
     out: &mut [u8],
     scratch: &mut [u8],
 ) -> Result<()> {
-    match gpt.find_partition(part_name) {
-        Ok(Some(e)) => {
-            let abs_offset = check_offset(blk_dev, e, offset, out.len() as u64)?;
-            read(blk_dev, abs_offset, out, scratch)
-        }
-        _ => Err(StorageError::NotExist),
-    }
+    let e = gpt.find_partition(part_name)?;
+    let abs_offset = check_offset(blk_dev, e, offset, out.len() as u64)?;
+    read(blk_dev, abs_offset, out, scratch)
 }
 
 /// Write GPT partition. Library internal helper for AsBlockDevice::write_gpt_partition().
-pub(crate) fn write_gpt_partition<B>(
+pub(crate) fn write_gpt_partition(
     blk_dev: &mut (impl BlockIo + ?Sized),
     gpt: &Gpt,
     part_name: &str,
     offset: u64,
-    mut data: B,
+    data: &[u8],
     scratch: &mut [u8],
-) -> Result<()>
-where
-    B: WriteBuffer,
-{
-    match gpt.find_partition(part_name) {
-        Ok(Some(e)) => {
-            let abs_offset = check_offset(blk_dev, e, offset, data.data_len()? as u64)?;
-            write(blk_dev, abs_offset, data, scratch)
-        }
-        _ => Err(StorageError::NotExist),
-    }
+) -> Result<()> {
+    let e = gpt.find_partition(part_name)?;
+    let abs_offset = check_offset(blk_dev, e, offset, data.len() as u64)?;
+    write_bytes(blk_dev, abs_offset, data, scratch)
+}
+
+/// Write GPT partition. Library internal helper for AsBlockDevice::write_gpt_partition().
+/// Optimized version for mutable buffers.
+pub(crate) fn write_gpt_partition_mut(
+    blk_dev: &mut (impl BlockIo + ?Sized),
+    gpt: &Gpt,
+    part_name: &str,
+    offset: u64,
+    data: &mut [u8],
+    scratch: &mut [u8],
+) -> Result<()> {
+    let e = gpt.find_partition(part_name)?;
+    let abs_offset = check_offset(blk_dev, e, offset, data.as_ref().len() as u64)?;
+    write_bytes_mut(blk_dev, abs_offset, data.as_mut(), scratch)
 }
 
 fn crc32(data: &[u8]) -> u32 {
@@ -424,101 +433,13 @@ fn crc32(data: &[u8]) -> u32 {
     hasher.finalize()
 }
 
-/// `MultiGptDevices` provides APIs for finding/reading partitions from multiple block devices.
-///
-/// The APIs use first match when searching for a partition. The caller should ensure that the
-/// partition of interest is unique among all devices. Otherwise it may lead to unexpected behavor.
-/// The intended use of this trait is for cases where a single collection of functional/bootable
-/// partitions are scattered on multiple GPT devices due to design constraint such as storage size,
-/// or GPT A/B etc. It should not be used to handle multiple GPT devices that contains multiple
-/// collections or copipes of functional/bootable partitions.
-pub trait MultiGptDevices {
-    /// Calls closure `f` for each `AsBlockDevice` object until reaching end or `f` returns true.
-    fn for_each_until(&mut self, f: &mut dyn FnMut(&mut dyn AsBlockDevice) -> bool);
-
-    /// Calls AsBlockDevice::sync_gpt() for all block devices.
-    fn sync_gpt(&mut self) -> Result<()> {
-        let mut res: Result<()> = Ok(());
-        self.for_each_until(&mut |v| {
-            res = v.sync_gpt().map(|_| ());
-            res.is_err()
-        });
-        res
-    }
-
-    /// Checks if there is exactly one partition with the given name among all devices.
-    fn check_unique(&mut self, part: &str) -> bool {
-        let mut count = 0usize;
-        self.for_each_until(&mut |v| {
-            count += (|| -> Result<bool> { Ok(v.gpt()?.find_partition(part)?.is_some()) })()
-                .unwrap_or(false) as usize;
-            count > 1
-        });
-        count == 1
-    }
-
-    /// Returns the block size and `GptEntry` for a partition on the first match.
-    fn find_partition(&mut self, part: &str) -> Result<(u64, GptEntry)> {
-        let mut res = Err(StorageError::NotExist);
-        self.for_each_until(&mut |v| {
-            res = (|| match v.gpt()?.find_partition(part)?.map(|v| *v) {
-                Some(p) => Ok((v.block_io().block_size(), p)),
-                _ => res,
-            })();
-            res.is_ok()
-        });
-        res
-    }
-
-    /// Returns the size of a partition on the first match.
-    fn partition_size(&mut self, part: &str) -> Result<u64> {
-        let (block_size, entry) = self.find_partition(part)?;
-        Ok(mul(block_size, entry.blocks()?)?)
-    }
-
-    /// Reads a GPT partition on the first match.
-    fn read_gpt_partition(&mut self, part_name: &str, offset: u64, out: &mut [u8]) -> Result<()> {
-        let mut res = Err(StorageError::NotExist);
-        self.for_each_until(&mut |v| {
-            res = v.read_gpt_partition(part_name, offset, out);
-            res.is_ok()
-        });
-        res
-    }
-}
-
-/// `MultiGptDevicesWrite` provides partition write APIs for a `MultiGptDevices`
-pub trait MultiGptDevicesWrite<B: WriteBuffer>: MultiGptDevices {
-    /// Writes a GPT partition on the first match.
-    fn write_gpt_partition(&mut self, part_name: &str, offset: u64, mut data: B) -> Result<()> {
-        let mut res = Err(StorageError::NotExist);
-        self.for_each_until(&mut |v| {
-            res = v.write_gpt_partition(part_name, offset, &mut data);
-            res.is_ok()
-        });
-        res
-    }
-}
-
-impl<T: ?Sized + MultiGptDevices, B: WriteBuffer> MultiGptDevicesWrite<B> for T {}
-
-impl<B: AsBlockDevice> MultiGptDevices for &mut [B] {
-    fn for_each_until(&mut self, f: &mut dyn FnMut(&mut dyn AsBlockDevice) -> bool) {
-        for ele in self.iter_mut() {
-            if f(ele) {
-                return;
-            }
-        }
-    }
-}
-
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use super::*;
     use crate::test::TestBlockDevice;
-    use crate::BlockDeviceWrite;
+    use crate::AsBlockDevice;
 
-    fn gpt_block_device(max_entries: u64, data: &[u8]) -> TestBlockDevice {
+    pub(crate) fn gpt_block_device(max_entries: u64, data: &[u8]) -> TestBlockDevice {
         TestBlockDevice::new_with_data(512, 512, max_entries, data)
     }
 
@@ -526,12 +447,12 @@ mod test {
     fn test_new_from_buffer() {
         let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
         let mut dev = gpt_block_device(128, &disk);
-        let gpt = dev.sync_gpt().unwrap();
+        dev.sync_gpt().unwrap();
 
-        assert_eq!(gpt.entries().unwrap().len(), 2);
-        gpt.find_partition("boot_a").unwrap().unwrap();
-        gpt.find_partition("boot_b").unwrap().unwrap();
-        assert!(gpt.find_partition("boot_c").unwrap().is_none());
+        assert_eq!(dev.partition_iter().count(), 2);
+        dev.find_partition("boot_a").unwrap();
+        dev.find_partition("boot_b").unwrap();
+        assert!(dev.find_partition("boot_c").is_err());
     }
 
     #[test]
@@ -556,12 +477,12 @@ mod test {
 
         // Corrupt secondary.
         dev.io.storage[disk.len() - 512..].fill(0);
-        let gpt = dev.sync_gpt().unwrap();
+        dev.sync_gpt().unwrap();
 
-        assert_eq!(gpt.entries().unwrap().len(), 2);
-        gpt.find_partition("boot_a").unwrap().unwrap();
-        gpt.find_partition("boot_b").unwrap().unwrap();
-        assert!(gpt.find_partition("boot_c").unwrap().is_none());
+        assert_eq!(dev.partition_iter().count(), 2);
+        dev.find_partition("boot_a").unwrap();
+        dev.find_partition("boot_b").unwrap();
+        assert!(dev.find_partition("boot_c").is_err());
 
         // Check that secondary is restored
         assert_eq!(dev.io.storage, disk);
@@ -574,11 +495,11 @@ mod test {
 
         // Corrupt primary.
         dev.io.storage[512..1024].fill(0);
-        let gpt = dev.sync_gpt().unwrap();
+        dev.sync_gpt().unwrap();
 
-        assert_eq!(gpt.entries().unwrap().len(), 2);
-        gpt.find_partition("boot_a").unwrap().unwrap();
-        gpt.find_partition("boot_b").unwrap().unwrap();
+        assert_eq!(dev.partition_iter().count(), 2);
+        dev.find_partition("boot_a").unwrap();
+        dev.find_partition("boot_b").unwrap();
 
         // Check that primary is restored
         assert_eq!(dev.io.storage, disk);
@@ -588,7 +509,7 @@ mod test {
     fn test_good_gpt_no_repair_write() {
         let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
         let mut dev = gpt_block_device(128, &disk);
-        let _ = dev.sync_gpt().unwrap();
+        dev.sync_gpt().unwrap();
 
         assert_eq!(dev.io.num_writes, 0);
     }
@@ -597,8 +518,9 @@ mod test {
     fn test_load_gpt_incorrect_magic() {
         let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
         let mut dev = gpt_block_device(128, &disk);
-        let gpt = dev.sync_gpt().unwrap();
+        dev.sync_gpt().unwrap();
 
+        let gpt = dev.gpt();
         let primary_header = &mut gpt.primary_header[..to_usize(GPT_HEADER_SIZE).unwrap()];
         let gpt_header = GptHeader::from_bytes(primary_header);
         gpt_header.magic = 0x123456;
@@ -606,7 +528,7 @@ mod test {
         let primary_header = Vec::from(primary_header);
         dev.io.storage[512..512 + primary_header.len()].clone_from_slice(&primary_header);
 
-        let _ = dev.sync_gpt().unwrap();
+        dev.sync_gpt().unwrap();
 
         // Check that incorrect magic header is restored
         assert_eq!(dev.io.storage, disk);
@@ -623,8 +545,9 @@ mod test {
         // Create a header with non-max entries_count
         let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
         let mut dev = gpt_block_device(128, &disk);
-        let gpt = dev.sync_gpt().unwrap();
+        dev.sync_gpt().unwrap();
 
+        let gpt = dev.gpt();
         let primary_header = &mut gpt.primary_header[..to_usize(GPT_HEADER_SIZE).unwrap()];
         let gpt_header = GptHeader::from_bytes(primary_header);
         gpt_header.entries_count = 2;
@@ -638,11 +561,11 @@ mod test {
 
         // Corrupt secondary. Sync ok
         dev.io.storage[disk.len() - 512..].fill(0);
-        let _ = dev.sync_gpt().unwrap();
+        dev.sync_gpt().unwrap();
 
         // Corrup primary. Sync ok
         dev.io.storage[512..1024].fill(0);
-        let _ = dev.sync_gpt().unwrap();
+        dev.sync_gpt().unwrap();
     }
 
     #[test]
@@ -650,18 +573,17 @@ mod test {
         // Load a good GPT first.
         let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
         let mut dev = gpt_block_device(128, &disk);
-        let _ = dev.sync_gpt().unwrap();
+        dev.sync_gpt().unwrap();
         dev.io.storage[..64 * 1024].fill(0);
         // Load a bad GPT. Validate that the valid state is reset.
         assert!(dev.sync_gpt().is_err());
-        assert!(dev.gpt().unwrap().entries().is_err());
-        assert!(dev.gpt().unwrap().find_partition("").is_err());
+        assert!(dev.find_partition("").is_err());
     }
 
     #[test]
     fn test_gpt_read() {
         let mut dev = gpt_block_device(128, include_bytes!("../test/gpt_test_1.bin"));
-        let _ = dev.sync_gpt().unwrap();
+        dev.sync_gpt().unwrap();
 
         let expect_boot_a = include_bytes!("../test/boot_a.bin");
         let expect_boot_b = include_bytes!("../test/boot_b.bin");
@@ -687,7 +609,7 @@ mod test {
     #[test]
     fn test_gpt_write() {
         let mut dev = gpt_block_device(128, include_bytes!("../test/gpt_test_1.bin"));
-        let _ = dev.sync_gpt().unwrap();
+        dev.sync_gpt().unwrap();
 
         let mut expect_boot_a = include_bytes!("../test/boot_a.bin").to_vec();
         expect_boot_a.reverse();
@@ -699,37 +621,37 @@ mod test {
 
         // "boot_a" partition
         // Mutable version
-        dev.write_gpt_partition("boot_a", 0, &mut expect_boot_a[..]).unwrap();
+        dev.write_gpt_partition_mut("boot_a", 0, expect_boot_a.as_mut_slice()).unwrap();
         dev.read_gpt_partition("boot_a", 0, &mut actual_boot_a).unwrap();
         assert_eq!(expect_boot_a.to_vec(), actual_boot_a);
         // Mutable version, partial write.
-        dev.write_gpt_partition("boot_a", 1, &expect_boot_a[1..]).unwrap();
+        dev.write_gpt_partition_mut("boot_a", 1, expect_boot_a[1..].as_mut()).unwrap();
         dev.read_gpt_partition("boot_a", 1, &mut actual_boot_a[1..]).unwrap();
         assert_eq!(expect_boot_a[1..], actual_boot_a[1..]);
         // Immutable version
-        dev.write_gpt_partition("boot_a", 0, &expect_boot_a[..] as &[u8]).unwrap();
+        dev.write_gpt_partition("boot_a", 0, &expect_boot_a).unwrap();
         dev.read_gpt_partition("boot_a", 0, &mut actual_boot_a).unwrap();
         assert_eq!(expect_boot_a.to_vec(), actual_boot_a);
         // Immutable version, partial write.
-        dev.write_gpt_partition("boot_a", 1, &expect_boot_a[1..] as &[u8]).unwrap();
+        dev.write_gpt_partition("boot_a", 1, &expect_boot_a[1..]).unwrap();
         dev.read_gpt_partition("boot_a", 1, &mut actual_boot_a[1..]).unwrap();
         assert_eq!(expect_boot_a[1..], actual_boot_a[1..]);
 
         // "boot_b" partition
         // Mutable version
-        dev.write_gpt_partition("boot_b", 0, &mut expect_boot_b[..]).unwrap();
+        dev.write_gpt_partition_mut("boot_b", 0, expect_boot_b.as_mut_slice()).unwrap();
         dev.read_gpt_partition("boot_b", 0, &mut actual_boot_b).unwrap();
         assert_eq!(expect_boot_b.to_vec(), actual_boot_b);
         // Mutable version, partial write.
-        dev.write_gpt_partition("boot_b", 1, &expect_boot_b[1..]).unwrap();
+        dev.write_gpt_partition_mut("boot_b", 1, expect_boot_b[1..].as_mut()).unwrap();
         dev.read_gpt_partition("boot_b", 1, &mut actual_boot_b[1..]).unwrap();
         assert_eq!(expect_boot_b[1..], actual_boot_b[1..]);
         // Immutable version
-        dev.write_gpt_partition("boot_b", 0, &expect_boot_b[..] as &[u8]).unwrap();
+        dev.write_gpt_partition("boot_b", 0, &expect_boot_b).unwrap();
         dev.read_gpt_partition("boot_b", 0, &mut actual_boot_b).unwrap();
         assert_eq!(expect_boot_b.to_vec(), actual_boot_b);
         // Immutable version, partial write.
-        dev.write_gpt_partition("boot_b", 1, &expect_boot_b[1..] as &[u8]).unwrap();
+        dev.write_gpt_partition("boot_b", 1, &expect_boot_b[1..]).unwrap();
         dev.read_gpt_partition("boot_b", 1, &mut actual_boot_b[1..]).unwrap();
         assert_eq!(expect_boot_b[1..], actual_boot_b[1..]);
     }
@@ -737,103 +659,17 @@ mod test {
     #[test]
     fn test_gpt_rw_overflow() {
         let mut dev = gpt_block_device(128, include_bytes!("../test/gpt_test_1.bin"));
-        let _ = dev.sync_gpt().unwrap();
+        dev.sync_gpt().unwrap();
 
         let mut boot_a = [0u8; include_bytes!("../test/boot_a.bin").len()];
         let mut boot_b = [0u8; include_bytes!("../test/boot_b.bin").len()];
 
         assert!(dev.read_gpt_partition("boot_a", 1, &mut boot_a).is_err());
-        assert!(dev.write_gpt_partition("boot_a", 1, &mut boot_a[..]).is_err());
-        assert!(dev.write_gpt_partition("boot_a", 1, &boot_a[..]).is_err());
+        assert!(dev.write_gpt_partition_mut("boot_a", 1, boot_a.as_mut_slice()).is_err());
+        assert!(dev.write_gpt_partition("boot_a", 1, &boot_a).is_err());
 
         assert!(dev.read_gpt_partition("boot_b", 1, &mut boot_b).is_err());
-        assert!(dev.write_gpt_partition("boot_b", 1, &mut boot_b[..]).is_err());
-        assert!(dev.write_gpt_partition("boot_b", 1, &boot_b[..]).is_err());
-    }
-
-    #[test]
-    fn test_multi_gpt_check_unique() {
-        let mut devs = &mut vec![
-            gpt_block_device(128, include_bytes!("../test/gpt_test_1.bin")),
-            gpt_block_device(128, include_bytes!("../test/gpt_test_1.bin")),
-            gpt_block_device(128, include_bytes!("../test/gpt_test_2.bin")),
-        ][..];
-
-        devs.sync_gpt().unwrap();
-        assert!(!devs.check_unique("boot_a"));
-        assert!(!devs.check_unique("boot_b"));
-        assert!(devs.check_unique("vendor_boot_a"));
-        assert!(devs.check_unique("vendor_boot_b"));
-    }
-
-    #[test]
-    fn test_multi_gpt_read() {
-        let mut devs = &mut vec![
-            gpt_block_device(128, include_bytes!("../test/gpt_test_1.bin")),
-            gpt_block_device(128, include_bytes!("../test/gpt_test_2.bin")),
-        ][..];
-
-        devs.sync_gpt().unwrap();
-        assert_eq!(devs.partition_size("boot_a").unwrap(), 8 * 1024);
-        assert_eq!(devs.partition_size("boot_b").unwrap(), 12 * 1024);
-        assert_eq!(devs.partition_size("vendor_boot_a").unwrap(), 4 * 1024);
-        assert_eq!(devs.partition_size("vendor_boot_b").unwrap(), 6 * 1024);
-
-        let expect_boot_a = include_bytes!("../test/boot_a.bin");
-        let expect_boot_b = include_bytes!("../test/boot_b.bin");
-        let mut actual_boot_a = vec![0u8; expect_boot_a.len()];
-        let mut actual_boot_b = vec![0u8; expect_boot_b.len()];
-
-        devs.read_gpt_partition("boot_a", 0, &mut actual_boot_a).unwrap();
-        assert_eq!(expect_boot_a.to_vec(), actual_boot_a);
-        devs.read_gpt_partition("boot_b", 0, &mut actual_boot_b).unwrap();
-        assert_eq!(expect_boot_b.to_vec(), actual_boot_b);
-
-        let expect_vendor_boot_a = include_bytes!("../test/vendor_boot_a.bin");
-        let expect_vendor_boot_b = include_bytes!("../test/vendor_boot_b.bin");
-        let mut actual_vendor_boot_a = vec![0u8; expect_vendor_boot_a.len()];
-        let mut actual_vendor_boot_b = vec![0u8; expect_vendor_boot_b.len()];
-
-        devs.read_gpt_partition("vendor_boot_a", 0, &mut actual_vendor_boot_a).unwrap();
-        assert_eq!(expect_vendor_boot_a.to_vec(), actual_vendor_boot_a);
-        devs.read_gpt_partition("vendor_boot_b", 0, &mut actual_vendor_boot_b).unwrap();
-        assert_eq!(expect_vendor_boot_b.to_vec(), actual_vendor_boot_b);
-    }
-
-    #[test]
-    fn test_multi_gpt_write() {
-        let mut devs = &mut vec![
-            gpt_block_device(128, include_bytes!("../test/gpt_test_1.bin")),
-            gpt_block_device(128, include_bytes!("../test/gpt_test_2.bin")),
-        ][..];
-        devs.sync_gpt().unwrap();
-
-        let mut expect_boot_a = include_bytes!("../test/boot_a.bin").to_vec();
-        expect_boot_a.reverse();
-        let mut expect_boot_b = include_bytes!("../test/boot_b.bin").to_vec();
-        expect_boot_b.reverse();
-        let mut actual_boot_a = vec![0u8; expect_boot_a.len()];
-        let mut actual_boot_b = vec![0u8; expect_boot_b.len()];
-
-        devs.write_gpt_partition("boot_a", 0, &mut expect_boot_a[..]).unwrap();
-        devs.read_gpt_partition("boot_a", 0, &mut actual_boot_a).unwrap();
-        assert_eq!(expect_boot_a.to_vec(), actual_boot_a);
-        devs.write_gpt_partition("boot_b", 0, &mut expect_boot_b[..]).unwrap();
-        devs.read_gpt_partition("boot_b", 0, &mut actual_boot_b).unwrap();
-        assert_eq!(expect_boot_b.to_vec(), actual_boot_b);
-
-        let mut expect_vendor_boot_a = include_bytes!("../test/vendor_boot_a.bin").to_vec();
-        expect_vendor_boot_a.reverse();
-        let mut expect_vendor_boot_b = include_bytes!("../test/vendor_boot_b.bin").to_vec();
-        expect_vendor_boot_b.reverse();
-        let mut actual_vendor_boot_a = vec![0u8; expect_vendor_boot_a.len()];
-        let mut actual_vendor_boot_b = vec![0u8; expect_vendor_boot_b.len()];
-
-        devs.write_gpt_partition("boot_a", 0, &mut expect_vendor_boot_a[..]).unwrap();
-        devs.read_gpt_partition("boot_a", 0, &mut actual_vendor_boot_a).unwrap();
-        assert_eq!(expect_vendor_boot_a.to_vec(), actual_vendor_boot_a);
-        devs.write_gpt_partition("boot_b", 0, &mut expect_vendor_boot_b[..]).unwrap();
-        devs.read_gpt_partition("boot_b", 0, &mut actual_vendor_boot_b).unwrap();
-        assert_eq!(expect_vendor_boot_b.to_vec(), actual_vendor_boot_b);
+        assert!(dev.write_gpt_partition_mut("boot_b", 1, boot_b.as_mut_slice()).is_err());
+        assert!(dev.write_gpt_partition("boot_b", 1, &boot_b).is_err());
     }
 }
