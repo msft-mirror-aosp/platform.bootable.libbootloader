@@ -23,7 +23,7 @@ use crc32fast::Hasher;
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 
 const GPT_GUID_LEN: usize = 16;
-pub(crate) const GPT_NAME_LEN: usize = 36;
+pub const GPT_NAME_LEN_U16: usize = 36;
 
 #[repr(C, packed)]
 #[derive(Debug, Default, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
@@ -66,7 +66,7 @@ pub struct GptEntry {
     pub first: u64,
     pub last: u64,
     pub flags: u64,
-    pub name: [u16; GPT_NAME_LEN],
+    pub name: [u16; GPT_NAME_LEN_U16],
 }
 
 impl GptEntry {
@@ -82,7 +82,7 @@ impl GptEntry {
     }
 
     /// Decode the partition name into a string. A length N utf16 string can be at most 2N utf8
-    /// bytes. Therefore, a safe size of `buffer` is 2*GPT_NAME_LEN = 72.
+    /// bytes. Therefore, a safe size of `buffer` is 2*GPT_NAME_LEN_U16 = 72.
     pub fn name_to_str<'a>(&self, buffer: &'a mut [u8]) -> Result<&'a str> {
         let mut index = 0;
         for c in char::decode_utf16(self.name) {
@@ -104,7 +104,7 @@ impl GptEntry {
 impl core::fmt::Display for GptEntry {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // Format: partition name: "abc", [first, last]: [123, 456]
-        let mut name_conversion_buffer = [0u8; GPT_NAME_LEN * 2];
+        let mut name_conversion_buffer = [0u8; GPT_NAME_LEN_U16 * 2];
         let name = self.name_to_str(&mut name_conversion_buffer).map_err(|_| core::fmt::Error)?;
         write!(f, "partition name: \"{}\", [first, last]: [{}, {}]", name, self.first, self.last)
     }
@@ -230,7 +230,7 @@ impl<'a> Gpt<'a> {
     /// If the object does not contain a valid GPT, the method returns Error.
     pub(crate) fn find_partition(&self, part: &str) -> Result<&GptEntry> {
         for entry in self.entries()? {
-            let mut name_conversion_buffer = [0u8; GPT_NAME_LEN * 2];
+            let mut name_conversion_buffer = [0u8; GPT_NAME_LEN_U16 * 2];
             if entry.name_to_str(&mut name_conversion_buffer)? != part {
                 continue;
             }
