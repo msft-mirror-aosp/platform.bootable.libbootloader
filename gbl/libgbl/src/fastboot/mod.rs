@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use core::str::Split;
-use fastboot::{CommandError, FastbootImplementation};
+use fastboot::{CommandError, FastbootImplementation, FastbootUtils, UploadBuilder};
 use gbl_storage::AsMultiBlockDevices;
 
 mod vars;
@@ -53,6 +53,7 @@ impl FastbootImplementation for GblFastboot<'_> {
         var: &str,
         args: Split<char>,
         out: &mut [u8],
+        _utils: &mut FastbootUtils,
     ) -> Result<usize, CommandError> {
         Self::NATIVE_VARS
             .iter()
@@ -63,8 +64,27 @@ impl FastbootImplementation for GblFastboot<'_> {
     fn get_var_all(
         &mut self,
         f: &mut dyn FnMut(&str, &[&str], &str) -> Result<(), CommandError>,
+        _utils: &mut FastbootUtils,
     ) -> Result<(), CommandError> {
         Self::NATIVE_VARS.iter().find_map(|v| v.get_all(self, f).err()).map_or(Ok(()), |e| Err(e))
+    }
+
+    fn upload(
+        &mut self,
+        _upload_builder: UploadBuilder,
+        _utils: &mut FastbootUtils,
+    ) -> Result<(), CommandError> {
+        Err("Unimplemented".into())
+    }
+
+    fn oem<'a>(
+        &mut self,
+        _cmd: &str,
+        utils: &mut FastbootUtils,
+        _res: &'a mut [u8],
+    ) -> Result<&'a [u8], CommandError> {
+        utils.fb_info.as_mut().unwrap().send("GBL OEM not implemented yet")?;
+        Err("Unimplemented".into())
     }
 }
 
@@ -145,8 +165,13 @@ mod test {
 
     /// Helper to test fastboot variable value.
     fn check_var(gbl_fb: &mut GblFastboot, var: &str, args: &str, expected: &str) {
+        let mut utils =
+            FastbootUtils { download_buffer: &mut [], download_data_size: 0, fb_info: None };
         let mut out = vec![0u8; fastboot::MAX_RESPONSE_SIZE];
-        assert_eq!(gbl_fb.get_var_as_str(var, args.split(':'), &mut out[..]).unwrap(), expected);
+        assert_eq!(
+            gbl_fb.get_var_as_str(var, args.split(':'), &mut out[..], &mut utils).unwrap(),
+            expected
+        );
     }
 
     #[test]
@@ -163,9 +188,11 @@ mod test {
         check_var(&mut gbl_fb, "partition-size", "vendor_boot_a:1", "0x1000");
         check_var(&mut gbl_fb, "partition-size", "vendor_boot_b:1", "0x1800");
 
+        let mut utils =
+            FastbootUtils { download_buffer: &mut [], download_data_size: 0, fb_info: None };
         let mut out = vec![0u8; fastboot::MAX_RESPONSE_SIZE];
         assert!(gbl_fb
-            .get_var_as_str("partition", "non-existent".split(':'), &mut out[..])
+            .get_var_as_str("partition", "non-existent".split(':'), &mut out[..], &mut utils)
             .is_err());
     }
 
@@ -178,12 +205,17 @@ mod test {
         devs.sync_gpt_all(&mut |_, _, _| panic!("GPT sync failed"));
         let mut gbl_fb = GblFastboot::new(&mut devs);
 
+        let mut utils =
+            FastbootUtils { download_buffer: &mut [], download_data_size: 0, fb_info: None };
         let mut out: Vec<String> = Default::default();
         gbl_fb
-            .get_var_all(&mut |name, args, val| {
-                out.push(format!("{}:{}: {}", name, args.join(":"), val));
-                Ok(())
-            })
+            .get_var_all(
+                &mut |name, args, val| {
+                    out.push(format!("{}:{}: {}", name, args.join(":"), val));
+                    Ok(())
+                },
+                &mut utils,
+            )
             .unwrap();
         assert_eq!(
             out,
