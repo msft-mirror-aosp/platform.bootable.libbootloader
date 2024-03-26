@@ -27,6 +27,7 @@ rust_library(
         "@bitflags",
         "@crc32fast",
         "@cstr",
+        "@gbl//libfastboot",
         "@gbl//libstorage",
         "@gbl//third_party/libzbi",
         "@spin",
@@ -36,6 +37,7 @@ rust_library(
 
 rust_test(
     name = "libgbl_test",
+    compile_data = ["@gbl//libstorage/test:test_data"],
     crate = ":libgbl",
     crate_features = ["uuid"],
     data = [

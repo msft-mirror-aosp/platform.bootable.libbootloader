@@ -12,4 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+package(
+    default_visibility = ["//visibility:public"],
+)
+
 exports_files(glob(["**/*"]))
+
+filegroup(
+    name = "test_data",
+    srcs = [
+        ":boot_a.bin",
+        ":boot_b.bin",
+        ":gpt_test_1.bin",
+        ":gpt_test_2.bin",
+        ":vendor_boot_a.bin",
+        ":vendor_boot_b.bin",
+    ],
+)

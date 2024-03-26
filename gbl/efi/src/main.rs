@@ -52,7 +52,7 @@ fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -
         efi_println!(entry, "Image path: {}", v);
     }
 
-    efi_println!(entry, "Press 'f' to enter fastboot. TODO(b/328786603)");
+    efi_println!(entry, "Press 'f' to enter fastboot.");
     match wait_key_stroke(&entry, 'f', 2000) {
         Ok(true) => {
             efi_println!(entry, "'f' pressed.");

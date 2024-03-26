@@ -107,6 +107,12 @@ pub trait AsMultiBlockDevices {
     }
 }
 
+impl<T: ?Sized + AsMultiBlockDevices> AsMultiBlockDevices for &mut T {
+    fn for_each_until(&mut self, f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64) -> bool) {
+        (*self).for_each_until(&mut |io, id| f(io, id))
+    }
+}
+
 /// Iterates and runs a closure on each block device until `Ok(R)` is returned.
 fn until_ok<F, R>(devs: &mut (impl AsMultiBlockDevices + ?Sized), mut f: F) -> Result<R>
 where
