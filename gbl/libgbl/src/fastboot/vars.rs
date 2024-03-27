@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::fastboot::{hex_str_to_u64, next_arg, GblFastboot};
+use crate::fastboot::{GblFastboot, GPT_NAME_LEN_U8};
 use core::fmt::Write;
 use core::str::{from_utf8, Split};
-use fastboot::{snprintf, CommandError, FormattedBytes};
-use gbl_storage::{AsBlockDevice, AsMultiBlockDevices, GPT_NAME_LEN_U16};
+use fastboot::{next_arg, next_arg_u64, snprintf, CommandError, FormattedBytes};
+use gbl_storage::{AsBlockDevice, AsMultiBlockDevices};
 
 /// Internal trait that provides methods for getting and enumerating values for one or multiple
 /// related fastboot variables.
@@ -64,8 +64,8 @@ impl Variable for (&'static str, &'static str) {
 
 /// `Partition` variable provides information of GPT partitions
 ///
-/// `fastboot getvar partition-size:<partition name>[:<block-device>]`
-/// `fastboot getvar partition-type:<partition name>[:<block-device>]`
+/// `fastboot getvar partition-size:<GBL Fastboot partition>`
+/// `fastboot getvar partition-type:<GBL Fastboot partition>`
 pub(crate) struct Partition {}
 
 const PARTITION_SIZE: &str = "partition-size";
@@ -75,19 +75,12 @@ impl Variable for Partition {
         &self,
         gbl_fb: &mut GblFastboot,
         name: &str,
-        mut args: Split<char>,
+        args: Split<char>,
         out: &mut [u8],
     ) -> Result<Option<usize>, CommandError> {
-        let part = next_arg(&mut args, "Missing partition name")?;
-        let blk_id = args.next().map(|v| hex_str_to_u64(v)).transpose()?;
+        let part = gbl_fb.parse_partition(args)?;
         Ok(match name {
-            PARTITION_SIZE => {
-                let sz = match blk_id {
-                    Some(id) => gbl_fb.storage().get(id)?.partition_size(part)?,
-                    _ => gbl_fb.storage().partition_size(part)?,
-                };
-                Some(snprintf!(out, "{:#x}", sz).len())
-            }
+            PARTITION_SIZE => Some(snprintf!(out, "{:#x}", gbl_fb.partition_io(part).size()).len()),
             PARTITION_TYPE => Some(snprintf!(out, "raw").len()), // Image type not supported yet.
             _ => None,
         })
@@ -98,25 +91,23 @@ impl Variable for Partition {
         gbl_fb: &mut GblFastboot,
         f: &mut dyn FnMut(&str, &[&str], &str) -> Result<(), CommandError>,
     ) -> Result<(), CommandError> {
+        // Though any sub range of a GPT partition or raw block counts as a partition in GBL
+        // Fastboot, for "getvar all" we only enumerate whole range GPT partitions.
         let mut res: Result<(), CommandError> = Ok(());
-        let part_name = &mut [0u8; GPT_NAME_LEN_U16 * 2][..];
+        let part_name = &mut [0u8; GPT_NAME_LEN_U8][..];
         let mut size_str = [0u8; 32];
         gbl_fb.storage().for_each_until(&mut |mut v, id| {
-            // AsBlockDevice::partition_iter() has `Self:Sized` constraint thus we make it into a
-            // &mut &mut dyn AsBlockDevice to meet the bound requirement.
+            // `AsBlockDevice::partition_iter()` has `Self:Sized` constraint thus we make it into a
+            // `&mut &mut dyn AsBlockDevice` to meet the bound requirement.
             let v = &mut v;
             let mut id_str = [0u8; 32];
             let id = snprintf!(id_str, "{:x}", id);
             res = (|| {
-                let block_size = v.block_size()?;
                 for ptn in v.partition_iter() {
-                    let sz = ptn
-                        .blocks()?
-                        .checked_mul(block_size)
-                        .ok_or::<CommandError>("Partition size overflow".into())?;
-                    let part = ptn.name_to_str(part_name)?;
+                    let sz = ptn.size()?;
+                    let part = ptn.gpt_entry().name_to_str(part_name)?;
                     f(PARTITION_SIZE, &[part, id], snprintf!(size_str, "{:#x}", sz))?;
-                    // Image type not supported yet.
+                    // Image type is not supported yet.
                     f(PARTITION_TYPE, &[part, id], snprintf!(size_str, "raw"))?;
                 }
                 Ok(())
@@ -146,9 +137,8 @@ impl Variable for BlockDevice {
     ) -> Result<Option<usize>, CommandError> {
         Ok(match name {
             BLOCK_DEVICE => {
-                let id = next_arg(&mut args, "Missing block device ID")?;
-                let val_type = next_arg(&mut args, "Missing value type")?;
-                let id = hex_str_to_u64(id)?;
+                let id = next_arg_u64(&mut args, Err("Missing block device ID".into()))?;
+                let val_type = next_arg(&mut args, Err("Missing value type".into()))?;
                 let val = match val_type {
                     TOTAL_BLOCKS => gbl_fb.storage().get(id)?.num_blocks()?,
                     BLOCK_SIZE => gbl_fb.storage().get(id)?.block_size()?,
