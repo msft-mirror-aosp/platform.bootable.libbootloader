@@ -182,12 +182,21 @@ pub trait FastbootImplementation {
     /// additional arguments in `args`.
     ///
     /// Variable `max-download-size`, `version` are reserved by the library.
+    ///
+    /// # Args
+    ///
+    /// * `var`: Name of the variable.
+    /// * `args`: Additional arguments.
+    /// * `out`: Output buffer for storing the variable value.
+    /// * `utils`: A mutable reference to an instance of `FastbootUtils`.
+    ///
     /// TODO(b/322540167): Figure out other reserved variables.
     fn get_var(
         &mut self,
         var: &str,
         args: Split<char>,
         out: &mut [u8],
+        utils: &mut FastbootUtils,
     ) -> Result<usize, CommandError>;
 
     /// A helper API for getting the value of a fastboot variable and decoding it into string.
@@ -196,8 +205,9 @@ pub trait FastbootImplementation {
         var: &str,
         args: Split<char>,
         out: &'s mut [u8],
+        utils: &mut FastbootUtils,
     ) -> Result<&'s str, CommandError> {
-        let size = self.get_var(var, args, out)?;
+        let size = self.get_var(var, args, out, utils)?;
         Ok(from_utf8(out.get(..size).ok_or("Invalid variable size")?)
             .map_err(|_| "Value is not string")?)
     }
@@ -215,7 +225,7 @@ pub trait FastbootImplementation {
     ///   error, the implementation should return it immediately. For example the following
     ///   implementation:
     ///
-    ///   fn get_var_all(&mut self, f: F) -> Result<(), CommandError> {
+    ///   fn get_var_all(&mut self, f: F, utils: &mut FastbootUtils) -> Result<(), CommandError> {
     ///       f("partition-size", &["boot_a"], /* size string of boot_a */)?;
     ///       f("partition-size", &["boot_b"], /* size string of boot_b */)?;
     ///       f("partition-size", &["init_boot_a"], /* size string of init_boot_a */)?;
@@ -232,17 +242,70 @@ pub trait FastbootImplementation {
     ///   (bootloader) partition-size:init_boot_b: <size of init_boot_b>
     ///   ...
     ///
+    /// * `utils`: A mutable reference to an instance of `FastbootUtils`.
+    ///
     /// TODO(b/322540167): This and `get_var()` contain duplicated logic. Investigate if there can
     /// be better solutions for doing the combination traversal.
     fn get_var_all(
         &mut self,
         f: &mut dyn FnMut(&str, &[&str], &str) -> Result<(), CommandError>,
+        utils: &mut FastbootUtils,
     ) -> Result<(), CommandError>;
+
+    /// Backend for `fastboot get_staged ...`
+    ///
+    /// # Args
+    ///
+    /// * `upload_builder`: An instance of `UploadBuilder` for initiating and uploading data. For
+    ///   example:
+    ///
+    ///   ```
+    ///   fn upload(
+    ///       &mut self,
+    ///       upload_builder: UploadBuilder,
+    ///       utils: &mut FastbootUtils,
+    ///   ) -> Result<(), CommandError> {
+    ///       // Sends a total of 1024 bytes data.
+    ///       let mut uploader = upload_builder.start(1024)?;
+    ///       // Can upload in multiple batches.
+    ///       uploader.upload(&utils.download_buffer[..512])?;
+    ///       uploader.upload(&utils.download_buffer[512..])?;
+    ///       Ok(())
+    ///   }
+    ///   ```
+    ///
+    ///   If implementation fails to upload enough, or upload more than expected data with
+    ///   `Uploader::upload` a Fastboot error will be sent to the host.
+    /// * `utils`: A mutable reference to an instance of `FastbootUtils`.
+    fn upload(
+        &mut self,
+        upload_builder: UploadBuilder,
+        utils: &mut FastbootUtils,
+    ) -> Result<(), CommandError>;
+
+    /// Backend for `fastboot oem ...`.
+    ///
+    /// # Args
+    ///
+    /// * `cmd`: The OEM command string that comes after "oem ".
+    /// * `utils`: A mutable reference to an instance of `FastbootUtils`.
+    /// * `res`: The response buffer. Upon success, implementation can use the buffer to
+    ///   construct a valid UTF8 string which will be sent as "OKAY<string>"
+    ///
+    /// # Returns
+    ///
+    /// On success, returns the portion of `res` used by the construction of string message.
+    fn oem<'a>(
+        &mut self,
+        cmd: &str,
+        utils: &mut FastbootUtils,
+        res: &'a mut [u8],
+    ) -> Result<&'a [u8], CommandError>;
 
     // TODO(b/322540167): Add methods for other commands.
 }
 
-/// An internal convenient macro helper for `fastboot_okay` and `fastboot_fail`.
+/// An internal convenient macro helper for `fastboot_okay`, `fastboot_fail` and `fastboot_info`.
 macro_rules! fastboot_msg {
     ( $arr:expr, $msg_type:expr, $( $x:expr ),* $(,)? ) => {
         {
@@ -263,6 +326,143 @@ macro_rules! fastboot_okay {
 /// An internal convenient macro that constructs a formatted fastboot FAIL message.
 macro_rules! fastboot_fail {
     ( $arr:expr, $( $x:expr ),* ) => { fastboot_msg!($arr, "FAIL", $($x,)*) };
+}
+
+/// An internal convenient macro that constructs a formatted fastboot INFO message.
+macro_rules! fastboot_info {
+    ( $arr:expr, $( $x:expr ),* ) => { fastboot_msg!($arr, "INFO", $($x,)*) };
+}
+
+/// `FastbootInfoSender` defines a method for sending Fastboot INFO messages.
+///
+/// The trait is for user to implement their mock `FastbootUtils` for testing implementation
+/// of the `FastbootImplementation` trait.
+pub trait FastbootInfoSend {
+    /// Sends a Fastboot "INFO<`msg`>" packet
+    fn send(&mut self, msg: &str) -> Result<(), CommandError>;
+}
+
+/// `FastbootUtils` contains download data/buffer and a `FastbootInfoSend` trait object for sending
+/// Fastboot INFO messages. It can be used in the implementation of `FastbootImplementation`.
+pub struct FastbootUtils<'a> {
+    // TODO(b/328784766): Consider using arrayvec crate or similar instead of passing download
+    // buffer and size separately.
+    /// The total download buffer.
+    pub download_buffer: &'a mut [u8],
+    /// Current downloaded data size.
+    pub download_data_size: usize,
+    /// When available, a trait object `FastbootInfoSend` for sending Fastboot INFO messages.
+    pub fb_info: Option<&'a mut dyn FastbootInfoSend>,
+}
+
+impl<'a> FastbootUtils<'a> {
+    fn new(fb: &'a mut Fastboot, fb_info: Option<&'a mut dyn FastbootInfoSend>) -> Self {
+        Self {
+            download_buffer: fb.download_buffer,
+            download_data_size: fb.total_download_size,
+            fb_info: fb_info,
+        }
+    }
+}
+
+/// `FastbootInfoSender` is an internal type that implements `FastbootInfoSend` with a `Transport`
+/// trait object.
+struct FastbootInfoSender<'a> {
+    transport: &'a mut dyn Transport,
+    transport_error: Result<(), TransportError>,
+}
+
+impl<'a> FastbootInfoSender<'a> {
+    /// Creates an new instance
+    fn new(transport: &'a mut dyn Transport) -> Self {
+        Self { transport: transport, transport_error: Ok(()) }
+    }
+
+    /// Returns the `Self:;transport_error`.
+    fn transport_error(&self) -> Result<(), TransportError> {
+        self.transport_error
+    }
+}
+
+impl FastbootInfoSend for FastbootInfoSender<'_> {
+    fn send(&mut self, msg: &str) -> Result<(), CommandError> {
+        self.transport_error?;
+        let mut res = [0u8; MAX_RESPONSE_SIZE];
+        self.transport_error = self.transport.send_packet(fastboot_info!(res, "{}", msg));
+        Ok(self.transport_error?)
+    }
+}
+
+/// `UploadBuilder` can be consumed to create an `Uploader` for sending data to the host during
+/// handling of command `fastboot get_staged`.
+pub struct UploadBuilder<'a> {
+    remaining: &'a mut u64,
+    // `send` sends a bytes array as fastboot packet.
+    send: &'a mut dyn FnMut(&[u8]) -> Result<(), CommandError>,
+}
+
+impl<'a> UploadBuilder<'a> {
+    /// Consumes the builder to create an `Uploader` to start uploading data.
+    pub fn start(self, data_size: u64) -> Result<Uploader<'a>, CommandError> {
+        let mut res = [0u8; 16];
+        (self.send)(snprintf!(res, "DATA{:08x}", data_size).as_bytes())?;
+        *self.remaining = data_size;
+        Ok(Uploader { remaining: self.remaining, send: self.send })
+    }
+}
+
+/// `UploadBuilder` provides APIs for sending data from the device in response to
+/// `fastboot get_staged`
+pub struct Uploader<'a> {
+    remaining: &'a mut u64,
+    send: &'a mut dyn FnMut(&[u8]) -> Result<(), CommandError>,
+}
+
+impl<'a> Uploader<'a> {
+    /// Uploads data. Returns error if accumulative amount exceeds `data_size` passed to
+    /// `UploadBuilder::start()`.
+    pub fn upload(&mut self, data: &[u8]) -> Result<(), CommandError> {
+        *self.remaining = self
+            .remaining
+            .checked_sub(data.len().try_into().map_err(|_| "usize -> u64 overflows")?)
+            .ok_or::<CommandError>("Upload more than expected".into())?;
+        (self.send)(data)
+    }
+}
+
+pub mod test_utils {
+    use crate::{CommandError, UploadBuilder};
+
+    /// Runs a closure with a mock uploader for user implementation to test
+    /// `FastbootImplementation::upload()`.
+    ///
+    /// The mock uploader simply uploads to a user provided buffer.
+    ///
+    /// Returns the total uploaded size and remaining size.
+    pub fn with_mock_upload_builder<F>(buffer: &mut [u8], mut f: F) -> (usize, usize)
+    where
+        F: FnMut(UploadBuilder),
+    {
+        let mut remaining = 0u64;
+        let mut sent = 0;
+        let mut send = |data: &[u8]| -> Result<(), CommandError> {
+            // Skips the first 12 bytes "DATAXXXXXXXX" fastboot message.
+            match sent == 0 {
+                true => {
+                    assert_eq!(data.len(), 12);
+                    assert!(data.starts_with(b"DATA"));
+                    sent += data.len()
+                }
+                _ => {
+                    buffer[sent - 12..][..data.len()].clone_from_slice(data);
+                    sent += data.len();
+                }
+            };
+            Ok(())
+        };
+        f(UploadBuilder { remaining: &mut remaining, send: &mut send });
+        (core::cmp::max(sent, 12) - 12, remaining.try_into().unwrap())
+    }
 }
 
 const MAX_DOWNLOAD_SIZE_NAME: &'static str = "max-download-size";
@@ -318,14 +518,14 @@ impl<'a> Fastboot<'a> {
                     }
 
                     let mut res = [0u8; MAX_RESPONSE_SIZE];
-                    let cmd = match from_utf8(&packet[..cmd_size]) {
+                    let cmd_str = match from_utf8(&packet[..cmd_size]) {
                         Ok(s) => s,
                         _ => {
                             transport.send_packet(fastboot_fail!(res, "Invalid Command"))?;
                             continue;
                         }
                     };
-                    let mut args = cmd.split(':');
+                    let mut args = cmd_str.split(':');
                     let Some(cmd) = args.next() else {
                         transport.send_packet(fastboot_fail!(res, "No command"))?;
                         continue;
@@ -333,6 +533,10 @@ impl<'a> Fastboot<'a> {
                     match cmd {
                         "getvar" => self.get_var(args, transport, fb_impl)?,
                         "download" => self.download(args, transport, fb_impl)?,
+                        "upload" => self.upload(transport, fb_impl)?,
+                        _ if cmd_str.starts_with("oem ") => {
+                            self.oem(&cmd_str[4..], transport, fb_impl)?
+                        }
                         _ => {
                             transport.send_packet(fastboot_fail!(res, "Command not found"))?;
                         }
@@ -400,9 +604,12 @@ impl<'a> Fastboot<'a> {
 
         if var == "all" {
             return self.get_var_all(transport, fb_impl);
+        } else if var == MAX_DOWNLOAD_SIZE_NAME {
+            return transport.send_packet(fastboot_okay!(res, "{:#x}", self.download_buffer.len()));
         }
+
         let mut val = [0u8; MAX_RESPONSE_SIZE];
-        match self.get_var_str(var, args, &mut val[..], fb_impl) {
+        match self.get_var_str(var, args, &mut val[..], transport, fb_impl) {
             Ok(s) => transport.send_packet(fastboot_okay!(res, "{}", s)),
             Err(e) => transport.send_packet(fastboot_fail!(res, "{}", e.to_str())),
         }
@@ -414,13 +621,12 @@ impl<'a> Fastboot<'a> {
         var: &str,
         args: Split<char>,
         out: &'s mut [u8],
+        transport: &mut impl Transport,
         fb_impl: &mut impl FastbootImplementation,
     ) -> Result<&'s str, CommandError> {
-        if var == MAX_DOWNLOAD_SIZE_NAME {
-            Ok(snprintf!(out, "{:#x}", self.download_buffer.len()))
-        } else {
-            fb_impl.get_var_as_str(var, args, out)
-        }
+        let mut info_sender = FastbootInfoSender::new(transport);
+        let mut utils = FastbootUtils::new(self, Some(&mut info_sender));
+        fb_impl.get_var_as_str(var, args, out, &mut utils)
     }
 
     /// A wrapper of `get_var_all()` that first iterates reserved variables.
@@ -429,16 +635,11 @@ impl<'a> Fastboot<'a> {
         fb_impl: &mut impl FastbootImplementation,
         f: &mut dyn FnMut(&str, &[&str], &str) -> Result<(), CommandError>,
     ) -> Result<(), CommandError> {
-        let mut size_str = [0u8; 32];
-
         // Process the built-in MAX_DOWNLOAD_SIZE_NAME variable.
-        f(
-            MAX_DOWNLOAD_SIZE_NAME,
-            &[],
-            self.get_var_str(MAX_DOWNLOAD_SIZE_NAME, "".split(':'), &mut size_str[..], fb_impl)?,
-        )?;
+        let mut size_str = [0u8; 32];
+        f(MAX_DOWNLOAD_SIZE_NAME, &[], snprintf!(size_str, "{:#x}", self.download_buffer.len()))?;
 
-        fb_impl.get_var_all(f)
+        fb_impl.get_var_all(f, &mut FastbootUtils::new(self, None))
     }
 
     /// Method for handling "fastboot getvar all"
@@ -500,6 +701,55 @@ impl<'a> Fastboot<'a> {
         self.downloaded_size = 0;
         self.state = ProtocolState::Download;
         Ok(())
+    }
+
+    /// Method for handling "fastboot get_staged ...".
+    pub fn upload(
+        &mut self,
+        transport: &mut impl Transport,
+        fb_impl: &mut impl FastbootImplementation,
+    ) -> Result<(), TransportError> {
+        let mut transport_error = Ok(());
+        let mut remaining = 0u64;
+        let mut send = |data: &[u8]| -> Result<(), CommandError> {
+            transport_error?;
+            transport_error = transport.send_packet(data);
+            Ok(transport_error?)
+        };
+        let mut utils = FastbootUtils::new(self, None);
+        let upload_res = fb_impl
+            .upload(UploadBuilder { remaining: &mut remaining, send: &mut send }, &mut utils);
+        transport_error?;
+        let mut res = [0u8; MAX_RESPONSE_SIZE];
+        match upload_res {
+            Err(e) => transport.send_packet(fastboot_fail!(res, "{}", e.to_str())),
+            Ok(()) if remaining > 0 => {
+                transport.send_packet(fastboot_fail!(res, "Failed to upload all data"))
+            }
+            _ => transport.send_packet(fastboot_okay!(res, "")),
+        }
+    }
+
+    /// Method for handling "fastboot oem ...".
+    pub fn oem(
+        &mut self,
+        cmd: &str,
+        transport: &mut impl Transport,
+        fb_impl: &mut impl FastbootImplementation,
+    ) -> Result<(), TransportError> {
+        let mut info_sender = FastbootInfoSender::new(transport);
+        let mut utils = FastbootUtils::new(self, Some(&mut info_sender));
+        let mut oem_out = [0u8; MAX_RESPONSE_SIZE - 4];
+        let oem_res = fb_impl.oem(cmd, &mut utils, &mut oem_out[..]);
+        info_sender.transport_error()?;
+        let mut res = [0u8; MAX_RESPONSE_SIZE];
+        match oem_res {
+            Ok(msg) => match from_utf8(msg) {
+                Ok(s) => transport.send_packet(fastboot_okay!(res, "{}", s)),
+                Err(e) => transport.send_packet(fastboot_fail!(res, "Invalid return string {}", e)),
+            },
+            Err(e) => transport.send_packet(fastboot_fail!(res, "{}", e.to_str())),
+        }
     }
 }
 
@@ -568,17 +818,24 @@ mod test {
     use std::collections::{BTreeMap, VecDeque};
 
     #[derive(Default)]
-    struct FastbootTest {
+    struct FastbootTest<'a> {
         // A mapping from (variable name, argument) to variable value.
         vars: BTreeMap<(&'static str, &'static [&'static str]), &'static str>,
+        upload_cb: Option<
+            &'a mut dyn FnMut(UploadBuilder, &mut FastbootUtils) -> Result<(), CommandError>,
+        >,
+        oem_cb: Option<
+            &'a mut dyn FnMut(&str, &mut FastbootUtils, &mut [u8]) -> Result<usize, CommandError>,
+        >,
     }
 
-    impl FastbootImplementation for FastbootTest {
+    impl FastbootImplementation for FastbootTest<'_> {
         fn get_var(
             &mut self,
             var: &str,
             args: Split<char>,
             out: &mut [u8],
+            _: &mut FastbootUtils,
         ) -> Result<usize, CommandError> {
             let args = args.collect::<Vec<_>>();
             match self.vars.get(&(var, &args[..])) {
@@ -593,11 +850,30 @@ mod test {
         fn get_var_all(
             &mut self,
             f: &mut dyn FnMut(&str, &[&str], &str) -> Result<(), CommandError>,
+            _: &mut FastbootUtils,
         ) -> Result<(), CommandError> {
             for ((var, config), value) in &self.vars {
                 f(var, config, value)?;
             }
             Ok(())
+        }
+
+        fn upload(
+            &mut self,
+            upload_builder: UploadBuilder,
+            utils: &mut FastbootUtils,
+        ) -> Result<(), CommandError> {
+            (self.upload_cb.as_mut().unwrap())(upload_builder, utils)
+        }
+
+        fn oem<'b>(
+            &mut self,
+            cmd: &str,
+            utils: &mut FastbootUtils,
+            res: &'b mut [u8],
+        ) -> Result<&'b [u8], CommandError> {
+            let sz = (self.oem_cb.as_mut().unwrap())(cmd, utils, res)?;
+            Ok(&res[..sz])
         }
     }
 
@@ -849,6 +1125,132 @@ mod test {
                 b"DATA0x3ff".into(),
                 b"FAILMore data received then expected".into(),
                 b"OKAY0x400".into(),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_oem_cmd() {
+        let mut fastboot_impl: FastbootTest = Default::default();
+        const DOWNLOAD_BUFFER_LEN: usize = 2048;
+        let mut download_buffer = vec![0u8; DOWNLOAD_BUFFER_LEN];
+        let download_content: Vec<u8> = (0..1024).into_iter().map(|v| v as u8).collect();
+        let mut fastboot = Fastboot::new(&mut download_buffer[..]);
+        let mut transport = TestTransport::new();
+        transport.add_input(format!("download:{:#x}", download_content.len()).as_bytes());
+        transport.add_input(&download_content[..]);
+        transport.add_input(b"oem oem-command");
+
+        let mut oem_cb = |cmd: &str, utils: &mut FastbootUtils, res: &mut [u8]| {
+            assert_eq!(cmd, "oem-command");
+            assert_eq!(utils.download_buffer.len(), DOWNLOAD_BUFFER_LEN);
+            assert_eq!(
+                utils.download_buffer[..utils.download_data_size].to_vec(),
+                download_content
+            );
+            utils.fb_info.as_mut().unwrap().send("oem-info-1").unwrap();
+            utils.fb_info.as_mut().unwrap().send("oem-info-2").unwrap();
+            Ok(snprintf!(res, "oem-return").len())
+        };
+        fastboot_impl.oem_cb = Some(&mut oem_cb);
+        let _ = fastboot.run(&mut transport, &mut fastboot_impl);
+        assert_eq!(
+            transport.out_queue,
+            VecDeque::<Vec<u8>>::from([
+                b"DATA0x400".into(),
+                b"OKAY".into(),
+                b"INFOoem-info-1".into(),
+                b"INFOoem-info-2".into(),
+                b"OKAYoem-return".into(),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_upload() {
+        let mut fastboot_impl: FastbootTest = Default::default();
+        const DOWNLOAD_BUFFER_LEN: usize = 2048;
+        let mut download_buffer = vec![0u8; DOWNLOAD_BUFFER_LEN];
+        let download_content: Vec<u8> = (0..1024).into_iter().map(|v| v as u8).collect();
+        let mut fastboot = Fastboot::new(&mut download_buffer[..]);
+        let mut transport = TestTransport::new();
+        transport.add_input(format!("download:{:#x}", download_content.len()).as_bytes());
+        transport.add_input(&download_content[..]);
+        transport.add_input(b"upload");
+
+        let mut upload_cb = |upload_builder: UploadBuilder, utils: &mut FastbootUtils| {
+            assert_eq!(utils.download_buffer.len(), DOWNLOAD_BUFFER_LEN);
+            assert_eq!(
+                utils.download_buffer[..utils.download_data_size].to_vec(),
+                download_content
+            );
+            let to_send = &utils.download_buffer[..utils.download_data_size];
+            let mut uploader = upload_builder.start(u64::try_from(to_send.len()).unwrap()).unwrap();
+            uploader.upload(&to_send[..to_send.len() / 2]).unwrap();
+            uploader.upload(&to_send[to_send.len() / 2..]).unwrap();
+            assert!(utils.fb_info.is_none());
+            Ok(())
+        };
+        fastboot_impl.upload_cb = Some(&mut upload_cb);
+        let _ = fastboot.run(&mut transport, &mut fastboot_impl);
+        assert_eq!(
+            transport.out_queue,
+            VecDeque::<Vec<u8>>::from([
+                b"DATA0x400".into(),
+                b"OKAY".into(),
+                b"DATA00000400".into(),
+                download_content[..download_content.len() / 2].to_vec(),
+                download_content[download_content.len() / 2..].to_vec(),
+                b"OKAY".into(),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_upload_not_enough_data() {
+        let mut fastboot_impl: FastbootTest = Default::default();
+        let mut download_buffer = vec![0u8; 2048];
+        let mut fastboot = Fastboot::new(&mut download_buffer[..]);
+        let mut transport = TestTransport::new();
+        transport.add_input(b"upload");
+
+        let mut upload_cb = |upload_builder: UploadBuilder, _: &mut FastbootUtils| {
+            let mut uploader = upload_builder.start(0x400).unwrap();
+            uploader.upload(&[0u8; 0x400 - 1]).unwrap();
+            Ok(())
+        };
+        fastboot_impl.upload_cb = Some(&mut upload_cb);
+        let _ = fastboot.run(&mut transport, &mut fastboot_impl);
+        assert_eq!(
+            transport.out_queue,
+            VecDeque::<Vec<u8>>::from([
+                b"DATA00000400".into(),
+                [0u8; 0x400 - 1].to_vec(),
+                b"FAILFailed to upload all data".into(),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_upload_more_data() {
+        let mut fastboot_impl: FastbootTest = Default::default();
+        let mut download_buffer = vec![0u8; 2048];
+        let mut fastboot = Fastboot::new(&mut download_buffer[..]);
+        let mut transport = TestTransport::new();
+        transport.add_input(b"upload");
+
+        let mut upload_cb = |upload_builder: UploadBuilder, _: &mut FastbootUtils| {
+            let mut uploader = upload_builder.start(0x400).unwrap();
+            uploader.upload(&[0u8; 0x400 + 1])?;
+            Ok(())
+        };
+        fastboot_impl.upload_cb = Some(&mut upload_cb);
+        let _ = fastboot.run(&mut transport, &mut fastboot_impl);
+        assert_eq!(
+            transport.out_queue,
+            VecDeque::<Vec<u8>>::from([
+                b"DATA00000400".into(),
+                b"FAILUpload more than expected".into(),
             ])
         );
     }
