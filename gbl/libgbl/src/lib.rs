@@ -177,7 +177,7 @@ pub fn get_images<'a: 'b, 'b: 'c, 'c, 'd>(
 static BOOT_TOKEN: Mutex<Option<BootToken>> = Mutex::new(Some(BootToken(())));
 
 type AvbVerifySlot = for<'b> fn(
-    ops: &'b mut dyn avb::Ops,
+    ops: &mut dyn avb::Ops<'b>,
     requested_partitions: &[&CStr],
     ab_suffix: Option<&CStr>,
     flags: SlotVerifyFlags,
@@ -219,14 +219,11 @@ where
     /// * `Err(Error)` - on failure
     pub fn load_and_verify_image<'b>(
         &mut self,
-        avb_ops: &'b mut impl avb::Ops,
+        avb_ops: &mut impl avb::Ops<'b>,
         partitions_ram_map: &mut [PartitionRamMap],
         avb_verification_flags: AvbVerificationFlags,
         boot_target: Option<BootTarget>,
-    ) -> Result<VerifiedData<'b>>
-    where
-        'a: 'b,
-    {
+    ) -> Result<VerifiedData<'b>> {
         let bytes: SuffixBytes =
             if let Some(tgt) = boot_target { tgt.suffix().into() } else { Default::default() };
 
@@ -408,7 +405,7 @@ where
     #[allow(clippy::too_many_arguments)]
     pub fn load_verify_boot<'b: 'c, 'c, 'd: 'b, B: gbl_storage::AsBlockDevice>(
         &mut self,
-        avb_ops: &'b mut impl avb::Ops,
+        avb_ops: &mut impl avb::Ops<'b>,
         partitions_ram_map: &'d mut [PartitionRamMap<'b, 'c>],
         avb_verification_flags: AvbVerificationFlags,
         slot_cursor: Cursor<B, impl Manager>,
@@ -455,7 +452,7 @@ where
 
     fn lvb_inner<'b: 'c, 'c, 'd: 'b, 'e, B: gbl_storage::AsBlockDevice>(
         &mut self,
-        avb_ops: &'b mut impl avb::Ops,
+        avb_ops: &mut impl avb::Ops<'b>,
         ramdisk: &mut Ramdisk,
         kernel_load_buffer: &'e mut [u8],
         partitions_ram_map: &'d mut [PartitionRamMap<'b, 'c>],
@@ -596,7 +593,7 @@ mod tests {
     use std::fs;
 
     struct AvbOpsUnimplemented {}
-    impl avb::Ops for AvbOpsUnimplemented {
+    impl avb::Ops<'_> for AvbOpsUnimplemented {
         fn validate_vbmeta_public_key(&mut self, _: &[u8], _: Option<&[u8]>) -> AvbIoResult<bool> {
             Err(IoError::NotImplemented)
         }

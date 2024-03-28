@@ -44,7 +44,7 @@ fn cstr_to_str<E>(s: &CStr, err: E) -> Result<&str, E> {
     Ok(s.to_str().map_err(|_| err)?)
 }
 
-impl Ops for GblEfiAvbOps<'_, '_> {
+impl<'b> Ops<'b> for GblEfiAvbOps<'_, 'b> {
     fn read_from_partition(
         &mut self,
         partition: &CStr,
@@ -68,7 +68,7 @@ impl Ops for GblEfiAvbOps<'_, '_> {
         Ok(buffer.len())
     }
 
-    fn get_preloaded_partition(&mut self, partition: &CStr) -> IoResult<&[u8]> {
+    fn get_preloaded_partition(&mut self, partition: &CStr) -> IoResult<&'b [u8]> {
         let part_str = cstr_to_str(partition, IoError::NotImplemented)?;
         Ok(self
             .preloaded_partitions
