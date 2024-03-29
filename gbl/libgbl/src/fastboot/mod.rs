@@ -189,6 +189,11 @@ impl FastbootImplementation for GblFastboot<'_> {
         Self::NATIVE_VARS.iter().find_map(|v| v.get_all(self, f).err()).map_or(Ok(()), |e| Err(e))
     }
 
+    fn flash(&mut self, part: &str, utils: &mut FastbootUtils) -> Result<(), CommandError> {
+        let part = self.parse_partition(part.split(':'))?;
+        self.partition_io(part).write(0, utils.download_data())
+    }
+
     fn upload(
         &mut self,
         _upload_builder: UploadBuilder,
@@ -524,5 +529,49 @@ mod test {
         check_gpt_upload(&mut gbl_fb, "boot_b", off, size, None, expect_boot_b);
         check_gpt_upload(&mut gbl_fb, "vendor_boot_a", off, size, None, expect_vendor_boot_a);
         check_gpt_upload(&mut gbl_fb, "vendor_boot_b", off, size, None, expect_vendor_boot_b);
+    }
+
+    /// A helper for testing GPT partition flashing.
+    fn check_flash_part(fb: &mut GblFastboot, part: &str, expected: &[u8]) {
+        // Prepare a download buffer.
+        let mut dl_size = expected.len();
+        let mut download = expected.to_vec();
+        let mut utils = FastbootUtils::new(&mut download[..], &mut dl_size, None);
+        fb.flash(part, &mut utils).unwrap();
+        assert_eq!(fetch(fb, part.into(), 0, dl_size.try_into().unwrap()).unwrap(), download);
+
+        // Also flashes bit-wise reversed version in case the initial content is the same.
+        let mut download = expected.iter().map(|v| !(*v)).collect::<Vec<_>>();
+        let mut utils = FastbootUtils::new(&mut download[..], &mut dl_size, None);
+        fb.flash(part, &mut utils).unwrap();
+        assert_eq!(fetch(fb, part.into(), 0, dl_size.try_into().unwrap()).unwrap(), download);
+    }
+
+    #[test]
+    fn test_flash_partition() {
+        let mut disk_0 = include_bytes!("../../../libstorage/test/gpt_test_1.bin").to_vec();
+        let mut disk_1 = include_bytes!("../../../libstorage/test/gpt_test_2.bin").to_vec();
+        let mut devs = TestMultiBlockDevices(vec![
+            test_block_device(&disk_0[..]),
+            test_block_device(&disk_1[..]),
+        ]);
+        devs.sync_gpt_all(&mut |_, _, _| panic!("GPT sync failed"));
+
+        let mut gbl_fb = GblFastboot::new(&mut devs);
+
+        let expect_boot_a = &mut include_bytes!("../../../libstorage/test/boot_a.bin").to_vec()[..];
+        let expect_boot_b = &mut include_bytes!("../../../libstorage/test/boot_b.bin").to_vec()[..];
+        check_flash_part(&mut gbl_fb, "boot_a", expect_boot_a);
+        check_flash_part(&mut gbl_fb, "boot_b", expect_boot_b);
+        check_flash_part(&mut gbl_fb, ":0", &mut disk_0[..]);
+        check_flash_part(&mut gbl_fb, ":1", &mut disk_1[..]);
+
+        // Partital flash
+        let off = 0x200;
+        let size = 1024;
+        check_flash_part(&mut gbl_fb, "boot_a::200", &expect_boot_a[off..][..size]);
+        check_flash_part(&mut gbl_fb, "boot_b::200", &expect_boot_b[off..][..size]);
+        check_flash_part(&mut gbl_fb, ":0:200", &mut disk_0[off..][..size]);
+        check_flash_part(&mut gbl_fb, ":1:200", &mut disk_1[off..][..size]);
     }
 }
