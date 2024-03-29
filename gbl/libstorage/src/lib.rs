@@ -120,7 +120,7 @@ pub use multi_blocks::{with_id, AsMultiBlockDevices};
 pub type Result<T> = core::result::Result<T, StorageError>;
 
 /// Error code for this library.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum StorageError {
     ArithmeticOverflow,
     OutOfRange,
@@ -203,23 +203,57 @@ pub trait BlockIo {
     fn write_blocks(&mut self, blk_offset: u64, data: &[u8]) -> bool;
 }
 
-/// `GptEntryIterator` is returned by `AsBlockDevice::partition_iter()` and can be used to iterate
+/// `Partition` contains information about a GPT partition.
+#[derive(Debug, Copy, Clone)]
+pub struct Partition {
+    entry: GptEntry,
+    block_size: u64,
+}
+
+impl Partition {
+    /// Creates a new instance.
+    fn new(entry: GptEntry, block_size: u64) -> Self {
+        Self { entry, block_size }
+    }
+
+    /// Returns the partition size in bytes.
+    pub fn size(&self) -> Result<u64> {
+        Ok(mul(self.block_size, self.entry.blocks()?)?)
+    }
+
+    /// Returns the block size of this partition.
+    pub fn block_size(&self) -> u64 {
+        self.block_size
+    }
+
+    /// Returns the partition entry structure in the GPT header.
+    pub fn gpt_entry(&self) -> &GptEntry {
+        &self.entry
+    }
+}
+
+/// `PartitionIterator` is returned by `AsBlockDevice::partition_iter()` and can be used to iterate
 /// all GPT partition entries.
-pub struct GptEntryIterator<'a> {
+pub struct PartitionIterator<'a> {
     dev: &'a mut dyn AsBlockDevice,
     idx: usize,
 }
 
-impl Iterator for GptEntryIterator<'_> {
-    type Item = GptEntry;
+impl Iterator for PartitionIterator<'_> {
+    type Item = Partition;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let res =
-            with_partitioned_scratch(self.dev, |_, _, gpt_buffer, _| -> Result<Option<GptEntry>> {
-                Ok(Gpt::from_existing(gpt_buffer)?.entries()?.get(self.idx).map(|v| *v))
-            })
-            .ok()?
-            .ok()??;
+        let res = with_partitioned_scratch(
+            self.dev,
+            |io, _, gpt_buffer, _| -> Result<Option<Partition>> {
+                Ok(Gpt::from_existing(gpt_buffer)?
+                    .entries()?
+                    .get(self.idx)
+                    .map(|v| Partition::new(*v, io.block_size())))
+            },
+        )
+        .ok()?
+        .ok()??;
         self.idx += 1;
         Some(res)
     }
@@ -260,14 +294,19 @@ pub trait AsBlockDevice {
     ///   smaller bound on it, it is recommended to always return 128.
     fn with(&mut self, f: &mut dyn FnMut(&mut dyn BlockIo, &mut [u8], u64));
 
-    // Returns the block size of the underlying `BlockIo`
+    /// Returns the block size of the underlying `BlockIo`
     fn block_size(&mut self) -> Result<u64> {
         with_partitioned_scratch(self, |io, _, _, _| io.block_size())
     }
 
-    // Returns the number of blocks of the underlying `BlockIo`
+    /// Returns the number of blocks of the underlying `BlockIo`
     fn num_blocks(&mut self) -> Result<u64> {
         with_partitioned_scratch(self, |io, _, _, _| io.num_blocks())
+    }
+
+    /// Returns the total size in number of bytes.
+    fn total_size(&mut self) -> Result<u64> {
+        mul(self.block_size()?, self.num_blocks()?)
     }
 
     /// Read data from the block device.
@@ -339,33 +378,25 @@ pub trait AsBlockDevice {
     }
 
     /// Returns an iterator to GPT partition entries.
-    fn partition_iter(&mut self) -> GptEntryIterator
+    fn partition_iter(&mut self) -> PartitionIterator
     where
         Self: Sized,
     {
-        GptEntryIterator { dev: self, idx: 0 }
+        PartitionIterator { dev: self, idx: 0 }
     }
 
-    /// Returns the `GptEntry` for a partition.
+    /// Returns the `Partition` for a partition.
     ///
     /// # Args
     ///
     /// * `part`: Name of the partition.
-    fn find_partition(&mut self, part: &str) -> Result<GptEntry> {
-        with_partitioned_scratch(self, |_, _, gpt_buffer, _| {
-            Ok(Gpt::from_existing(gpt_buffer)?.find_partition(part).map(|v| *v)?)
+    fn find_partition(&mut self, part: &str) -> Result<Partition> {
+        with_partitioned_scratch(self, |io, _, gpt_buffer, _| {
+            Ok(Partition::new(
+                *Gpt::from_existing(gpt_buffer)?.find_partition(part)?,
+                io.block_size(),
+            ))
         })?
-    }
-
-    /// Returns the size of a partition.
-    ///
-    /// # Args
-    ///
-    /// * `part`: Name of the partition.
-    fn partition_size(&mut self, part: &str) -> Result<u64> {
-        let blk_sz = self.block_size()?;
-        let entry = self.find_partition(part)?;
-        mul(blk_sz, entry.blocks()?)
     }
 
     /// Read a GPT partition on a block device

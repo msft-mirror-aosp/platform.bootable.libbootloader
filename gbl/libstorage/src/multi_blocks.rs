@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{mul, AsBlockDevice, BlockIo, GptEntry, Result, StorageError};
+use crate::{AsBlockDevice, BlockIo, Partition, Result, StorageError};
 
 /// `AsMultiBlockDevices` provides APIs for finding/reading/writing raw data or GPT partitions from
 /// multiple block devices.
@@ -43,37 +43,26 @@ pub trait AsMultiBlockDevices {
     }
 
     /// Checks that a partition exists and is unique among all block devices with GPT.
-    fn check_part(&mut self, part: &str) -> Result<()> {
-        let mut count = 0usize;
-        self.for_each_until(&mut |v, _| {
-            count += (|| -> Result<bool> { Ok(v.find_partition(part).is_ok()) })().unwrap_or(false)
-                as usize;
-            count > 1
+    ///
+    /// Returns the block device ID for the partition.
+    fn check_part(&mut self, part: &str) -> Result<(u64, Partition)> {
+        let mut res = Err(StorageError::NotExist);
+        self.for_each_until(&mut |v, id| {
+            res = match v.find_partition(part).map(|v| (id, v)) {
+                Ok(_) if res.is_ok() => Err(StorageError::PartitionNotUnique),
+                v => v.or(res),
+            };
+            res.err() == Some(StorageError::PartitionNotUnique)
         });
-        match count {
-            1 => Ok(()),
-            0 => Err(StorageError::NotExist),
-            _ => Err(StorageError::PartitionNotUnique),
-        }
+        res
     }
 
     /// Returns the block size and `GptEntry` for a partition.
     ///
     /// Returns Ok(()) if the partition is found and unique among all block devices.
-    fn find_partition(&mut self, part: &str) -> Result<(u64, GptEntry)> {
+    fn find_partition(&mut self, part: &str) -> Result<Partition> {
         self.check_part(part)?;
-        until_ok(self, |dev, _| {
-            let blk_sz = dev.block_size()?;
-            dev.find_partition(part).map(|v| (blk_sz, v))
-        })
-    }
-
-    /// Returns the size of a partition.
-    ///
-    /// Returns Ok(()) if the partition is found and unique among all block devices.
-    fn partition_size(&mut self, part: &str) -> Result<u64> {
-        let (block_size, entry) = self.find_partition(part)?;
-        Ok(mul(block_size, entry.blocks()?)?)
+        until_ok(self, |dev, _| dev.find_partition(part))
     }
 
     /// Reads a GPT partition.
@@ -224,17 +213,29 @@ mod test {
         ];
         devs.sync_gpt_all(&mut |_, _, _| panic!("GPT sync failed"));
 
-        assert_eq!(devs.partition_size("boot_a").unwrap(), 8 * 1024);
-        assert_eq!(devs.get(0).unwrap().partition_size("boot_a").unwrap(), 8 * 1024);
+        assert_eq!(devs.find_partition("boot_a").and_then(|v| v.size()).unwrap(), 8 * 1024);
+        assert_eq!(
+            devs.get(0).unwrap().find_partition("boot_a").and_then(|v| v.size()).unwrap(),
+            8 * 1024
+        );
 
-        assert_eq!(devs.partition_size("boot_b").unwrap(), 12 * 1024);
-        assert_eq!(devs.get(0).unwrap().partition_size("boot_b").unwrap(), 12 * 1024);
+        assert_eq!(devs.find_partition("boot_b").and_then(|v| v.size()).unwrap(), 12 * 1024);
+        assert_eq!(
+            devs.get(0).unwrap().find_partition("boot_b").and_then(|v| v.size()).unwrap(),
+            12 * 1024
+        );
 
-        assert_eq!(devs.partition_size("vendor_boot_a").unwrap(), 4 * 1024);
-        assert_eq!(devs.get(1).unwrap().partition_size("vendor_boot_a").unwrap(), 4 * 1024);
+        assert_eq!(devs.find_partition("vendor_boot_a").and_then(|v| v.size()).unwrap(), 4 * 1024);
+        assert_eq!(
+            devs.get(1).unwrap().find_partition("vendor_boot_a").and_then(|v| v.size()).unwrap(),
+            4 * 1024
+        );
 
-        assert_eq!(devs.partition_size("vendor_boot_b").unwrap(), 6 * 1024);
-        assert_eq!(devs.get(1).unwrap().partition_size("vendor_boot_b").unwrap(), 6 * 1024);
+        assert_eq!(devs.find_partition("vendor_boot_b").and_then(|v| v.size()).unwrap(), 6 * 1024);
+        assert_eq!(
+            devs.get(1).unwrap().find_partition("vendor_boot_b").and_then(|v| v.size()).unwrap(),
+            6 * 1024
+        );
     }
 
     /// A test helper for `AsMultiBlockDevices::read_gpt_partition`
@@ -334,6 +335,5 @@ mod test {
         assert!(devs.write_gpt_partition_mut("boot_a", 0, &mut []).is_err());
         assert!(devs.write_gpt_partition("boot_a", 0, &mut []).is_err());
         assert!(devs.find_partition("boot_a").is_err());
-        assert!(devs.partition_size("boot_a").is_err());
     }
 }
