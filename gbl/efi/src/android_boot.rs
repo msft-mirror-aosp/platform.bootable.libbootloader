@@ -243,7 +243,7 @@ pub fn load_android_simple<'a>(
         })?;
     }
     // Check if there is a device specific bootconfig partition.
-    match gpt_devices.partition_size("bootconfig") {
+    match gpt_devices.find_partition("bootconfig").and_then(|v| v.size()) {
         Ok(sz) => {
             bootconfig_builder.add_with(|out| {
                 // For proof-of-concept only, we just load as much as possible and figure out the
