@@ -54,7 +54,8 @@ impl<'b> Ops<'b> for GblEfiAvbOps<'_, 'b> {
         let part_str = cstr_to_str(partition, IoError::NoSuchPartition)?;
         let partition_size: u64 = self
             .gpt_dev
-            .partition_size(part_str)
+            .find_partition(part_str)
+            .and_then(|v| v.size())
             .map_err(|_| IoError::NoSuchPartition)?
             .try_into()
             .map_err(|_| IoError::Oom)?;
@@ -110,9 +111,8 @@ impl<'b> Ops<'b> for GblEfiAvbOps<'_, 'b> {
 
     fn get_unique_guid_for_partition(&mut self, partition: &CStr) -> IoResult<Uuid> {
         let part_str = cstr_to_str(partition, IoError::NoSuchPartition)?;
-        let (_, gpt_entry) =
-            self.gpt_dev.find_partition(part_str).map_err(|_| IoError::NoSuchPartition)?;
-        Ok(Uuid::from_bytes(gpt_entry.guid))
+        let ptn = self.gpt_dev.find_partition(part_str).map_err(|_| IoError::NoSuchPartition)?;
+        Ok(Uuid::from_bytes(ptn.gpt_entry().guid))
     }
 
     fn get_size_of_partition(&mut self, partition: &CStr) -> IoResult<u64> {
@@ -122,7 +122,8 @@ impl<'b> Ops<'b> for GblEfiAvbOps<'_, 'b> {
                 let part_str = cstr_to_str(partition, IoError::NoSuchPartition)?;
                 Ok(self
                     .gpt_dev
-                    .partition_size(part_str)
+                    .find_partition(part_str)
+                    .and_then(|v| v.size())
                     .map_err(|_| IoError::NoSuchPartition)?
                     .try_into()
                     .map_err(|_| IoError::NoSuchPartition)?)

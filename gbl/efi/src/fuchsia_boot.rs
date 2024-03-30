@@ -160,7 +160,7 @@ pub fn is_fuchsia_gpt(efi_entry: &EfiEntry) -> Result<()> {
         &["fvm"],
     ];
     for partition in partitions {
-        if !partition.iter().any(|v| gpt_devices.partition_size(*v).is_ok()) {
+        if !partition.iter().any(|v| gpt_devices.find_partition(*v).is_ok()) {
             return Err(EfiAppError::NotFound.into());
         }
     }
