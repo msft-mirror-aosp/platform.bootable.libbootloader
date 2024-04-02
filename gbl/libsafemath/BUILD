@@ -1,4 +1,4 @@
-# Copyright (C) 2023 The Android Open Source Project
+# Copyright (C) 2024 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,18 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-test_suite(
-    name = "tests",
-    tests = [
-        "@gbl//libbootconfig:libbootconfig_test",
-        "@gbl//libbootimg:libbootimg_test",
-        "@gbl//libefi:libefi_test",
-        "@gbl//libfastboot:libfastboot_test",
-        "@gbl//libfdt:libfdt_test",
-        "@gbl//libgbl:libgbl_test",
-        "@gbl//libsafemath:libsafemath_test",
-        "@gbl//libstorage:libstorage_doc_test",
-        "@gbl//libstorage:libstorage_test",
-        "@gbl//third_party/libzbi:libzbi_test",
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "libsafemath",
+    srcs = [
+        "src/lib.rs",
     ],
+    crate_name = "safemath",
+    edition = "2021",
+    visibility = ["//visibility:public"],
+)
+
+rust_test(
+    name = "libsafemath_test",
+    crate = ":libsafemath",
 )
