@@ -44,7 +44,7 @@ fn cstr_to_str<E>(s: &CStr, err: E) -> Result<&str, E> {
     Ok(s.to_str().map_err(|_| err)?)
 }
 
-impl Ops for GblEfiAvbOps<'_, '_> {
+impl<'b> Ops<'b> for GblEfiAvbOps<'_, 'b> {
     fn read_from_partition(
         &mut self,
         partition: &CStr,
@@ -54,7 +54,8 @@ impl Ops for GblEfiAvbOps<'_, '_> {
         let part_str = cstr_to_str(partition, IoError::NoSuchPartition)?;
         let partition_size: u64 = self
             .gpt_dev
-            .partition_size(part_str)
+            .find_partition(part_str)
+            .and_then(|v| v.size())
             .map_err(|_| IoError::NoSuchPartition)?
             .try_into()
             .map_err(|_| IoError::Oom)?;
@@ -68,7 +69,7 @@ impl Ops for GblEfiAvbOps<'_, '_> {
         Ok(buffer.len())
     }
 
-    fn get_preloaded_partition(&mut self, partition: &CStr) -> IoResult<&[u8]> {
+    fn get_preloaded_partition(&mut self, partition: &CStr) -> IoResult<&'b [u8]> {
         let part_str = cstr_to_str(partition, IoError::NotImplemented)?;
         Ok(self
             .preloaded_partitions
@@ -110,9 +111,8 @@ impl Ops for GblEfiAvbOps<'_, '_> {
 
     fn get_unique_guid_for_partition(&mut self, partition: &CStr) -> IoResult<Uuid> {
         let part_str = cstr_to_str(partition, IoError::NoSuchPartition)?;
-        let (_, gpt_entry) =
-            self.gpt_dev.find_partition(part_str).map_err(|_| IoError::NoSuchPartition)?;
-        Ok(Uuid::from_bytes(gpt_entry.guid))
+        let ptn = self.gpt_dev.find_partition(part_str).map_err(|_| IoError::NoSuchPartition)?;
+        Ok(Uuid::from_bytes(ptn.gpt_entry().guid))
     }
 
     fn get_size_of_partition(&mut self, partition: &CStr) -> IoResult<u64> {
@@ -122,7 +122,8 @@ impl Ops for GblEfiAvbOps<'_, '_> {
                 let part_str = cstr_to_str(partition, IoError::NoSuchPartition)?;
                 Ok(self
                     .gpt_dev
-                    .partition_size(part_str)
+                    .find_partition(part_str)
+                    .and_then(|v| v.size())
                     .map_err(|_| IoError::NoSuchPartition)?
                     .try_into()
                     .map_err(|_| IoError::NoSuchPartition)?)
