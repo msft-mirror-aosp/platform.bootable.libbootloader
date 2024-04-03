@@ -403,10 +403,14 @@ impl<'a> FastbootUtils<'a> {
         &mut self.download_buffer[..*self.download_data_size]
     }
 
-    /// Takes the download buffer. The downloaded data is invalidated.
-    pub fn take_download_buffer(&mut self) -> &mut [u8] {
+    /// Returns the entire download buffer and the size of the download data. The method assumes
+    /// that callers will modify the download buffer and therefore will no longer consider the
+    /// download data valid, i.e. future calls of FastbootUtils::download_data() will only return
+    /// an empty slice.
+    pub fn take_download_buffer(&mut self) -> (&mut [u8], usize) {
+        let download_data_size = *self.download_data_size;
         *self.download_data_size = 0;
-        self.download_buffer
+        (self.download_buffer, download_data_size)
     }
 
     /// Sends a Fastboot INFO message.
@@ -1387,8 +1391,8 @@ mod test {
         let mut upload_cb = |upload_builder: UploadBuilder, utils: &mut FastbootUtils| {
             assert_eq!(utils.download_buffer.len(), DOWNLOAD_BUFFER_LEN);
             assert_eq!(utils.download_data().to_vec(), download_content);
-            let download_len = utils.download_data().len();
-            let to_send = &mut utils.take_download_buffer()[..download_len];
+            let (download_buffer, download_len) = utils.take_download_buffer();
+            let to_send = &mut download_buffer[..download_len];
             let mut uploader = upload_builder.start(u64::try_from(to_send.len()).unwrap()).unwrap();
             uploader.upload(&to_send[..download_len / 2]).unwrap();
             uploader.upload(&to_send[download_len / 2..]).unwrap();
