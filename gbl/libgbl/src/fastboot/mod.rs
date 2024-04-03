@@ -23,6 +23,9 @@ use gbl_storage::{AsBlockDevice, AsMultiBlockDevices, GPT_NAME_LEN_U16};
 mod vars;
 use vars::{BlockDevice, Partition, Variable};
 
+mod sparse;
+use sparse::{is_sparse_image, write_sparse_image};
+
 pub(crate) const GPT_NAME_LEN_U8: usize = GPT_NAME_LEN_U16 * 2;
 
 /// `GblFbPartition` represents a GBL Fastboot partition, which is defined as any sub window of a
@@ -191,7 +194,14 @@ impl FastbootImplementation for GblFastboot<'_> {
 
     fn flash(&mut self, part: &str, utils: &mut FastbootUtils) -> Result<(), CommandError> {
         let part = self.parse_partition(part.split(':'))?;
-        self.partition_io(part).write(0, utils.download_data())
+        match is_sparse_image(utils.download_data()) {
+            // Passes the entire download buffer so that more can be used as fill buffer.
+            Ok(_) => write_sparse_image(utils.take_download_buffer().0, |off, data| {
+                self.partition_io(part).write(off, data)
+            })
+            .map(|_| ()),
+            _ => self.partition_io(part).write(0, utils.download_data()),
+        }
     }
 
     fn upload(
@@ -211,7 +221,7 @@ impl FastbootImplementation for GblFastboot<'_> {
         utils: &mut FastbootUtils,
     ) -> Result<(), CommandError> {
         let part = self.parse_partition(part.split(':'))?;
-        let buffer = utils.take_download_buffer();
+        let (buffer, _) = utils.take_download_buffer();
         let buffer_len = u64::try_from(buffer.len())
             .map_err::<CommandError, _>(|_| "buffer size overflow".into())?;
         let end = add(offset, size)?;
@@ -573,5 +583,19 @@ mod test {
         check_flash_part(&mut gbl_fb, "boot_b::200", &expect_boot_b[off..][..size]);
         check_flash_part(&mut gbl_fb, ":0:200", &mut disk_0[off..][..size]);
         check_flash_part(&mut gbl_fb, ":1:200", &mut disk_1[off..][..size]);
+    }
+
+    #[test]
+    fn test_flash_partition_sparse() {
+        let raw = include_bytes!("../../testdata/sparse_test_raw.bin");
+        let sparse = include_bytes!("../../testdata/sparse_test.bin");
+        let mut devs = TestMultiBlockDevices(vec![test_block_device(&vec![0u8; raw.len()])]);
+        let mut fb = GblFastboot::new(&mut devs);
+
+        let mut dl_size = sparse.len();
+        let mut download = sparse.to_vec();
+        let mut utils = FastbootUtils::new(&mut download[..], &mut dl_size, None);
+        fb.flash(":0", &mut utils).unwrap();
+        assert_eq!(fetch(&mut fb, ":0".into(), 0, raw.len().try_into().unwrap()).unwrap(), raw);
     }
 }
