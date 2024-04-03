@@ -42,6 +42,9 @@ rust_test(
     crate = ":libgbl",
     crate_features = ["uuid"],
     data = [
+        "@gbl//libgbl/testdata:sparse_test.bin",
+        "@gbl//libgbl/testdata:sparse_test_blk1024.bin",
+        "@gbl//libgbl/testdata:sparse_test_raw.bin",
         "@gbl//libgbl/testdata:test_image.img",
         "@gbl//libgbl/testdata:testkey_rsa4096.pem",
         "@gbl//libgbl/testdata:testkey_rsa4096.pub.pem",
