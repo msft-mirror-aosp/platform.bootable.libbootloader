@@ -160,10 +160,9 @@ impl Default for AbrData {
 
 impl super::private::SlotGet for SlotBlock<'_, AbrData> {
     fn get_slot_by_number(&self, number: usize) -> Result<Slot, Error> {
-        let lower_ascii = 'a'..='z';
-        let (suffix, &abr_slot) = zip(lower_ascii, self.get_data().slot_data.iter())
+        let lower_ascii_suffixes = ('a'..='z').map(Suffix);
+        let (suffix, &abr_slot) = zip(lower_ascii_suffixes, self.get_data().slot_data.iter())
             .nth(number)
-            .map(|(c, s)| (Suffix(c), s))
             .ok_or_else(|| Suffix::try_from(number).map_or(Error::Other, Error::NoSuchSlot))?;
 
         let bootability = match (abr_slot.successful, abr_slot.tries) {
