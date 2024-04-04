@@ -55,6 +55,10 @@ cc_library(
         "libavb/avb_version.h",
         "libavb/libavb.h",
         "libavb/sha/avb_crypto_ops_impl.h",
+        "libavb_atx/avb_atx_ops.h",
+        "libavb_atx/avb_atx_types.h",
+        "libavb_atx/avb_atx_validate.h",
+        "libavb_atx/libavb_atx.h",
     ],
     includes = [
         ".",
@@ -81,6 +85,7 @@ cc_library(
         "libavb/avb_util.c",
         "libavb/avb_vbmeta_image.c",
         "libavb/avb_version.c",
+        "libavb_atx/avb_atx_validate.c",
 
         # Contains noop placeholder for avb_printv/avb_printf
         "@gbl//libavb:print.c",
@@ -163,7 +168,7 @@ use zerocopy::{FromBytes, FromZeroes};
         "-I{}".format(LLVM_PREBUILTS_C_INCLUDE),
         "-nostdinc",
     ],
-    header = "libavb/libavb.h",
+    header = "libavb_atx/libavb_atx.h",
 )
 
 rust_library(
