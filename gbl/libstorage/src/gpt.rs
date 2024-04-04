@@ -183,7 +183,7 @@ impl<'a> Gpt<'a> {
     /// The method simply partitions the input buffer and populate the `GptInfo` struct and
     /// primary/secondary header/entries slices. It assumes that the buffer contains a valid
     /// GptInfo struct.
-    pub(crate) fn from_existing(buffer: &'a mut [u8]) -> Result<Gpt<'a>> {
+    pub fn from_existing(buffer: &'a mut [u8]) -> Result<Gpt<'a>> {
         let buffer = aligned_subslice(buffer, GPT_ENTRY_ALIGNMENT)?;
         let (info, remain) = Ref::<_, GptInfo>::new_from_prefix(buffer).unwrap();
         let entries_size = mul(info.max_entries, GPT_ENTRY_SIZE)?;
@@ -436,17 +436,21 @@ fn crc32(data: &[u8]) -> u32 {
 #[cfg(test)]
 pub(crate) mod test {
     use super::*;
-    use crate::test::TestBlockDevice;
-    use crate::AsBlockDevice;
+    use gbl_storage_testlib::{
+        alignment_scratch_size, AsBlockDevice, TestBlockDevice, TestBlockDeviceBuilder,
+    };
 
-    pub(crate) fn gpt_block_device(max_entries: u64, data: &[u8]) -> TestBlockDevice {
-        TestBlockDevice::new_with_data(512, 512, max_entries, data)
+    /// Helper function to extract the gpt header from a test block device.
+    /// This function lives here and not as a method of TestBlockDevice so that
+    /// the Gpt type doesn't have to be exported.
+    fn gpt(dev: &mut TestBlockDevice) -> Gpt {
+        let (_, gpt) = dev.scratch.split_at_mut(alignment_scratch_size(&mut dev.io).unwrap());
+        Gpt::from_existing(gpt).unwrap()
     }
 
     #[test]
     fn test_new_from_buffer() {
-        let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
-        let mut dev = gpt_block_device(128, &disk);
+        let mut dev: TestBlockDevice = include_bytes!("../test/gpt_test_1.bin").as_slice().into();
         dev.sync_gpt().unwrap();
 
         assert_eq!(dev.partition_iter().count(), 2);
@@ -457,23 +461,24 @@ pub(crate) mod test {
 
     #[test]
     fn test_gpt_buffer_too_small() {
-        let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
-        let mut dev = gpt_block_device(128, &disk);
+        let mut dev: TestBlockDevice = include_bytes!("../test/gpt_test_1.bin").as_slice().into();
         dev.scratch = vec![0u8; dev.scratch.len() - 1];
         assert!(dev.sync_gpt().is_err());
     }
 
     #[test]
     fn test_gpt_too_many_entries() {
-        let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
-        let mut dev = gpt_block_device(129, &disk);
+        let mut dev = TestBlockDeviceBuilder::new()
+            .set_data(include_bytes!("../test/gpt_test_1.bin"))
+            .set_max_gpt_entries(129)
+            .build();
         assert!(dev.sync_gpt().is_err());
     }
 
     #[test]
     fn test_load_gpt_primary() {
-        let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
-        let mut dev = gpt_block_device(128, &disk);
+        let disk = include_bytes!("../test/gpt_test_1.bin");
+        let mut dev: TestBlockDevice = disk.as_slice().into();
 
         // Corrupt secondary.
         dev.io.storage[disk.len() - 512..].fill(0);
@@ -490,8 +495,8 @@ pub(crate) mod test {
 
     #[test]
     fn test_load_gpt_secondary() {
-        let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
-        let mut dev = gpt_block_device(128, &disk);
+        let disk = include_bytes!("../test/gpt_test_1.bin");
+        let mut dev: TestBlockDevice = disk.as_slice().into();
 
         // Corrupt primary.
         dev.io.storage[512..1024].fill(0);
@@ -507,8 +512,7 @@ pub(crate) mod test {
 
     #[test]
     fn test_good_gpt_no_repair_write() {
-        let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
-        let mut dev = gpt_block_device(128, &disk);
+        let mut dev: TestBlockDevice = include_bytes!("../test/gpt_test_1.bin").as_slice().into();
         dev.sync_gpt().unwrap();
 
         assert_eq!(dev.io.num_writes, 0);
@@ -516,11 +520,11 @@ pub(crate) mod test {
 
     #[test]
     fn test_load_gpt_incorrect_magic() {
-        let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
-        let mut dev = gpt_block_device(128, &disk);
+        let disk = include_bytes!("../test/gpt_test_1.bin");
+        let mut dev = TestBlockDeviceBuilder::new().set_data(disk).build();
         dev.sync_gpt().unwrap();
 
-        let gpt = dev.gpt();
+        let gpt = gpt(&mut dev);
         let primary_header = &mut gpt.primary_header[..to_usize(GPT_HEADER_SIZE).unwrap()];
         let gpt_header = GptHeader::from_bytes(primary_header);
         gpt_header.magic = 0x123456;
@@ -536,18 +540,22 @@ pub(crate) mod test {
 
     #[test]
     fn test_load_gpt_exceeds_max_entries() {
-        let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
-        assert!(gpt_block_device(127, &disk).sync_gpt().is_err());
+        let mut dev = TestBlockDeviceBuilder::new()
+            .set_data(include_bytes!("../test/gpt_test_1.bin"))
+            .set_max_gpt_entries(127)
+            .build();
+
+        assert!(dev.sync_gpt().is_err());
     }
 
     #[test]
     fn test_load_gpt_non_max_entries() {
         // Create a header with non-max entries_count
-        let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
-        let mut dev = gpt_block_device(128, &disk);
+        let disk = include_bytes!("../test/gpt_test_1.bin");
+        let mut dev = TestBlockDeviceBuilder::new().set_data(disk).build();
         dev.sync_gpt().unwrap();
 
-        let gpt = dev.gpt();
+        let gpt = gpt(&mut dev);
         let primary_header = &mut gpt.primary_header[..to_usize(GPT_HEADER_SIZE).unwrap()];
         let gpt_header = GptHeader::from_bytes(primary_header);
         gpt_header.entries_count = 2;
@@ -571,8 +579,9 @@ pub(crate) mod test {
     #[test]
     fn test_uninitialized_gpt() {
         // Load a good GPT first.
-        let disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
-        let mut dev = gpt_block_device(128, &disk);
+        let mut dev = TestBlockDeviceBuilder::new()
+            .set_data(include_bytes!("../test/gpt_test_1.bin"))
+            .build();
         dev.sync_gpt().unwrap();
         dev.io.storage[..64 * 1024].fill(0);
         // Load a bad GPT. Validate that the valid state is reset.
@@ -582,7 +591,9 @@ pub(crate) mod test {
 
     #[test]
     fn test_gpt_read() {
-        let mut dev = gpt_block_device(128, include_bytes!("../test/gpt_test_1.bin"));
+        let mut dev = TestBlockDeviceBuilder::new()
+            .set_data(include_bytes!("../test/gpt_test_1.bin"))
+            .build();
         dev.sync_gpt().unwrap();
 
         let expect_boot_a = include_bytes!("../test/boot_a.bin");
@@ -608,7 +619,9 @@ pub(crate) mod test {
 
     #[test]
     fn test_gpt_write() {
-        let mut dev = gpt_block_device(128, include_bytes!("../test/gpt_test_1.bin"));
+        let mut dev = TestBlockDeviceBuilder::new()
+            .set_data(include_bytes!("../test/gpt_test_1.bin"))
+            .build();
         dev.sync_gpt().unwrap();
 
         let mut expect_boot_a = include_bytes!("../test/boot_a.bin").to_vec();
@@ -658,7 +671,9 @@ pub(crate) mod test {
 
     #[test]
     fn test_gpt_rw_overflow() {
-        let mut dev = gpt_block_device(128, include_bytes!("../test/gpt_test_1.bin"));
+        let mut dev = TestBlockDeviceBuilder::new()
+            .set_data(include_bytes!("../../libstorage/test/gpt_test_1.bin"))
+            .build();
         dev.sync_gpt().unwrap();
 
         let mut boot_a = [0u8; include_bytes!("../test/boot_a.bin").len()];
