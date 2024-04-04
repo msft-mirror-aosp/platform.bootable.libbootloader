@@ -52,6 +52,7 @@ rust_test(
     ],
     deps = [
         "@avb//:avb_test",
+        "@gbl//libstorage:libstorage_testlib",
         "@static_assertions",
         "@uuid",
     ],
