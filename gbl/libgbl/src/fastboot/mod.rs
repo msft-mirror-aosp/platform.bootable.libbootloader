@@ -23,6 +23,9 @@ use gbl_storage::{AsBlockDevice, AsMultiBlockDevices, GPT_NAME_LEN_U16};
 mod vars;
 use vars::{BlockDevice, Partition, Variable};
 
+mod sparse;
+use sparse::{is_sparse_image, write_sparse_image};
+
 pub(crate) const GPT_NAME_LEN_U8: usize = GPT_NAME_LEN_U16 * 2;
 
 /// `GblFbPartition` represents a GBL Fastboot partition, which is defined as any sub window of a
@@ -191,7 +194,14 @@ impl FastbootImplementation for GblFastboot<'_> {
 
     fn flash(&mut self, part: &str, utils: &mut FastbootUtils) -> Result<(), CommandError> {
         let part = self.parse_partition(part.split(':'))?;
-        self.partition_io(part).write(0, utils.download_data())
+        match is_sparse_image(utils.download_data()) {
+            // Passes the entire download buffer so that more can be used as fill buffer.
+            Ok(_) => write_sparse_image(utils.take_download_buffer().0, |off, data| {
+                self.partition_io(part).write(off, data)
+            })
+            .map(|_| ()),
+            _ => self.partition_io(part).write(0, utils.download_data()),
+        }
     }
 
     fn upload(
@@ -211,7 +221,7 @@ impl FastbootImplementation for GblFastboot<'_> {
         utils: &mut FastbootUtils,
     ) -> Result<(), CommandError> {
         let part = self.parse_partition(part.split(':'))?;
-        let buffer = utils.take_download_buffer();
+        let (buffer, _) = utils.take_download_buffer();
         let buffer_len = u64::try_from(buffer.len())
             .map_err::<CommandError, _>(|_| "buffer size overflow".into())?;
         let end = add(offset, size)?;
@@ -256,68 +266,9 @@ fn sub(lhs: u64, rhs: u64) -> Result<u64, CommandError> {
 mod test {
     use super::*;
     use fastboot::test_utils::with_mock_upload_builder;
-    use gbl_storage::{required_scratch_size, AsBlockDevice, BlockIo};
+    use gbl_storage_testlib::{TestBlockDeviceBuilder, TestMultiBlockDevices};
     use std::string::String;
     use Vec;
-
-    const BLOCK_SIZE: u64 = 512;
-    const MAX_GPT_ENTRIES: u64 = 128;
-
-    // TODO(b/329138620): Migrate to common storage test library once available.
-    struct TestBlockIo(Vec<u8>);
-
-    impl BlockIo for TestBlockIo {
-        fn block_size(&mut self) -> u64 {
-            BLOCK_SIZE
-        }
-
-        fn num_blocks(&mut self) -> u64 {
-            u64::try_from(self.0.len()).unwrap() / BLOCK_SIZE
-        }
-
-        fn alignment(&mut self) -> u64 {
-            BLOCK_SIZE
-        }
-
-        fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> bool {
-            out.clone_from_slice(
-                &self.0[usize::try_from(blk_offset * BLOCK_SIZE).unwrap()..][..out.len()],
-            );
-            true
-        }
-
-        fn write_blocks(&mut self, blk_offset: u64, data: &[u8]) -> bool {
-            self.0[usize::try_from(blk_offset * BLOCK_SIZE).unwrap()..][..data.len()]
-                .clone_from_slice(data);
-            true
-        }
-    }
-
-    struct TestBlockDevice((TestBlockIo, Vec<u8>));
-
-    impl AsBlockDevice for TestBlockDevice {
-        fn with(&mut self, f: &mut dyn FnMut(&mut dyn BlockIo, &mut [u8], u64)) {
-            f(&mut self.0 .0, &mut self.0 .1[..], MAX_GPT_ENTRIES)
-        }
-    }
-
-    fn test_block_device(storage: &[u8]) -> TestBlockDevice {
-        let mut io = TestBlockIo(Vec::from(storage));
-        let scratch_size = required_scratch_size(&mut io, MAX_GPT_ENTRIES).unwrap();
-        TestBlockDevice((io, vec![0u8; scratch_size]))
-    }
-
-    struct TestMultiBlockDevices(Vec<TestBlockDevice>);
-
-    impl AsMultiBlockDevices for TestMultiBlockDevices {
-        fn for_each_until(&mut self, f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64) -> bool) {
-            let _ = self
-                .0
-                .iter_mut()
-                .enumerate()
-                .find_map(|(idx, ele)| f(ele, u64::try_from(idx).unwrap()).then_some(()));
-        }
-    }
 
     /// Helper to test fastboot variable value.
     fn check_var(gbl_fb: &mut GblFastboot, var: &str, args: &str, expected: &str) {
@@ -333,8 +284,8 @@ mod test {
     #[test]
     fn test_get_var_partition_info() {
         let mut devs = TestMultiBlockDevices(vec![
-            test_block_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin")),
-            test_block_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin")),
+            include_bytes!("../../../libstorage/test/gpt_test_1.bin").as_slice().into(),
+            include_bytes!("../../../libstorage/test/gpt_test_2.bin").as_slice().into(),
         ]);
         devs.sync_gpt_all(&mut |_, _, _| panic!("GPT sync failed"));
         let mut gbl_fb = GblFastboot::new(&mut devs);
@@ -365,8 +316,8 @@ mod test {
     #[test]
     fn test_get_var_all() {
         let mut devs = TestMultiBlockDevices(vec![
-            test_block_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin")),
-            test_block_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin")),
+            include_bytes!("../../../libstorage/test/gpt_test_1.bin").as_slice().into(),
+            include_bytes!("../../../libstorage/test/gpt_test_2.bin").as_slice().into(),
         ]);
         devs.sync_gpt_all(&mut |_, _, _| panic!("GPT sync failed"));
         let mut gbl_fb = GblFastboot::new(&mut devs);
@@ -428,9 +379,9 @@ mod test {
     #[test]
     fn test_fetch_invalid_partition_arg() {
         let mut devs = TestMultiBlockDevices(vec![
-            test_block_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin")),
-            test_block_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin")),
-            test_block_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin")),
+            include_bytes!("../../../libstorage/test/gpt_test_1.bin").as_slice().into(),
+            include_bytes!("../../../libstorage/test/gpt_test_2.bin").as_slice().into(),
+            include_bytes!("../../../libstorage/test/gpt_test_2.bin").as_slice().into(),
         ]);
         devs.sync_gpt_all(&mut |_, _, _| panic!("GPT sync failed"));
         let mut fb = GblFastboot::new(&mut devs);
@@ -470,7 +421,7 @@ mod test {
         let disk_0 = include_bytes!("../../../libstorage/test/gpt_test_1.bin");
         let disk_1 = include_bytes!("../../../libstorage/test/gpt_test_2.bin");
         let mut devs =
-            TestMultiBlockDevices(vec![test_block_device(disk_0), test_block_device(disk_1)]);
+            TestMultiBlockDevices(vec![disk_0.as_slice().into(), disk_1.as_slice().into()]);
         devs.sync_gpt_all(&mut |_, _, _| panic!("GPT sync failed"));
         let mut gbl_fb = GblFastboot::new(&mut devs);
 
@@ -505,8 +456,8 @@ mod test {
     #[test]
     fn test_fetch_gpt_partition() {
         let mut devs = TestMultiBlockDevices(vec![
-            test_block_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin")),
-            test_block_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin")),
+            include_bytes!("../../../libstorage/test/gpt_test_1.bin").as_slice().into(),
+            include_bytes!("../../../libstorage/test/gpt_test_2.bin").as_slice().into(),
         ]);
         devs.sync_gpt_all(&mut |_, _, _| panic!("GPT sync failed"));
         let mut gbl_fb = GblFastboot::new(&mut devs);
@@ -549,29 +500,42 @@ mod test {
 
     #[test]
     fn test_flash_partition() {
-        let mut disk_0 = include_bytes!("../../../libstorage/test/gpt_test_1.bin").to_vec();
-        let mut disk_1 = include_bytes!("../../../libstorage/test/gpt_test_2.bin").to_vec();
-        let mut devs = TestMultiBlockDevices(vec![
-            test_block_device(&disk_0[..]),
-            test_block_device(&disk_1[..]),
-        ]);
+        let disk_0 = include_bytes!("../../../libstorage/test/gpt_test_1.bin");
+        let disk_1 = include_bytes!("../../../libstorage/test/gpt_test_2.bin");
+        let mut devs =
+            TestMultiBlockDevices(vec![disk_0.as_slice().into(), disk_1.as_slice().into()]);
         devs.sync_gpt_all(&mut |_, _, _| panic!("GPT sync failed"));
 
         let mut gbl_fb = GblFastboot::new(&mut devs);
 
-        let expect_boot_a = &mut include_bytes!("../../../libstorage/test/boot_a.bin").to_vec()[..];
-        let expect_boot_b = &mut include_bytes!("../../../libstorage/test/boot_b.bin").to_vec()[..];
+        let expect_boot_a = include_bytes!("../../../libstorage/test/boot_a.bin");
+        let expect_boot_b = include_bytes!("../../../libstorage/test/boot_b.bin");
         check_flash_part(&mut gbl_fb, "boot_a", expect_boot_a);
         check_flash_part(&mut gbl_fb, "boot_b", expect_boot_b);
-        check_flash_part(&mut gbl_fb, ":0", &mut disk_0[..]);
-        check_flash_part(&mut gbl_fb, ":1", &mut disk_1[..]);
+        check_flash_part(&mut gbl_fb, ":0", disk_0);
+        check_flash_part(&mut gbl_fb, ":1", disk_1);
 
         // Partital flash
         let off = 0x200;
         let size = 1024;
-        check_flash_part(&mut gbl_fb, "boot_a::200", &expect_boot_a[off..][..size]);
-        check_flash_part(&mut gbl_fb, "boot_b::200", &expect_boot_b[off..][..size]);
-        check_flash_part(&mut gbl_fb, ":0:200", &mut disk_0[off..][..size]);
-        check_flash_part(&mut gbl_fb, ":1:200", &mut disk_1[off..][..size]);
+        check_flash_part(&mut gbl_fb, "boot_a::200", &expect_boot_a[off..size]);
+        check_flash_part(&mut gbl_fb, "boot_b::200", &expect_boot_b[off..size]);
+        check_flash_part(&mut gbl_fb, ":0:200", &disk_0[off..size]);
+        check_flash_part(&mut gbl_fb, ":1:200", &disk_1[off..size]);
+    }
+
+    #[test]
+    fn test_flash_partition_sparse() {
+        let raw = include_bytes!("../../testdata/sparse_test_raw.bin");
+        let sparse = include_bytes!("../../testdata/sparse_test.bin");
+        let mut devs =
+            TestMultiBlockDevices(vec![TestBlockDeviceBuilder::new().set_size(raw.len()).build()]);
+        let mut fb = GblFastboot::new(&mut devs);
+
+        let mut dl_size = sparse.len();
+        let mut download = sparse.to_vec();
+        let mut utils = FastbootUtils::new(&mut download[..], &mut dl_size, None);
+        fb.flash(":0", &mut utils).unwrap();
+        assert_eq!(fetch(&mut fb, ":0".into(), 0, raw.len().try_into().unwrap()).unwrap(), raw);
     }
 }
