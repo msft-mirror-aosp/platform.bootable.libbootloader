@@ -67,19 +67,9 @@ mod allocation;
 #[cfg(not(test))]
 pub use allocation::{efi_free, efi_malloc};
 
-mod protocol;
-// Protocol type and implementation to export.
-pub use protocol::BlockIoProtocol;
-pub use protocol::DevicePathProtocol;
-pub use protocol::DevicePathText;
-pub use protocol::DevicePathToTextProtocol;
-pub use protocol::LoadedImageProtocol;
-pub use protocol::Protocol;
-pub use protocol::ProtocolInfo;
-pub use protocol::RiscvBootProtocol;
-pub use protocol::SimpleNetworkProtocol;
-pub use protocol::SimpleTextInputProtocol;
-pub use protocol::SimpleTextOutputProtocol;
+pub mod protocol;
+use protocol::simple_text_output::SimpleTextOutputProtocol;
+use protocol::{Protocol, ProtocolInfo};
 
 mod error {
     use super::defs::EFI_STATUS_SUCCESS;
@@ -688,6 +678,7 @@ fn panic(panic: &PanicInfo) -> ! {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::protocol::block_io::BlockIoProtocol;
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::mem::size_of;
