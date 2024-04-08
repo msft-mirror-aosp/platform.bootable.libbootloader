@@ -77,6 +77,7 @@ const OKAY: &'static str = "OKAY";
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum TransportError {
     InvalidHanshake,
+    InvalidState,
     PacketSizeOverflow,
     PacketSizeExceedMaximum,
     NotEnoughUpload,
@@ -123,29 +124,45 @@ pub trait TcpStream {
     fn write_exact(&mut self, data: &[u8]) -> Result<(), TransportError>;
 }
 
-impl Transport for &mut dyn TcpStream {
+/// `TcpTransport` implements `Transport` with a `TcpStream` object.
+pub struct TcpTransport<'a>(&'a mut dyn TcpStream);
+
+impl<'a> TcpTransport<'a> {
+    /// Creates an instance from a newly connected TcpStream and performs handshake.
+    pub fn new_and_handshake(tcp_stream: &'a mut dyn TcpStream) -> Result<Self, TransportError> {
+        let mut handshake = [0u8; 4];
+        tcp_stream.write_exact(TCP_HANDSHAKE_MESSAGE)?;
+        tcp_stream.read_exact(&mut handshake[..])?;
+        match handshake == *TCP_HANDSHAKE_MESSAGE {
+            true => Ok(Self(tcp_stream)),
+            _ => Err(TransportError::InvalidHanshake),
+        }
+    }
+}
+
+impl Transport for TcpTransport<'_> {
     fn receive_packet(&mut self, out: &mut [u8]) -> Result<usize, TransportError> {
         let mut length_prefix = [0u8; 8];
-        self.read_exact(&mut length_prefix[..])?;
+        self.0.read_exact(&mut length_prefix[..])?;
         let packet_size: usize = u64::from_be_bytes(length_prefix)
             .try_into()
             .map_err(|_| TransportError::PacketSizeOverflow)?;
         match out.len() < packet_size {
             true => Err(TransportError::PacketSizeExceedMaximum),
             _ => {
-                self.read_exact(&mut out[..packet_size])?;
+                self.0.read_exact(&mut out[..packet_size])?;
                 Ok(packet_size)
             }
         }
     }
 
     fn send_packet(&mut self, packet: &[u8]) -> Result<(), TransportError> {
-        self.write_exact(
+        self.0.write_exact(
             &mut u64::try_from(packet.len())
                 .map_err(|_| TransportError::PacketSizeOverflow)?
                 .to_be_bytes()[..],
         )?;
-        self.write_exact(packet)
+        self.0.write_exact(packet)
     }
 }
 
@@ -580,85 +597,113 @@ impl<'a> Fastboot<'a> {
         }
     }
 
-    /// Process fastboot command/data from a given transport.
+    /// Processes the next fastboot packet from a transport.
     ///
     /// # Args
     ///
-    ///   * `transport`: An implementation of `Transport`
-    ///   * `fb_impl`: An implementation of `FastbootImplementation`.
+    /// * `transport`: An implementation of `Transport`
+    /// * `fb_impl`: An implementation of `FastbootImplementation`.
     ///
     /// # Returns
     ///
-    ///   The method returns on any errors from calls to `transport` methods.
+    /// Returns error if any calls to `transport` methods return error.
+    /// Returns Ok(()) if transport doesn't have any next packet.
+    pub fn process_next_packet(
+        &mut self,
+        transport: &mut impl Transport,
+        fb_impl: &mut impl FastbootImplementation,
+    ) -> Result<(), TransportError> {
+        match self.state {
+            ProtocolState::Command => {
+                let mut packet = [0u8; MAX_COMMAND_SIZE];
+                let cmd_size = transport.receive_packet(&mut packet[..])?;
+                if cmd_size == 0 {
+                    return Ok(());
+                }
+
+                let mut res = [0u8; MAX_RESPONSE_SIZE];
+                let cmd_str = match from_utf8(&packet[..cmd_size]) {
+                    Ok(s) => s,
+                    _ => {
+                        return transport.send_packet(fastboot_fail!(res, "Invalid Command"));
+                    }
+                };
+                let mut args = cmd_str.split(':');
+                let Some(cmd) = args.next() else {
+                    return transport.send_packet(fastboot_fail!(res, "No command"));
+                };
+                match cmd {
+                    "getvar" => self.get_var(args, transport, fb_impl)?,
+                    "download" => self.download(args, transport, fb_impl)?,
+                    "flash" => self.flash(cmd_str, transport, fb_impl)?,
+                    "upload" => self.upload(transport, fb_impl)?,
+                    "fetch" => self.fetch(&cmd_str, args, transport, fb_impl)?,
+                    _ if cmd_str.starts_with("oem ") => {
+                        self.oem(&cmd_str[4..], transport, fb_impl)?;
+                    }
+                    _ => {
+                        return transport.send_packet(fastboot_fail!(res, "Command not found"));
+                    }
+                }
+            }
+            ProtocolState::Download => {
+                let (_, remains) = &mut self.download_buffer[..self.total_download_size]
+                    .split_at_mut(self.downloaded_size);
+                match transport.receive_packet(remains) {
+                    Ok(size) if size > remains.len() => {
+                        let mut res = [0u8; MAX_RESPONSE_SIZE];
+                        transport.send_packet(
+                            snprintf!(res, "FAILMore data received then expected").as_bytes(),
+                        )?;
+                        self.total_download_size = 0;
+                        self.downloaded_size = 0;
+                        self.state = ProtocolState::Command;
+                    }
+                    Ok(size) => {
+                        self.downloaded_size = self.downloaded_size.checked_add(size).unwrap();
+                        if self.downloaded_size == self.total_download_size {
+                            self.state = ProtocolState::Command;
+                            transport.send_packet(OKAY.as_bytes())?;
+                        }
+                    }
+                    Err(e) => {
+                        self.total_download_size = 0;
+                        self.downloaded_size = 0;
+                        return Err(e);
+                    }
+                }
+            }
+        };
+        Ok(())
+    }
+
+    /// Fetches and processes the next fastboot command from the transport.
+    ///
+    /// Returns Ok(()) if transport doesn't have any next packet.
+    pub fn process_next_command(
+        &mut self,
+        transport: &mut impl Transport,
+        fb_impl: &mut impl FastbootImplementation,
+    ) -> Result<(), TransportError> {
+        if !matches!(self.state, ProtocolState::Command) {
+            return Err(TransportError::InvalidState);
+        }
+        self.process_next_packet(transport, fb_impl)?;
+        // Keep processing until it is back to the command state.
+        while !matches!(self.state, ProtocolState::Command) {
+            self.process_next_packet(transport, fb_impl)?;
+        }
+        Ok(())
+    }
+
+    /// Keeps polling and processing fastboot commands from the transport.
     pub fn run(
         &mut self,
         transport: &mut impl Transport,
         fb_impl: &mut impl FastbootImplementation,
     ) -> Result<(), TransportError> {
         loop {
-            match self.state {
-                ProtocolState::Command => {
-                    let mut packet = [0u8; MAX_COMMAND_SIZE];
-                    let cmd_size = transport.receive_packet(&mut packet[..])?;
-                    if cmd_size == 0 {
-                        continue;
-                    }
-
-                    let mut res = [0u8; MAX_RESPONSE_SIZE];
-                    let cmd_str = match from_utf8(&packet[..cmd_size]) {
-                        Ok(s) => s,
-                        _ => {
-                            transport.send_packet(fastboot_fail!(res, "Invalid Command"))?;
-                            continue;
-                        }
-                    };
-                    let mut args = cmd_str.split(':');
-                    let Some(cmd) = args.next() else {
-                        transport.send_packet(fastboot_fail!(res, "No command"))?;
-                        continue;
-                    };
-                    match cmd {
-                        "getvar" => self.get_var(args, transport, fb_impl)?,
-                        "download" => self.download(args, transport, fb_impl)?,
-                        "flash" => self.flash(cmd_str, transport, fb_impl)?,
-                        "upload" => self.upload(transport, fb_impl)?,
-                        "fetch" => self.fetch(&cmd_str, args, transport, fb_impl)?,
-                        _ if cmd_str.starts_with("oem ") => {
-                            self.oem(&cmd_str[4..], transport, fb_impl)?
-                        }
-                        _ => {
-                            transport.send_packet(fastboot_fail!(res, "Command not found"))?;
-                        }
-                    }
-                }
-                ProtocolState::Download => {
-                    let (_, remains) = &mut self.download_buffer[..self.total_download_size]
-                        .split_at_mut(self.downloaded_size);
-                    match transport.receive_packet(remains) {
-                        Ok(size) if size > remains.len() => {
-                            let mut res = [0u8; MAX_RESPONSE_SIZE];
-                            transport.send_packet(
-                                snprintf!(res, "FAILMore data received then expected").as_bytes(),
-                            )?;
-                            self.total_download_size = 0;
-                            self.downloaded_size = 0;
-                            self.state = ProtocolState::Command;
-                        }
-                        Ok(size) => {
-                            self.downloaded_size = self.downloaded_size.checked_add(size).unwrap();
-                            if self.downloaded_size == self.total_download_size {
-                                self.state = ProtocolState::Command;
-                                transport.send_packet(OKAY.as_bytes())?;
-                            }
-                        }
-                        Err(e) => {
-                            self.total_download_size = 0;
-                            self.downloaded_size = 0;
-                            return Err(e);
-                        }
-                    }
-                }
-            }
+            self.process_next_command(transport, fb_impl)?;
         }
     }
 
@@ -667,16 +712,10 @@ impl<'a> Fastboot<'a> {
     /// The method performs fastboot over TCP handshake and then call `Self::run(...)`.
     pub fn run_tcp_session(
         &mut self,
-        mut tcp_stream: &mut dyn TcpStream,
+        tcp_stream: &mut dyn TcpStream,
         fb_impl: &mut impl FastbootImplementation,
     ) -> Result<(), TransportError> {
-        let mut handshake = [0u8; 4];
-        tcp_stream.write_exact(TCP_HANDSHAKE_MESSAGE)?;
-        tcp_stream.read_exact(&mut handshake[..])?;
-        match handshake == *TCP_HANDSHAKE_MESSAGE {
-            true => self.run(&mut tcp_stream, fb_impl),
-            _ => Err(TransportError::InvalidHanshake),
-        }
+        self.run(&mut TcpTransport::new_and_handshake(tcp_stream)?, fb_impl)
     }
 
     /// Method for handling "fastboot getvar ..."

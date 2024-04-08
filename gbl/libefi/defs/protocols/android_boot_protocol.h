@@ -31,7 +31,7 @@ typedef struct EfiAndroidBootProtocol {
   EfiStatus (*fastboot_usb_receive)(struct EfiAndroidBootProtocol* self,
                                     size_t* buffer_size, void* buffer);
   EfiStatus (*fastboot_usb_send)(struct EfiAndroidBootProtocol* self,
-                                 size_t* buffer_size, void* buffer);
+                                 size_t* buffer_size, const void* buffer);
   EfiEvent wait_for_send_completion;
 } EfiAndroidBootProtocol;
 
