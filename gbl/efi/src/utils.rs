@@ -16,10 +16,16 @@ use alloc::vec::Vec;
 use core::ffi::CStr;
 
 use crate::error::{EfiAppError, Result};
-use efi::defs::{EfiGuid, EFI_TIMER_DELAY_TIMER_RELATIVE};
 use efi::{
-    BlockIoProtocol, DeviceHandle, DevicePathProtocol, DevicePathText, DevicePathToTextProtocol,
-    EfiEntry, EventType, LoadedImageProtocol, Protocol, SimpleTextInputProtocol,
+    defs::{EfiGuid, EFI_TIMER_DELAY_TIMER_RELATIVE},
+    protocol::{
+        block_io::BlockIoProtocol,
+        device_path::{DevicePathProtocol, DevicePathText, DevicePathToTextProtocol},
+        loaded_image::LoadedImageProtocol,
+        simple_text_input::SimpleTextInputProtocol,
+        Protocol,
+    },
+    DeviceHandle, EfiEntry, EventType,
 };
 use fdt::FdtHeader;
 use gbl_storage::{required_scratch_size, AsBlockDevice, AsMultiBlockDevices, BlockIo};
