@@ -12,27 +12,32 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use core::fmt::Write;
-use core::sync::atomic::{AtomicU64, Ordering};
-use efi::defs::{
-    EfiEvent, EfiMacAddress, EFI_STATUS_ALREADY_STARTED, EFI_STATUS_NOT_STARTED,
-    EFI_TIMER_DELAY_TIMER_PERIODIC,
+use crate::{
+    error::{EfiAppError, Result},
+    utils::{get_device_path, loop_with_timeout, ms_to_100ns},
+};
+use alloc::{boxed::Box, vec::Vec};
+use core::{
+    fmt::Write,
+    sync::atomic::{AtomicU64, Ordering},
 };
 use efi::{
-    efi_print, efi_println, DeviceHandle, EfiEntry, EventNotify, EventType, Protocol,
-    SimpleNetworkProtocol, Tpl,
+    defs::{
+        EfiEvent, EfiMacAddress, EFI_STATUS_ALREADY_STARTED, EFI_STATUS_NOT_STARTED,
+        EFI_TIMER_DELAY_TIMER_PERIODIC,
+    },
+    efi_print, efi_println,
+    protocol::{simple_network::SimpleNetworkProtocol, Protocol},
+    DeviceHandle, EfiEntry, EventNotify, EventType, Tpl,
 };
-//use fastboot::{Fastboot, FastbootImplementation, FormattedBytes, TcpStream, TransportError};
-use crate::error::{EfiAppError, Result};
-use crate::utils::{get_device_path, loop_with_timeout, ms_to_100ns};
-use smoltcp::iface::{Config, Interface, SocketSet};
-use smoltcp::phy;
-use smoltcp::phy::{Device, DeviceCapabilities, Medium};
-use smoltcp::socket::tcp;
-use smoltcp::time::Instant;
-use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr, Ipv6Address};
+use smoltcp::{
+    iface::{Config, Interface, SocketSet},
+    phy,
+    phy::{Device, DeviceCapabilities, Medium},
+    socket::tcp,
+    time::Instant,
+    wire::{EthernetAddress, IpAddress, IpCidr, Ipv6Address},
+};
 
 /// Maintains a timestamp needed by smoltcp network. It's updated periodically during timer event.
 static NETWORK_TIMESTAMP: AtomicU64 = AtomicU64::new(0);
