@@ -14,7 +14,7 @@
 
 use crate::defs::{EfiAndroidBootProtocol, EfiGuid, EFI_STATUS_NOT_FOUND};
 use crate::protocol::{Protocol, ProtocolInfo};
-use crate::{efi_call, map_efi_err, EfiResult};
+use crate::{efi_call, map_efi_err, EfiResult, Event};
 
 /// EFI_ANDROID_BOOT_PROTOCOL
 pub struct AndroidBootProtocol;
@@ -74,7 +74,7 @@ impl Protocol<'_, AndroidBootProtocol> {
     }
 
     /// Wrapper of `EFI_ANDROID_BOOT_PROTOCOL.fastboot_usb_send()`
-    pub fn fastboot_usb_send(&self, data: &mut [u8], out_size: &mut usize) -> EfiResult<()> {
+    pub fn fastboot_usb_send(&self, data: &[u8], out_size: &mut usize) -> EfiResult<()> {
         *out_size = data.len();
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
@@ -86,8 +86,13 @@ impl Protocol<'_, AndroidBootProtocol> {
                 self.interface()?.fastboot_usb_send,
                 self.interface,
                 out_size,
-                data.as_mut_ptr() as _,
+                data.as_ptr() as _,
             )
         }
+    }
+
+    /// Returns the `EFI_ANDROID_BOOT_PROTOCOL.wait_for_send_completion` EFI event.
+    pub fn wait_for_send_completion(&self) -> EfiResult<Event> {
+        Ok(Event::new_unowned(self.interface()?.wait_for_send_completion))
     }
 }

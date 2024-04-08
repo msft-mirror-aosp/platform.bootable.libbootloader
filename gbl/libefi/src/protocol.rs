@@ -70,6 +70,11 @@ impl<'a, T: ProtocolInfo> Protocol<'a, T> {
         unsafe { self.interface.as_ref() }.ok_or_else(|| EFI_STATUS_INVALID_PARAMETER.into())
     }
 
+    /// Returns the reference to EFI entry.
+    pub fn efi_entry(&self) -> &'a EfiEntry {
+        self.efi_entry
+    }
+
     /// Returns the mutable pointer of the interface. Invisible from outside. Application should
     /// not have any need to alter the content of interface data.
     pub(crate) fn interface_ptr(&self) -> *mut T::InterfaceType {
