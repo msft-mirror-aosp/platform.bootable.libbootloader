@@ -197,9 +197,9 @@ Receives a USB packet from the interface started by
 typedef
 EFI_STATUS
 (EFIAPI * EFI_ANDROID_BOOT_FASTBOOT_USB_RECEIVE)(
-  IN EFI_ANDROID_BOOT_PROTOCOL *This,
-  IN OUT UINTN        *BufferSize,
-  OUT VOID            *Buffer,
+  IN EFI_ANDROID_BOOT_PROTOCOL  *This,
+  IN OUT UINTN                  *BufferSize,
+  OUT VOID                      *Buffer,
   );
 ```
 
@@ -245,9 +245,9 @@ Sends a USB packet from the USB interface started by
 typedef
 EFI_STATUS
 (EFIAPI * EFI_ANDROID_BOOT_FASTBOOT_USB_SEND)(
-  IN EFI_ANDROID_BOOT_PROTOCOL *This,
-  IN OUT UINTN        *BufferSize,
-  IN VOID             *Buffer,
+  IN EFI_ANDROID_BOOT_PROTOCOL  *This,
+  IN OUT UINTN                  *BufferSize,
+  IN CONST VOID                 *Buffer,
   );
 ```
 

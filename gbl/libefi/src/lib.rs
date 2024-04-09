@@ -428,11 +428,11 @@ impl<'a> BootServices<'a> {
                 &mut efi_event
             )?;
         }
-        Ok(Event {
-            efi_entry: self.efi_entry,
-            efi_event: efi_event,
-            _cb: cb.map::<&'n mut dyn FnMut(EfiEvent), _>(|v| v.cb),
-        })
+        Ok(Event::new(
+            Some(self.efi_entry),
+            efi_event,
+            cb.map::<&'n mut dyn FnMut(EfiEvent), _>(|v| v.cb),
+        ))
     }
 
     /// Wrapper of `EFI_BOOT_SERVICE.CloseEvent()`.
@@ -508,14 +508,33 @@ impl<'e> EventNotify<'e> {
 /// `Event` wraps the raw `EfiEvent` handle and internally enforces a borrow of the registered
 /// callback for the given life time `e. The event is automatically closed when going out of scope.
 pub struct Event<'a, 'n> {
-    efi_entry: &'a EfiEntry,
+    // If `efi_entry` is None, it represents an unowned Event and won't get closed on drop.
+    efi_entry: Option<&'a EfiEntry>,
     efi_event: EfiEvent,
     _cb: Option<&'n mut dyn FnMut(EfiEvent)>,
 }
 
+impl<'a, 'n> Event<'a, 'n> {
+    /// Creates an instance of owned `Event`. The `Event` is closed when going out of scope.
+    fn new(
+        efi_entry: Option<&'a EfiEntry>,
+        efi_event: EfiEvent,
+        _cb: Option<&'n mut dyn FnMut(EfiEvent)>,
+    ) -> Self {
+        Self { efi_entry, efi_event, _cb }
+    }
+
+    /// Creates an  unowned `Event`. The `Event` is not closed when going out of scope.
+    fn new_unowned(efi_event: EfiEvent) -> Self {
+        Self { efi_entry: None, efi_event: efi_event, _cb: None }
+    }
+}
+
 impl Drop for Event<'_, '_> {
     fn drop(&mut self) {
-        self.efi_entry.system_table().boot_services().close_event(self).unwrap();
+        if let Some(efi_entry) = self.efi_entry {
+            efi_entry.system_table().boot_services().close_event(self).unwrap();
+        }
     }
 }
 
