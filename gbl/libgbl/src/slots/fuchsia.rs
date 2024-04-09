@@ -294,10 +294,10 @@ impl<'a> SlotBlock<'a, AbrData> {
 
 #[cfg(test)]
 mod test {
-    use super::super::Cursor;
     use super::*;
-    use crate::slots::partition::CacheStatus;
+    use crate::slots::{partition::CacheStatus, Cursor};
     use gbl_storage::AsBlockDevice;
+    use gbl_storage_testlib::TestBlockDevice;
 
     #[test]
     fn test_slot_block_defaults() {
@@ -608,72 +608,12 @@ mod test {
         assert_eq!(sb.slots_iter().next().unwrap().bootability, Bootability::Successful);
     }
 
-    /// Mocks a block device with content from buffer.
-    /// Copied from libstorage test
-    pub struct TestBlockIo {
-        pub storage: Vec<u8>,
-    }
-
-    const BLOCK_SIZE: u64 = 512;
-    const ALIGNMENT: u64 = 512;
-
-    impl gbl_storage::BlockIo for TestBlockIo {
-        fn block_size(&mut self) -> u64 {
-            BLOCK_SIZE
-        }
-
-        fn num_blocks(&mut self) -> u64 {
-            self.storage.len() as u64 / self.block_size()
-        }
-
-        fn alignment(&mut self) -> u64 {
-            ALIGNMENT
-        }
-
-        fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> bool {
-            let start = blk_offset * self.block_size();
-            let end = start + out.len() as u64;
-            out.clone_from_slice(&self.storage[start as usize..end as usize]);
-            true
-        }
-
-        fn write_blocks(&mut self, blk_offset: u64, data: &[u8]) -> bool {
-            let start = blk_offset * self.block_size();
-            let end = start + data.len() as u64;
-            self.storage[start as usize..end as usize].clone_from_slice(&data);
-            true
-        }
-    }
-
-    pub struct TestBlockDevice {
-        pub io: TestBlockIo,
-        pub scratch: Vec<u8>,
-    }
-
-    impl TestBlockDevice {
-        const GPT_ENTRIES: u64 = 128;
-
-        /// Creates an instance with provided storage content.
-        pub fn new_with_data(data: &[u8]) -> Self {
-            let mut io = TestBlockIo { storage: Vec::from(data) };
-            let scratch_size =
-                gbl_storage::required_scratch_size(&mut io, Self::GPT_ENTRIES).unwrap();
-            Self { io, scratch: vec![0u8; scratch_size] }
-        }
-    }
-
-    impl gbl_storage::AsBlockDevice for TestBlockDevice {
-        fn with(&mut self, f: &mut dyn FnMut(&mut dyn gbl_storage::BlockIo, &mut [u8], u64)) {
-            f(&mut self.io, &mut self.scratch[..], Self::GPT_ENTRIES)
-        }
-    }
-
     #[test]
     fn test_writeback() {
         const PARTITION: &str = "test_partition";
         const OFFSET: u64 = 2112; // Deliberately wrong to test propagation of parameter.
-        let disk = include_bytes!("../../testdata/writeback_test_disk.bin");
-        let mut block_dev = TestBlockDevice::new_with_data(disk);
+        let mut block_dev: TestBlockDevice =
+            include_bytes!("../../testdata/writeback_test_disk.bin").as_slice().into();
         assert!(block_dev.sync_gpt().is_ok());
         let mut sb: SlotBlock<AbrData> = Default::default();
         sb.partition = PARTITION;
@@ -703,9 +643,8 @@ mod test {
     fn test_writeback_with_cursor() {
         const PARTITION: &str = "test_partition";
         const OFFSET: u64 = 2112; // Deliberately wrong to test propagation of parameter.
-        let disk = include_bytes!("../../testdata/writeback_test_disk.bin");
-
-        let mut block_dev = TestBlockDevice::new_with_data(disk);
+        let mut block_dev: TestBlockDevice =
+            include_bytes!("../../testdata/writeback_test_disk.bin").as_slice().into();
         assert!(block_dev.sync_gpt().is_ok());
         let mut read_buffer: [u8; size_of::<AbrData>()] = Default::default();
         let mut abr_data;
