@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
 package(
     default_visibility = ["//visibility:public"],
 )
@@ -22,4 +24,11 @@ cc_library(
     name = "gbl_deps",
     hdrs = ["deps/include/inttypes.h"],
     includes = ["./deps/include"],
+)
+
+rust_library(
+    name = "sysdeps",
+    srcs = glob(["**/*.rs"]),
+    crate_name = "avb_sysdeps",
+    edition = "2021",
 )
