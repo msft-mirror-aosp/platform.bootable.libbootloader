@@ -113,7 +113,7 @@ impl Variable for Partition {
                 Ok(())
             })();
             res.is_err()
-        });
+        })?;
         res
     }
 }
@@ -165,7 +165,7 @@ impl Variable for BlockDevice {
                 f(BLOCK_DEVICE, &[id, "block-size"], snprintf!(val, "{:#x}", blk.block_size()?))
             })();
             res.is_err()
-        });
+        })?;
         res
     }
 }
