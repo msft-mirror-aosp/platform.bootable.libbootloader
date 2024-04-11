@@ -16,14 +16,13 @@
 // is mainly for use by the boot demo. Eventually, these backends will be implemented from the
 // `GblOps` interface in libgbl, where EFI services will be one level lower as its backend instead.
 
-use core::cmp::{min, Ord};
-use core::ffi::CStr;
-
 use crate::utils::EfiMultiBlockDevices;
 use avb::{IoError, IoResult, Ops, PublicKeyForPartitionInfo};
-use efi::{efi_free, efi_malloc};
+use core::ffi::CStr;
 use gbl_storage::AsMultiBlockDevices;
 use uuid::Uuid;
+
+extern crate avb_sysdeps;
 
 pub struct GblEfiAvbOps<'a, 'b> {
     gpt_dev: &'b mut EfiMultiBlockDevices<'a>,
@@ -155,98 +154,4 @@ impl<'b> Ops<'b> for GblEfiAvbOps<'_, 'b> {
         // Not supported until we add our GBL specific EFI protocol that does this.
         unimplemented!();
     }
-}
-
-#[no_mangle]
-pub extern "C" fn avb_abort() -> ! {
-    panic!("avb_abort");
-}
-
-#[no_mangle]
-pub extern "C" fn avb_malloc_(size: usize) -> *mut core::ffi::c_void {
-    efi_malloc(size) as *mut _
-}
-
-#[no_mangle]
-pub extern "C" fn avb_free(ptr: *mut core::ffi::c_void) {
-    efi_free(ptr as *mut _);
-}
-
-#[no_mangle]
-pub extern "C" fn avb_strlen(s: *const core::ffi::c_char) -> usize {
-    // SAFETY: libavb guarantees to pass valid NULL-terminated strings to this function. The
-    // returned reference is only used to compute string length.
-    unsafe { CStr::from_ptr(s as *const _) }.to_bytes().len()
-}
-
-#[no_mangle]
-pub extern "C" fn avb_div_by_10(dividend: *mut u64) -> u32 {
-    // SAFETY: libavb guarantees to pass valid pointer to u64 integer here
-    let val = unsafe { &mut *dividend };
-    let rem = *val % 10;
-    *val /= 10;
-    rem.try_into().unwrap()
-}
-
-#[no_mangle]
-pub extern "C" fn avb_memcpy(
-    dest: *mut core::ffi::c_void,
-    src: *const core::ffi::c_void,
-    n: usize,
-) -> *mut core::ffi::c_void {
-    // SAFETY: libavb guarantees to pass valid pointers.
-    unsafe { (src.cast::<u8>()).copy_to(dest as *mut _, n) };
-    dest
-}
-
-#[no_mangle]
-pub extern "C" fn avb_memcmp(
-    src1: *const core::ffi::c_void,
-    src2: *const core::ffi::c_void,
-    n: usize,
-) -> core::ffi::c_int {
-    // SAFETY: libavb guarantees to pass valid pointers. References are only used within function.
-    let (lhs, rhs) = unsafe {
-        (
-            core::slice::from_raw_parts(src1 as *const u8, n),
-            core::slice::from_raw_parts(src2 as *const u8, n),
-        )
-    };
-    Ord::cmp(lhs, rhs) as i32
-}
-
-#[no_mangle]
-pub extern "C" fn avb_strcmp(
-    s1: *const core::ffi::c_char,
-    s2: *const core::ffi::c_char,
-) -> core::ffi::c_int {
-    // SAFETY: libavb guarantees to pass valid NULL-terminated strings. References are only used
-    // within function.
-    let (lhs, rhs) = unsafe { (CStr::from_ptr(s1 as *const _), CStr::from_ptr(s2 as *const _)) };
-    Ord::cmp(lhs, rhs) as i32
-}
-
-#[no_mangle]
-pub extern "C" fn avb_strncmp(
-    s1: *const core::ffi::c_char,
-    s2: *const core::ffi::c_char,
-    n: usize,
-) -> core::ffi::c_int {
-    // SAFETY: libavb guarantees to pass valid NULL-terminated strings. References are only used
-    // within function.
-    let (lhs, rhs) = unsafe { (CStr::from_ptr(s1 as *const _), CStr::from_ptr(s2 as *const _)) };
-    let cmp_size = min(min(lhs.to_bytes().len(), rhs.to_bytes().len()), n);
-    Ord::cmp(&lhs.to_bytes()[..cmp_size], &rhs.to_bytes()[..cmp_size]) as i32
-}
-
-#[no_mangle]
-pub extern "C" fn avb_memset(
-    dest: *mut core::ffi::c_void,
-    c: core::ffi::c_int,
-    n: usize,
-) -> *mut core::ffi::c_void {
-    // SAFETY: libavb guarantees to pass valid buffer. Reference is only used within function.
-    let arr = unsafe { core::slice::from_raw_parts_mut(dest as *mut u8, n) };
-    arr.fill(c as u8);
-    dest
 }
