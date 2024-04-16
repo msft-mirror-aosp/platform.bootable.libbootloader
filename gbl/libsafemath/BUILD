@@ -1,4 +1,4 @@
-# Copyright (C) 2023 The Android Open Source Project
+# Copyright (C) 2024 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,23 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@rules_rust//rust:defs.bzl", "rust_library")
-
-package(
-    default_visibility = ["//visibility:public"],
-)
-
-exports_files(glob(["**/*"]))
-
-cc_library(
-    name = "gbl_deps",
-    hdrs = ["deps/include/inttypes.h"],
-    includes = ["./deps/include"],
-)
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 rust_library(
-    name = "sysdeps",
-    srcs = glob(["**/*.rs"]),
-    crate_name = "avb_sysdeps",
+    name = "libsafemath",
+    srcs = [
+        "src/lib.rs",
+    ],
+    crate_name = "safemath",
     edition = "2021",
+    visibility = ["//visibility:public"],
+)
+
+rust_test(
+    name = "libsafemath_test",
+    crate = ":libsafemath",
 )

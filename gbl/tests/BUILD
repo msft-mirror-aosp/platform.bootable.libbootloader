@@ -21,6 +21,7 @@ test_suite(
         "@gbl//libfastboot:libfastboot_test",
         "@gbl//libfdt:libfdt_test",
         "@gbl//libgbl:libgbl_test",
+        "@gbl//libsafemath:libsafemath_test",
         "@gbl//libstorage:libstorage_doc_test",
         "@gbl//libstorage:libstorage_test",
         "@gbl//third_party/libzbi:libzbi_test",
