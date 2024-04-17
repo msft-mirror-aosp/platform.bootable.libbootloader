@@ -13,21 +13,25 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Generate test files for sparse image flash test"""
+"""Generate test data files for libgbl tests"""
 
 import os
 import pathlib
 import subprocess
 
 SCRIPT_DIR = pathlib.Path(os.path.dirname(os.path.realpath(__file__)))
+GPT_TOOL = pathlib.Path(SCRIPT_DIR.parents[1]) / "tools" / "gen_gpt_disk.py"
+SZ_KB = 1024
 
-# Writes bytes to a file at a given offset.
+
+# A helper for writing bytes to a file at a given offset.
 def write_file(file, offset, data):
     file.seek(offset, 0)
     file.write(data)
 
 
-if __name__ == '__main__':
+# Generates sparse image for flashing test
+def gen_sparse_test_file():
     sz_kb = 1024
     out_file_raw = SCRIPT_DIR / "sparse_test_raw.bin"
     with open(out_file_raw, "wb") as f:
@@ -54,3 +58,32 @@ if __name__ == '__main__':
         SCRIPT_DIR / "sparse_test_blk1024.bin",
         "1024",
     ])
+
+
+# Generates GPT disk, kernel data for Zircon tests
+def gen_zircon_gpt():
+    gen_gpt_args = []
+    for suffix in ["a", "b", "r"]:
+        zircon = os.urandom(16 * SZ_KB)
+        out_file = SCRIPT_DIR / f"zircon_{suffix}.bin"
+        out_file.write_bytes(zircon)
+        gen_gpt_args.append(f"--partition=zircon_{suffix},16K,{str(out_file)}")
+
+    subprocess.run([GPT_TOOL, SCRIPT_DIR / "zircon_gpt.bin", "128K"] +
+                   gen_gpt_args,
+                   check=True)
+
+
+# Generates test data for A/B slot Manager writeback test
+def gen_writeback_test_bin():
+    subprocess.run([
+        GPT_TOOL, SCRIPT_DIR / "writeback_test_disk.bin", "64K",
+        "--partition=test_partition,4k,/dev/zero"
+    ],
+                   check=True)
+
+
+if __name__ == '__main__':
+    gen_writeback_test_bin()
+    gen_sparse_test_file()
+    gen_zircon_gpt()
