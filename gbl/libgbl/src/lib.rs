@@ -40,6 +40,7 @@ use avb::{HashtreeErrorMode, SlotVerifyData, SlotVerifyError, SlotVerifyFlags, S
 use core::ffi::CStr;
 use core::fmt::Debug;
 use cstr::cstr;
+use gbl_storage::AsMultiBlockDevices;
 use spin::Mutex;
 
 pub mod boot_mode;
@@ -62,10 +63,14 @@ pub use avb::Descriptor;
 pub use boot_mode::BootMode;
 pub use boot_reason::KnownBootReason;
 pub use digest::{Context, Digest};
-pub use error::{Error, Result};
-pub use ops::{DefaultGblOps, GblOps};
+pub use error::{Error, IntegrationError, Result};
+pub use ops::{
+    AndroidBootImages, BootImages, DefaultGblOps, FuchsiaBootImages, GblOps, GblOpsError,
+};
 #[cfg(feature = "sw_digest")]
 pub use sw_digest::{SwContext, SwDigest};
+
+use ops::GblUtils;
 
 // TODO: b/312607649 - Replace placeholders with actual structures: https://r.android.com/2721974, etc
 /// TODO: b/312607649 - placeholder type
@@ -184,7 +189,6 @@ type AvbVerifySlot = for<'b> fn(
     hashtree_error_mode: HashtreeErrorMode,
 ) -> SlotVerifyResult<'b, SlotVerifyData<'b>>;
 
-#[derive(Debug)]
 /// GBL object that provides implementation of helpers for boot process.
 ///
 /// To create this object use [GblBuilder].
@@ -230,13 +234,16 @@ where
         let requested_partitions = [cstr!("")];
         let avb_suffix = CStr::from_bytes_until_nul(&bytes)?;
 
-        let verified_data = VerifiedData((self.verify_slot)(
-            avb_ops,
-            &requested_partitions,
-            Some(avb_suffix),
-            SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_NONE,
-            HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_EIO,
-        )?);
+        let verified_data = VerifiedData(
+            (self.verify_slot)(
+                avb_ops,
+                &requested_partitions,
+                Some(avb_suffix),
+                SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_NONE,
+                HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_EIO,
+            )
+            .map_err(|v| v.without_verify_data())?,
+        );
 
         Ok(verified_data)
     }
@@ -250,14 +257,14 @@ where
     ///
     /// * `Ok(Cursor)` - Cursor object that manages a Manager
     /// * `Err(Error)` - on failure
-    pub fn load_slot_interface<B: gbl_storage::AsBlockDevice, M: Manager>(
+    pub fn load_slot_interface<'b, B: gbl_storage::AsBlockDevice, M: Manager>(
         &mut self,
-        block_device: B,
-    ) -> Result<Cursor<B, M>> {
+        block_device: &'b mut B,
+    ) -> Result<Cursor<'b, B, M>> {
         let boot_token = BOOT_TOKEN.lock().take().ok_or(Error::OperationProhibited)?;
         self.ops
             .load_slot_interface::<B, M>(block_device, boot_token)
-            .map_err(|_| Error::OperationProhibited)
+            .map_err(|_| Error::OperationProhibited.into())
     }
 
     /// Info Load
@@ -431,10 +438,10 @@ where
         self.kernel_jump(kernel_image, ramdisk, dtb, token)
     }
 
-    fn is_unrecoverable_error(error: &Error) -> bool {
+    fn is_unrecoverable_error(error: &IntegrationError) -> bool {
         // Note: these ifs are nested instead of chained because multiple
         //       expressions in an if-let is an unstable features
-        if let Error::AvbSlotVerifyError(ref avb_error) = error {
+        if let IntegrationError::AvbSlotVerifyError(ref avb_error) = error {
             // These are the AVB errors that are not recoverable on a subsequent attempt.
             // If necessary in the future, this helper function can be moved to the GblOps trait
             // and customized for platform specific behavior.
@@ -465,7 +472,7 @@ where
         if oneshot_status == Some(OneShot::Bootloader) {
             match self.ops.do_fastboot(&mut slot_cursor) {
                 Ok(_) => oneshot_status = slot_cursor.ctx.get_oneshot_status(),
-                Err(Error::NotImplemented) => (),
+                Err(IntegrationError::GblNativeError(Error::NotImplemented)) => (),
                 Err(e) => return Err(e),
             }
         }
@@ -482,7 +489,7 @@ where
                 AvbVerificationFlags(0),
                 Some(boot_target),
             )
-            .map_err(|e: Error| {
+            .map_err(|e: IntegrationError| {
                 if let BootTarget::NormalBoot(slot) = boot_target {
                     if Self::is_unrecoverable_error(&e) {
                         let _ = slot_cursor.ctx.set_slot_unbootable(
@@ -527,6 +534,23 @@ where
             .map_err(|_| Error::OperationProhibited)?;
 
         Ok((kernel_image, token))
+    }
+
+    /// Loads and boots a Zircon kernel according to ABR + AVB.
+    pub fn zircon_load_and_boot(&mut self, load_buffer: &mut [u8]) -> Result<()> {
+        let (mut block_devices, load_buffer) = GblUtils::new(self.ops, load_buffer)?;
+        block_devices.sync_gpt_all(&mut |_, _, _| {});
+        // TODO(b/334962583): Implement zircon ABR + AVB.
+        // The following are place holder for test of invocation in the integration test only.
+        let ptn_size = block_devices.find_partition("zircon_a")?.size()?;
+        let (kernel, remains) =
+            load_buffer.split_at_mut(ptn_size.try_into().map_err(|_| Error::ArithmeticOverflow)?);
+        block_devices.read_gpt_partition("zircon_a", 0, kernel)?;
+        self.ops.boot(BootImages::Fuchsia(FuchsiaBootImages {
+            zbi_kernel: kernel,
+            zbi_items: &mut [],
+        }))?;
+        Err(Error::BootFailed.into())
     }
 }
 
