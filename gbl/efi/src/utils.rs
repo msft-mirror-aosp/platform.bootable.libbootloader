@@ -109,12 +109,14 @@ impl AsBlockDevice for EfiGptDevice<'_> {
 pub struct EfiMultiBlockDevices<'a>(pub alloc::vec::Vec<EfiGptDevice<'a>>);
 
 impl AsMultiBlockDevices for EfiMultiBlockDevices<'_> {
-    fn for_each_until(&mut self, f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64) -> bool) {
+    fn for_each(
+        &mut self,
+        f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64),
+    ) -> core::result::Result<(), Option<&'static str>> {
         for (idx, ele) in self.0.iter_mut().enumerate() {
-            if f(ele, u64::try_from(idx).unwrap()) {
-                return;
-            }
+            f(ele, u64::try_from(idx).unwrap());
         }
+        Ok(())
     }
 }
 

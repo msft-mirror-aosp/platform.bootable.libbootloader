@@ -114,7 +114,7 @@ use gpt::Gpt;
 pub use gpt::{GptEntry, GPT_NAME_LEN_U16};
 
 mod multi_blocks;
-pub use multi_blocks::{with_id, AsMultiBlockDevices};
+pub use multi_blocks::AsMultiBlockDevices;
 
 /// The type of Result used in this library.
 pub type Result<T> = core::result::Result<T, StorageError>;
@@ -128,6 +128,7 @@ pub enum StorageError {
     BlockDeviceNotFound,
     BlockIoError,
     BlockIoNotProvided,
+    FailedGettingBlockDevices(Option<&'static str>),
     InvalidInput,
     NoValidGpt,
     NotExist,
@@ -135,27 +136,26 @@ pub enum StorageError {
     U64toUSizeOverflow,
 }
 
-impl Into<&'static str> for StorageError {
-    fn into(self) -> &'static str {
-        match self {
-            StorageError::ArithmeticOverflow => "Arithmetic overflow",
-            StorageError::OutOfRange => "Out of range",
-            StorageError::ScratchTooSmall => "Not enough scratch buffer",
-            StorageError::BlockDeviceNotFound => "Block device not found",
-            StorageError::BlockIoError => "Block IO error",
-            StorageError::BlockIoNotProvided => "Block IO is not provided",
-            StorageError::InvalidInput => "Invalid input",
-            StorageError::NoValidGpt => "GPT not found",
-            StorageError::NotExist => "The specified partition could not be found",
-            StorageError::PartitionNotUnique => "Partition is found on multiple block devices",
-            StorageError::U64toUSizeOverflow => "u64 to usize fails",
-        }
-    }
-}
-
 impl core::fmt::Display for StorageError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}", Into::<&'static str>::into(*self))
+        match self {
+            StorageError::ArithmeticOverflow => write!(f, "Arithmetic overflow"),
+            StorageError::OutOfRange => write!(f, "Out of range"),
+            StorageError::ScratchTooSmall => write!(f, "Not enough scratch buffer"),
+            StorageError::BlockDeviceNotFound => write!(f, "Block device not found"),
+            StorageError::BlockIoError => write!(f, "Block IO error"),
+            StorageError::BlockIoNotProvided => write!(f, "Block IO is not provided"),
+            StorageError::FailedGettingBlockDevices(v) => {
+                write!(f, "Failed to iterate all block devices {:?}", v)
+            }
+            StorageError::InvalidInput => write!(f, "Invalid input"),
+            StorageError::NoValidGpt => write!(f, "GPT not found"),
+            StorageError::NotExist => write!(f, "The specified partition could not be found"),
+            StorageError::PartitionNotUnique => {
+                write!(f, "Partition is found on multiple block devices")
+            }
+            StorageError::U64toUSizeOverflow => write!(f, "u64 to usize fails"),
+        }
     }
 }
 
