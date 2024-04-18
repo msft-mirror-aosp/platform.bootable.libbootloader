@@ -17,9 +17,24 @@ use crate::{AsBlockDevice, BlockIo, Partition, Result, StorageError};
 /// `AsMultiBlockDevices` provides APIs for finding/reading/writing raw data or GPT partitions from
 /// multiple block devices.
 pub trait AsMultiBlockDevices {
-    /// Calls closure `f` for each `AsBlockDevice` object and its unique `id` until reaching end or
-    /// `f` returns true.
-    fn for_each_until(&mut self, f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64) -> bool);
+    /// Calls closure `f` for each `AsBlockDevice` object and its unique `id` until reaching end.
+    fn for_each(
+        &mut self,
+        f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64),
+    ) -> core::result::Result<(), Option<&'static str>>;
+
+    /// Calls closure `f` for each `AsBlockDevice` object and its unique `id` until reaching end of
+    /// returnning true.
+    fn for_each_until(
+        &mut self,
+        f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64) -> bool,
+    ) -> Result<()> {
+        let mut stop = false;
+        self.for_each(&mut |io, id| {
+            stop = stop || f(io, id);
+        })
+        .map_err(|v| StorageError::FailedGettingBlockDevices(v))
+    }
 
     /// Gets the block device with the given id.
     fn get(&mut self, id: u64) -> Result<SelectedBlockDevice>
@@ -33,7 +48,7 @@ pub trait AsMultiBlockDevices {
     /// Syncs gpt for all block devices. Caller provides a callback for handling sync error for
     /// each block device.
     fn sync_gpt_all(&mut self, f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64, StorageError)) {
-        self.for_each_until(&mut |v, id| {
+        let _ = self.for_each_until(&mut |v, id| {
             match v.sync_gpt() {
                 Err(e) => f(v, id, e),
                 _ => {}
@@ -53,7 +68,7 @@ pub trait AsMultiBlockDevices {
                 v => v.or(res),
             };
             res.err() == Some(StorageError::PartitionNotUnique)
-        });
+        })?;
         res
     }
 
@@ -97,8 +112,11 @@ pub trait AsMultiBlockDevices {
 }
 
 impl<T: ?Sized + AsMultiBlockDevices> AsMultiBlockDevices for &mut T {
-    fn for_each_until(&mut self, f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64) -> bool) {
-        (*self).for_each_until(&mut |io, id| f(io, id))
+    fn for_each(
+        &mut self,
+        f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64),
+    ) -> core::result::Result<(), Option<&'static str>> {
+        (*self).for_each(&mut |io, id| f(io, id))
     }
 }
 
@@ -111,16 +129,12 @@ where
     devs.for_each_until(&mut |v, id| {
         res = f(v, id);
         res.is_ok()
-    });
+    })?;
     res
 }
 
 /// Finds the first block device with the given ID and runs a closure with it.
-pub fn with_id<F, R>(
-    devs: &mut (impl AsMultiBlockDevices + ?Sized),
-    dev_id: u64,
-    mut f: F,
-) -> Result<R>
+fn with_id<F, R>(devs: &mut (impl AsMultiBlockDevices + ?Sized), dev_id: u64, mut f: F) -> Result<R>
 where
     F: FnMut(&mut dyn AsBlockDevice) -> R,
 {
