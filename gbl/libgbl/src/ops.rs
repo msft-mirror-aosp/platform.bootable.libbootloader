@@ -33,6 +33,7 @@ use core::{
 use gbl_storage::{
     required_scratch_size, AsBlockDevice, AsMultiBlockDevices, BlockDevice, BlockIo,
 };
+use safemath::SafeNum;
 
 use super::slots;
 
@@ -143,16 +144,17 @@ pub trait GblOps {
 
     /// Computes the sum of required scratch size for all block devices.
     fn required_scratch_size(&mut self) -> GblResult<usize> {
-        let mut total = 0usize;
+        let mut total = SafeNum::ZERO;
         let mut res = Ok(());
         self.visit_block_devices(&mut |io, id, max_gpt_entries| {
             res = (|| {
-                let scratch_size = required_scratch_size(io, max_gpt_entries)?;
-                total = total.checked_add(scratch_size).ok_or(Error::ArithmeticOverflow)?;
+                total += required_scratch_size(io, max_gpt_entries).unwrap();
                 Ok(())
             })();
         })?;
-        res.map(|_| total)
+
+        let total = usize::try_from(total).map_err(|e| e.into());
+        res.and(total)
     }
 }
 
@@ -185,13 +187,14 @@ impl<T: GblOps> AsMultiBlockDevices for GblUtils<'_, '_, T> {
         &mut self,
         f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64),
     ) -> core::result::Result<(), Option<&'static str>> {
-        let mut scratch_offset = 0;
+        let mut scratch_offset = SafeNum::ZERO;
         self.ops
             .visit_block_devices(&mut |io, id, max_gpt_entries| {
                 // Not expected to fail as `Self::new()` should have checked any overflow.
-                let scratch_size = required_scratch_size(io, max_gpt_entries).unwrap();
-                let scratch = &mut self.scratch[scratch_offset..][..scratch_size];
-                scratch_offset = scratch_offset.checked_add(scratch_size).unwrap();
+                let scratch_size: usize = required_scratch_size(io, max_gpt_entries).unwrap();
+                let scratch =
+                    &mut self.scratch[scratch_offset.try_into().unwrap()..][..scratch_size];
+                scratch_offset += scratch_size;
                 f(&mut BlockDevice::new(io, scratch, max_gpt_entries), id);
             })
             .map_err(|v| v.0)

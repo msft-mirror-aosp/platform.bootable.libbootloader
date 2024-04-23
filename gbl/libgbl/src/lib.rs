@@ -542,9 +542,13 @@ where
         block_devices.sync_gpt_all(&mut |_, _, _| {});
         // TODO(b/334962583): Implement zircon ABR + AVB.
         // The following are place holder for test of invocation in the integration test only.
-        let ptn_size = block_devices.find_partition("zircon_a")?.size()?;
-        let (kernel, remains) =
-            load_buffer.split_at_mut(ptn_size.try_into().map_err(|_| Error::ArithmeticOverflow)?);
+        let ptn_size = block_devices
+            .find_partition("zircon_a")?
+            .size()
+            .map_err(|e: gbl_storage::StorageError| IntegrationError::StorageError(e))?
+            .try_into()
+            .or(Err(Error::ArithmeticOverflow))?;
+        let (kernel, remains) = load_buffer.split_at_mut(ptn_size);
         block_devices.read_gpt_partition("zircon_a", 0, kernel)?;
         self.ops.boot(BootImages::Fuchsia(FuchsiaBootImages {
             zbi_kernel: kernel,

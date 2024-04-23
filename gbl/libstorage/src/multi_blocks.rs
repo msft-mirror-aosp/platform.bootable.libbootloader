@@ -217,28 +217,28 @@ mod test {
         ]);
         devs.sync_gpt_all(&mut |_, _, _| panic!("GPT sync failed"));
 
-        assert_eq!(devs.find_partition("boot_a").and_then(|v| v.size()).unwrap(), 8 * 1024);
+        assert_eq!(devs.find_partition("boot_a").map(|v| v.size()).unwrap(), Ok(8 * 1024));
         assert_eq!(
-            devs.get(0).unwrap().find_partition("boot_a").and_then(|v| v.size()).unwrap(),
-            8 * 1024
+            devs.get(0).unwrap().find_partition("boot_a").map(|v| v.size()).unwrap(),
+            Ok(8 * 1024)
         );
 
-        assert_eq!(devs.find_partition("boot_b").and_then(|v| v.size()).unwrap(), 12 * 1024);
+        assert_eq!(devs.find_partition("boot_b").map(|v| v.size()).unwrap(), Ok(12 * 1024));
         assert_eq!(
-            devs.get(0).unwrap().find_partition("boot_b").and_then(|v| v.size()).unwrap(),
-            12 * 1024
+            devs.get(0).unwrap().find_partition("boot_b").map(|v| v.size()).unwrap(),
+            Ok(12 * 1024)
         );
 
-        assert_eq!(devs.find_partition("vendor_boot_a").and_then(|v| v.size()).unwrap(), 4 * 1024);
+        assert_eq!(devs.find_partition("vendor_boot_a").map(|v| v.size()).unwrap(), Ok(4 * 1024));
         assert_eq!(
-            devs.get(1).unwrap().find_partition("vendor_boot_a").and_then(|v| v.size()).unwrap(),
-            4 * 1024
+            devs.get(1).unwrap().find_partition("vendor_boot_a").map(|v| v.size()).unwrap(),
+            Ok(4 * 1024)
         );
 
-        assert_eq!(devs.find_partition("vendor_boot_b").and_then(|v| v.size()).unwrap(), 6 * 1024);
+        assert_eq!(devs.find_partition("vendor_boot_b").map(|v| v.size()).unwrap(), Ok(6 * 1024));
         assert_eq!(
-            devs.get(1).unwrap().find_partition("vendor_boot_b").and_then(|v| v.size()).unwrap(),
-            6 * 1024
+            devs.get(1).unwrap().find_partition("vendor_boot_b").map(|v| v.size()).unwrap(),
+            Ok(6 * 1024)
         );
     }
 

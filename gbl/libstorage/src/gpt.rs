@@ -12,14 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{
-    add, aligned_subslice, div, mul, read, sub, to_usize, write_bytes, write_bytes_mut, BlockIo,
-    Result, StorageError,
-};
+use crate::{aligned_subslice, read, write_bytes, write_bytes_mut, BlockIo, Result, StorageError};
 use core::default::Default;
 use core::mem::{align_of, size_of};
 use core::num::NonZeroU64;
 use crc32fast::Hasher;
+use safemath::SafeNum;
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 
 const GPT_GUID_LEN: usize = 16;
@@ -72,7 +70,7 @@ pub struct GptEntry {
 impl GptEntry {
     /// Return the partition entry size in blocks.
     pub fn blocks(&self) -> Result<u64> {
-        add(sub(self.last, self.first)?, 1)
+        u64::try_from((SafeNum::from(self.last) - self.first) + 1).map_err(|e| e.into())
     }
 
     /// Return whether this is a `NULL` entry. The first null entry marks the end of the partition
@@ -173,8 +171,7 @@ impl<'a> Gpt<'a> {
             return Err(StorageError::InvalidInput);
         }
         let buffer = aligned_subslice(buffer, GPT_ENTRY_ALIGNMENT)?;
-        *GptInfo::from_bytes(buffer) =
-            GptInfo { num_valid_entries: None, max_entries: max_entries };
+        *GptInfo::from_bytes(buffer) = GptInfo { num_valid_entries: None, max_entries };
         Self::from_existing(buffer)
     }
 
@@ -186,32 +183,29 @@ impl<'a> Gpt<'a> {
     pub fn from_existing(buffer: &'a mut [u8]) -> Result<Gpt<'a>> {
         let buffer = aligned_subslice(buffer, GPT_ENTRY_ALIGNMENT)?;
         let (info, remain) = Ref::<_, GptInfo>::new_from_prefix(buffer).unwrap();
-        let entries_size = mul(info.max_entries, GPT_ENTRY_SIZE)?;
-        let split_pos = add(GPT_HEADER_SIZE_PADDED, entries_size)?;
-        let (primary, secondary) = remain.split_at_mut(to_usize(split_pos)?);
-        let (primary_header, primary_entries) =
-            primary.split_at_mut(to_usize(GPT_HEADER_SIZE_PADDED)?);
-        let (secondary_header, secondary_entries) =
-            secondary.split_at_mut(to_usize(GPT_HEADER_SIZE_PADDED)?);
+        let entries_size = SafeNum::from(info.max_entries) * GPT_ENTRY_SIZE;
+        let header_size: usize = SafeNum::from(GPT_HEADER_SIZE_PADDED).try_into()?;
+        let split_pos = entries_size + header_size;
+        let (primary, secondary) = remain.split_at_mut(split_pos.try_into()?);
+        let (primary_header, primary_entries) = primary.split_at_mut(header_size);
+        let (secondary_header, secondary_entries) = secondary.split_at_mut(header_size);
 
         Ok(Self {
             info: info.into_mut(),
-            primary_header: primary_header,
-            primary_entries: primary_entries,
-            secondary_header: secondary_header,
-            secondary_entries: &mut secondary_entries[..to_usize(entries_size)?],
+            primary_header,
+            primary_entries,
+            secondary_header,
+            secondary_entries: &mut secondary_entries[..entries_size.try_into()?],
         })
     }
 
     /// The minimum buffer size needed for `new_from_buffer()`
     pub(crate) fn required_buffer_size(max_entries: u64) -> Result<usize> {
-        // Add 7 more bytes to accommodate 8-byte alignment.
-        let entries_size = mul(max_entries, GPT_ENTRY_SIZE)?;
-        let info_size = size_of::<GptInfo>() as u64;
-        to_usize(add(
-            add(info_size, mul(2, add(GPT_HEADER_SIZE_PADDED, entries_size)?)?)?,
-            GPT_ENTRY_ALIGNMENT - 1,
-        )?)
+        let entries_size = SafeNum::from(max_entries) * GPT_ENTRY_SIZE;
+        (((entries_size + GPT_HEADER_SIZE_PADDED) * 2) + size_of::<GptInfo>() + GPT_ENTRY_ALIGNMENT
+            - 1)
+        .try_into()
+        .map_err(|e: safemath::Error| e.into())
     }
 
     /// Return the list of GPT entries.
@@ -220,7 +214,7 @@ impl<'a> Gpt<'a> {
     pub(crate) fn entries(&self) -> Result<&[GptEntry]> {
         self.check_valid()?;
         Ok(&Ref::<_, [GptEntry]>::new_slice(&self.primary_entries[..]).unwrap().into_slice()
-            [..to_usize(self.info.num_valid_entries()?)?])
+            [..self.info.num_valid_entries()?.try_into()?])
     }
 
     /// Search for a partition entry.
@@ -254,41 +248,43 @@ impl<'a> Gpt<'a> {
     ) -> Result<bool> {
         let (header_start, header_bytes, entries) = match header_type {
             HeaderType::Primary => {
-                (blk_dev.block_size(), &mut self.primary_header, &mut self.primary_entries)
+                (blk_dev.block_size().into(), &mut self.primary_header, &mut self.primary_entries)
             }
             HeaderType::Secondary => (
-                mul(sub(blk_dev.num_blocks(), 1)?, blk_dev.block_size())?,
+                (SafeNum::from(blk_dev.num_blocks()) - 1) * blk_dev.block_size(),
                 &mut self.secondary_header,
                 &mut self.secondary_entries,
             ),
         };
-        read(blk_dev, header_start, header_bytes, scratch)?;
-        let header = Ref::<_, GptHeader>::new_from_prefix(&header_bytes[..]).unwrap().0.into_ref();
+        read(blk_dev, header_start.try_into()?, header_bytes, scratch)?;
+        let header =
+            Ref::<_, GptHeader>::new_from_prefix(header_bytes.as_bytes()).unwrap().0.into_ref();
 
         if header.magic != GPT_MAGIC {
             return Ok(false);
         }
 
-        let entries_size = mul(header.entries_count as u64, GPT_ENTRY_SIZE)?;
-        let entries_offset = mul(header.entries as u64, blk_dev.block_size())?;
-        if header.entries_count as u64 > self.info.max_entries
-            || add(entries_size, entries_offset)?
-                > mul(sub(blk_dev.num_blocks(), 1)?, blk_dev.block_size())?
+        let entries_size = SafeNum::from(header.entries_count) * GPT_ENTRY_SIZE;
+        let entries_offset = SafeNum::from(header.entries) * blk_dev.block_size();
+        if self.info.max_entries < header.entries_count.into()
+            || u64::try_from(entries_size + entries_offset)?
+                > ((SafeNum::from(blk_dev.num_blocks()) - 1) * blk_dev.block_size()).try_into()?
         {
             return Ok(false);
         }
 
+        let crc32_offset = SafeNum::from(GPT_CRC32_OFFSET).try_into()?;
         let mut hasher = Hasher::new();
-        hasher.update(&header.as_bytes()[..to_usize(GPT_CRC32_OFFSET)?]);
+        hasher.update(&header.as_bytes()[..crc32_offset]);
         hasher.update(&[0u8; size_of::<u32>()]);
-        hasher.update(&header.as_bytes()[to_usize(GPT_CRC32_OFFSET)? + size_of::<u32>()..]);
+        hasher.update(&header.as_bytes()[crc32_offset + size_of::<u32>()..]);
         if hasher.finalize() != header.crc32 {
             return Ok(false);
         }
 
         // Load the entries
-        let out = &mut entries[..to_usize(entries_size)?];
-        read(blk_dev, entries_offset, out, scratch)?;
+        let out = &mut entries[..entries_size.try_into()?];
+        read(blk_dev, entries_offset.try_into()?, out, scratch)?;
         // Validate entries crc32.
         Ok(header.entries_crc == crc32(out))
     }
@@ -302,24 +298,24 @@ impl<'a> Gpt<'a> {
         self.info.num_valid_entries = None;
 
         let block_size = blk_dev.block_size();
-        let total_blocks = blk_dev.num_blocks();
+        let total_blocks: SafeNum = blk_dev.num_blocks().into();
 
         let primary_header_blk = 1;
         let primary_header_pos = block_size;
-        let secondary_header_blk = sub(total_blocks, 1)?;
-        let secondary_header_pos = mul(secondary_header_blk, block_size)?;
+        let secondary_header_blk = total_blocks - 1;
+        let secondary_header_pos = secondary_header_blk * block_size;
 
         // Entries position for restoring.
         let primary_entries_blk = 2;
-        let primary_entries_pos = mul(primary_entries_blk, block_size)?;
-        let secondary_entries_pos = sub(secondary_header_pos, GPT_MAX_ENTRIES_SIZE)?;
-        let secondary_entries_blk = div(secondary_entries_pos, block_size)?;
+        let primary_entries_pos = SafeNum::from(primary_entries_blk) * block_size;
+        let secondary_entries_pos = secondary_header_pos - GPT_MAX_ENTRIES_SIZE;
+        let secondary_entries_blk = secondary_entries_pos / block_size;
 
         let primary_valid = self.validate_gpt(blk_dev, scratch, HeaderType::Primary)?;
         let secondary_valid = self.validate_gpt(blk_dev, scratch, HeaderType::Secondary)?;
 
         let primary_header = GptHeader::from_bytes(self.primary_header);
-        let secondary_header = GptHeader::from_bytes(&mut self.secondary_header[..]);
+        let secondary_header = GptHeader::from_bytes(self.secondary_header.as_mut());
         if !primary_valid {
             if !secondary_valid {
                 return Err(StorageError::NoValidGpt);
@@ -328,26 +324,36 @@ impl<'a> Gpt<'a> {
             primary_header.as_bytes_mut().clone_from_slice(secondary_header.as_bytes());
             self.primary_entries.clone_from_slice(&self.secondary_entries);
             primary_header.current = primary_header_blk;
-            primary_header.backup = secondary_header_blk;
+            primary_header.backup = secondary_header_blk.try_into()?;
             primary_header.entries = primary_entries_blk;
             primary_header.update_crc();
             write_bytes_mut(blk_dev, primary_header_pos, primary_header.as_bytes_mut(), scratch)?;
-            write_bytes_mut(blk_dev, primary_entries_pos, self.primary_entries, scratch)?
+            write_bytes_mut(
+                blk_dev,
+                primary_entries_pos.try_into()?,
+                self.primary_entries,
+                scratch,
+            )?
         } else if !secondary_valid {
             // Restore to secondary
             secondary_header.as_bytes_mut().clone_from_slice(primary_header.as_bytes());
             self.secondary_entries.clone_from_slice(&self.primary_entries);
-            secondary_header.current = secondary_header_blk;
+            secondary_header.current = secondary_header_blk.try_into()?;
             secondary_header.backup = primary_header_blk;
-            secondary_header.entries = secondary_entries_blk;
+            secondary_header.entries = secondary_entries_blk.try_into()?;
             secondary_header.update_crc();
             write_bytes_mut(
                 blk_dev,
-                secondary_header_pos,
+                secondary_header_pos.try_into()?,
                 secondary_header.as_bytes_mut(),
                 scratch,
             )?;
-            write_bytes_mut(blk_dev, secondary_entries_pos, self.secondary_entries, scratch)?;
+            write_bytes_mut(
+                blk_dev,
+                secondary_entries_pos.try_into()?,
+                self.secondary_entries,
+                scratch,
+            )?;
         }
 
         // Calculate actual number of GPT entries by finding the first invalid entry.
@@ -376,10 +382,12 @@ fn check_offset(
     blk_dev: &mut (impl BlockIo + ?Sized),
     entry: &GptEntry,
     offset: u64,
-    len: u64,
+    len: usize,
 ) -> Result<u64> {
-    match add(offset, len)? <= mul(entry.blocks()?, blk_dev.block_size())? {
-        true => Ok(add(mul(entry.first, blk_dev.block_size())?, offset)?),
+    let s = SafeNum::from(offset) + len;
+    let total_size = SafeNum::from(entry.blocks()?) * blk_dev.block_size();
+    match u64::try_from(s)? <= total_size.try_into()? {
+        true => Ok((SafeNum::from(entry.first) * blk_dev.block_size() + offset).try_into()?),
         false => Err(StorageError::OutOfRange),
     }
 }
@@ -394,7 +402,7 @@ pub(crate) fn read_gpt_partition(
     scratch: &mut [u8],
 ) -> Result<()> {
     let e = gpt.find_partition(part_name)?;
-    let abs_offset = check_offset(blk_dev, e, offset, out.len() as u64)?;
+    let abs_offset = check_offset(blk_dev, e, offset, out.len())?;
     read(blk_dev, abs_offset, out, scratch)
 }
 
@@ -408,7 +416,7 @@ pub(crate) fn write_gpt_partition(
     scratch: &mut [u8],
 ) -> Result<()> {
     let e = gpt.find_partition(part_name)?;
-    let abs_offset = check_offset(blk_dev, e, offset, data.len() as u64)?;
+    let abs_offset = check_offset(blk_dev, e, offset, data.len())?;
     write_bytes(blk_dev, abs_offset, data, scratch)
 }
 
@@ -423,7 +431,7 @@ pub(crate) fn write_gpt_partition_mut(
     scratch: &mut [u8],
 ) -> Result<()> {
     let e = gpt.find_partition(part_name)?;
-    let abs_offset = check_offset(blk_dev, e, offset, data.as_ref().len() as u64)?;
+    let abs_offset = check_offset(blk_dev, e, offset, data.as_ref().len())?;
     write_bytes_mut(blk_dev, abs_offset, data.as_mut(), scratch)
 }
 
@@ -525,7 +533,7 @@ pub(crate) mod test {
         dev.sync_gpt().unwrap();
 
         let gpt = gpt(&mut dev);
-        let primary_header = &mut gpt.primary_header[..to_usize(GPT_HEADER_SIZE).unwrap()];
+        let primary_header = &mut gpt.primary_header[..GPT_HEADER_SIZE.try_into().unwrap()];
         let gpt_header = GptHeader::from_bytes(primary_header);
         gpt_header.magic = 0x123456;
         gpt_header.update_crc();
@@ -556,12 +564,12 @@ pub(crate) mod test {
         dev.sync_gpt().unwrap();
 
         let gpt = gpt(&mut dev);
-        let primary_header = &mut gpt.primary_header[..to_usize(GPT_HEADER_SIZE).unwrap()];
+        let primary_header = &mut gpt.primary_header[..GPT_HEADER_SIZE.try_into().unwrap()];
         let gpt_header = GptHeader::from_bytes(primary_header);
         gpt_header.entries_count = 2;
         // Update entries crc32
         gpt_header.entries_crc =
-            crc32(&gpt.primary_entries[..to_usize(2 * GPT_ENTRY_SIZE).unwrap()]);
+            crc32(&gpt.primary_entries[..(2 * GPT_ENTRY_SIZE).try_into().unwrap()]);
         gpt_header.update_crc();
         // Update to primary.
         let primary_header = Vec::from(primary_header);
