@@ -413,7 +413,7 @@ pub fn android_boot_demo(entry: EfiEntry) -> Result<()> {
         let boot_hart_id = entry
             .system_table()
             .boot_services()
-            .find_first_and_open::<efi::RiscvBootProtocol>()?
+            .find_first_and_open::<efi::protocol::riscv::RiscvBootProtocol>()?
             .get_boot_hartid()?;
         efi_println!(entry, "riscv boot_hart_id: {}", boot_hart_id);
         let _ = exit_boot_services(entry, remains)?;

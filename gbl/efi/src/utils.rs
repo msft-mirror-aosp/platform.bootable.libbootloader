@@ -16,10 +16,16 @@ use alloc::vec::Vec;
 use core::ffi::CStr;
 
 use crate::error::{EfiAppError, Result};
-use efi::defs::{EfiGuid, EFI_TIMER_DELAY_TIMER_RELATIVE};
 use efi::{
-    BlockIoProtocol, DeviceHandle, DevicePathProtocol, DevicePathText, DevicePathToTextProtocol,
-    EfiEntry, EventType, LoadedImageProtocol, Protocol, SimpleTextInputProtocol,
+    defs::{EfiGuid, EFI_TIMER_DELAY_TIMER_RELATIVE},
+    protocol::{
+        block_io::BlockIoProtocol,
+        device_path::{DevicePathProtocol, DevicePathText, DevicePathToTextProtocol},
+        loaded_image::LoadedImageProtocol,
+        simple_text_input::SimpleTextInputProtocol,
+        Protocol,
+    },
+    DeviceHandle, EfiEntry, EventType,
 };
 use fdt::FdtHeader;
 use gbl_storage::{required_scratch_size, AsBlockDevice, AsMultiBlockDevices, BlockIo};
@@ -103,12 +109,14 @@ impl AsBlockDevice for EfiGptDevice<'_> {
 pub struct EfiMultiBlockDevices<'a>(pub alloc::vec::Vec<EfiGptDevice<'a>>);
 
 impl AsMultiBlockDevices for EfiMultiBlockDevices<'_> {
-    fn for_each_until(&mut self, f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64) -> bool) {
+    fn for_each(
+        &mut self,
+        f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64),
+    ) -> core::result::Result<(), Option<&'static str>> {
         for (idx, ele) in self.0.iter_mut().enumerate() {
-            if f(ele, u64::try_from(idx).unwrap()) {
-                return;
-            }
+            f(ele, u64::try_from(idx).unwrap());
         }
+        Ok(())
     }
 }
 
