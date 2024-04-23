@@ -29,6 +29,7 @@ rust_library(
     edition = "2021",
     deps = [
         "@crc32fast",
+        "@gbl//libsafemath",
         "@zerocopy",
     ],
 )
@@ -42,6 +43,7 @@ rust_library(
     edition = "2021",
     deps = [
         ":libstorage",
+        "@gbl//libsafemath",
     ],
 )
 
