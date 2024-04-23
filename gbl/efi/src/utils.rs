@@ -34,7 +34,7 @@ pub const EFI_DTB_TABLE_GUID: EfiGuid =
     EfiGuid::new(0xb1b621d5, 0xf19c, 0x41a5, [0x83, 0x0b, 0xd9, 0x15, 0x2c, 0x69, 0xaa, 0xe0]);
 
 /// Checks and converts an integer into usize
-fn to_usize<T: TryInto<usize>>(val: T) -> Result<usize> {
+pub fn to_usize<T: TryInto<usize>>(val: T) -> Result<usize> {
     Ok(val.try_into().map_err(|_| EfiAppError::ArithmeticOverflow)?)
 }
 

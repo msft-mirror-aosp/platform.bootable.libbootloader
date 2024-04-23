@@ -104,7 +104,7 @@ impl Variable for Partition {
             let id = snprintf!(id_str, "{:x}", id);
             res = (|| {
                 for ptn in v.partition_iter() {
-                    let sz = ptn.size()?;
+                    let sz: u64 = ptn.size()?;
                     let part = ptn.gpt_entry().name_to_str(part_name)?;
                     f(PARTITION_SIZE, &[part, id], snprintf!(size_str, "{:#x}", sz))?;
                     // Image type is not supported yet.

@@ -28,6 +28,7 @@ rust_library(
         "@crc32fast",
         "@cstr",
         "@gbl//libfastboot",
+        "@gbl//libsafemath",
         "@gbl//libstorage",
         "@gbl//third_party/libzbi",
         "@spin",
