@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::error::{EfiAppError, Result};
-use crate::utils::{aligned_subslice, find_gpt_devices, get_efi_fdt, usize_add};
+use crate::utils::{aligned_subslice, find_gpt_devices, get_efi_fdt, to_usize, usize_add};
 use core::fmt::Write;
 use core::mem::size_of;
 use efi::{efi_print, efi_println, EfiEntry};
@@ -36,7 +36,7 @@ struct ZbiKernelHeader {
 // https://fuchsia.googlesource.com/fuchsia/+/4f204d8a0243e84a86af4c527a8edcc1ace1615f/zircon/kernel/target/arm64/boot-shim/BUILD.gn#38
 const ZIRCON_KERNEL_ALIGN: usize = 64 * 1024;
 
-/// Relocates a ZBI kernel to a different buffer and returns the kernel entry address.
+/// Relocates a ZBI kernel to a different buffer and returns the kernel entry offset.
 pub fn relocate_kernel(kernel: &[u8], dest: &mut [u8]) -> Result<usize> {
     if (dest.as_ptr() as usize % ZIRCON_KERNEL_ALIGN) != 0 {
         return Err(EfiAppError::BufferAlignment.into());
@@ -60,7 +60,7 @@ pub fn relocate_kernel(kernel: &[u8], dest: &mut [u8]) -> Result<usize> {
     dest_kernel_header.container_header.length = (kernel_size - size_of::<ZbiHeader>())
         .try_into()
         .map_err(|_| EfiAppError::ArithmeticOverflow)?;
-    Ok(usize_add(dest_kernel_header.entry, dest.as_ptr() as usize)?)
+    Ok(to_usize(dest_kernel_header.entry)?)
 }
 
 /// A helper for getting the total size of a ZBI container, including payload and header.
@@ -79,7 +79,7 @@ fn zbi_get_unused_buffer(zbi: &mut [u8]) -> Result<(&mut [u8], &mut [u8])> {
 
 /// Relocate a ZBI kernel to the trailing unused buffer.
 ///
-/// Returns the original kernel subslice, relocated kernel subslice, and kernel entry address.
+/// Returns the original kernel subslice, relocated kernel subslice, and kernel entry offset.
 fn relocate_to_tail(kernel: &mut [u8]) -> Result<(&mut [u8], &mut [u8], usize)> {
     let (original, relocated) = zbi_get_unused_buffer(kernel)?;
     let relocated = aligned_subslice(relocated, ZIRCON_KERNEL_ALIGN)?;
@@ -202,7 +202,7 @@ pub fn fuchsia_boot_demo(efi_entry: EfiEntry) -> Result<()> {
         let (_, remains) = zbi_get_unused_buffer(relocated)?;
         let _ = efi::exit_boot_services(efi_entry, remains).unwrap();
         // SAFETY: For demo, we assume images are provided valid.
-        unsafe { boot::aarch64::jump_zircon_el2_or_lower(kernel_entry, original) };
+        unsafe { boot::aarch64::jump_zircon_el2_or_lower(relocated, kernel_entry, original) };
     }
 
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
