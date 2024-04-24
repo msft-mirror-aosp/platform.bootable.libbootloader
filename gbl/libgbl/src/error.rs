@@ -145,6 +145,7 @@ composite_enum! {
         FromBytesUntilNulError(FromBytesUntilNulError),
         FromBytesWithNulError(FromBytesWithNulError),
         StorageError(StorageError),
+        SafeMathError(safemath::Error),
     }
 }
 
