@@ -25,7 +25,7 @@ pub const GPT_NAME_LEN_U16: usize = 36;
 
 #[repr(C, packed)]
 #[derive(Debug, Default, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
-struct GptHeader {
+pub struct GptHeader {
     pub magic: u64,
     pub revision: u32,
     pub size: u32,
@@ -49,7 +49,7 @@ impl GptHeader {
     }
 
     /// Update the header crc32 value.
-    fn update_crc(&mut self) {
+    pub fn update_crc(&mut self) {
         self.crc32 = 0;
         self.crc32 = crc32(self.as_bytes());
     }
@@ -114,11 +114,10 @@ const GPT_CRC32_OFFSET: u64 = 16;
 const GPT_ENTRY_ALIGNMENT: u64 = align_of::<GptEntry>() as u64;
 const GPT_ENTRY_SIZE: u64 = size_of::<GptEntry>() as u64;
 const GPT_MAX_NUM_ENTRIES: u64 = 128;
-const GPT_MAX_ENTRIES_SIZE: u64 = GPT_MAX_NUM_ENTRIES * GPT_ENTRY_SIZE;
 const GPT_HEADER_SIZE: u64 = size_of::<GptHeader>() as u64; // 92 bytes.
 const GPT_HEADER_SIZE_PADDED: u64 =
     (GPT_HEADER_SIZE + GPT_ENTRY_ALIGNMENT - 1) / GPT_ENTRY_ALIGNMENT * GPT_ENTRY_ALIGNMENT;
-const GPT_MAGIC: u64 = 0x5452415020494645;
+pub const GPT_MAGIC: u64 = 0x5452415020494645;
 
 enum HeaderType {
     Primary,
@@ -128,7 +127,13 @@ enum HeaderType {
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
 struct GptInfo {
+    // The number of valid entries in the entries array.
+    // May change as partitions are added or removed.
     num_valid_entries: Option<NonZeroU64>,
+    // The maximum number of elements available in the entries array.
+    // Note: this is GREATER THAN OR EQUAL TO the number of valid entries
+    // and LESS THAN OR EQUAL TO the value of GPT_MAX_NUM_ENTRIES.
+    // Values other than GPT_MAX_NUM_ENTRIES are mostly used in unit tests.
     max_entries: u64,
 }
 
@@ -308,14 +313,11 @@ impl<'a> Gpt<'a> {
         // Entries position for restoring.
         let primary_entries_blk = 2;
         let primary_entries_pos = SafeNum::from(primary_entries_blk) * block_size;
-        let secondary_entries_pos = secondary_header_pos - GPT_MAX_ENTRIES_SIZE;
-        let secondary_entries_blk = secondary_entries_pos / block_size;
-
         let primary_valid = self.validate_gpt(blk_dev, scratch, HeaderType::Primary)?;
         let secondary_valid = self.validate_gpt(blk_dev, scratch, HeaderType::Secondary)?;
 
         let primary_header = GptHeader::from_bytes(self.primary_header);
-        let secondary_header = GptHeader::from_bytes(self.secondary_header.as_mut());
+        let secondary_header = GptHeader::from_bytes(self.secondary_header);
         if !primary_valid {
             if !secondary_valid {
                 return Err(StorageError::NoValidGpt);
@@ -327,6 +329,7 @@ impl<'a> Gpt<'a> {
             primary_header.backup = secondary_header_blk.try_into()?;
             primary_header.entries = primary_entries_blk;
             primary_header.update_crc();
+
             write_bytes_mut(blk_dev, primary_header_pos, primary_header.as_bytes_mut(), scratch)?;
             write_bytes_mut(
                 blk_dev,
@@ -336,12 +339,17 @@ impl<'a> Gpt<'a> {
             )?
         } else if !secondary_valid {
             // Restore to secondary
+            let secondary_entries_pos = secondary_header_pos
+                - (SafeNum::from(self.info.max_entries) * core::mem::size_of::<GptEntry>());
+            let secondary_entries_blk = secondary_entries_pos / block_size;
+
             secondary_header.as_bytes_mut().clone_from_slice(primary_header.as_bytes());
             self.secondary_entries.clone_from_slice(&self.primary_entries);
             secondary_header.current = secondary_header_blk.try_into()?;
             secondary_header.backup = primary_header_blk;
             secondary_header.entries = secondary_entries_blk.try_into()?;
             secondary_header.update_crc();
+
             write_bytes_mut(
                 blk_dev,
                 secondary_header_pos.try_into()?,
@@ -561,6 +569,7 @@ pub(crate) mod test {
         // Create a header with non-max entries_count
         let disk = include_bytes!("../test/gpt_test_1.bin");
         let mut dev = TestBlockDeviceBuilder::new().set_data(disk).build();
+        let block_size: usize = dev.io.block_size.try_into().unwrap();
         dev.sync_gpt().unwrap();
 
         let gpt = gpt(&mut dev);
@@ -573,14 +582,15 @@ pub(crate) mod test {
         gpt_header.update_crc();
         // Update to primary.
         let primary_header = Vec::from(primary_header);
-        dev.io.storage[512..512 + primary_header.len()].clone_from_slice(&primary_header);
+        dev.io.storage[block_size..block_size + primary_header.len()]
+            .clone_from_slice(&primary_header);
 
         // Corrupt secondary. Sync ok
-        dev.io.storage[disk.len() - 512..].fill(0);
+        dev.io.storage[disk.len() - block_size..].fill(0);
         dev.sync_gpt().unwrap();
 
         // Corrup primary. Sync ok
-        dev.io.storage[512..1024].fill(0);
+        dev.io.storage[block_size..(block_size * 2)].fill(0);
         dev.sync_gpt().unwrap();
     }
 
