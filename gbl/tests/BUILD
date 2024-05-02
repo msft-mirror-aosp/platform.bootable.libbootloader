@@ -15,6 +15,7 @@
 test_suite(
     name = "tests",
     tests = [
+        "@gbl//libabr:libabr_tests",
         "@gbl//libbootconfig:libbootconfig_test",
         "@gbl//libbootimg:libbootimg_test",
         "@gbl//libefi:libefi_test",
