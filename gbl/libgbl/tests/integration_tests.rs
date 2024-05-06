@@ -45,8 +45,8 @@ impl TestGblOps<'_> {
         data: T,
     ) {
         self.block_io.push(GblTestBlockIo {
-            io: TestBlockIo::new(alignment, block_size, data),
-            max_gpt_entries: max_gpt_entries,
+            io: TestBlockIo::new(alignment, block_size, data.as_ref().into()),
+            max_gpt_entries,
         })
     }
 }
