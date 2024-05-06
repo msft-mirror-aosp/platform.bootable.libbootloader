@@ -111,7 +111,7 @@ use core::cmp::min;
 // Selective export of submodule types.
 mod gpt;
 use gpt::Gpt;
-pub use gpt::{GptEntry, GPT_NAME_LEN_U16};
+pub use gpt::{GptEntry, GptHeader, GPT_MAGIC, GPT_NAME_LEN_U16};
 
 use safemath::SafeNum;
 
