@@ -43,7 +43,9 @@ rust_library(
     edition = "2021",
     deps = [
         ":libstorage",
+        "@crc32fast",
         "@gbl//libsafemath",
+        "@zerocopy",
     ],
 )
 
@@ -54,6 +56,11 @@ rust_test(
     deps = [
         ":libstorage_testlib",
     ],
+)
+
+rust_test(
+    name = "libstorage_testlib_test",
+    crate = ":libstorage_testlib",
 )
 
 rust_doc_test(
