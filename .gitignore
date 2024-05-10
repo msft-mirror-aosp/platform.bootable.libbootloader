@@ -1,0 +1,7 @@
+# Ignore the following convenience symlinks created by Bazel during build
+gbl/bazel-bin
+gbl/bazel-gbl
+gbl/bazel-out
+gbl/bazel-testlogs
+
+MODULE.bazel.lock
