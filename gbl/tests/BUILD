@@ -15,6 +15,8 @@
 test_suite(
     name = "tests",
     tests = [
+        # TODO(b/340322551): protocols are properly documented
+        # "@gbl//:readme_test",
         "@gbl//libabr:libabr_tests",
         "@gbl//libbootconfig:libbootconfig_test",
         "@gbl//libbootimg:libbootimg_test",
