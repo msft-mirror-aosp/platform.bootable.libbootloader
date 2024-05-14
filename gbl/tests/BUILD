@@ -15,6 +15,7 @@
 test_suite(
     name = "tests",
     tests = [
+        "@gbl//:readme_test",
         "@gbl//libabr:libabr_tests",
         "@gbl//libbootconfig:libbootconfig_test",
         "@gbl//libbootimg:libbootimg_test",
