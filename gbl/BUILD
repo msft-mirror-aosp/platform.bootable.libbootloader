@@ -16,7 +16,7 @@ load(":readme.bzl", "readme_test")
 
 readme_test(
     name = "readme_test",
-    readme = "README.md",
+    readme = "docs/efi_protocols.md",
     # Note: can't read files in subpackages, not sure how to add a dependency on all,
     # globbed, subpackages and all the rust_lib targets they contain.
     deps = [
