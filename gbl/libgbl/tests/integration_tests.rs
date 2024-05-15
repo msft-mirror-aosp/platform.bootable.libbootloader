@@ -14,10 +14,7 @@
 
 use gbl_storage::BlockIo;
 use gbl_storage_testlib::TestBlockIo;
-use libgbl::{
-    digest::Algorithm, BootImages, Context, Digest, FuchsiaBootImages, GblBuilder, GblOps,
-    GblOpsError,
-};
+use libgbl::{BootImages, FuchsiaBootImages, GblBuilder, GblOps, GblOpsError};
 use std::{collections::VecDeque, vec::Vec};
 
 extern crate avb_sysdeps;
@@ -52,8 +49,6 @@ impl TestGblOps<'_> {
 }
 
 impl GblOps for TestGblOps<'_> {
-    type Context = TestDigestContext;
-
     fn visit_block_devices(
         &mut self,
         f: &mut dyn FnMut(&mut dyn BlockIo, u64, u64),
@@ -74,44 +69,6 @@ impl GblOps for TestGblOps<'_> {
 
     fn boot(&mut self, boot_images: BootImages) -> Result<(), GblOpsError> {
         Ok((self.boot_cb.as_mut().unwrap().get())(boot_images))
-    }
-}
-
-/// Placeholder.
-struct DigestBytes(Vec<u8>);
-
-impl AsRef<[u8]> for DigestBytes {
-    fn as_ref(&self) -> &[u8] {
-        self.0.as_ref()
-    }
-}
-
-impl Digest for DigestBytes {
-    fn algorithm(&self) -> &Algorithm {
-        unimplemented!();
-    }
-}
-
-/// Placeholder.
-struct TestDigestContext {}
-
-impl Context for TestDigestContext {
-    type Digest = DigestBytes;
-
-    fn new(_: Algorithm) -> Self {
-        unimplemented!();
-    }
-
-    fn update(&mut self, _: &[u8]) {
-        unimplemented!();
-    }
-
-    fn finish(self) -> Self::Digest {
-        unimplemented!();
-    }
-
-    fn algorithm(&self) -> &Algorithm {
-        unimplemented!();
     }
 }
 
