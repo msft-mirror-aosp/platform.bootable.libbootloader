@@ -49,15 +49,29 @@ if [ ! -f $README ]; then
   exit 1
 fi
 
+ALL_INPUTS=$(echo ${INPUT} | sed 's/,/ /g')
+
 DOCLESS_PROTOCOLS=""
-PROTOCOLS=($(echo $INPUT | sed 's/,/ /g' | xargs grep -h -E 'impl ProtocolInfo for .* \\{' | awk '{print $4}' | sort))
+PROTOCOLS=($(grep -hE 'impl ProtocolInfo for .* \\{' ${ALL_INPUTS} | awk '{print $4}' | sort))
 for P in ${PROTOCOLS[@]}
 do
-  grep -Lq $P $README || DOCLESS_PROTOCOLS+="\n\t$P"
+  grep -Lq $P ${README} || DOCLESS_PROTOCOLS+="\n\t$P"
 done
 
 if [ ! -z "${DOCLESS_PROTOCOLS}" ]; then
-  echo "Missing documentation for protocol(s):$DOCLESS_PROTOCOLS"
+  echo -e "Missing documentation for protocol(s):$DOCLESS_PROTOCOLS"
+  exit 1
+fi
+
+UNUSED_PROTOCOLS=""
+README_PROTOCOLS=($(grep -P " ?.*?Protocol$" ${README} | awk '{print $NF}' | sort | uniq))
+for P in ${README_PROTOCOLS[@]}
+do
+  grep -qhE "impl ProtocolInfo for $P" ${ALL_INPUTS} || UNUSED_PROTOCOLS+="\n\t$P"
+done
+
+if [ ! -z "${UNUSED_PROTOCOLS}" ]; then
+  echo -e "Unused protocol(s) found in documentation:$UNUSED_PROTOCOLS"
   exit 1
 fi
 
