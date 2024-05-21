@@ -23,7 +23,7 @@ use gbl_storage::StorageError;
 /// Helper type GBL functions will return.
 pub type Result<T> = core::result::Result<T, IntegrationError>;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 /// Errors originating from GBL native logic.
 pub enum Error {
     ArithmeticOverflow,
@@ -133,7 +133,7 @@ macro_rules! composite_enum {
 
 composite_enum! {
     /// Top level error type that integrates errors from various dependency libraries.
-    #[derive(Debug)]
+    #[derive(Debug, PartialEq, Eq)]
     pub enum IntegrationError {
         /// Failed to get descriptor from AvbMeta
         AvbDescriptorError(DescriptorError),
