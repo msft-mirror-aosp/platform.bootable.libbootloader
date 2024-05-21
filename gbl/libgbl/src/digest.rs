@@ -13,9 +13,6 @@
 // limitations under the License.
 
 //! GBL Digest trait that defines interface for hash computation.
-//!
-//! Software implementation available in `sw_digest` module. Specifically
-//! [SwContext] and [SwDigest].
 
 /// List of supported algorithms
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]

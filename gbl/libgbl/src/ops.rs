@@ -19,15 +19,11 @@ extern crate alloc;
 #[cfg(test)]
 extern crate static_assertions;
 
-use crate::digest::{Algorithm, Context};
 use crate::error::{Error, Result as GblResult};
-#[cfg(feature = "sw_digest")]
-use crate::sw_digest::SwContext;
 #[cfg(feature = "alloc")]
 use alloc::ffi::CString;
 use core::{
     fmt::{Debug, Write},
-    ptr::NonNull,
     result::Result,
 };
 use gbl_storage::{
@@ -57,7 +53,7 @@ pub enum BootImages<'a> {
 }
 
 /// `GblOpsError` is the error type returned by required methods in `GblOps`.
-#[derive(Default, Debug)]
+#[derive(Default, Debug, PartialEq, Eq)]
 pub struct GblOpsError(Option<&'static str>);
 
 // https://stackoverflow.com/questions/41081240/idiomatic-callbacks-in-rust
@@ -70,9 +66,6 @@ missing:
 */
 /// Trait that defines callbacks that can be provided to Gbl.
 pub trait GblOps {
-    /// Digest context type
-    type Context: Context;
-
     /// Iterates block devices on the platform.
     ///
     /// For each block device, implementation should call `f` with its 1) `BlockIo` trait
@@ -99,23 +92,13 @@ pub trait GblOps {
     /// Implementation is not expected to return on success.
     fn boot(&mut self, boot_images: BootImages) -> Result<(), GblOpsError>;
 
-    /// Create digest object to use for hash computations.
-    ///
-    /// Context interface allows to update value adding more data to process.
-    /// # Arguments
-    ///
-    /// * algorithm - algorithm to use for hash computation.
-    fn new_digest(&self, algorithm: Algorithm) -> Self::Context {
-        Context::new(algorithm)
-    }
-
-    /// Calculate digest of provided data with requested algorithm. Single use unlike [new_digest]
-    /// flow.
-    fn digest(&self, algorithm: Algorithm, data: &[u8]) -> <Self::Context as Context>::Digest {
-        let mut ctx = self.new_digest(algorithm);
-        ctx.update(data);
-        ctx.finish()
-    }
+    // TODO(b/334962570): figure out how to plumb ops-provided hash implementations into
+    // libavb. The tricky part is that libavb hashing APIs are global with no way to directly
+    // correlate the implementation to a particular [GblOps] object, so we'll probably have to
+    // create a [Context] ahead of time and store it globally for the hashing APIs to access.
+    // However this would mean that [Context] must be a standalone object and cannot hold a
+    // reference to [GblOps], which may restrict implementations.
+    // fn new_digest(&self) -> Option<Self::Context>;
 
     /// Callback for when fastboot mode is requested.
     // Nevertype could be used here when it is stable https://github.com/serde-rs/serde/issues/812
@@ -214,19 +197,23 @@ impl<T: GblOps> Write for GblUtils<'_, '_, T> {
 #[derive(Debug)]
 pub struct DefaultGblOps {}
 
-#[cfg(feature = "sw_digest")]
 impl GblOps for DefaultGblOps {
-    type Context = SwContext;
-}
+    fn visit_block_devices(
+        &mut self,
+        f: &mut dyn FnMut(&mut dyn BlockIo, u64, u64),
+    ) -> Result<(), GblOpsError> {
+        Err(GblOpsError(Some("unimplemented")))
+    }
 
-#[cfg(test)]
-static_assertions::const_assert_eq!(core::mem::size_of::<DefaultGblOps>(), 0);
-impl DefaultGblOps {
-    /// Create new DefaultGblOps object
-    pub fn new() -> &'static mut Self {
-        let mut ptr: NonNull<Self> = NonNull::dangling();
-        // SAFETY: Self is a ZST, asserted above, and ptr is appropriately aligned and nonzero by
-        // NonNull::dangling()
-        unsafe { ptr.as_mut() }
+    fn console_put_char(&mut self, ch: u8) -> Result<(), GblOpsError> {
+        Err(GblOpsError(Some("unimplemented")))
+    }
+
+    fn should_stop_in_fastboot(&mut self) -> Result<bool, GblOpsError> {
+        Err(GblOpsError(Some("unimplemented")))
+    }
+
+    fn boot(&mut self, boot_images: BootImages) -> Result<(), GblOpsError> {
+        Err(GblOpsError(Some("unimplemented")))
     }
 }
