@@ -122,7 +122,7 @@ pub use multi_blocks::AsMultiBlockDevices;
 pub type Result<T> = core::result::Result<T, StorageError>;
 
 /// Error code for this library.
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum StorageError {
     ArithmeticOverflow(safemath::Error),
     BlockDeviceNotFound,
