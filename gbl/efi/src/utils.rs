@@ -28,7 +28,9 @@ use efi::{
     DeviceHandle, EfiEntry, EventType,
 };
 use fdt::FdtHeader;
-use gbl_storage::{required_scratch_size, AsBlockDevice, AsMultiBlockDevices, BlockIo};
+use gbl_storage::{
+    required_scratch_size, AsBlockDevice, AsMultiBlockDevices, BlockInfo, BlockIo, BlockIoError,
+};
 
 pub const EFI_DTB_TABLE_GUID: EfiGuid =
     EfiGuid::new(0xb1b621d5, 0xf19c, 0x41a5, [0x83, 0x0b, 0xd9, 0x15, 0x2c, 0x69, 0xaa, 0xe0]);
@@ -62,24 +64,32 @@ pub fn aligned_subslice(bytes: &mut [u8], alignment: usize) -> Result<&mut [u8]>
 pub struct EfiBlockIo<'a>(pub Protocol<'a, BlockIoProtocol>);
 
 impl BlockIo for EfiBlockIo<'_> {
-    fn block_size(&mut self) -> u64 {
-        self.0.media().unwrap().block_size as u64
+    fn info(&mut self) -> BlockInfo {
+        BlockInfo {
+            block_size: self.0.media().unwrap().block_size as u64,
+            num_blocks: (self.0.media().unwrap().last_block + 1) as u64,
+            alignment: core::cmp::max(1, self.0.media().unwrap().io_align as u64),
+        }
     }
 
-    fn num_blocks(&mut self) -> u64 {
-        (self.0.media().unwrap().last_block + 1) as u64
+    fn read_blocks(
+        &mut self,
+        blk_offset: u64,
+        out: &mut [u8],
+    ) -> core::result::Result<(), BlockIoError> {
+        self.0
+            .read_blocks(blk_offset, out)
+            .map_err(|_| BlockIoError::Others(Some("EFI BLOCK_IO protocol read error")))
     }
 
-    fn alignment(&mut self) -> u64 {
-        core::cmp::max(1, self.0.media().unwrap().io_align as u64)
-    }
-
-    fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> bool {
-        self.0.read_blocks(blk_offset, out).is_ok()
-    }
-
-    fn write_blocks(&mut self, blk_offset: u64, data: &[u8]) -> bool {
-        self.0.write_blocks(blk_offset, data).is_ok()
+    fn write_blocks(
+        &mut self,
+        blk_offset: u64,
+        data: &mut [u8],
+    ) -> core::result::Result<(), BlockIoError> {
+        self.0
+            .write_blocks(blk_offset, data)
+            .map_err(|_| BlockIoError::Others(Some("EFI BLOCK_IO protocol write error")))
     }
 }
 
