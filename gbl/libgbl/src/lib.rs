@@ -187,7 +187,6 @@ where
     G: GblOps,
 {
     ops: &'a mut G,
-    image_verification: bool,
     verify_slot: AvbVerifySlot,
 }
 
@@ -203,7 +202,7 @@ where
     ///   * `avb_ops` - implementation for `avb::Ops` that would be borrowed in result to prevent
     ///   changes to partitions until it is out of scope.
     ///   * `partitions_ram_map` - Partitions to verify with optional address to load image to.
-    ///   * `avb_verification_flags` - AVB verification flags/options
+    ///   * `slot_verify_flags` - AVB slot verification flags
     ///   * `boot_target` - [Optional] Boot Target
     ///
     /// # Returns
@@ -388,7 +387,7 @@ where
     ///   * `avb_ops` - implementation for `avb::Ops` that would be borrowed in result to prevent
     ///   changes to partitions until it is out of scope.
     ///   * `partitions_ram_map` - Partitions to verify and optional address for them to be loaded.
-    ///   * `avb_verification_flags` - AVB verification flags/options
+    ///   * `slot_verify_flags` - AVB slot verification flags
     ///   * `slot_cursor` - Cursor object that manages interactions with boot slot management
     ///   * `kernel_load_buffer` - Buffer for loading the kernel.
     ///   * `ramdisk_load_buffer` - Buffer for loading the ramdisk.
@@ -555,7 +554,6 @@ where
     G: GblOps,
 {
     ops: &'a mut G,
-    image_verification: bool,
     verify_slot: AvbVerifySlot,
 }
 
@@ -565,13 +563,7 @@ where
 {
     /// Start Gbl object creation, with default GblOps implementation
     pub fn new(ops: &'a mut G) -> Self {
-        GblBuilder { ops, image_verification: true, verify_slot: avb::slot_verify }
-    }
-
-    /// Disable image verification
-    pub fn no_image_verification(mut self) -> Self {
-        self.image_verification = false;
-        self
+        GblBuilder { ops, verify_slot: avb::slot_verify }
     }
 
     // Override [avb::slot_verify] for testing only
@@ -583,11 +575,7 @@ where
 
     /// Finish Gbl object construction and return it as the result
     pub fn build(self) -> Gbl<'a, G> {
-        Gbl {
-            ops: self.ops,
-            image_verification: self.image_verification,
-            verify_slot: self.verify_slot,
-        }
+        Gbl { ops: self.ops, verify_slot: self.verify_slot }
     }
 }
 
