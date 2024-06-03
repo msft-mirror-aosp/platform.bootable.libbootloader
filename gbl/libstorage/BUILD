@@ -29,21 +29,38 @@ rust_library(
     edition = "2021",
     deps = [
         "@crc32fast",
+        "@gbl//libsafemath",
+        "@zerocopy",
+    ],
+)
+
+rust_library(
+    name = "libstorage_testlib",
+    srcs = [
+        "src/testlib.rs",
+    ],
+    crate_name = "gbl_storage_testlib",
+    edition = "2021",
+    deps = [
+        ":libstorage",
+        "@crc32fast",
+        "@gbl//libsafemath",
         "@zerocopy",
     ],
 )
 
 rust_test(
     name = "libstorage_test",
-    compile_data = [
-        "@gbl//libstorage/test:gpt_test_1.bin",
-        "@gbl//libstorage/test:gpt_test_2.bin",
-        "@gbl//libstorage/test:boot_a.bin",
-        "@gbl//libstorage/test:boot_b.bin",
-        "@gbl//libstorage/test:vendor_boot_a.bin",
-        "@gbl//libstorage/test:vendor_boot_b.bin",
-    ],
+    compile_data = ["@gbl//libstorage/test:test_data"],
     crate = ":libstorage",
+    deps = [
+        ":libstorage_testlib",
+    ],
+)
+
+rust_test(
+    name = "libstorage_testlib_test",
+    crate = ":libstorage_testlib",
 )
 
 rust_doc_test(

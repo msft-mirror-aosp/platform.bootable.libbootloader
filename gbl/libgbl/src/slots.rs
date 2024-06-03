@@ -15,6 +15,9 @@
 /// Export the default implementation
 pub mod fuchsia;
 
+/// Reference Android implementation
+pub mod android;
+
 /// Generic functionality for partition backed ABR schemes
 pub mod partition;
 

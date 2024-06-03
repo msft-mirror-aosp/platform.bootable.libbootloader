@@ -16,48 +16,53 @@
 
  #include <arch.h>
 
-.global disable_cache_mmu
+.global disable_cache_mmu_and_jump
 
-/*
- * Cache flush and Cache/MMU disable should be done in order atomically to make sure RAM is up to
- * date.
+/* ---------------------------------------------------------------
+ * Disable cache, MMU and jump to the given address with arguments
+ *
+ * x0 - x3: Arguments for the target jump address.
+ * x4: The jump address.
+ * ---------------------------------------------------------------
  */
-disable_cache_mmu:
-    stp x29, x30, [sp, #-0x10]!
-    /*
-     * Call helper function "dcsw_op_all(DCCISW)" from ATF library to flush all cache.
-     */
-    mov x0, #DCCISW
-    bl dcsw_op_all
-    ic  iallu
-    isb
-
+disable_cache_mmu_and_jump:
     // Query current EL
-    mrs     x0, CurrentEL
-    cmp     x0, #(1 << 3)
-    beq     disable_cache_mmu_el2
+    mrs     x5, CurrentEL
+    cmp     x5, #(1 << 3)
+    beq     asm_disable_cache_mmu_el2
 
-disable_cache_mmu_el1:
-    mrs x1, sctlr_el1
-    bic x1, x1, #SCTLR_M_BIT
-    bic x1, x1, #SCTLR_C_BIT
-    bic x1, x1, #SCTLR_I_BIT
-    msr sctlr_el1, x1
-    b finish
-
-disable_cache_mmu_el2:
-    mrs x1, sctlr_el2
-    bic x1, x1, #SCTLR_M_BIT
-    bic x1, x1, #SCTLR_C_BIT
-    bic x1, x1, #SCTLR_I_BIT
-    msr sctlr_el2, x1
-
-finish:
-    mov x0, #DCCISW
-    bl dcsw_op_all
+    /*
+     * Invalidate instruction cache before disabling it.
+     */
     ic  iallu
     isb
+
+asm_disable_cache_mmu_el1:
+    mrs x5, sctlr_el1
+    bic x5, x5, #SCTLR_M_BIT
+    bic x5, x5, #SCTLR_C_BIT
+    bic x5, x5, #SCTLR_I_BIT
+    msr sctlr_el1, x5
+    b asm_finish
+
+asm_disable_cache_mmu_el2:
+    mrs x5, sctlr_el2
+    bic x5, x5, #SCTLR_M_BIT
+    bic x5, x5, #SCTLR_C_BIT
+    bic x5, x5, #SCTLR_I_BIT
+    msr sctlr_el2, x5
+
+asm_finish:
+    ic  iallu
+    isb
+    /*
+     * Invalidate TLB.
+     */
     tlbi vmalle1
 
-    ldp x29, x30, [sp], #0x10
-    ret
+    br x4
+    /*
+     * Prevent speculative execution.
+     */
+    dsb nsh
+    isb

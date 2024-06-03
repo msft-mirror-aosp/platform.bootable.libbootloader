@@ -243,7 +243,7 @@ pub fn load_android_simple<'a>(
         })?;
     }
     // Check if there is a device specific bootconfig partition.
-    match gpt_devices.partition_size("bootconfig") {
+    match gpt_devices.find_partition("bootconfig").and_then(|v| v.size()) {
         Ok(sz) => {
             bootconfig_builder.add_with(|out| {
                 // For proof-of-concept only, we just load as much as possible and figure out the
@@ -371,7 +371,7 @@ pub fn android_boot_demo(entry: EfiEntry) -> Result<()> {
     {
         let _ = exit_boot_services(entry, remains)?;
         // SAFETY: We currently targets at Cuttlefish emulator where images are provided valid.
-        unsafe { boot::aarch64::jump_linux_el2_or_lower(kernel, fdt) };
+        unsafe { boot::aarch64::jump_linux_el2_or_lower(kernel, ramdisk, fdt) };
     }
 
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
@@ -413,7 +413,7 @@ pub fn android_boot_demo(entry: EfiEntry) -> Result<()> {
         let boot_hart_id = entry
             .system_table()
             .boot_services()
-            .find_first_and_open::<efi::RiscvBootProtocol>()?
+            .find_first_and_open::<efi::protocol::riscv::RiscvBootProtocol>()?
             .get_boot_hartid()?;
         efi_println!(entry, "riscv boot_hart_id: {}", boot_hart_id);
         let _ = exit_boot_services(entry, remains)?;

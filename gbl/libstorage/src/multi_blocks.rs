@@ -12,14 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{mul, AsBlockDevice, BlockIo, GptEntry, Result, StorageError};
+use crate::{AsBlockDevice, BlockIo, Partition, Result, StorageError};
 
 /// `AsMultiBlockDevices` provides APIs for finding/reading/writing raw data or GPT partitions from
 /// multiple block devices.
 pub trait AsMultiBlockDevices {
-    /// Calls closure `f` for each `AsBlockDevice` object and its unique `id` until reaching end or
-    /// `f` returns true.
-    fn for_each_until(&mut self, f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64) -> bool);
+    /// Calls closure `f` for each `AsBlockDevice` object and its unique `id` until reaching end.
+    fn for_each(
+        &mut self,
+        f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64),
+    ) -> core::result::Result<(), Option<&'static str>>;
+
+    /// Calls closure `f` for each `AsBlockDevice` object and its unique `id` until reaching end of
+    /// returnning true.
+    fn for_each_until(
+        &mut self,
+        f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64) -> bool,
+    ) -> Result<()> {
+        let mut stop = false;
+        self.for_each(&mut |io, id| {
+            stop = stop || f(io, id);
+        })
+        .map_err(|v| StorageError::FailedGettingBlockDevices(v))
+    }
 
     /// Gets the block device with the given id.
     fn get(&mut self, id: u64) -> Result<SelectedBlockDevice>
@@ -33,7 +48,7 @@ pub trait AsMultiBlockDevices {
     /// Syncs gpt for all block devices. Caller provides a callback for handling sync error for
     /// each block device.
     fn sync_gpt_all(&mut self, f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64, StorageError)) {
-        self.for_each_until(&mut |v, id| {
+        let _ = self.for_each_until(&mut |v, id| {
             match v.sync_gpt() {
                 Err(e) => f(v, id, e),
                 _ => {}
@@ -43,37 +58,26 @@ pub trait AsMultiBlockDevices {
     }
 
     /// Checks that a partition exists and is unique among all block devices with GPT.
-    fn check_part(&mut self, part: &str) -> Result<()> {
-        let mut count = 0usize;
-        self.for_each_until(&mut |v, _| {
-            count += (|| -> Result<bool> { Ok(v.find_partition(part).is_ok()) })().unwrap_or(false)
-                as usize;
-            count > 1
-        });
-        match count {
-            1 => Ok(()),
-            0 => Err(StorageError::NotExist),
-            _ => Err(StorageError::PartitionNotUnique),
-        }
+    ///
+    /// Returns the block device ID for the partition.
+    fn check_part(&mut self, part: &str) -> Result<(u64, Partition)> {
+        let mut res = Err(StorageError::NotExist);
+        self.for_each_until(&mut |v, id| {
+            res = match v.find_partition(part).map(|v| (id, v)) {
+                Ok(_) if res.is_ok() => Err(StorageError::PartitionNotUnique),
+                v => v.or(res),
+            };
+            res.err() == Some(StorageError::PartitionNotUnique)
+        })?;
+        res
     }
 
     /// Returns the block size and `GptEntry` for a partition.
     ///
     /// Returns Ok(()) if the partition is found and unique among all block devices.
-    fn find_partition(&mut self, part: &str) -> Result<(u64, GptEntry)> {
+    fn find_partition(&mut self, part: &str) -> Result<Partition> {
         self.check_part(part)?;
-        until_ok(self, |dev, _| {
-            let blk_sz = dev.block_size()?;
-            dev.find_partition(part).map(|v| (blk_sz, v))
-        })
-    }
-
-    /// Returns the size of a partition.
-    ///
-    /// Returns Ok(()) if the partition is found and unique among all block devices.
-    fn partition_size(&mut self, part: &str) -> Result<u64> {
-        let (block_size, entry) = self.find_partition(part)?;
-        Ok(mul(block_size, entry.blocks()?)?)
+        until_ok(self, |dev, _| dev.find_partition(part))
     }
 
     /// Reads a GPT partition.
@@ -107,6 +111,15 @@ pub trait AsMultiBlockDevices {
     }
 }
 
+impl<T: ?Sized + AsMultiBlockDevices> AsMultiBlockDevices for &mut T {
+    fn for_each(
+        &mut self,
+        f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64),
+    ) -> core::result::Result<(), Option<&'static str>> {
+        (*self).for_each(&mut |io, id| f(io, id))
+    }
+}
+
 /// Iterates and runs a closure on each block device until `Ok(R)` is returned.
 fn until_ok<F, R>(devs: &mut (impl AsMultiBlockDevices + ?Sized), mut f: F) -> Result<R>
 where
@@ -116,16 +129,12 @@ where
     devs.for_each_until(&mut |v, id| {
         res = f(v, id);
         res.is_ok()
-    });
+    })?;
     res
 }
 
 /// Finds the first block device with the given ID and runs a closure with it.
-pub fn with_id<F, R>(
-    devs: &mut (impl AsMultiBlockDevices + ?Sized),
-    dev_id: u64,
-    mut f: F,
-) -> Result<R>
+fn with_id<F, R>(devs: &mut (impl AsMultiBlockDevices + ?Sized), dev_id: u64, mut f: F) -> Result<R>
 where
     F: FnMut(&mut dyn AsBlockDevice) -> R,
 {
@@ -150,27 +159,16 @@ impl AsBlockDevice for SelectedBlockDevice<'_> {
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use crate::gpt::test::gpt_block_device;
-    use crate::test::TestBlockDevice;
-    use crate::AsMultiBlockDevices;
-
-    impl<B: AsBlockDevice> AsMultiBlockDevices for Vec<B> {
-        fn for_each_until(&mut self, f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64) -> bool) {
-            for (idx, ele) in self.iter_mut().enumerate() {
-                if f(ele, u64::try_from(idx).unwrap()) {
-                    return;
-                }
-            }
-        }
-    }
+    use gbl_storage_testlib::{
+        AsBlockDevice, AsMultiBlockDevices, TestBlockDeviceBuilder, TestMultiBlockDevices,
+    };
 
     #[test]
     fn test_get() {
-        let devs = &mut vec![
-            gpt_block_device(128, include_bytes!("../test/gpt_test_1.bin")),
-            gpt_block_device(128, include_bytes!("../test/gpt_test_2.bin")),
-        ];
+        let mut devs: TestMultiBlockDevices = TestMultiBlockDevices(vec![
+            include_bytes!("../test/gpt_test_1.bin").as_slice().into(),
+            include_bytes!("../test/gpt_test_2.bin").as_slice().into(),
+        ]);
         devs.sync_gpt_all(&mut |_, _, _| panic!("GPT sync failed"));
         devs.get(0).unwrap();
         devs.get(1).unwrap();
@@ -182,7 +180,8 @@ mod test {
         let off = 512; // Randomly selected offset.
         let blk_0 = include_bytes!("../test/gpt_test_1.bin");
         let blk_1 = include_bytes!("../test/gpt_test_2.bin");
-        let mut devs = vec![gpt_block_device(128, blk_0), gpt_block_device(128, blk_1)];
+        let mut devs =
+            TestMultiBlockDevices(vec![blk_0.as_slice().into(), blk_1.as_slice().into()]);
 
         let mut out = vec![0u8; blk_0[off..].len()];
         devs.get(0).unwrap().read(u64::try_from(off).unwrap(), &mut out[..]).unwrap();
@@ -196,46 +195,58 @@ mod test {
     #[test]
     fn test_multi_block_write() {
         let off = 512; // Randomly selected offset.
-        let mut blk_0 = Vec::from(include_bytes!("../test/gpt_test_1.bin"));
-        let mut blk_1 = Vec::from(include_bytes!("../test/gpt_test_2.bin"));
-        let mut devs = vec![
-            gpt_block_device(128, &vec![0u8; blk_0.len()][..]),
-            gpt_block_device(128, &vec![0u8; blk_1.len()][..]),
-        ];
+        let mut blk_0 = include_bytes!("../test/gpt_test_1.bin").to_vec();
+        let mut blk_1 = include_bytes!("../test/gpt_test_2.bin").to_vec();
+        let mut devs = TestMultiBlockDevices(vec![
+            TestBlockDeviceBuilder::new().set_size(blk_0.len()).build(),
+            TestBlockDeviceBuilder::new().set_size(blk_1.len()).build(),
+        ]);
 
         devs.get(0).unwrap().write(u64::try_from(off).unwrap(), &mut blk_0[off..]).unwrap();
-        assert_eq!(blk_0[off..], devs[0].io.storage[off..]);
+        assert_eq!(blk_0[off..], devs.0[0].io.storage[off..]);
 
         devs.get(1).unwrap().write(u64::try_from(off).unwrap(), &mut blk_1[off..]).unwrap();
-        assert_eq!(blk_1[off..], devs[1].io.storage[off..]);
+        assert_eq!(blk_1[off..], devs.0[1].io.storage[off..]);
     }
 
     #[test]
     fn test_multi_block_gpt_partition_size() {
-        let devs = &mut vec![
-            gpt_block_device(128, include_bytes!("../test/gpt_test_1.bin")),
-            gpt_block_device(128, include_bytes!("../test/gpt_test_2.bin")),
-        ];
+        let mut devs = TestMultiBlockDevices(vec![
+            include_bytes!("../test/gpt_test_1.bin").as_slice().into(),
+            include_bytes!("../test/gpt_test_2.bin").as_slice().into(),
+        ]);
         devs.sync_gpt_all(&mut |_, _, _| panic!("GPT sync failed"));
 
-        assert_eq!(devs.partition_size("boot_a").unwrap(), 8 * 1024);
-        assert_eq!(devs.get(0).unwrap().partition_size("boot_a").unwrap(), 8 * 1024);
+        assert_eq!(devs.find_partition("boot_a").map(|v| v.size()).unwrap(), Ok(8 * 1024));
+        assert_eq!(
+            devs.get(0).unwrap().find_partition("boot_a").map(|v| v.size()).unwrap(),
+            Ok(8 * 1024)
+        );
 
-        assert_eq!(devs.partition_size("boot_b").unwrap(), 12 * 1024);
-        assert_eq!(devs.get(0).unwrap().partition_size("boot_b").unwrap(), 12 * 1024);
+        assert_eq!(devs.find_partition("boot_b").map(|v| v.size()).unwrap(), Ok(12 * 1024));
+        assert_eq!(
+            devs.get(0).unwrap().find_partition("boot_b").map(|v| v.size()).unwrap(),
+            Ok(12 * 1024)
+        );
 
-        assert_eq!(devs.partition_size("vendor_boot_a").unwrap(), 4 * 1024);
-        assert_eq!(devs.get(1).unwrap().partition_size("vendor_boot_a").unwrap(), 4 * 1024);
+        assert_eq!(devs.find_partition("vendor_boot_a").map(|v| v.size()).unwrap(), Ok(4 * 1024));
+        assert_eq!(
+            devs.get(1).unwrap().find_partition("vendor_boot_a").map(|v| v.size()).unwrap(),
+            Ok(4 * 1024)
+        );
 
-        assert_eq!(devs.partition_size("vendor_boot_b").unwrap(), 6 * 1024);
-        assert_eq!(devs.get(1).unwrap().partition_size("vendor_boot_b").unwrap(), 6 * 1024);
+        assert_eq!(devs.find_partition("vendor_boot_b").map(|v| v.size()).unwrap(), Ok(6 * 1024));
+        assert_eq!(
+            devs.get(1).unwrap().find_partition("vendor_boot_b").map(|v| v.size()).unwrap(),
+            Ok(6 * 1024)
+        );
     }
 
     /// A test helper for `AsMultiBlockDevices::read_gpt_partition`
     /// It verifies that data read partition `part` at offset `off` is the same as
     /// `expected[off..]`.
     fn check_read_partition(
-        devs: &mut Vec<TestBlockDevice>,
+        devs: &mut TestMultiBlockDevices,
         part: &str,
         off: u64,
         part_data: &[u8],
@@ -250,10 +261,10 @@ mod test {
     fn test_multi_block_gpt_read() {
         let off = 512u64; // Randomly selected offset.
 
-        let mut devs = vec![
-            gpt_block_device(128, include_bytes!("../test/gpt_test_1.bin")),
-            gpt_block_device(128, include_bytes!("../test/gpt_test_2.bin")),
-        ];
+        let mut devs = TestMultiBlockDevices(vec![
+            include_bytes!("../test/gpt_test_1.bin").as_slice().into(),
+            include_bytes!("../test/gpt_test_2.bin").as_slice().into(),
+        ]);
         devs.sync_gpt_all(&mut |_, _, _| panic!("GPT sync failed"));
 
         let expect_boot_a = include_bytes!("../test/boot_a.bin");
@@ -272,7 +283,7 @@ mod test {
     /// A test helper for `AsMultiBlockDevices::write_gpt_partition`
     /// It verifies that `data[off..]` is correctly written to partition `part` at offset `off`.
     fn check_write_partition(
-        devs: &mut Vec<TestBlockDevice>,
+        devs: &mut TestMultiBlockDevices,
         part: &str,
         off: u64,
         data: &mut [u8],
@@ -285,7 +296,7 @@ mod test {
         assert_eq!(out, to_write.to_vec());
 
         to_write.reverse();
-        devs.write_gpt_partition(part, off, to_write).unwrap();
+        devs.write_gpt_partition_mut(part, off, to_write).unwrap();
         devs.read_gpt_partition(part, off, &mut out[..]).unwrap();
         assert_eq!(out, to_write.to_vec());
     }
@@ -294,10 +305,10 @@ mod test {
     fn test_multi_block_gpt_write() {
         let off = 512u64; // Randomly selected offset.
 
-        let mut devs = vec![
-            gpt_block_device(128, include_bytes!("../test/gpt_test_1.bin")),
-            gpt_block_device(128, include_bytes!("../test/gpt_test_2.bin")),
-        ];
+        let mut devs = TestMultiBlockDevices(vec![
+            include_bytes!("../test/gpt_test_1.bin").as_slice().into(),
+            include_bytes!("../test/gpt_test_2.bin").as_slice().into(),
+        ]);
         devs.sync_gpt_all(&mut |_, _, _| panic!("GPT sync failed"));
 
         let expect_boot_a = &mut include_bytes!("../test/boot_a.bin").to_vec();
@@ -319,15 +330,14 @@ mod test {
 
     #[test]
     fn test_none_block_id_fail_with_non_unique_partition() {
-        let mut devs = vec![
-            gpt_block_device(128, include_bytes!("../test/gpt_test_1.bin")),
-            gpt_block_device(128, include_bytes!("../test/gpt_test_1.bin")),
-        ];
+        let mut devs = TestMultiBlockDevices(vec![
+            include_bytes!("../test/gpt_test_1.bin").as_slice().into(),
+            include_bytes!("../test/gpt_test_1.bin").as_slice().into(),
+        ]);
         devs.sync_gpt_all(&mut |_, _, _| panic!("GPT sync failed"));
         assert!(devs.read_gpt_partition("boot_a", 0, &mut []).is_err());
         assert!(devs.write_gpt_partition_mut("boot_a", 0, &mut []).is_err());
         assert!(devs.write_gpt_partition("boot_a", 0, &mut []).is_err());
         assert!(devs.find_partition("boot_a").is_err());
-        assert!(devs.partition_size("boot_a").is_err());
     }
 }

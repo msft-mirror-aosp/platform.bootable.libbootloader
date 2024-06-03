@@ -111,51 +111,63 @@ use core::cmp::min;
 // Selective export of submodule types.
 mod gpt;
 use gpt::Gpt;
-pub use gpt::GptEntry;
+pub use gpt::{GptEntry, GptHeader, GPT_MAGIC, GPT_NAME_LEN_U16};
+
+use safemath::SafeNum;
 
 mod multi_blocks;
-pub use multi_blocks::{with_id, AsMultiBlockDevices};
+pub use multi_blocks::AsMultiBlockDevices;
 
 /// The type of Result used in this library.
 pub type Result<T> = core::result::Result<T, StorageError>;
 
 /// Error code for this library.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum StorageError {
-    ArithmeticOverflow,
-    OutOfRange,
-    ScratchTooSmall,
+    ArithmeticOverflow(safemath::Error),
     BlockDeviceNotFound,
     BlockIoError,
     BlockIoNotProvided,
+    FailedGettingBlockDevices(Option<&'static str>),
     InvalidInput,
     NoValidGpt,
     NotExist,
+    OutOfRange,
     PartitionNotUnique,
-    U64toUSizeOverflow,
+    ScratchTooSmall,
 }
 
-impl Into<&'static str> for StorageError {
-    fn into(self) -> &'static str {
-        match self {
-            StorageError::ArithmeticOverflow => "Arithmetic overflow",
-            StorageError::OutOfRange => "Out of range",
-            StorageError::ScratchTooSmall => "Not enough scratch buffer",
-            StorageError::BlockDeviceNotFound => "Block device not found",
-            StorageError::BlockIoError => "Block IO error",
-            StorageError::BlockIoNotProvided => "Block IO is not provided",
-            StorageError::InvalidInput => "Invalid input",
-            StorageError::NoValidGpt => "GPT not found",
-            StorageError::NotExist => "The specified partition could not be found",
-            StorageError::PartitionNotUnique => "Partition is found on multiple block devices",
-            StorageError::U64toUSizeOverflow => "u64 to usize fails",
-        }
+impl From<safemath::Error> for StorageError {
+    fn from(err: safemath::Error) -> Self {
+        Self::ArithmeticOverflow(err)
+    }
+}
+
+impl From<core::num::TryFromIntError> for StorageError {
+    fn from(_: core::num::TryFromIntError) -> Self {
+        Self::OutOfRange
     }
 }
 
 impl core::fmt::Display for StorageError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}", Into::<&'static str>::into(*self))
+        match self {
+            StorageError::ArithmeticOverflow(e) => write!(f, "Arithmetic overflow {:?}", e),
+            StorageError::BlockDeviceNotFound => write!(f, "Block device not found"),
+            StorageError::BlockIoError => write!(f, "Block IO error"),
+            StorageError::BlockIoNotProvided => write!(f, "Block IO is not provided"),
+            StorageError::FailedGettingBlockDevices(v) => {
+                write!(f, "Failed to iterate all block devices {:?}", v)
+            }
+            StorageError::InvalidInput => write!(f, "Invalid input"),
+            StorageError::NoValidGpt => write!(f, "GPT not found"),
+            StorageError::NotExist => write!(f, "The specified partition could not be found"),
+            StorageError::OutOfRange => write!(f, "Out of range"),
+            StorageError::PartitionNotUnique => {
+                write!(f, "Partition is found on multiple block devices")
+            }
+            StorageError::ScratchTooSmall => write!(f, "Not enough scratch buffer"),
+        }
     }
 }
 
@@ -203,23 +215,59 @@ pub trait BlockIo {
     fn write_blocks(&mut self, blk_offset: u64, data: &[u8]) -> bool;
 }
 
-/// `GptEntryIterator` is returned by `AsBlockDevice::partition_iter()` and can be used to iterate
+/// `Partition` contains information about a GPT partition.
+#[derive(Debug, Copy, Clone)]
+pub struct Partition {
+    entry: GptEntry,
+    block_size: u64,
+}
+
+impl Partition {
+    /// Creates a new instance.
+    fn new(entry: GptEntry, block_size: u64) -> Self {
+        Self { entry, block_size }
+    }
+
+    /// Returns the partition size in bytes.
+    pub fn size(&self) -> Result<u64> {
+        (SafeNum::from(self.entry.blocks()?) * self.block_size)
+            .try_into()
+            .map_err(|e: safemath::Error| e.into())
+    }
+
+    /// Returns the block size of this partition.
+    pub fn block_size(&self) -> u64 {
+        self.block_size
+    }
+
+    /// Returns the partition entry structure in the GPT header.
+    pub fn gpt_entry(&self) -> &GptEntry {
+        &self.entry
+    }
+}
+
+/// `PartitionIterator` is returned by `AsBlockDevice::partition_iter()` and can be used to iterate
 /// all GPT partition entries.
-pub struct GptEntryIterator<'a> {
+pub struct PartitionIterator<'a> {
     dev: &'a mut dyn AsBlockDevice,
     idx: usize,
 }
 
-impl Iterator for GptEntryIterator<'_> {
-    type Item = GptEntry;
+impl Iterator for PartitionIterator<'_> {
+    type Item = Partition;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let res =
-            with_partitioned_scratch(self.dev, |_, _, gpt_buffer, _| -> Result<Option<GptEntry>> {
-                Ok(Gpt::from_existing(gpt_buffer)?.entries()?.get(self.idx).map(|v| *v))
-            })
-            .ok()?
-            .ok()??;
+        let res = with_partitioned_scratch(
+            self.dev,
+            |io, _, gpt_buffer, _| -> Result<Option<Partition>> {
+                Ok(Gpt::from_existing(gpt_buffer)?
+                    .entries()?
+                    .get(self.idx)
+                    .map(|v| Partition::new(*v, io.block_size())))
+            },
+        )
+        .ok()?
+        .ok()??;
         self.idx += 1;
         Some(res)
     }
@@ -260,14 +308,19 @@ pub trait AsBlockDevice {
     ///   smaller bound on it, it is recommended to always return 128.
     fn with(&mut self, f: &mut dyn FnMut(&mut dyn BlockIo, &mut [u8], u64));
 
-    // Returns the block size of the underlying `BlockIo`
+    /// Returns the block size of the underlying `BlockIo`
     fn block_size(&mut self) -> Result<u64> {
         with_partitioned_scratch(self, |io, _, _, _| io.block_size())
     }
 
-    // Returns the number of blocks of the underlying `BlockIo`
+    /// Returns the number of blocks of the underlying `BlockIo`
     fn num_blocks(&mut self) -> Result<u64> {
         with_partitioned_scratch(self, |io, _, _, _| io.num_blocks())
+    }
+
+    /// Returns the total size in number of bytes.
+    fn total_size(&mut self) -> Result<u64> {
+        Ok((SafeNum::from(self.block_size()?) * self.num_blocks()?).try_into()?)
     }
 
     /// Read data from the block device.
@@ -339,33 +392,25 @@ pub trait AsBlockDevice {
     }
 
     /// Returns an iterator to GPT partition entries.
-    fn partition_iter(&mut self) -> GptEntryIterator
+    fn partition_iter(&mut self) -> PartitionIterator
     where
         Self: Sized,
     {
-        GptEntryIterator { dev: self, idx: 0 }
+        PartitionIterator { dev: self, idx: 0 }
     }
 
-    /// Returns the `GptEntry` for a partition.
+    /// Returns the `Partition` for a partition.
     ///
     /// # Args
     ///
     /// * `part`: Name of the partition.
-    fn find_partition(&mut self, part: &str) -> Result<GptEntry> {
-        with_partitioned_scratch(self, |_, _, gpt_buffer, _| {
-            Ok(Gpt::from_existing(gpt_buffer)?.find_partition(part).map(|v| *v)?)
+    fn find_partition(&mut self, part: &str) -> Result<Partition> {
+        with_partitioned_scratch(self, |io, _, gpt_buffer, _| {
+            Ok(Partition::new(
+                *Gpt::from_existing(gpt_buffer)?.find_partition(part)?,
+                io.block_size(),
+            ))
         })?
-    }
-
-    /// Returns the size of a partition.
-    ///
-    /// # Args
-    ///
-    /// * `part`: Name of the partition.
-    fn partition_size(&mut self, part: &str) -> Result<u64> {
-        let blk_sz = self.block_size()?;
-        let entry = self.find_partition(part)?;
-        mul(blk_sz, entry.blocks()?)
     }
 
     /// Read a GPT partition on a block device
@@ -485,12 +530,12 @@ pub fn required_scratch_size(
     io: &mut (impl BlockIo + ?Sized),
     max_gpt_entries: u64,
 ) -> Result<usize> {
-    let alignment_size = alignment_scratch_size(io)?;
+    let alignment_size: SafeNum = alignment_scratch_size(io)?.into();
     let gpt_buffer_size = match max_gpt_entries {
         0 => 0,
         v => Gpt::required_buffer_size(v)?,
     };
-    alignment_size.checked_add(gpt_buffer_size).ok_or(StorageError::ArithmeticOverflow)
+    (alignment_size + gpt_buffer_size).try_into().map_err(|e: safemath::Error| e.into())
 }
 
 /// A helper that wraps `AsBlockDevice::with` and additionally partitions the scratch buffer into
@@ -515,70 +560,32 @@ where
     res
 }
 
-/// Add two u64 integers and check overflow
-fn add(lhs: u64, rhs: u64) -> Result<u64> {
-    lhs.checked_add(rhs).ok_or_else(|| StorageError::ArithmeticOverflow)
-}
-
-/// Substract two u64 integers and check overflow
-fn sub(lhs: u64, rhs: u64) -> Result<u64> {
-    lhs.checked_sub(rhs).ok_or_else(|| StorageError::ArithmeticOverflow)
-}
-
-/// Calculate remainders and check overflow
-fn rem(lhs: u64, rhs: u64) -> Result<u64> {
-    lhs.checked_rem(rhs).ok_or_else(|| StorageError::ArithmeticOverflow)
-}
-
-/// Multiply two numbers and check overflow
-fn mul(lhs: u64, rhs: u64) -> Result<u64> {
-    lhs.checked_mul(rhs).ok_or_else(|| StorageError::ArithmeticOverflow)
-}
-
-/// Divide two numbers and check overflow
-fn div(lhs: u64, rhs: u64) -> Result<u64> {
-    lhs.checked_div(rhs).ok_or_else(|| StorageError::ArithmeticOverflow)
-}
-
 /// Check if `value` is aligned to (multiples of) `alignment`
 /// It can fail if the remainider calculation fails overflow check.
-fn is_aligned(value: u64, alignment: u64) -> Result<bool> {
-    Ok(rem(value, alignment)? == 0)
+pub fn is_aligned(value: SafeNum, alignment: SafeNum) -> Result<bool> {
+    Ok(u64::try_from(value % alignment)? == 0)
 }
 
 /// Check if `buffer` address is aligned to `alignment`
 /// It can fail if the remainider calculation fails overflow check.
-fn is_buffer_aligned(buffer: &[u8], alignment: u64) -> Result<bool> {
-    is_aligned(buffer.as_ptr() as u64, alignment)
-}
-
-/// Round down `size` according to `alignment`.
-/// It can fail if any arithmetic operation fails overflow check
-fn round_down(size: u64, alignment: u64) -> Result<u64> {
-    sub(size, rem(size, alignment)?)
-}
-
-/// Round up `size` according to `alignment`.
-/// It can fail if any arithmetic operation fails overflow check
-fn round_up(size: u64, alignment: u64) -> Result<u64> {
-    // equivalent to round_down(size + alignment - 1, alignment)
-    round_down(add(size, sub(alignment, 1)?)?, alignment)
-}
-
-/// Check and convert u64 into usize
-fn to_usize(val: u64) -> Result<usize> {
-    val.try_into().map_err(|_| StorageError::U64toUSizeOverflow)
+pub fn is_buffer_aligned(buffer: &[u8], alignment: u64) -> Result<bool> {
+    is_aligned((buffer.as_ptr() as usize).into(), alignment.into())
 }
 
 /// Check read/write range and calculate offset in number of blocks.
-fn check_range(blk_io: &mut (impl BlockIo + ?Sized), offset: u64, buffer: &[u8]) -> Result<u64> {
-    // The following should be invariants if implementation is correct.
-    debug_assert!(is_aligned(offset, blk_io.block_size())?);
-    debug_assert!(is_aligned(buffer.len() as u64, blk_io.block_size())?);
-    debug_assert!(is_buffer_aligned(buffer, blk_io.alignment())?);
-    let blk_offset = offset / blk_io.block_size();
-    let blk_count = buffer.len() as u64 / blk_io.block_size();
-    match add(blk_offset, blk_count)? <= blk_io.num_blocks() {
+fn check_range(
+    blk_io: &mut (impl BlockIo + ?Sized),
+    offset: u64,
+    buffer: &[u8],
+) -> Result<SafeNum> {
+    let offset: SafeNum = offset.into();
+    let block_size: SafeNum = blk_io.block_size().into();
+    debug_assert!(is_aligned(offset, block_size)?);
+    debug_assert!(is_aligned(buffer.len().into(), block_size)?);
+    debug_assert!(is_buffer_aligned(buffer, blk_io.alignment().into())?);
+    let blk_offset = offset / block_size;
+    let blk_count = SafeNum::from(buffer.len()) / block_size;
+    match u64::try_from(blk_offset + blk_count)? <= blk_io.num_blocks() {
         true => Ok(blk_offset),
         false => Err(StorageError::OutOfRange),
     }
@@ -590,7 +597,7 @@ fn read_aligned_all(
     offset: u64,
     out: &mut [u8],
 ) -> Result<()> {
-    let blk_offset = check_range(blk_io, offset, out)?;
+    let blk_offset = check_range(blk_io, offset, out).map(u64::try_from)??;
     if blk_io.read_blocks(blk_offset, out) {
         return Ok(());
     }
@@ -606,20 +613,23 @@ fn read_aligned_offset_and_buffer(
     out: &mut [u8],
     scratch: &mut [u8],
 ) -> Result<()> {
-    debug_assert!(is_aligned(offset, blk_io.block_size())?);
+    let block_size = SafeNum::from(blk_io.block_size());
+    debug_assert!(is_aligned(offset.into(), block_size)?);
     debug_assert!(is_buffer_aligned(out, blk_io.alignment())?);
 
-    let aligned_read = round_down(out.len() as u64, blk_io.block_size())?;
+    let aligned_read: usize = SafeNum::from(out.len()).round_down(block_size).try_into()?;
+
     if aligned_read > 0 {
-        read_aligned_all(blk_io, offset, &mut out[..to_usize(aligned_read)?])?;
+        read_aligned_all(blk_io, offset, &mut out[..aligned_read])?;
     }
-    let unaligned = &mut out[to_usize(aligned_read)?..];
-    if unaligned.len() == 0 {
+    let unaligned = &mut out[aligned_read..];
+    if unaligned.is_empty() {
         return Ok(());
     }
     // Read unalinged part.
-    let block_scratch = &mut scratch[..to_usize(blk_io.block_size())?];
-    read_aligned_all(blk_io, add(offset, aligned_read)?, block_scratch)?;
+    let block_scratch = &mut scratch[..block_size.try_into()?];
+    let aligned_offset = SafeNum::from(offset) + aligned_read;
+    read_aligned_all(blk_io, aligned_offset.try_into()?, block_scratch)?;
     unaligned.clone_from_slice(&block_scratch[..unaligned.len()]);
     Ok(())
 }
@@ -639,67 +649,61 @@ fn read_aligned_buffer(
 ) -> Result<()> {
     debug_assert!(is_buffer_aligned(out, blk_io.alignment())?);
 
-    if is_aligned(offset, blk_io.block_size())? {
+    if is_aligned(offset.into(), blk_io.block_size().into())? {
         return read_aligned_offset_and_buffer(blk_io, offset, out, scratch);
     }
+    let offset = SafeNum::from(offset);
+    let aligned_start: u64 =
+        min(offset.round_up(blk_io.block_size()).try_into()?, (offset + out.len()).try_into()?);
 
-    let aligned_start = min(round_up(offset, blk_io.block_size())?, add(offset, out.len() as u64)?);
-    let aligned_relative_offset = sub(aligned_start, offset)?;
-    if aligned_relative_offset < out.len() as u64 {
-        if is_buffer_aligned(&out[to_usize(aligned_relative_offset)?..], blk_io.alignment())? {
+    let aligned_relative_offset: usize = (SafeNum::from(aligned_start) - offset).try_into()?;
+    if aligned_relative_offset < out.len() {
+        if is_buffer_aligned(&out[aligned_relative_offset..], blk_io.alignment())? {
             // If new output address is aligned, read directly.
             read_aligned_offset_and_buffer(
                 blk_io,
                 aligned_start,
-                &mut out[to_usize(aligned_relative_offset)?..],
+                &mut out[aligned_relative_offset..],
                 scratch,
             )?;
         } else {
             // Otherwise read into `out` (assumed aligned) and memmove to the correct
             // position
-            let read_len = sub(out.len() as u64, aligned_relative_offset)?;
-            read_aligned_offset_and_buffer(
-                blk_io,
-                aligned_start,
-                &mut out[..to_usize(read_len)?],
-                scratch,
-            )?;
-            out.copy_within(..to_usize(read_len)?, to_usize(aligned_relative_offset)?);
+            let read_len: usize =
+                (SafeNum::from(out.len()) - aligned_relative_offset).try_into()?;
+            read_aligned_offset_and_buffer(blk_io, aligned_start, &mut out[..read_len], scratch)?;
+            out.copy_within(..read_len, aligned_relative_offset);
         }
     }
 
     // Now read the unaligned part
-    let block_scratch = &mut scratch[..to_usize(blk_io.block_size())?];
-    let round_down_offset = round_down(offset, blk_io.block_size())?;
-    read_aligned_all(blk_io, round_down_offset, block_scratch)?;
-    let offset_relative = sub(offset, round_down_offset)?;
-    let unaligned = &mut out[..to_usize(aligned_relative_offset)?];
+    let block_scratch = &mut scratch[..SafeNum::from(blk_io.block_size()).try_into()?];
+    let round_down_offset = offset.round_down(blk_io.block_size());
+    read_aligned_all(blk_io, round_down_offset.try_into()?, block_scratch)?;
+    let offset_relative = offset - round_down_offset;
+    let unaligned = &mut out[..aligned_relative_offset];
     unaligned.clone_from_slice(
         &block_scratch
-            [to_usize(offset_relative)?..to_usize(add(offset_relative, unaligned.len() as u64)?)?],
+            [offset_relative.try_into()?..(offset_relative + unaligned.len()).try_into()?],
     );
     Ok(())
 }
 
 /// Calculates the necessary scratch buffer size for handling block and buffer misalignment.
-fn alignment_scratch_size(blk_io: &mut (impl BlockIo + ?Sized)) -> Result<usize> {
-    // block_size() + 2 * (alignment() - 1)
-    // This guarantees that we can craft out two aligned scratch buffers:
-    // [u8; blk_io.alignment() - 1] and [u8; blk_io.block_size())] respectively. They are
-    // needed for handing buffer and read/write range misalignment.
+pub fn alignment_scratch_size(blk_io: &mut (impl BlockIo + ?Sized)) -> Result<usize> {
     let block_alignment = match blk_io.block_size() {
         1 => 0,
         v => v,
     };
-    let buffer_alignment = mul(2, sub(blk_io.alignment(), 1)?)?;
-    to_usize(add(block_alignment, buffer_alignment)?)
+    ((SafeNum::from(blk_io.alignment()) - 1) * 2 + block_alignment)
+        .try_into()
+        .map_err(|e: safemath::Error| e.into())
 }
 
 /// Gets a subslice of the given slice with aligned address according to `alignment`
 fn aligned_subslice(buffer: &mut [u8], alignment: u64) -> Result<&mut [u8]> {
-    let addr =
-        u64::try_from(buffer.as_ptr() as usize).map_err(|_| StorageError::ArithmeticOverflow)?;
-    Ok(&mut buffer[to_usize(sub(round_up(addr, alignment)?, addr)?)?..])
+    let addr = SafeNum::from(buffer.as_ptr() as usize);
+    Ok(&mut buffer[(addr.round_up(alignment) - addr).try_into()?..])
 }
 
 // Partition a scratch into two aligned parts: [u8; alignment()-1] and [u8; block_size())]
@@ -709,13 +713,13 @@ fn split_scratch<'a>(
     scratch: &'a mut [u8],
 ) -> Result<(&'a mut [u8], &'a mut [u8])> {
     let (buffer_alignment, block_alignment) = aligned_subslice(scratch, blk_io.alignment())?
-        .split_at_mut(to_usize(sub(blk_io.alignment(), 1)?)?);
+        .split_at_mut((SafeNum::from(blk_io.alignment()) - 1).try_into()?);
     let block_alignment = aligned_subslice(block_alignment, blk_io.alignment())?;
     let block_alignment_scratch_size = match blk_io.block_size() {
-        1 => 0usize,
-        v => to_usize(v)?,
+        1 => SafeNum::ZERO,
+        v => v.into(),
     };
-    Ok((buffer_alignment, &mut block_alignment[..block_alignment_scratch_size]))
+    Ok((buffer_alignment, &mut block_alignment[..block_alignment_scratch_size.try_into()?]))
 }
 
 /// Read with no alignment requirement.
@@ -742,29 +746,30 @@ fn read(
     //  |----------------------|---------------------|
     //     blk_io.alignment()
 
-    let out_addr_value = out.as_ptr() as u64;
-    let unaligned_read =
-        min(sub(round_up(out_addr_value, blk_io.alignment())?, out_addr_value)?, out.len() as u64);
-    // Read unaligned part
-    let unaligned_out = &mut buffer_alignment_scratch[..to_usize(unaligned_read)?];
-    read_aligned_buffer(blk_io, offset, unaligned_out, block_alignment_scratch)?;
-    out[..to_usize(unaligned_read)?].clone_from_slice(unaligned_out);
+    let out_addr_value = SafeNum::from(out.as_ptr() as usize);
+    let unaligned_read: usize =
+        min((out_addr_value.round_up(blk_io.alignment()) - out_addr_value).try_into()?, out.len());
 
-    if unaligned_read == out.len() as u64 {
+    // Read unaligned part
+    let unaligned_out = &mut buffer_alignment_scratch[..unaligned_read];
+    read_aligned_buffer(blk_io, offset, unaligned_out, block_alignment_scratch)?;
+    out[..unaligned_read].clone_from_slice(unaligned_out);
+
+    if unaligned_read == out.len() {
         return Ok(());
     }
     // Read aligned part
     read_aligned_buffer(
         blk_io,
-        add(offset, unaligned_read)?,
-        &mut out[to_usize(unaligned_read)?..],
+        (SafeNum::from(offset) + unaligned_read).try_into()?,
+        &mut out[unaligned_read..],
         block_alignment_scratch,
     )
 }
 
 fn write_aligned_all(blk_io: &mut (impl BlockIo + ?Sized), offset: u64, data: &[u8]) -> Result<()> {
     let blk_offset = check_range(blk_io, offset, data)?;
-    if blk_io.write_blocks(blk_offset, data) {
+    if blk_io.write_blocks(blk_offset.try_into()?, data) {
         return Ok(());
     }
     Err(StorageError::BlockIoError)
@@ -779,21 +784,22 @@ fn write_aligned_offset_and_buffer(
     data: &[u8],
     scratch: &mut [u8],
 ) -> Result<()> {
-    debug_assert!(is_aligned(offset, blk_io.block_size())?);
+    debug_assert!(is_aligned(offset.into(), blk_io.block_size().into())?);
     debug_assert!(is_buffer_aligned(data, blk_io.alignment())?);
 
-    let aligned_write = round_down(data.len() as u64, blk_io.block_size())?;
+    let aligned_write: usize =
+        SafeNum::from(data.len()).round_down(blk_io.block_size()).try_into()?;
     if aligned_write > 0 {
-        write_aligned_all(blk_io, offset, &data[..to_usize(aligned_write)?])?;
+        write_aligned_all(blk_io, offset, &data[..aligned_write])?;
     }
-    let unaligned = &data[to_usize(aligned_write)?..];
+    let unaligned = &data[aligned_write..];
     if unaligned.len() == 0 {
         return Ok(());
     }
 
     // Perform read-modify-write for the unaligned part
-    let unaligned_start = add(offset, aligned_write)?;
-    let block_scratch = &mut scratch[..to_usize(blk_io.block_size())?];
+    let unaligned_start: u64 = (SafeNum::from(offset) + aligned_write).try_into()?;
+    let block_scratch = &mut scratch[..SafeNum::from(blk_io.block_size()).try_into()?];
     read_aligned_all(blk_io, unaligned_start, block_scratch)?;
     block_scratch[..unaligned.len()].clone_from_slice(unaligned);
     write_aligned_all(blk_io, unaligned_start, block_scratch)
@@ -805,35 +811,39 @@ fn write_aligned_offset_and_buffer(
 /// case.
 fn write_bytes(
     blk_io: &mut (impl BlockIo + ?Sized),
-    mut offset: u64,
+    offset: u64,
     data: &[u8],
     scratch: &mut [u8],
 ) -> Result<()> {
     let (_, block_scratch) = split_scratch(blk_io, scratch)?;
-    let block_size = blk_io.block_size();
-    let mut data_offset = 0;
-    while data_offset < data.len() as u64 {
-        if is_aligned(offset, blk_io.block_size())?
-            && is_buffer_aligned(&data[to_usize(data_offset)?..], blk_io.alignment())?
+    let block_size = SafeNum::from(blk_io.block_size());
+    let mut data_offset = SafeNum::ZERO;
+    let mut offset = SafeNum::from(offset);
+    while usize::try_from(data_offset)? < data.len() {
+        if is_aligned(offset, block_size)?
+            && is_buffer_aligned(&data[data_offset.try_into()?..], blk_io.alignment())?
         {
             return write_aligned_offset_and_buffer(
                 blk_io,
-                offset,
-                &data[to_usize(data_offset)?..],
+                offset.try_into()?,
+                &data[data_offset.try_into()?..],
                 block_scratch,
             );
         }
 
-        let block_offset = round_down(offset, block_size)?;
+        let block_offset = offset.round_down(block_size);
         let copy_offset = offset - block_offset;
-        let copy_size = min(data[to_usize(data_offset)?..].len() as u64, block_size - copy_offset);
-        if copy_size < block_size {
+        let copy_size =
+            min(data[data_offset.try_into()?..].len(), (block_size - copy_offset).try_into()?);
+        if copy_size < block_size.try_into()? {
             // Partial block copy. Perform read-modify-write
-            read_aligned_all(blk_io, block_offset, block_scratch)?;
+            read_aligned_all(blk_io, block_offset.try_into()?, block_scratch)?;
         }
-        block_scratch[to_usize(copy_offset)?..to_usize(copy_offset + copy_size)?]
-            .clone_from_slice(&data[to_usize(data_offset)?..to_usize(data_offset + copy_size)?]);
-        write_aligned_all(blk_io, block_offset, block_scratch)?;
+        block_scratch[copy_offset.try_into()?..(copy_offset + copy_size).try_into()?]
+            .clone_from_slice(
+                &data[data_offset.try_into()?..(data_offset + copy_size).try_into()?],
+            );
+        write_aligned_all(blk_io, block_offset.try_into()?, block_scratch)?;
         data_offset += copy_size;
         offset += copy_size;
     }
@@ -864,45 +874,44 @@ fn write_aligned_buffer(
 ) -> Result<()> {
     debug_assert!(is_buffer_aligned(data, blk_io.alignment())?);
 
-    if is_aligned(offset, blk_io.block_size())? {
-        return write_aligned_offset_and_buffer(blk_io, offset, data, scratch);
+    let offset = SafeNum::from(offset);
+    if is_aligned(offset, blk_io.block_size().into())? {
+        return write_aligned_offset_and_buffer(blk_io, offset.try_into()?, data, scratch);
     }
 
-    let aligned_start =
-        min(round_up(offset, blk_io.block_size())?, add(offset, data.len() as u64)?);
-    let aligned_relative_offset = sub(aligned_start, offset)?;
-    if aligned_relative_offset < data.len() as u64 {
-        if is_buffer_aligned(&data[to_usize(aligned_relative_offset)?..], blk_io.alignment())? {
+    let aligned_start: u64 =
+        min(offset.round_up(blk_io.block_size()).try_into()?, (offset + data.len()).try_into()?);
+    let aligned_relative_offset: usize = (SafeNum::from(aligned_start) - offset).try_into()?;
+    if aligned_relative_offset < data.len() {
+        if is_buffer_aligned(&data[aligned_relative_offset..], blk_io.alignment())? {
             // If new address is aligned, write directly.
             write_aligned_offset_and_buffer(
                 blk_io,
                 aligned_start,
-                &data[to_usize(aligned_relative_offset)?..],
+                &data[aligned_relative_offset..],
                 scratch,
             )?;
         } else {
-            let write_len = sub(data.len() as u64, aligned_relative_offset)?;
+            let write_len: usize =
+                (SafeNum::from(data.len()) - aligned_relative_offset).try_into()?;
             // Swap the offset-aligned part to the beginning of the buffer (assumed aligned)
-            swap_slice(data, to_usize(aligned_relative_offset)?);
-            let res = write_aligned_offset_and_buffer(
-                blk_io,
-                aligned_start,
-                &data[..to_usize(write_len)?],
-                scratch,
-            );
+            swap_slice(data, aligned_relative_offset);
+            let res =
+                write_aligned_offset_and_buffer(blk_io, aligned_start, &data[..write_len], scratch);
             // Swap the two parts back before checking the result.
-            swap_slice(data, to_usize(write_len)?);
+            swap_slice(data, write_len);
             res?;
         }
     }
 
     // perform read-modify-write for the unaligned part.
-    let block_scratch = &mut scratch[..to_usize(blk_io.block_size())?];
-    let round_down_offset = round_down(offset, blk_io.block_size())?;
+    let block_scratch = &mut scratch[..SafeNum::from(blk_io.block_size()).try_into()?];
+    let round_down_offset: u64 = offset.round_down(blk_io.block_size()).try_into()?;
     read_aligned_all(blk_io, round_down_offset, block_scratch)?;
-    let offset_relative = sub(offset, round_down_offset)?;
-    block_scratch[to_usize(offset_relative)?..to_usize(offset_relative + aligned_relative_offset)?]
-        .clone_from_slice(&data[..to_usize(aligned_relative_offset)?]);
+    let offset_relative = offset - round_down_offset;
+    block_scratch
+        [offset_relative.try_into()?..(offset_relative + aligned_relative_offset).try_into()?]
+        .clone_from_slice(&data[..aligned_relative_offset]);
     write_aligned_all(blk_io, round_down_offset, block_scratch)
 }
 
@@ -932,124 +941,34 @@ fn write_bytes_mut(
     //     blk_io.alignment()
 
     // Write unaligned part
-    let data_addr_value = data.as_ptr() as u64;
-    let unaligned_write = min(
-        sub(round_up(data_addr_value, blk_io.alignment())?, data_addr_value)?,
-        data.len() as u64,
+    let data_addr_value = SafeNum::from(data.as_ptr() as usize);
+    let unaligned_write: usize = min(
+        (data_addr_value.round_up(blk_io.alignment()) - data_addr_value).try_into()?,
+        data.len(),
     );
-    let mut unaligned_data = &mut buffer_alignment_scratch[..to_usize(unaligned_write)?];
-    unaligned_data.clone_from_slice(&data[..to_usize(unaligned_write)?]);
+    let mut unaligned_data = &mut buffer_alignment_scratch[..unaligned_write];
+    unaligned_data.clone_from_slice(&data[..unaligned_write]);
     write_aligned_buffer(blk_io, offset, &mut unaligned_data, block_alignment_scratch)?;
-    if unaligned_write == data.len() as u64 {
+    if unaligned_write == data.len() {
         return Ok(());
     }
 
     // Write aligned part
     write_aligned_buffer(
         blk_io,
-        add(offset, unaligned_write)?,
-        &mut data[to_usize(unaligned_write)?..],
+        (SafeNum::from(offset) + unaligned_write).try_into()?,
+        &mut data[unaligned_write..],
         block_alignment_scratch,
     )
 }
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use core::mem::size_of;
-
-    /// Mocks a block device with content from buffer.
-    pub struct TestBlockIo {
-        pub block_size: u64,
-        pub alignment: u64,
-        pub storage: Vec<u8>,
-        pub num_writes: usize,
-        pub num_reads: usize,
-    }
-
-    impl BlockIo for TestBlockIo {
-        fn block_size(&mut self) -> u64 {
-            self.block_size
-        }
-
-        fn num_blocks(&mut self) -> u64 {
-            self.storage.len() as u64 / self.block_size()
-        }
-
-        fn alignment(&mut self) -> u64 {
-            self.alignment
-        }
-
-        fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> bool {
-            assert!(is_buffer_aligned(out, self.alignment()).unwrap());
-            assert!(is_aligned(out.len() as u64, self.block_size()).unwrap());
-            let start = blk_offset * self.block_size();
-            let end = start + out.len() as u64;
-            out.clone_from_slice(&self.storage[to_usize(start).unwrap()..to_usize(end).unwrap()]);
-            self.num_reads += 1;
-            true
-        }
-
-        fn write_blocks(&mut self, blk_offset: u64, data: &[u8]) -> bool {
-            assert!(is_buffer_aligned(data, self.alignment()).unwrap());
-            assert!(is_aligned(data.len() as u64, self.block_size()).unwrap());
-            let start = blk_offset * self.block_size();
-            let end = start + data.len() as u64;
-            self.storage[to_usize(start).unwrap()..to_usize(end).unwrap()].clone_from_slice(&data);
-            self.num_writes += 1;
-            true
-        }
-    }
-
-    pub struct TestBlockDevice {
-        pub io: TestBlockIo,
-        pub scratch: Vec<u8>,
-        max_gpt_entries: u64,
-    }
-
-    impl TestBlockDevice {
-        /// Creates an instance with provided storage content.
-        pub fn new_with_data(
-            alignment: u64,
-            block_size: u64,
-            max_gpt_entries: u64,
-            data: &[u8],
-        ) -> Self {
-            let mut io = TestBlockIo {
-                block_size: block_size,
-                alignment: alignment,
-                storage: Vec::from(data),
-                num_writes: 0,
-                num_reads: 0,
-            };
-            let scratch_size = required_scratch_size(&mut io, max_gpt_entries).unwrap();
-            Self { io: io, scratch: vec![0u8; scratch_size], max_gpt_entries: max_gpt_entries }
-        }
-
-        /// Creates an instance with default storage content.
-        pub fn new(
-            alignment: u64,
-            block_size: u64,
-            max_gpt_entries: u64,
-            storage_size: u64,
-        ) -> Self {
-            // Initialize default storage content.
-            let storage: Vec<u8> = (0..storage_size).map(|x| x as u8).collect();
-            Self::new_with_data(alignment, block_size, max_gpt_entries, &storage)
-        }
-
-        /// Extract the internal Gpt structure for examination by test.
-        pub fn gpt(&mut self) -> Gpt {
-            let (_, gpt) = self.scratch.split_at_mut(alignment_scratch_size(&mut self.io).unwrap());
-            Gpt::from_existing(gpt).unwrap()
-        }
-    }
-
-    impl AsBlockDevice for TestBlockDevice {
-        fn with(&mut self, f: &mut dyn FnMut(&mut dyn BlockIo, &mut [u8], u64)) {
-            f(&mut self.io, &mut self.scratch[..], self.max_gpt_entries)
-        }
-    }
+    use gbl_storage_testlib::{
+        required_scratch_size, AsBlockDevice, TestBlockDevice, TestBlockDeviceBuilder,
+    };
+    use safemath::SafeNum;
 
     #[derive(Debug)]
     struct TestCase {
@@ -1083,15 +1002,16 @@ mod test {
 
     impl AlignedBuffer {
         pub fn new(alignment: u64, size: u64) -> Self {
-            let buffer = vec![0u8; to_usize(size + alignment).unwrap()];
+            let aligned_size = (SafeNum::from(size) + alignment).try_into().unwrap();
+            let buffer = vec![0u8; aligned_size];
             Self { buffer, alignment, size }
         }
 
         pub fn get(&mut self) -> &mut [u8] {
-            let addr = self.buffer.as_ptr() as u64;
-            let aligned_start = round_up(addr, self.alignment).unwrap() - addr;
+            let addr = SafeNum::from(self.buffer.as_ptr() as usize);
+            let aligned_start = addr.round_up(self.alignment) - addr;
             &mut self.buffer
-                [to_usize(aligned_start).unwrap()..to_usize(aligned_start + self.size).unwrap()]
+                [aligned_start.try_into().unwrap()..(aligned_start + self.size).try_into().unwrap()]
         }
     }
 
@@ -1108,18 +1028,24 @@ mod test {
     const READ_WRITE_BLOCKS_UPPER_BOUND: usize = 6;
 
     fn read_test_helper(case: &TestCase) {
-        let mut blk = TestBlockDevice::new(case.alignment, case.block_size, 0, case.storage_size);
+        let mut blk = TestBlockDeviceBuilder::new()
+            .set_alignment(case.alignment)
+            .set_block_size(case.block_size)
+            .set_size(case.storage_size as usize)
+            .build();
         // Make an aligned buffer. A misaligned version is created by taking a sub slice that
         // starts at an unaligned offset. Because of this we need to allocate
         // `case.misalignment` more to accommodate it.
         let mut aligned_buf = AlignedBuffer::new(case.alignment, case.rw_size + case.misalignment);
-        let out = &mut aligned_buf.get()[to_usize(case.misalignment).unwrap()
-            ..to_usize(case.misalignment + case.rw_size).unwrap()];
+        let misalignment = SafeNum::from(case.misalignment);
+        let out = &mut aligned_buf.get()
+            [misalignment.try_into().unwrap()..(misalignment + case.rw_size).try_into().unwrap()];
         blk.read(case.rw_offset, out).unwrap();
+        let rw_offset = SafeNum::from(case.rw_offset);
         assert_eq!(
             out.to_vec(),
-            blk.io.storage[to_usize(case.rw_offset).unwrap()
-                ..to_usize(case.rw_offset + case.rw_size).unwrap()]
+            blk.io.storage
+                [rw_offset.try_into().unwrap()..(rw_offset + case.rw_size).try_into().unwrap()]
                 .to_vec(),
             "Failed. Test case {:?}",
             case,
@@ -1129,24 +1055,33 @@ mod test {
     }
 
     fn write_test_helper(case: &TestCase, write_func: fn(&mut TestBlockDevice, u64, &mut [u8])) {
-        let mut blk = TestBlockDevice::new(case.alignment, case.block_size, 0, case.storage_size);
+        let data = (0..case.storage_size).map(|v| v as u8).collect::<Vec<_>>();
+        let mut blk = TestBlockDeviceBuilder::new()
+            .set_alignment(case.alignment)
+            .set_block_size(case.block_size)
+            .set_size(case.storage_size as usize)
+            .set_data(&data[..])
+            .build();
         // Write a reverse version of the current data.
+        let rw_offset = SafeNum::from(case.rw_offset);
         let mut expected = blk.io.storage
-            [to_usize(case.rw_offset).unwrap()..to_usize(case.rw_offset + case.rw_size).unwrap()]
+            [rw_offset.try_into().unwrap()..(rw_offset + case.rw_size).try_into().unwrap()]
             .to_vec();
         expected.reverse();
         // Make an aligned buffer. A misaligned version is created by taking a sub slice that
         // starts at an unaligned offset. Because of this we need to allocate
         // `case.misalignment` more to accommodate it.
+        let misalignment = SafeNum::from(case.misalignment);
         let mut aligned_buf = AlignedBuffer::new(case.alignment, case.rw_size + case.misalignment);
-        let data = &mut aligned_buf.get()[to_usize(case.misalignment).unwrap()
-            ..to_usize(case.misalignment + case.rw_size).unwrap()];
+        let data = &mut aligned_buf.get()
+            [misalignment.try_into().unwrap()..(misalignment + case.rw_size).try_into().unwrap()];
         data.clone_from_slice(&expected);
         write_func(&mut blk, case.rw_offset, data);
+        let rw_offset = SafeNum::from(case.rw_offset);
         assert_eq!(
             expected,
-            blk.io.storage[to_usize(case.rw_offset).unwrap()
-                ..to_usize(case.rw_offset + case.rw_size).unwrap()]
+            blk.io.storage
+                [rw_offset.try_into().unwrap()..(rw_offset + case.rw_size).try_into().unwrap()]
                 .to_vec(),
             "Failed. Test case {:?}",
             case,
@@ -1445,35 +1380,59 @@ mod test {
 
     #[test]
     fn test_no_alignment_require_zero_size_scratch() {
-        let mut blk = TestBlockDevice::new(1, 1, 0, 1);
+        let mut blk = TestBlockDeviceBuilder::new()
+            .set_alignment(1)
+            .set_block_size(1)
+            .set_max_gpt_entries(0)
+            .set_size(1)
+            .build();
         assert_eq!(required_scratch_size(&mut blk.io, 0).unwrap(), 0);
     }
 
     #[test]
     fn test_scratch_too_small() {
-        let block_size: u64 = 512;
-        let alignment: u64 = 64;
-        let mut blk = TestBlockDevice::new(alignment, block_size, 0, block_size * 3);
-        blk.scratch = vec![0u8; blk.scratch.len() - 1];
-        assert!(blk.read(0, &mut vec![0u8; to_usize(block_size).unwrap()]).is_err());
+        let storage_size = (TestBlockDeviceBuilder::DEFAULT_BLOCK_SIZE * 3) as usize;
+        let scratch_size =
+            TestBlockDeviceBuilder::new().set_size(storage_size).build().scratch.len() - 1;
+        let mut blk = TestBlockDeviceBuilder::new()
+            .set_size(storage_size)
+            .set_scratch_size(scratch_size)
+            .build();
+        let block_size = TestBlockDeviceBuilder::DEFAULT_BLOCK_SIZE;
+        assert!(blk.read(0, &mut vec![0u8; block_size.try_into().unwrap()]).is_err());
     }
 
     #[test]
     fn test_read_overflow() {
-        let mut blk = TestBlockDevice::new(1, 1, 0, 512);
+        let mut blk = TestBlockDeviceBuilder::new()
+            .set_alignment(1)
+            .set_block_size(1)
+            .set_max_gpt_entries(0)
+            .set_size(512)
+            .build();
         assert!(blk.read(512, &mut vec![0u8; 1]).is_err());
         assert!(blk.read(0, &mut vec![0u8; 513]).is_err());
     }
 
     #[test]
     fn test_read_arithmetic_overflow() {
-        let mut blk = TestBlockDevice::new(1, 1, 0, 512);
+        let mut blk = TestBlockDeviceBuilder::new()
+            .set_alignment(1)
+            .set_block_size(1)
+            .set_max_gpt_entries(0)
+            .set_size(512)
+            .build();
         assert!(blk.read(u64::MAX, &mut vec![0u8; 1]).is_err());
     }
 
     #[test]
     fn test_write_overflow() {
-        let mut blk = TestBlockDevice::new(1, 1, 0, 512);
+        let mut blk = TestBlockDeviceBuilder::new()
+            .set_alignment(1)
+            .set_block_size(1)
+            .set_max_gpt_entries(0)
+            .set_size(512)
+            .build();
         assert!(blk.write_mut(512, vec![0u8; 1].as_mut_slice()).is_err());
         assert!(blk.write_mut(0, vec![0u8; 513].as_mut_slice()).is_err());
 
@@ -1483,7 +1442,12 @@ mod test {
 
     #[test]
     fn test_write_arithmetic_overflow() {
-        let mut blk = TestBlockDevice::new(1, 1, 0, 512);
+        let mut blk = TestBlockDeviceBuilder::new()
+            .set_alignment(1)
+            .set_block_size(1)
+            .set_max_gpt_entries(0)
+            .set_size(512)
+            .build();
         assert!(blk.write_mut(u64::MAX, vec![0u8; 1].as_mut_slice()).is_err());
         assert!(blk.write(u64::MAX, &vec![0u8; 1]).is_err());
     }

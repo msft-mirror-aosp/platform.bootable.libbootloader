@@ -27,26 +27,54 @@ rust_library(
         "@bitflags",
         "@crc32fast",
         "@cstr",
+        "@gbl//libfastboot",
+        "@gbl//libsafemath",
         "@gbl//libstorage",
         "@gbl//third_party/libzbi",
         "@spin",
+        "@static_assertions",
         "@zerocopy",
     ],
 )
 
 rust_test(
     name = "libgbl_test",
+    compile_data = ["@gbl//libstorage/test:test_data"],
     crate = ":libgbl",
     crate_features = ["uuid"],
     data = [
-        "@gbl//libgbl/testdata:test_image.img",
-        "@gbl//libgbl/testdata:testkey_rsa4096.pem",
-        "@gbl//libgbl/testdata:testkey_rsa4096.pub.pem",
+        "@gbl//libgbl/testdata:sparse_test.bin",
+        "@gbl//libgbl/testdata:sparse_test_blk1024.bin",
+        "@gbl//libgbl/testdata:sparse_test_raw.bin",
+        "@gbl//libgbl/testdata:testkey_rsa4096_pub.bin",
         "@gbl//libgbl/testdata:writeback_test_disk.bin",
+        "@gbl//libgbl/testdata:zircon_a.bin",
+        "@gbl//libgbl/testdata:zircon_a.vbmeta",
     ],
     deps = [
+        "@avb//:avb_crypto_ops_sha_impl_staticlib",
         "@avb//:avb_test",
+        "@gbl//libavb:sysdeps",
+        "@gbl//libstorage:libstorage_testlib",
         "@static_assertions",
         "@uuid",
+    ],
+)
+
+rust_test(
+    name = "integration_test",
+    srcs = ["tests/integration_tests.rs"],
+    compile_data = [
+        "@gbl//libgbl/testdata:zircon_a.bin",
+        "@gbl//libgbl/testdata:zircon_b.bin",
+        "@gbl//libgbl/testdata:zircon_r.bin",
+        "@gbl//libgbl/testdata:zircon_gpt.bin",
+    ],
+    deps = [
+        ":libgbl",
+        "@avb//:avb_crypto_ops_sha_impl_staticlib",
+        "@gbl//libavb:sysdeps",
+        "@gbl//libstorage",
+        "@gbl//libstorage:libstorage_testlib",
     ],
 )

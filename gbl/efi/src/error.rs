@@ -20,6 +20,7 @@ use efi::EfiError;
 use fastboot::TransportError;
 use fdt::FdtError;
 use gbl_storage::StorageError;
+use libgbl::composite_enum;
 use misc::BcbError;
 use smoltcp::socket::tcp::{ListenError, RecvError, SendError};
 use zbi::ZbiError;
@@ -38,74 +39,6 @@ pub enum EfiAppError {
     PeerClosed,
     Timeout,
     Unsupported,
-}
-
-/// A convenient macro for declaring a composite enum type that simply wraps other types as
-/// entries. It auto-generate `From<...>` implementation for each entry type. i.e.:
-///
-/// ```rust
-///   composite_enum! {
-///       pub enum MyEnum {
-///           Usize(usize),
-///           I64(i64),
-///       }
-///   }
-/// ```
-///
-/// expands to
-///
-/// ```rust
-///   pub enum MyEnum {
-///       Usize(usize),
-///       I64(i64),
-///   }
-///
-///   impl From<usize> for MyEnum {
-///       fn from(entry: usize) -> MyEnum {
-///           MyEnum::Usize(entry)
-///       }
-///   }
-///
-///   impl From<i64> for MyEnum {
-///       fn from(entry: i64) -> MyEnum {
-///           MyEnum::I64(entry)
-///       }
-///   }
-/// ```
-///
-/// The macro assumes that each entry is a different type.
-macro_rules! composite_enum {
-    // Top level macro entry. Match enum declaration code and call recursively for `From<>`
-    // generation.
-    (
-        $(#[$outer:meta])*
-        $vis:vis enum $EnumName:ident {
-            $($entry:ident($entry_type:ty)),*
-            $(,)*
-        }
-    ) => {
-        // Copy over enum declaration as it is.
-        $(#[$outer])*
-        $vis enum $EnumName {
-            $($entry($entry_type)),*
-        }
-
-        // Generate `From<...>` implementation.
-        composite_enum!{$EnumName,  $($entry($entry_type)),*}
-    };
-    // `From<>` implementation generation. Base case.
-    ($EnumName:ident, $entry:ident($entry_type:ty)) => {
-        impl From<$entry_type> for $EnumName {
-            fn from(entry: $entry_type) -> $EnumName {
-                $EnumName::$entry(entry)
-            }
-        }
-    };
-    // `From<>` implementation generation. Recursive case.
-    ($EnumName:ident, $entry:ident($entry_type:ty), $($entry_next:ident($entry_type_next:ty)),+) => {
-        composite_enum!{$EnumName, $entry($entry_type)}
-        composite_enum!{$EnumName, $($entry_next($entry_type_next)),*}
-    };
 }
 
 composite_enum! {

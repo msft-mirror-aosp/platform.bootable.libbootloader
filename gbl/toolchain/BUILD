@@ -194,6 +194,8 @@ gbl_clang_cc_toolchain(
         # crash as a result.
         "-march=i686",
     ],
+    # Safe Exception Handlers is not applicable to EFI systems.
+    ld_flags = ["/SAFESEH:no"],
     target_cpu = "x86_32",
     target_system_triple = "i686-unknown-windows-gnu",
 )
@@ -355,7 +357,14 @@ rust_toolchain(
     ],
     global_allocator_library = None,
     rust_doc = "@rust_prebuilts//:bin/rustdoc",
-    rust_std = "@rust_prebuilts//:i686-unknown-uefi_prebuilt_stdlibs",
+    # Need to use our own sysroot because we have a custom patch that needs to be applied for std
+    # in order to enable compiler builtin for chkstk(), alloca(). Once the fix is upstreamed, we
+    # can use the prebuilt.
+    rust_std = select({
+        ":rust_no_sysroot_true": ":rust_stdlib_empty",
+        "//conditions:default": ":rust_std_source_build",
+    }),
+    #rust_std = "@rust_prebuilts//:i686-unknown-uefi_prebuilt_stdlibs",
     rustc = "@rust_prebuilts//:bin/rustc",
     staticlib_ext = ".a",
     stdlib_linkflags = [],

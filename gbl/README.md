@@ -96,3 +96,7 @@ configurations:
        -drive format=raw,file=fat:rw:/tmp/esp,id=blk0 \
        -device virtio-blk-device,drive=blk0
    ```
+
+## EFI Protocols
+
+List of EFI protocols used by GBL and a brief description of each [here](./docs/efi_protocols.md).

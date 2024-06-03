@@ -1,5 +1,4 @@
-#! /usr/bin/env bash
-# Copyright (C) 2024  Google LLC
+# Copyright (C) 2023 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,12 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set -e
+load("@gbl//toolchain:gbl_toolchain.bzl", "link_static_cc_library")
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+package(
+    default_visibility = ["//visibility:public"],
+)
 
-PARTITION_NAME="test_partition"
-PARTITION_SIZE="4k"
+cc_library(
+    name = "lib_efi_arch_deps_x86",
+    srcs = ["deps.S"],
+    visibility = ["//visibility:public"],
+)
 
-python3 ${SCRIPT_DIR}/../../tools/gen_gpt_disk.py ${SCRIPT_DIR}/writeback_test_disk.bin 64K \
-        --partition "${PARTITION_NAME},${PARTITION_SIZE},/dev/zero"
+link_static_cc_library(
+    name = "efi_arch_deps_x86",
+    cc_library = ":lib_efi_arch_deps_x86",
+)

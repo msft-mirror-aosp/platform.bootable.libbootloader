@@ -44,6 +44,7 @@ rust_binary(
     deps = [
         "@avb",
         "@avb//:avb_crypto_ops_sha_impl_staticlib",
+        "@gbl//libavb:sysdeps",
         "@gbl//libboot",
         "@gbl//libbootconfig",
         "@gbl//libbootimg",
@@ -59,6 +60,8 @@ rust_binary(
         "@zerocopy",
     ] + select({
         "@gbl//toolchain:gbl_rust_elf_riscv64": ["@gbl//efi/arch/riscv64:efi_arch_deps_riscv64"],
+        "@gbl//toolchain:gbl_rust_uefi_x86_64": ["@gbl//efi/arch/x86_64:efi_arch_deps_x86_64"],
+        "@gbl//toolchain:gbl_rust_uefi_x86_32": ["@gbl//efi/arch/x86:efi_arch_deps_x86"],
         "//conditions:default": [],
     }),
 )
