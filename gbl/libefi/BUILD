@@ -43,6 +43,7 @@ cc_library(
         "defs/protocols/simple_network_protocol.h",
         "defs/protocols/simple_text_input_protocol.h",
         "defs/protocols/simple_text_output_protocol.h",
+        "defs/runtime_service.h",
         "defs/system_table.h",
         "defs/types.h",
     ],
