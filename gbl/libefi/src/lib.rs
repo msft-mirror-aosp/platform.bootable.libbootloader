@@ -50,6 +50,9 @@
 
 #![cfg_attr(not(test), no_std)]
 
+extern crate alloc;
+use alloc::vec::Vec;
+
 use core::ptr::null_mut;
 use core::slice::from_raw_parts;
 #[cfg(not(test))]
@@ -214,6 +217,14 @@ impl<'a> SystemTable<'a> {
             efi_entry: self.efi_entry,
             // SAFETY: Pointers to UEFI data strucutres.
             boot_services: unsafe { self.table.boot_services.as_ref() }.unwrap(),
+        }
+    }
+
+    /// Creates an instance of `RuntimeServices`
+    pub fn runtime_services(&self) -> RuntimeServices<'a> {
+        RuntimeServices {
+            // SAFETY: Pointers to UEFI data strucutres.
+            runtime_services: unsafe { self.table.runtime_services.as_ref() }.unwrap(),
         }
     }
 
@@ -463,6 +474,39 @@ impl<'a> BootServices<'a> {
         // SAFETY: EFI_BOOT_SERVICES method call.
         unsafe {
             efi_call!(self.boot_services.set_timer, event.efi_event, delay_type, trigger_time)
+        }
+    }
+}
+
+/// `RuntimeServices` provides methods for accessing various EFI_RUNTIME_SERVICES interfaces.
+#[derive(Clone, Copy)]
+pub struct RuntimeServices<'a> {
+    runtime_services: &'a EfiRuntimeService,
+}
+
+impl<'a> RuntimeServices<'a> {
+    /// Wrapper of `EFI_RUNTIME_SERVICES.GetVariable()`.
+    pub fn get_variable(&self, guid: &EfiGuid, name: &str, out: &mut [u8]) -> EfiResult<usize> {
+        let mut size = out.len();
+
+        let mut name_utf16: Vec<u16> = name.encode_utf16().collect();
+        name_utf16.push(0); // null-terminator
+
+        // SAFETY:
+        // * `&mut size` and `&mut out` are input/output params only and will not be retained
+        // * `&mut size` and `&mut out` are valid pointers and outlive the call
+        match unsafe {
+            efi_call!(
+                self.runtime_services.get_variable,
+                name_utf16.as_ptr(),
+                guid,
+                null_mut(),
+                &mut size,
+                out.as_mut_ptr() as *mut core::ffi::c_void
+            )
+        } {
+            Ok(()) => Ok(size),
+            Err(e) => Err(e),
         }
     }
 }

@@ -1055,10 +1055,12 @@ mod test {
     }
 
     fn write_test_helper(case: &TestCase, write_func: fn(&mut TestBlockDevice, u64, &mut [u8])) {
+        let data = (0..case.storage_size).map(|v| v as u8).collect::<Vec<_>>();
         let mut blk = TestBlockDeviceBuilder::new()
             .set_alignment(case.alignment)
             .set_block_size(case.block_size)
             .set_size(case.storage_size as usize)
+            .set_data(&data[..])
             .build();
         // Write a reverse version of the current data.
         let rw_offset = SafeNum::from(case.rw_offset);
