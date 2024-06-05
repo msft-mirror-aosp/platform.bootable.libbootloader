@@ -22,6 +22,7 @@
 
 #include "boot_service.h"
 #include "protocols/simple_text_output_protocol.h"
+#include "runtime_service.h"
 
 typedef struct {
   EfiGuid vendor_guid;
@@ -38,7 +39,7 @@ typedef struct EfiSystemTable {
   EfiSimpleTextOutputProtocol* con_out;
   EfiHandle standard_error_handle;
   EfiSimpleTextOutputProtocol* std_err;
-  void* runtime_service;
+  EfiRuntimeService* runtime_services;
   EfiBootService* boot_services;
   size_t number_of_table_entries;
   const EfiConfigurationTable* configuration_table;
