@@ -492,7 +492,7 @@ where
                         //
                         // We don't really care about those circumstances.
                         // The call here is a best effort attempt to decrement tries remaining.
-                        let _ = slot_cursor.ctx.mark_boot_attempt(boot_target);
+                        let _ = slot_cursor.ctx.mark_boot_attempt();
                     }
                 }
                 e
@@ -517,10 +517,7 @@ where
 
         self.dtb_update_and_load(&info_struct, vendor_boot_image)?;
 
-        let token = slot_cursor
-            .ctx
-            .mark_boot_attempt(boot_target)
-            .map_err(|_| Error::OperationProhibited)?;
+        let token = slot_cursor.ctx.mark_boot_attempt().map_err(|_| Error::OperationProhibited)?;
 
         Ok((kernel_image, token))
     }
