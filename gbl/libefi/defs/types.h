@@ -18,6 +18,13 @@
 #ifndef __EFI_TYPES_H__
 #define __EFI_TYPES_H__
 
+typedef void* EfiHandle;
+typedef uint8_t char8_t;
+typedef uint16_t char16_t;
+typedef void* EfiEvent;
+typedef uint64_t EfiPhysicalAddr;
+typedef uint64_t EfiVirtualAddr;
+
 typedef struct EfiTableHeader {
   uint64_t signature;
   uint32_t revision;
@@ -33,11 +40,41 @@ typedef struct EfiGuid {
   uint8_t data4[8];
 } EfiGuid;
 
-typedef void* EfiHandle;
-typedef uint16_t char16_t;
-typedef void* EfiEvent;
-typedef uint64_t EfiPhysicalAddr;
-typedef uint64_t EfiVirtualAddr;
+typedef struct EfiMemoryDescriptor {
+  uint32_t memory_type;
+  uint32_t padding;
+  EfiPhysicalAddr physical_start;
+  EfiVirtualAddr virtual_start;
+  uint64_t number_of_pages;
+  uint64_t attributes;
+} EfiMemoryDescriptor;
+
+typedef struct EfiTime {
+  uint16_t year;
+  uint8_t month;
+  uint8_t day;
+  uint8_t hour;
+  uint8_t minute;
+  uint8_t second;
+  uint8_t pad1;
+  uint32_t nanosecond;
+  int16_t timezone;
+  uint8_t daylight;
+  uint8_t pad2;
+} EfiTime;
+
+typedef struct EfiTimeCapabilities {
+  uint32_t resolution;
+  uint32_t accuracy;
+  bool sets_to_zero;
+} EfiTimeCapabilities;
+
+typedef struct EfiCapsuleHeader {
+  EfiGuid CapsuleGuid;
+  uint32_t HeaderSize;
+  uint32_t Flags;
+  uint32_t CapsuleImageSize;
+} EfiCapsuleHeader;
 
 typedef void (*EfiEventNotify)(EfiEvent event, void* ctx);
 
@@ -79,6 +116,15 @@ typedef enum {
 } EFI_MEMORY_TYPE;
 
 typedef EFI_MEMORY_TYPE EfiMemoryType;
+
+typedef enum {
+  EFI_RESET_COLD,
+  EFI_RESET_WARM,
+  EFI_RESET_SHUTDOWN,
+  EFI_RESET_PLATFORM_SPECIFIC
+} EFI_RESET_TYPE;
+
+typedef EFI_RESET_TYPE EfiResetType;
 
 #define EFI_ERROR_MASK ((uintptr_t)INTPTR_MAX + 1)
 #define EFI_ERR(x) (EFI_ERROR_MASK | (x))
