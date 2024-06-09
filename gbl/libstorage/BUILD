@@ -24,6 +24,7 @@ rust_library(
         "src/gpt.rs",
         "src/lib.rs",
         "src/multi_blocks.rs",
+        "src/non_blocking.rs",
     ],
     crate_name = "gbl_storage",
     edition = "2021",
