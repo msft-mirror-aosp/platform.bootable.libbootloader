@@ -79,7 +79,7 @@ impl GblFbPartitionIo<'_> {
         let mut dev = (&mut self.devs).get(self.part.blk_id)?;
         Ok(match self.part.part() {
             "" => dev.write(offset, data),
-            part => dev.write_gpt_partition_mut(part, offset, data),
+            part => dev.write_gpt_partition(part, offset, data),
         }?)
     }
 
