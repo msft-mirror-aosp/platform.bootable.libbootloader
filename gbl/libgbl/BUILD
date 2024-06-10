@@ -20,6 +20,7 @@ rust_library(
         ["**/*.rs"],
         exclude = ["tests/**/*.rs"],
     ),
+    aliases = {"@itertools_noalloc": "itertools_noalloc"},
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
@@ -31,6 +32,7 @@ rust_library(
         "@gbl//libsafemath",
         "@gbl//libstorage",
         "@gbl//third_party/libzbi",
+        "@itertools_noalloc",
         "@spin",
         "@static_assertions",
         "@zerocopy",
@@ -39,6 +41,7 @@ rust_library(
 
 rust_test(
     name = "libgbl_test",
+    aliases = {"@itertools_noalloc": "itertools_noalloc"},
     compile_data = ["@gbl//libstorage/test:test_data"],
     crate = ":libgbl",
     crate_features = ["uuid"],
@@ -56,6 +59,8 @@ rust_test(
         "@avb//:avb_test",
         "@gbl//libavb:sysdeps",
         "@gbl//libstorage:libstorage_testlib",
+        "@itertools",
+        "@itertools_noalloc",
         "@static_assertions",
         "@uuid",
     ],
