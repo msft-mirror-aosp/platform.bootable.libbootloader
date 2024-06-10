@@ -47,6 +47,7 @@ pub mod boot_reason;
 pub mod error;
 pub mod fastboot;
 pub mod ops;
+mod overlap;
 
 /// The 'slots' module, containing types and traits for
 /// querying and modifying slotted boot behavior.
@@ -63,6 +64,7 @@ pub use ops::{
 };
 
 use ops::GblUtils;
+use overlap::is_overlap;
 
 // TODO: b/312607649 - Replace placeholders with actual structures: https://r.android.com/2721974, etc
 /// TODO: b/312607649 - placeholder type
@@ -492,7 +494,7 @@ where
                         //
                         // We don't really care about those circumstances.
                         // The call here is a best effort attempt to decrement tries remaining.
-                        let _ = slot_cursor.ctx.mark_boot_attempt(boot_target);
+                        let _ = slot_cursor.ctx.mark_boot_attempt();
                     }
                 }
                 e
@@ -503,6 +505,16 @@ where
         let boot_image = boot_image.ok_or(Error::MissingImage)?;
         let vendor_boot_image = vendor_boot_image.ok_or(Error::MissingImage)?;
         let init_boot_image = init_boot_image.ok_or(Error::MissingImage)?;
+
+        if is_overlap(&[
+            boot_image.0,
+            vendor_boot_image.0,
+            init_boot_image.0,
+            &ramdisk.0,
+            kernel_load_buffer,
+        ]) {
+            return Err(IntegrationError::GblNativeError(Error::BufferOverlap));
+        }
 
         let info_struct = self.unpack_boot_image(&boot_image, Some(boot_target))?;
 
@@ -517,10 +529,7 @@ where
 
         self.dtb_update_and_load(&info_struct, vendor_boot_image)?;
 
-        let token = slot_cursor
-            .ctx
-            .mark_boot_attempt(boot_target)
-            .map_err(|_| Error::OperationProhibited)?;
+        let token = slot_cursor.ctx.mark_boot_attempt().map_err(|_| Error::OperationProhibited)?;
 
         Ok((kernel_image, token))
     }
