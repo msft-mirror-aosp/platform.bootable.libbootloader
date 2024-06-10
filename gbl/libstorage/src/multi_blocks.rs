@@ -91,20 +91,6 @@ pub trait AsMultiBlockDevices {
     /// Writes a GPT partition with mutable input buffer.
     ///
     /// Returns Ok(()) if the partition is unique among all block devices and write is successful.
-    fn write_gpt_partition_mut(
-        &mut self,
-
-        part_name: &str,
-        offset: u64,
-        data: &mut [u8],
-    ) -> Result<()> {
-        self.check_part(part_name)?;
-        until_ok(self, |dev, _| dev.write_gpt_partition_mut(part_name, offset, &mut data[..]))
-    }
-
-    /// Writes a GPT partition with const input buffer.
-    ///
-    /// Returns Ok(()) if the partition is unique among all block devices and write is successful.
     fn write_gpt_partition(&mut self, part_name: &str, offset: u64, data: &mut [u8]) -> Result<()> {
         self.check_part(part_name)?;
         until_ok(self, |dev, _| dev.write_gpt_partition(part_name, offset, &mut data[..]))
@@ -291,12 +277,12 @@ mod test {
         let to_write = &mut data[off.try_into().unwrap()..];
 
         let mut out = vec![0u8; to_write.len()];
-        devs.write_gpt_partition_mut(part, off, to_write).unwrap();
+        devs.write_gpt_partition(part, off, to_write).unwrap();
         devs.read_gpt_partition(part, off, &mut out[..]).unwrap();
         assert_eq!(out, to_write.to_vec());
 
         to_write.reverse();
-        devs.write_gpt_partition_mut(part, off, to_write).unwrap();
+        devs.write_gpt_partition(part, off, to_write).unwrap();
         devs.read_gpt_partition(part, off, &mut out[..]).unwrap();
         assert_eq!(out, to_write.to_vec());
     }
@@ -336,7 +322,6 @@ mod test {
         ]);
         devs.sync_gpt_all(&mut |_, _, _| panic!("GPT sync failed"));
         assert!(devs.read_gpt_partition("boot_a", 0, &mut []).is_err());
-        assert!(devs.write_gpt_partition_mut("boot_a", 0, &mut []).is_err());
         assert!(devs.write_gpt_partition("boot_a", 0, &mut []).is_err());
         assert!(devs.find_partition("boot_a").is_err());
     }
