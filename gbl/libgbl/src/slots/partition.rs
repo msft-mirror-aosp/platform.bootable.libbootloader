@@ -137,7 +137,7 @@ impl<'a, MB: MetadataBytes> SlotBlock<'a, MB> {
 
         self.data.prepare_for_sync();
 
-        match block_dev.write_gpt_partition_mut(
+        match block_dev.write_gpt_partition(
             self.partition,
             self.partition_offset,
             self.get_mut_data().as_bytes_mut(),
