@@ -206,8 +206,13 @@ impl Manager for SlotBlock<'_, AbrData> {
         Ok(())
     }
 
-    fn mark_boot_attempt(&mut self, boot_target: BootTarget) -> Result<BootToken, Error> {
-        let target_slot = match boot_target {
+    fn mark_boot_attempt(&mut self) -> Result<BootToken, Error> {
+        let target = if let Some(OneShot::Continue(r)) = self.get_oneshot_status() {
+            BootTarget::Recovery(r)
+        } else {
+            self.get_boot_target()
+        };
+        let target_slot = match target {
             BootTarget::NormalBoot(slot) => slot,
             BootTarget::Recovery(RecoveryTarget::Slotted(_)) => Err(Error::OperationProhibited)?,
             BootTarget::Recovery(RecoveryTarget::Dedicated) => {
@@ -364,21 +369,33 @@ mod test {
     #[test]
     fn test_slot_mark_boot_attempt() {
         let mut sb: SlotBlock<AbrData> = Default::default();
-        let slot = Slot { suffix: 'a'.into(), ..Default::default() };
-        assert_eq!(sb.mark_boot_attempt(BootTarget::NormalBoot(slot)), Ok(BootToken(())));
+        assert_eq!(sb.mark_boot_attempt(), Ok(BootToken(())));
         assert_eq!(
             sb.slots_iter().next().unwrap(),
             Slot {
-                suffix: slot.suffix,
+                suffix: 'a'.into(),
                 priority: DEFAULT_PRIORITY.into(),
                 bootability: Bootability::Retriable((DEFAULT_RETRIES - 1).into())
             }
         );
 
         // Make sure we can call exactly once
+        assert_eq!(sb.mark_boot_attempt(), Err(Error::OperationProhibited));
+    }
+
+    #[test]
+    fn test_slot_mark_boot_attempt_tracks_active() {
+        let mut sb: SlotBlock<AbrData> = Default::default();
+        assert!(sb.set_active_slot('b'.into()).is_ok());
+
+        assert_eq!(sb.mark_boot_attempt(), Ok(BootToken(())));
         assert_eq!(
-            sb.mark_boot_attempt(BootTarget::NormalBoot(slot)),
-            Err(Error::OperationProhibited)
+            sb.get_boot_target(),
+            BootTarget::NormalBoot(Slot {
+                suffix: 'b'.into(),
+                priority: DEFAULT_PRIORITY.into(),
+                bootability: Bootability::Retriable((DEFAULT_RETRIES - 1).into())
+            })
         );
     }
 
@@ -386,12 +403,11 @@ mod test {
     fn test_slot_mark_boot_attempt_no_more_tries() {
         let mut sb: SlotBlock<AbrData> = Default::default();
         sb.get_mut_data().slot_data[0].tries = 1;
-        let slot = Slot { suffix: 'a'.into(), ..Default::default() };
-        assert_eq!(sb.mark_boot_attempt(BootTarget::NormalBoot(slot)), Ok(BootToken(())));
+        assert_eq!(sb.mark_boot_attempt(), Ok(BootToken(())));
         assert_eq!(
             sb.slots_iter().next().unwrap(),
             Slot {
-                suffix: slot.suffix,
+                suffix: 'a'.into(),
                 priority: DEFAULT_PRIORITY.into(),
                 bootability: Bootability::Unbootable(UnbootableReason::NoMoreTries)
             }
@@ -407,49 +423,31 @@ mod test {
             priority: DEFAULT_PRIORITY.into(),
             bootability: Bootability::Successful,
         });
-        assert_eq!(sb.mark_boot_attempt(target), Ok(BootToken(())));
+        assert_eq!(sb.mark_boot_attempt(), Ok(BootToken(())));
         assert_eq!(sb.get_boot_target(), target);
-    }
-
-    #[test]
-    fn test_slot_mark_tried_no_such_slot() {
-        let mut sb: SlotBlock<AbrData> = Default::default();
-        let slot = Slot { suffix: '$'.into(), ..Default::default() };
-        assert_eq!(
-            sb.mark_boot_attempt(BootTarget::NormalBoot(slot)),
-            Err(Error::NoSuchSlot(slot.suffix))
-        );
     }
 
     #[test]
     fn test_slot_mark_tried_recovery() {
         let mut sb: SlotBlock<AbrData> = Default::default();
         let recovery_tgt = BootTarget::Recovery(RecoveryTarget::Dedicated);
-        assert_eq!(sb.mark_boot_attempt(recovery_tgt), Ok(BootToken(())));
+        assert!(sb.set_slot_unbootable('a'.into(), UnbootableReason::UserRequested).is_ok());
+        assert!(sb.set_slot_unbootable('b'.into(), UnbootableReason::UserRequested).is_ok());
+        assert_eq!(sb.mark_boot_attempt(), Ok(BootToken(())));
 
         // Make sure a second attempt fails due to the moved boot token
-        assert_eq!(sb.mark_boot_attempt(recovery_tgt), Err(Error::OperationProhibited));
+        assert_eq!(sb.mark_boot_attempt(), Err(Error::OperationProhibited));
     }
 
     #[test]
-    fn test_mark_slot_tried_slotted_recovery() {
+    fn test_slot_mark_tried_recovery_oneshot() {
         let mut sb: SlotBlock<AbrData> = Default::default();
-        let slot: Slot = Default::default();
-        assert_eq!(
-            sb.mark_boot_attempt(BootTarget::Recovery(RecoveryTarget::Slotted(slot))),
-            Err(Error::OperationProhibited)
-        );
-    }
+        let tgt = sb.get_boot_target();
+        assert!(sb.set_oneshot_status(OneShot::Continue(RecoveryTarget::Dedicated)).is_ok());
+        assert_eq!(sb.mark_boot_attempt(), Ok(BootToken(())));
 
-    #[test]
-    fn test_slot_mark_tried_unbootable() {
-        let mut sb: SlotBlock<AbrData> = Default::default();
-        let slot = Slot { suffix: 'b'.into(), ..Default::default() };
-        assert_eq!(sb.set_slot_unbootable(slot.suffix, UnbootableReason::UserRequested), Ok(()));
-        assert_eq!(
-            sb.mark_boot_attempt(BootTarget::NormalBoot(slot)),
-            Err(Error::OperationProhibited)
-        );
+        // Verify that tries weren't decremented
+        assert_eq!(sb.get_boot_target(), tgt);
     }
 
     macro_rules! set_unbootable_tests {
