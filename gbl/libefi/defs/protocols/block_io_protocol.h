@@ -30,7 +30,7 @@ struct EfiBlockIoProtocol {
   EfiStatus (*read_blocks)(EfiBlockIoProtocol* self, uint32_t media_id, uint64_t lba,
                            size_t buffer_size, void* buffer);
   EfiStatus (*write_blocks)(EfiBlockIoProtocol* self, uint32_t media_id, uint64_t lba,
-                            size_t buffer_size, const void* buffer);
+                            size_t buffer_size, void* buffer);
   EfiStatus (*flush_blocks)(EfiBlockIoProtocol* self);
 };
 

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{aligned_subslice, read, write_bytes, write_bytes_mut, BlockIo, Result, StorageError};
+use crate::{aligned_subslice, read, write_bytes_mut, BlockIo, Result, StorageError};
 use core::default::Default;
 use core::mem::{align_of, size_of};
 use core::num::NonZeroU64;
@@ -135,6 +135,8 @@ struct GptInfo {
     // and LESS THAN OR EQUAL TO the value of GPT_MAX_NUM_ENTRIES.
     // Values other than GPT_MAX_NUM_ENTRIES are mostly used in unit tests.
     max_entries: u64,
+    // Block size of the GPT disk.
+    block_size: u64,
 }
 
 impl GptInfo {
@@ -176,7 +178,8 @@ impl<'a> Gpt<'a> {
             return Err(StorageError::InvalidInput);
         }
         let buffer = aligned_subslice(buffer, GPT_ENTRY_ALIGNMENT)?;
-        *GptInfo::from_bytes(buffer) = GptInfo { num_valid_entries: None, max_entries };
+        *GptInfo::from_bytes(buffer) =
+            GptInfo { num_valid_entries: None, max_entries, block_size: 0 };
         Self::from_existing(buffer)
     }
 
@@ -372,6 +375,7 @@ impl<'a> Gpt<'a> {
                 Some(idx) => idx as u64,
                 _ => self.info.max_entries,
             });
+        self.info.block_size = block_size;
         Ok(())
     }
 }
@@ -385,62 +389,22 @@ pub(crate) fn gpt_sync(
     gpt.load_and_sync(blk_dev, scratch)
 }
 
-/// Check if a relative offset/len into a partition overflows and returns the absolute offset.
-fn check_offset(
-    blk_dev: &mut (impl BlockIo + ?Sized),
-    entry: &GptEntry,
+/// Checks if a read/write range into a GPT partition overflows and returns the range's absolute
+/// offset in the block device.
+pub(crate) fn check_gpt_rw_params(
+    gpt_cache_buffer: &mut [u8],
+    part_name: &str,
     offset: u64,
-    len: usize,
+    size: usize,
 ) -> Result<u64> {
-    let s = SafeNum::from(offset) + len;
-    let total_size = SafeNum::from(entry.blocks()?) * blk_dev.block_size();
-    match u64::try_from(s)? <= total_size.try_into()? {
-        true => Ok((SafeNum::from(entry.first) * blk_dev.block_size() + offset).try_into()?),
+    let gpt = Gpt::from_existing(gpt_cache_buffer)?;
+    let entry = gpt.find_partition(part_name)?;
+    let end: u64 = (SafeNum::from(offset) + size).try_into()?;
+    let total_size = SafeNum::from(entry.blocks()?) * gpt.info.block_size;
+    match end <= total_size.try_into()? {
+        true => Ok((SafeNum::from(entry.first) * gpt.info.block_size + offset).try_into()?),
         false => Err(StorageError::OutOfRange),
     }
-}
-
-/// Read GPT partition. Library internal helper for AsBlockDevice::read_gpt_partition().
-pub(crate) fn read_gpt_partition(
-    blk_dev: &mut (impl BlockIo + ?Sized),
-    gpt: &Gpt,
-    part_name: &str,
-    offset: u64,
-    out: &mut [u8],
-    scratch: &mut [u8],
-) -> Result<()> {
-    let e = gpt.find_partition(part_name)?;
-    let abs_offset = check_offset(blk_dev, e, offset, out.len())?;
-    read(blk_dev, abs_offset, out, scratch)
-}
-
-/// Write GPT partition. Library internal helper for AsBlockDevice::write_gpt_partition().
-pub(crate) fn write_gpt_partition(
-    blk_dev: &mut (impl BlockIo + ?Sized),
-    gpt: &Gpt,
-    part_name: &str,
-    offset: u64,
-    data: &[u8],
-    scratch: &mut [u8],
-) -> Result<()> {
-    let e = gpt.find_partition(part_name)?;
-    let abs_offset = check_offset(blk_dev, e, offset, data.len())?;
-    write_bytes(blk_dev, abs_offset, data, scratch)
-}
-
-/// Write GPT partition. Library internal helper for AsBlockDevice::write_gpt_partition().
-/// Optimized version for mutable buffers.
-pub(crate) fn write_gpt_partition_mut(
-    blk_dev: &mut (impl BlockIo + ?Sized),
-    gpt: &Gpt,
-    part_name: &str,
-    offset: u64,
-    data: &mut [u8],
-    scratch: &mut [u8],
-) -> Result<()> {
-    let e = gpt.find_partition(part_name)?;
-    let abs_offset = check_offset(blk_dev, e, offset, data.as_ref().len())?;
-    write_bytes_mut(blk_dev, abs_offset, data.as_mut(), scratch)
 }
 
 fn crc32(data: &[u8]) -> u32 {
@@ -652,37 +616,21 @@ pub(crate) mod test {
 
         // "boot_a" partition
         // Mutable version
-        dev.write_gpt_partition_mut("boot_a", 0, expect_boot_a.as_mut_slice()).unwrap();
+        dev.write_gpt_partition("boot_a", 0, expect_boot_a.as_mut_slice()).unwrap();
         dev.read_gpt_partition("boot_a", 0, &mut actual_boot_a).unwrap();
         assert_eq!(expect_boot_a.to_vec(), actual_boot_a);
         // Mutable version, partial write.
-        dev.write_gpt_partition_mut("boot_a", 1, expect_boot_a[1..].as_mut()).unwrap();
-        dev.read_gpt_partition("boot_a", 1, &mut actual_boot_a[1..]).unwrap();
-        assert_eq!(expect_boot_a[1..], actual_boot_a[1..]);
-        // Immutable version
-        dev.write_gpt_partition("boot_a", 0, &expect_boot_a).unwrap();
-        dev.read_gpt_partition("boot_a", 0, &mut actual_boot_a).unwrap();
-        assert_eq!(expect_boot_a.to_vec(), actual_boot_a);
-        // Immutable version, partial write.
-        dev.write_gpt_partition("boot_a", 1, &expect_boot_a[1..]).unwrap();
+        dev.write_gpt_partition("boot_a", 1, expect_boot_a[1..].as_mut()).unwrap();
         dev.read_gpt_partition("boot_a", 1, &mut actual_boot_a[1..]).unwrap();
         assert_eq!(expect_boot_a[1..], actual_boot_a[1..]);
 
         // "boot_b" partition
         // Mutable version
-        dev.write_gpt_partition_mut("boot_b", 0, expect_boot_b.as_mut_slice()).unwrap();
+        dev.write_gpt_partition("boot_b", 0, expect_boot_b.as_mut_slice()).unwrap();
         dev.read_gpt_partition("boot_b", 0, &mut actual_boot_b).unwrap();
         assert_eq!(expect_boot_b.to_vec(), actual_boot_b);
         // Mutable version, partial write.
-        dev.write_gpt_partition_mut("boot_b", 1, expect_boot_b[1..].as_mut()).unwrap();
-        dev.read_gpt_partition("boot_b", 1, &mut actual_boot_b[1..]).unwrap();
-        assert_eq!(expect_boot_b[1..], actual_boot_b[1..]);
-        // Immutable version
-        dev.write_gpt_partition("boot_b", 0, &expect_boot_b).unwrap();
-        dev.read_gpt_partition("boot_b", 0, &mut actual_boot_b).unwrap();
-        assert_eq!(expect_boot_b.to_vec(), actual_boot_b);
-        // Immutable version, partial write.
-        dev.write_gpt_partition("boot_b", 1, &expect_boot_b[1..]).unwrap();
+        dev.write_gpt_partition("boot_b", 1, expect_boot_b[1..].as_mut()).unwrap();
         dev.read_gpt_partition("boot_b", 1, &mut actual_boot_b[1..]).unwrap();
         assert_eq!(expect_boot_b[1..], actual_boot_b[1..]);
     }
@@ -698,11 +646,9 @@ pub(crate) mod test {
         let mut boot_b = [0u8; include_bytes!("../test/boot_b.bin").len()];
 
         assert!(dev.read_gpt_partition("boot_a", 1, &mut boot_a).is_err());
-        assert!(dev.write_gpt_partition_mut("boot_a", 1, boot_a.as_mut_slice()).is_err());
-        assert!(dev.write_gpt_partition("boot_a", 1, &boot_a).is_err());
+        assert!(dev.write_gpt_partition("boot_a", 1, boot_a.as_mut_slice()).is_err());
 
         assert!(dev.read_gpt_partition("boot_b", 1, &mut boot_b).is_err());
-        assert!(dev.write_gpt_partition_mut("boot_b", 1, boot_b.as_mut_slice()).is_err());
-        assert!(dev.write_gpt_partition("boot_b", 1, &boot_b).is_err());
+        assert!(dev.write_gpt_partition("boot_b", 1, boot_b.as_mut_slice()).is_err());
     }
 }
