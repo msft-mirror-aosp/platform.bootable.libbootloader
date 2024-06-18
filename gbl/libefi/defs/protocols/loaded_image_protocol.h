@@ -15,6 +15,9 @@
  *
  */
 
+#ifndef __LOADED_IMAGE_PROTOCOL_H__
+#define __LOADED_IMAGE_PROTOCOL_H__
+
 #include "system_table.h"
 #include "types.h"
 
@@ -36,3 +39,5 @@ typedef struct {
 
   EfiStatus (*unload)(EfiHandle img);
 } EfiLoadedImageProtocol;
+
+#endif
