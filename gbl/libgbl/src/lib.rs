@@ -34,9 +34,8 @@ extern crate gbl_storage;
 extern crate spin;
 extern crate zbi;
 
-use avb::{HashtreeErrorMode, SlotVerifyData, SlotVerifyError, SlotVerifyFlags, SlotVerifyResult};
+use avb::{HashtreeErrorMode, SlotVerifyData, SlotVerifyError, SlotVerifyFlags};
 use core::ffi::CStr;
-use core::fmt::Debug;
 use gbl_storage::AsMultiBlockDevices;
 use spin::Mutex;
 
@@ -167,29 +166,26 @@ pub fn get_images<'a: 'b, 'b: 'c, 'c, 'd>(
 
 static BOOT_TOKEN: Mutex<Option<BootToken>> = Mutex::new(Some(BootToken(())));
 
-type AvbVerifySlot = for<'b> fn(
-    ops: &mut dyn avb::Ops<'b>,
-    requested_partitions: &[&CStr],
-    ab_suffix: Option<&CStr>,
-    flags: SlotVerifyFlags,
-    hashtree_error_mode: HashtreeErrorMode,
-) -> SlotVerifyResult<'b, SlotVerifyData<'b>>;
-
 /// GBL object that provides implementation of helpers for boot process.
-///
-/// To create this object use [GblBuilder].
 pub struct Gbl<'a, G>
 where
     G: GblOps,
 {
     ops: &'a mut G,
-    verify_slot: AvbVerifySlot,
 }
 
 impl<'a, G> Gbl<'a, G>
 where
     G: GblOps,
 {
+    /// Returns a new [Gbl] object.
+    ///
+    /// # Arguments
+    /// * `ops` - the [GblOps] callbacks to use
+    pub fn new(ops: &'a mut G) -> Self {
+        Self { ops }
+    }
+
     /// Verify + Load Image Into memory
     ///
     /// Load from disk, validate with AVB
@@ -215,7 +211,7 @@ where
 
         let avb_suffix = CStr::from_bytes_until_nul(&bytes)?;
 
-        Ok((self.verify_slot)(
+        Ok(avb::slot_verify(
             avb_ops,
             partitions_to_verify,
             Some(avb_suffix),
@@ -544,38 +540,6 @@ where
     }
 }
 
-/// Builder for GBL object
-#[derive(Debug)]
-pub struct GblBuilder<'a, G>
-where
-    G: GblOps,
-{
-    ops: &'a mut G,
-    verify_slot: AvbVerifySlot,
-}
-
-impl<'a, G> GblBuilder<'a, G>
-where
-    G: GblOps,
-{
-    /// Start Gbl object creation, with default GblOps implementation
-    pub fn new(ops: &'a mut G) -> Self {
-        GblBuilder { ops, verify_slot: avb::slot_verify }
-    }
-
-    // Override [avb::slot_verify] for testing only
-    #[cfg(test)]
-    fn verify_slot(mut self, verify_slot: AvbVerifySlot) -> Self {
-        self.verify_slot = verify_slot;
-        self
-    }
-
-    /// Finish Gbl object construction and return it as the result
-    pub fn build(self) -> Gbl<'a, G> {
-        Gbl { ops: self.ops, verify_slot: self.verify_slot }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     extern crate avb_sysdeps;
@@ -586,63 +550,6 @@ mod tests {
     use avb::{IoError, SlotVerifyError};
     use avb_test::{FakeVbmetaKey, TestOps};
     use std::{fs, path::Path};
-
-    struct AvbOpsUnimplemented {}
-    impl avb::Ops<'_> for AvbOpsUnimplemented {
-        fn validate_vbmeta_public_key(&mut self, _: &[u8], _: Option<&[u8]>) -> AvbIoResult<bool> {
-            Err(IoError::NotImplemented)
-        }
-        fn read_from_partition(&mut self, _: &CStr, _: i64, _: &mut [u8]) -> AvbIoResult<usize> {
-            Err(IoError::NotImplemented)
-        }
-        fn read_rollback_index(&mut self, _: usize) -> AvbIoResult<u64> {
-            Err(IoError::NotImplemented)
-        }
-        fn write_rollback_index(&mut self, _: usize, _: u64) -> AvbIoResult<()> {
-            Err(IoError::NotImplemented)
-        }
-        fn read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
-            Err(IoError::NotImplemented)
-        }
-        #[cfg(feature = "uuid")]
-        fn get_unique_guid_for_partition(&mut self, partition: &CStr) -> AvbIoResult<uuid::Uuid> {
-            Err(IoError::NotImplemented)
-        }
-        fn get_size_of_partition(&mut self, partition: &CStr) -> AvbIoResult<u64> {
-            Err(IoError::NotImplemented)
-        }
-        fn read_persistent_value(&mut self, name: &CStr, value: &mut [u8]) -> AvbIoResult<usize> {
-            Err(IoError::NotImplemented)
-        }
-        fn write_persistent_value(&mut self, name: &CStr, value: &[u8]) -> AvbIoResult<()> {
-            Err(IoError::NotImplemented)
-        }
-        fn erase_persistent_value(&mut self, name: &CStr) -> AvbIoResult<()> {
-            Err(IoError::NotImplemented)
-        }
-        fn validate_public_key_for_partition(
-            &mut self,
-            partition: &CStr,
-            public_key: &[u8],
-            public_key_metadata: Option<&[u8]>,
-        ) -> AvbIoResult<PublicKeyForPartitionInfo> {
-            Err(IoError::NotImplemented)
-        }
-    }
-
-    #[test]
-    fn test_load_and_verify_image_avb_io_error() {
-        let mut gbl_ops = DefaultGblOps {};
-        let mut gbl = GblBuilder::new(&mut gbl_ops).build();
-        let mut avb_ops = AvbOpsUnimplemented {};
-        let res = gbl.load_and_verify_image(
-            &mut avb_ops,
-            &mut [],
-            SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_NONE,
-            None,
-        );
-        assert_eq!(res.unwrap_err(), IntegrationError::AvbSlotVerifyError(SlotVerifyError::Io));
-    }
 
     const TEST_ZIRCON_PARTITION_NAME: &str = "zircon_a";
     const TEST_ZIRCON_PARTITION_NAME_CSTR: &CStr = c"zircon_a";
@@ -692,7 +599,7 @@ mod tests {
     #[test]
     fn test_load_and_verify_image_success() {
         let mut gbl_ops = DefaultGblOps {};
-        let mut gbl = GblBuilder::new(&mut gbl_ops).build();
+        let mut gbl = Gbl::new(&mut gbl_ops);
         let mut avb_ops = test_avb_ops();
 
         let res = gbl.load_and_verify_image(
@@ -707,7 +614,7 @@ mod tests {
     #[test]
     fn test_load_and_verify_image_verification_error() {
         let mut gbl_ops = DefaultGblOps {};
-        let mut gbl = GblBuilder::new(&mut gbl_ops).build();
+        let mut gbl = Gbl::new(&mut gbl_ops);
         let mut avb_ops = test_avb_ops();
 
         // Modify the kernel image, it should now fail to validate against the vbmeta image.
@@ -724,5 +631,23 @@ mod tests {
             res.unwrap_err(),
             IntegrationError::AvbSlotVerifyError(SlotVerifyError::Verification(None))
         );
+    }
+
+    #[test]
+    fn test_load_and_verify_image_io_error() {
+        let mut gbl_ops = DefaultGblOps {};
+        let mut gbl = Gbl::new(&mut gbl_ops);
+        let mut avb_ops = test_avb_ops();
+
+        // Erase the fake rollbacks, which will result in an I/O error when attempting to access.
+        avb_ops.rollbacks.clear();
+
+        let res = gbl.load_and_verify_image(
+            &mut avb_ops,
+            &mut [&TEST_ZIRCON_PARTITION_NAME_CSTR],
+            SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_NONE,
+            None,
+        );
+        assert_eq!(res.unwrap_err(), IntegrationError::AvbSlotVerifyError(SlotVerifyError::Io));
     }
 }
