@@ -63,3 +63,9 @@ Note: for security reasons, Fastboot over TCP is only available in dev builds.
 #### SimpleTextInputProtocol
 
 TODO: remove this protocol
+
+#### GblSlotProtocol
+
+If present, the system is expected to boot Android. This protocol abstracts over
+implementation details in the system AB metadata and provides a common interface
+for GBL.
