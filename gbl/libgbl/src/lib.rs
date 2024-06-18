@@ -30,7 +30,6 @@
 // TODO: b/312608163 - Adding ZBI library usage to check dependencies
 extern crate avb;
 extern crate core;
-extern crate cstr;
 extern crate gbl_storage;
 extern crate spin;
 extern crate zbi;
@@ -38,7 +37,6 @@ extern crate zbi;
 use avb::{HashtreeErrorMode, SlotVerifyData, SlotVerifyError, SlotVerifyFlags, SlotVerifyResult};
 use core::ffi::CStr;
 use core::fmt::Debug;
-use cstr::cstr;
 use gbl_storage::AsMultiBlockDevices;
 use spin::Mutex;
 
@@ -71,10 +69,6 @@ use overlap::is_overlap;
 pub struct Partition {}
 /// TODO: b/312607649 - placeholder type
 pub struct InfoStruct {}
-
-/// Data structure holding verified slot data.
-#[derive(Debug)]
-pub struct VerifiedData<'a>(SlotVerifyData<'a>);
 
 /// Structure representing partition and optional address it is required to be loaded.
 /// If no address is provided GBL will use default one.
@@ -112,7 +106,7 @@ pub struct Dtb<'a>(&'a mut [u8]);
 /// Create Boot Image from corresponding partition for `partitions_ram_map` and `avb_descriptors`
 /// lists
 pub fn get_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
-    verified_data: &mut VerifiedData<'d>,
+    verified_data: &mut SlotVerifyData<'d>,
     partitions_ram_map: &'a mut [PartitionRamMap<'b, 'c>],
 ) -> (Option<BootImage<'c>>, &'a mut [PartitionRamMap<'b, 'c>]) {
     match partitions_ram_map.len() {
@@ -127,7 +121,7 @@ pub fn get_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
 /// Create Vendor Boot Image from corresponding partition for `partitions_ram_map` and
 /// `avb_descriptors` lists
 pub fn get_vendor_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
-    verified_data: &mut VerifiedData<'d>,
+    verified_data: &mut SlotVerifyData<'d>,
     partitions_ram_map: &'a mut [PartitionRamMap<'b, 'c>],
 ) -> (Option<VendorBootImage<'c>>, &'a mut [PartitionRamMap<'b, 'c>]) {
     match partitions_ram_map.len() {
@@ -141,7 +135,7 @@ pub fn get_vendor_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
 
 /// Create Init Boot Image from corresponding partition for `partitions` and `avb_descriptors` lists
 pub fn get_init_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
-    verified_data: &mut VerifiedData<'d>,
+    verified_data: &mut SlotVerifyData<'d>,
     partitions_ram_map: &'a mut [PartitionRamMap<'b, 'c>],
 ) -> (Option<InitBootImage<'c>>, &'a mut [PartitionRamMap<'b, 'c>]) {
     match partitions_ram_map.len() {
@@ -155,7 +149,7 @@ pub fn get_init_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
 
 /// Create separate image types from [avb::Descriptor]
 pub fn get_images<'a: 'b, 'b: 'c, 'c, 'd>(
-    verified_data: &mut VerifiedData<'d>,
+    verified_data: &mut SlotVerifyData<'d>,
     partitions_ram_map: &'a mut [PartitionRamMap<'b, 'c>],
 ) -> (
     Option<BootImage<'c>>,
@@ -201,42 +195,34 @@ where
     /// Load from disk, validate with AVB
     ///
     /// # Arguments
-    ///   * `avb_ops` - implementation for `avb::Ops` that would be borrowed in result to prevent
-    ///   changes to partitions until it is out of scope.
-    ///   * `partitions_ram_map` - Partitions to verify with optional address to load image to.
-    ///   * `slot_verify_flags` - AVB slot verification flags
-    ///   * `boot_target` - [Optional] Boot Target
+    /// * `avb_ops` - implementation for `avb::Ops`
+    /// * `partitions_to_verify` - names of all the partitions to verify with libavb.
+    /// * `slot_verify_flags` - AVB slot verification flags
+    /// * `boot_target` - [Optional] Boot Target
     ///
     /// # Returns
-    ///
-    /// * `Ok(&[avb_descriptor])` - Array of AVB Descriptors - AVB return codes, partition name,
-    /// image load address, image size, AVB Footer contents (version details, etc.)
+    /// * `Ok(SlotVerifyData)` - avb verification data
     /// * `Err(Error)` - on failure
     pub fn load_and_verify_image<'b>(
         &mut self,
         avb_ops: &mut impl avb::Ops<'b>,
-        partitions_ram_map: &mut [PartitionRamMap],
+        partitions_to_verify: &[&CStr],
         slot_verify_flags: SlotVerifyFlags,
         boot_target: Option<BootTarget>,
-    ) -> Result<VerifiedData<'b>> {
+    ) -> Result<SlotVerifyData<'b>> {
         let bytes: SuffixBytes =
             if let Some(tgt) = boot_target { tgt.suffix().into() } else { Default::default() };
 
-        let requested_partitions = [cstr!("")];
         let avb_suffix = CStr::from_bytes_until_nul(&bytes)?;
 
-        let verified_data = VerifiedData(
-            (self.verify_slot)(
-                avb_ops,
-                &requested_partitions,
-                Some(avb_suffix),
-                slot_verify_flags,
-                HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_EIO,
-            )
-            .map_err(|v| v.without_verify_data())?,
-        );
-
-        Ok(verified_data)
+        Ok((self.verify_slot)(
+            avb_ops,
+            partitions_to_verify,
+            Some(avb_suffix),
+            slot_verify_flags,
+            HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_EIO,
+        )
+        .map_err(|v| v.without_verify_data())?)
     }
 
     /// Load Slot Manager Interface
@@ -384,19 +370,18 @@ where
     ///          Callers MAY log the error, enter an interactive mode,
     ///          or take other actions before rebooting.
     ///
-    ///
     /// # Arguments
-    ///   * `avb_ops` - implementation for `avb::Ops` that would be borrowed in result to prevent
+    /// * `avb_ops` - implementation for `avb::Ops` that would be borrowed in result to prevent
     ///   changes to partitions until it is out of scope.
-    ///   * `partitions_ram_map` - Partitions to verify and optional address for them to be loaded.
-    ///   * `slot_verify_flags` - AVB slot verification flags
-    ///   * `slot_cursor` - Cursor object that manages interactions with boot slot management
-    ///   * `kernel_load_buffer` - Buffer for loading the kernel.
-    ///   * `ramdisk_load_buffer` - Buffer for loading the ramdisk.
-    ///   * `fdt` - Buffer containing a flattened device tree blob.
+    /// * `partitions_to_verify` - names of all the partitions to verify with libavb.
+    /// * `partitions_ram_map` - Partitions to verify and optional address for them to be loaded.
+    /// * `slot_verify_flags` - AVB slot verification flags
+    /// * `slot_cursor` - Cursor object that manages interactions with boot slot management
+    /// * `kernel_load_buffer` - Buffer for loading the kernel.
+    /// * `ramdisk_load_buffer` - Buffer for loading the ramdisk.
+    /// * `fdt` - Buffer containing a flattened device tree blob.
     ///
     /// # Returns
-    ///
     /// * doesn't return on success
     /// * `Err(Error)` - on failure
     // Nevertype could be used here when it is stable https://github.com/serde-rs/serde/issues/812
@@ -404,6 +389,7 @@ where
     pub fn load_verify_boot<'b: 'c, 'c, 'd: 'b, B: gbl_storage::AsBlockDevice>(
         &mut self,
         avb_ops: &mut impl avb::Ops<'b>,
+        partitions_to_verify: &[&CStr],
         partitions_ram_map: &'d mut [PartitionRamMap<'b, 'c>],
         slot_verify_flags: SlotVerifyFlags,
         slot_cursor: Cursor<B, impl Manager>,
@@ -421,6 +407,7 @@ where
             avb_ops,
             &mut ramdisk,
             kernel_load_buffer,
+            partitions_to_verify,
             partitions_ram_map,
             slot_verify_flags,
             slot_cursor,
@@ -453,6 +440,7 @@ where
         avb_ops: &mut impl avb::Ops<'b>,
         ramdisk: &mut Ramdisk,
         kernel_load_buffer: &'e mut [u8],
+        partitions_to_verify: &[&CStr],
         partitions_ram_map: &'d mut [PartitionRamMap<'b, 'c>],
         slot_verify_flags: SlotVerifyFlags,
         mut slot_cursor: Cursor<B, impl Manager>,
@@ -476,7 +464,7 @@ where
         let mut verify_data = self
             .load_and_verify_image(
                 avb_ops,
-                partitions_ram_map,
+                partitions_to_verify,
                 slot_verify_flags,
                 Some(boot_target),
             )
@@ -593,9 +581,9 @@ mod tests {
     extern crate avb_sysdeps;
     extern crate avb_test;
     use super::*;
-    use avb::IoError;
     use avb::IoResult as AvbIoResult;
     use avb::PublicKeyForPartitionInfo;
+    use avb::{IoError, SlotVerifyError};
     use avb_test::{FakeVbmetaKey, TestOps};
     use std::{fs, path::Path};
 
@@ -647,10 +635,9 @@ mod tests {
         let mut gbl_ops = DefaultGblOps {};
         let mut gbl = GblBuilder::new(&mut gbl_ops).build();
         let mut avb_ops = AvbOpsUnimplemented {};
-        let mut partitions_ram_map: [PartitionRamMap; 0] = [];
         let res = gbl.load_and_verify_image(
             &mut avb_ops,
-            &mut partitions_ram_map,
+            &mut [],
             SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_NONE,
             None,
         );
@@ -658,6 +645,7 @@ mod tests {
     }
 
     const TEST_ZIRCON_PARTITION_NAME: &str = "zircon_a";
+    const TEST_ZIRCON_PARTITION_NAME_CSTR: &CStr = c"zircon_a";
     const TEST_ZIRCON_IMAGE_PATH: &str = "zircon_a.bin";
     const TEST_ZIRCON_VBMETA_PATH: &str = "zircon_a.vbmeta";
     const TEST_PUBLIC_KEY_PATH: &str = "testkey_rsa4096_pub.bin";
@@ -674,10 +662,19 @@ mod tests {
         fs::read(full_path).unwrap()
     }
 
-    #[test]
-    fn test_load_and_verify_image_stub() {
-        let mut gbl_ops = DefaultGblOps {};
-        let mut gbl = GblBuilder::new(&mut gbl_ops).build();
+    /// Creates and returns a configured avb `TestOps`.
+    ///
+    /// The initial state will verify successfully with:
+    /// * a valid vbmeta image in the `vbmeta` partition, containing a hash descriptor for the
+    ///   `TEST_ZIRCON_PARTITION_NAME` partition
+    /// * an image in the `TEST_ZIRCON_PARTITION_NAME` partition matching the vbmeta hash
+    /// * no preloaded partition data
+    /// * a public key matching the vbmeta image
+    /// * a valid vbmeta rollback index
+    /// * a locked bootloader state
+    ///
+    /// The caller can modify any of this state as needed for their particular test.
+    fn test_avb_ops() -> TestOps<'static> {
         let mut avb_ops = TestOps::default();
 
         avb_ops.add_partition(TEST_ZIRCON_PARTITION_NAME, testdata(TEST_ZIRCON_IMAGE_PATH));
@@ -689,10 +686,18 @@ mod tests {
         avb_ops.rollbacks.insert(TEST_VBMETA_ROLLBACK_LOCATION, 0);
         avb_ops.unlock_state = Ok(false);
 
-        let mut partitions_ram_map: [PartitionRamMap; 0] = [];
+        avb_ops
+    }
+
+    #[test]
+    fn test_load_and_verify_image_success() {
+        let mut gbl_ops = DefaultGblOps {};
+        let mut gbl = GblBuilder::new(&mut gbl_ops).build();
+        let mut avb_ops = test_avb_ops();
+
         let res = gbl.load_and_verify_image(
             &mut avb_ops,
-            &mut partitions_ram_map,
+            &mut [&TEST_ZIRCON_PARTITION_NAME_CSTR],
             SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_NONE,
             None,
         );
@@ -700,20 +705,24 @@ mod tests {
     }
 
     #[test]
-    fn test_load_and_verify_image_avb_error() {
-        const TEST_ERROR: SlotVerifyError<'static> = SlotVerifyError::Verification(None);
-        let expected_error = SlotVerifyError::Verification(None);
+    fn test_load_and_verify_image_verification_error() {
         let mut gbl_ops = DefaultGblOps {};
-        let mut gbl =
-            GblBuilder::new(&mut gbl_ops).verify_slot(|_, _, _, _, _| Err(TEST_ERROR)).build();
-        let mut avb_ops = AvbOpsUnimplemented {};
-        let mut partitions_ram_map: [PartitionRamMap; 0] = [];
+        let mut gbl = GblBuilder::new(&mut gbl_ops).build();
+        let mut avb_ops = test_avb_ops();
+
+        // Modify the kernel image, it should now fail to validate against the vbmeta image.
+        avb_ops.partitions.get_mut(TEST_ZIRCON_PARTITION_NAME).unwrap().contents.as_mut_vec()[0] ^=
+            0x01;
+
         let res = gbl.load_and_verify_image(
             &mut avb_ops,
-            &mut partitions_ram_map,
+            &mut [&TEST_ZIRCON_PARTITION_NAME_CSTR],
             SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_NONE,
             None,
         );
-        assert_eq!(res.unwrap_err(), IntegrationError::AvbSlotVerifyError(TEST_ERROR));
+        assert_eq!(
+            res.unwrap_err(),
+            IntegrationError::AvbSlotVerifyError(SlotVerifyError::Verification(None))
+        );
     }
 }
