@@ -47,6 +47,7 @@ pub mod boot_reason;
 pub mod error;
 pub mod fastboot;
 pub mod ops;
+mod overlap;
 
 /// The 'slots' module, containing types and traits for
 /// querying and modifying slotted boot behavior.
@@ -63,16 +64,13 @@ pub use ops::{
 };
 
 use ops::GblUtils;
+use overlap::is_overlap;
 
 // TODO: b/312607649 - Replace placeholders with actual structures: https://r.android.com/2721974, etc
 /// TODO: b/312607649 - placeholder type
 pub struct Partition {}
 /// TODO: b/312607649 - placeholder type
 pub struct InfoStruct {}
-
-/// Data structure holding verified slot data.
-#[derive(Debug)]
-pub struct VerifiedData<'a>(SlotVerifyData<'a>);
 
 /// Structure representing partition and optional address it is required to be loaded.
 /// If no address is provided GBL will use default one.
@@ -110,7 +108,7 @@ pub struct Dtb<'a>(&'a mut [u8]);
 /// Create Boot Image from corresponding partition for `partitions_ram_map` and `avb_descriptors`
 /// lists
 pub fn get_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
-    verified_data: &mut VerifiedData<'d>,
+    verified_data: &mut SlotVerifyData<'d>,
     partitions_ram_map: &'a mut [PartitionRamMap<'b, 'c>],
 ) -> (Option<BootImage<'c>>, &'a mut [PartitionRamMap<'b, 'c>]) {
     match partitions_ram_map.len() {
@@ -125,7 +123,7 @@ pub fn get_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
 /// Create Vendor Boot Image from corresponding partition for `partitions_ram_map` and
 /// `avb_descriptors` lists
 pub fn get_vendor_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
-    verified_data: &mut VerifiedData<'d>,
+    verified_data: &mut SlotVerifyData<'d>,
     partitions_ram_map: &'a mut [PartitionRamMap<'b, 'c>],
 ) -> (Option<VendorBootImage<'c>>, &'a mut [PartitionRamMap<'b, 'c>]) {
     match partitions_ram_map.len() {
@@ -139,7 +137,7 @@ pub fn get_vendor_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
 
 /// Create Init Boot Image from corresponding partition for `partitions` and `avb_descriptors` lists
 pub fn get_init_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
-    verified_data: &mut VerifiedData<'d>,
+    verified_data: &mut SlotVerifyData<'d>,
     partitions_ram_map: &'a mut [PartitionRamMap<'b, 'c>],
 ) -> (Option<InitBootImage<'c>>, &'a mut [PartitionRamMap<'b, 'c>]) {
     match partitions_ram_map.len() {
@@ -153,7 +151,7 @@ pub fn get_init_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
 
 /// Create separate image types from [avb::Descriptor]
 pub fn get_images<'a: 'b, 'b: 'c, 'c, 'd>(
-    verified_data: &mut VerifiedData<'d>,
+    verified_data: &mut SlotVerifyData<'d>,
     partitions_ram_map: &'a mut [PartitionRamMap<'b, 'c>],
 ) -> (
     Option<BootImage<'c>>,
@@ -199,16 +197,13 @@ where
     /// Load from disk, validate with AVB
     ///
     /// # Arguments
-    ///   * `avb_ops` - implementation for `avb::Ops` that would be borrowed in result to prevent
-    ///   changes to partitions until it is out of scope.
-    ///   * `partitions_ram_map` - Partitions to verify with optional address to load image to.
-    ///   * `slot_verify_flags` - AVB slot verification flags
-    ///   * `boot_target` - [Optional] Boot Target
+    /// * `avb_ops` - implementation for `avb::Ops`
+    /// * `partitions_ram_map` - Partitions to verify with optional address to load image to.
+    /// * `slot_verify_flags` - AVB slot verification flags
+    /// * `boot_target` - [Optional] Boot Target
     ///
     /// # Returns
-    ///
-    /// * `Ok(&[avb_descriptor])` - Array of AVB Descriptors - AVB return codes, partition name,
-    /// image load address, image size, AVB Footer contents (version details, etc.)
+    /// * `Ok(SlotVerifyData)` - avb verification data
     /// * `Err(Error)` - on failure
     pub fn load_and_verify_image<'b>(
         &mut self,
@@ -216,25 +211,21 @@ where
         partitions_ram_map: &mut [PartitionRamMap],
         slot_verify_flags: SlotVerifyFlags,
         boot_target: Option<BootTarget>,
-    ) -> Result<VerifiedData<'b>> {
+    ) -> Result<SlotVerifyData<'b>> {
         let bytes: SuffixBytes =
             if let Some(tgt) = boot_target { tgt.suffix().into() } else { Default::default() };
 
         let requested_partitions = [cstr!("")];
         let avb_suffix = CStr::from_bytes_until_nul(&bytes)?;
 
-        let verified_data = VerifiedData(
-            (self.verify_slot)(
-                avb_ops,
-                &requested_partitions,
-                Some(avb_suffix),
-                slot_verify_flags,
-                HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_EIO,
-            )
-            .map_err(|v| v.without_verify_data())?,
-        );
-
-        Ok(verified_data)
+        Ok((self.verify_slot)(
+            avb_ops,
+            &requested_partitions,
+            Some(avb_suffix),
+            slot_verify_flags,
+            HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_EIO,
+        )
+        .map_err(|v| v.without_verify_data())?)
     }
 
     /// Load Slot Manager Interface
@@ -492,7 +483,7 @@ where
                         //
                         // We don't really care about those circumstances.
                         // The call here is a best effort attempt to decrement tries remaining.
-                        let _ = slot_cursor.ctx.mark_boot_attempt(boot_target);
+                        let _ = slot_cursor.ctx.mark_boot_attempt();
                     }
                 }
                 e
@@ -503,6 +494,16 @@ where
         let boot_image = boot_image.ok_or(Error::MissingImage)?;
         let vendor_boot_image = vendor_boot_image.ok_or(Error::MissingImage)?;
         let init_boot_image = init_boot_image.ok_or(Error::MissingImage)?;
+
+        if is_overlap(&[
+            boot_image.0,
+            vendor_boot_image.0,
+            init_boot_image.0,
+            &ramdisk.0,
+            kernel_load_buffer,
+        ]) {
+            return Err(IntegrationError::GblNativeError(Error::BufferOverlap));
+        }
 
         let info_struct = self.unpack_boot_image(&boot_image, Some(boot_target))?;
 
@@ -517,10 +518,7 @@ where
 
         self.dtb_update_and_load(&info_struct, vendor_boot_image)?;
 
-        let token = slot_cursor
-            .ctx
-            .mark_boot_attempt(boot_target)
-            .map_err(|_| Error::OperationProhibited)?;
+        let token = slot_cursor.ctx.mark_boot_attempt().map_err(|_| Error::OperationProhibited)?;
 
         Ok((kernel_image, token))
     }

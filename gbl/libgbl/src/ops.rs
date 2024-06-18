@@ -16,8 +16,6 @@
 //!
 #[cfg(feature = "alloc")]
 extern crate alloc;
-#[cfg(test)]
-extern crate static_assertions;
 
 use crate::error::{Error, Result as GblResult};
 #[cfg(feature = "alloc")]

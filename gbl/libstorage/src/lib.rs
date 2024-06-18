@@ -23,7 +23,7 @@
 //!
 //! ```rust
 //! use gbl_storage::{
-//!     AsBlockDevice, BlockIo, BlockDevice, required_scratch_size,
+//!     AsBlockDevice, BlockIo, BlockDevice, required_scratch_size, BlockInfo, BlockIoError
 //! };
 //!
 //! /// Mocks a block device using a buffer.
@@ -32,30 +32,26 @@
 //! }
 //!
 //! impl BlockIo for RamBlockIo {
-//!     fn block_size(&mut self) -> u64 {
-//!         512
+//!     fn info(&mut self) -> BlockInfo {
+//!         BlockInfo {
+//!             block_size: 512,
+//!             num_blocks: self.storage.len() as u64 / 512,
+//!             alignment: 64,
+//!         }
 //!     }
 //!
-//!     fn num_blocks(&mut self) -> u64 {
-//!         self.storage.len() as u64 / self.block_size()
-//!     }
-//!
-//!     fn alignment(&mut self) -> u64 {
-//!         64
-//!     }
-//!
-//!     fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> bool {
+//!     fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> Result<(), BlockIoError> {
 //!         let start = blk_offset * self.block_size();
 //!         let end = start + out.len() as u64;
 //!         out.clone_from_slice(&self.storage[start as usize..end as usize]);
-//!         true
+//!         Ok(())
 //!     }
 //!
-//!     fn write_blocks(&mut self, blk_offset: u64, data: &[u8]) -> bool {
+//!     fn write_blocks(&mut self, blk_offset: u64, data: &mut [u8]) -> Result<(), BlockIoError> {
 //!         let start = blk_offset * self.block_size();
 //!         let end = start + data.len() as u64;
 //!         self.storage[start as usize..end as usize].clone_from_slice(&data);
-//!         true
+//!         Ok(())
 //!     }
 //! }
 //!
@@ -74,9 +70,7 @@
 //! ram_block_dev.read(4321, &mut out[..]).unwrap();
 //! let mut data = vec![0u8; 5678];
 //! // Mutable input. More efficient
-//! ram_block_dev.write_mut(8765, data.as_mut_slice()).unwrap();
-//! // Immutable input. Works too but not as efficient.
-//! ram_block_dev.write(8765, &data).unwrap();
+//! ram_block_dev.write(8765, data.as_mut_slice()).unwrap();
 //!
 //! // Sync GPT
 //! let _ = ram_block_dev.sync_gpt();
@@ -84,7 +78,7 @@
 //! let _ = ram_block_dev.find_partition("some-partition");
 //! // Read/Write GPT partitions with arbitrary offset, size, buffer
 //! let _ = ram_block_dev.read_gpt_partition("partition", 4321, &mut out[..]);
-//! let _ = ram_block_dev.write_gpt_partition_mut("partition", 8765, data.as_mut_slice());
+//! let _ = ram_block_dev.write_gpt_partition("partition", 8765, data.as_mut_slice());
 //!
 //! // Alterantively, you can also define a custom type that internally owns and binds the
 //! // implementation of `BlockIo` and scratch buffer together, and then implement the
@@ -110,6 +104,7 @@ use core::cmp::min;
 
 // Selective export of submodule types.
 mod gpt;
+use gpt::check_gpt_rw_params;
 use gpt::Gpt;
 pub use gpt::{GptEntry, GptHeader, GPT_MAGIC, GPT_NAME_LEN_U16};
 
@@ -117,6 +112,9 @@ use safemath::SafeNum;
 
 mod multi_blocks;
 pub use multi_blocks::AsMultiBlockDevices;
+
+mod non_blocking;
+pub use non_blocking::{BlockDeviceEx, IoStatus, NonBlockingBlockIo, Transaction};
 
 /// The type of Result used in this library.
 pub type Result<T> = core::result::Result<T, StorageError>;
@@ -126,12 +124,14 @@ pub type Result<T> = core::result::Result<T, StorageError>;
 pub enum StorageError {
     ArithmeticOverflow(safemath::Error),
     BlockDeviceNotFound,
-    BlockIoError,
+    BlockIoError(BlockIoError),
     BlockIoNotProvided,
     FailedGettingBlockDevices(Option<&'static str>),
+    IoAborted,
     InvalidInput,
     NoValidGpt,
     NotExist,
+    NotReady,
     OutOfRange,
     PartitionNotUnique,
     ScratchTooSmall,
@@ -149,42 +149,68 @@ impl From<core::num::TryFromIntError> for StorageError {
     }
 }
 
+impl From<BlockIoError> for StorageError {
+    fn from(val: BlockIoError) -> Self {
+        Self::BlockIoError(val)
+    }
+}
+
 impl core::fmt::Display for StorageError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            StorageError::ArithmeticOverflow(e) => write!(f, "Arithmetic overflow {:?}", e),
-            StorageError::BlockDeviceNotFound => write!(f, "Block device not found"),
-            StorageError::BlockIoError => write!(f, "Block IO error"),
-            StorageError::BlockIoNotProvided => write!(f, "Block IO is not provided"),
-            StorageError::FailedGettingBlockDevices(v) => {
-                write!(f, "Failed to iterate all block devices {:?}", v)
-            }
-            StorageError::InvalidInput => write!(f, "Invalid input"),
-            StorageError::NoValidGpt => write!(f, "GPT not found"),
-            StorageError::NotExist => write!(f, "The specified partition could not be found"),
-            StorageError::OutOfRange => write!(f, "Out of range"),
-            StorageError::PartitionNotUnique => {
-                write!(f, "Partition is found on multiple block devices")
-            }
-            StorageError::ScratchTooSmall => write!(f, "Not enough scratch buffer"),
-        }
+        write!(f, "{:?}", self)
     }
+}
+
+/// `BlockInfo` contains information for a block device.
+pub struct BlockInfo {
+    /// Native block size of the block device.
+    pub block_size: u64,
+    /// Total number of blocks of the block device.
+    pub num_blocks: u64,
+    /// The alignment requirement for IO buffers. For example, many block device drivers use DMA
+    /// for data transfer, which typically requires that the buffer address for DMA be aligned to
+    /// 16/32/64 bytes etc. If the block device has no alignment requirement, it can return 1.
+    pub alignment: u64,
+}
+
+impl BlockInfo {
+    /// Computes the total size in bytes of the block device.
+    pub fn total_size(&self) -> Result<u64> {
+        Ok((SafeNum::from(self.block_size) * self.num_blocks).try_into()?)
+    }
+}
+
+/// `BlockIoError` represents the error code for returned by implementation of `BlockIo` and
+/// `NonBlockingBlockIo` interfaces.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum BlockIoError {
+    MediaBusy,
+    Others(Option<&'static str>),
 }
 
 /// `BlockIo` contains methods for reading/writing blocks of data to a block device with aligned
 /// input/output buffers.
 pub trait BlockIo {
+    /// Gets the `BlockInfo` for this block device
+    fn info(&mut self) -> BlockInfo;
+
     /// Returns the block size of the block device.
-    fn block_size(&mut self) -> u64;
+    fn block_size(&mut self) -> u64 {
+        self.info().block_size
+    }
 
     /// Returns the total number of blocks of the block device.
-    fn num_blocks(&mut self) -> u64;
+    fn num_blocks(&mut self) -> u64 {
+        self.info().num_blocks
+    }
 
     /// Returns the alignment requirement for buffers passed to the `write_blocks()` and
     /// `read_blocks()` methods. For example, many block device drivers use DMA for data transfer,
     /// which typically requires that the buffer address for DMA be aligned to 16/32/64 bytes etc.
     /// If the block device has no alignment requirement, it can return 1.
-    fn alignment(&mut self) -> u64;
+    fn alignment(&mut self) -> u64 {
+        self.info().alignment
+    }
 
     /// Read blocks of data from the block device
     ///
@@ -198,7 +224,11 @@ pub trait BlockIo {
     /// # Returns
     ///
     /// Returns true if exactly out.len() number of bytes are read. Otherwise false.
-    fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> bool;
+    fn read_blocks(
+        &mut self,
+        blk_offset: u64,
+        out: &mut [u8],
+    ) -> core::result::Result<(), BlockIoError>;
 
     /// Write blocks of data to the block device
     ///
@@ -212,7 +242,11 @@ pub trait BlockIo {
     /// # Returns
     ///
     /// Returns true if exactly data.len() number of bytes are written. Otherwise false.
-    fn write_blocks(&mut self, blk_offset: u64, data: &[u8]) -> bool;
+    fn write_blocks(
+        &mut self,
+        blk_offset: u64,
+        data: &mut [u8],
+    ) -> core::result::Result<(), BlockIoError>;
 }
 
 /// `Partition` contains information about a GPT partition.
@@ -295,7 +329,7 @@ pub trait AsBlockDevice {
     ///
     /// * GPT headers will be cached in the scratch buffer after calling `Self::sync_gpt()` and
     ///   returning success. Subsequent call of `Self:read_gpt_partiton()`,
-    ///   `Self::write_gpt_partition()`, and `Self::write_gpt_partition_mut()`
+    ///   `Self::write_gpt_partition()`, and `Self::write_gpt_partition()`
     ///   will look up partition entries from the cached GPT header.
     ///   Thus callers should make sure to always return the same scratch buffer and avoid
     ///   modifying its content.
@@ -344,31 +378,12 @@ pub trait AsBlockDevice {
     ///
     /// * `data`: Data to write.
     ///
-    /// * If offset`/`data.len()` is not aligned to `Self::block_size()`
-    ///   or data.as_ptr() is not aligned to `Self::alignment()`, the API may
-    ///   reduce to a block by block read-modify-write in the worst case, which can be inefficient.
-    ///
-    /// * Returns success when exactly `data.len()` number of bytes are written.
-    fn write(&mut self, offset: u64, data: &[u8]) -> Result<()> {
-        with_partitioned_scratch(self, |io, alignment_scratch, _, _| {
-            write_bytes(io, offset, data, alignment_scratch)
-        })?
-    }
-
-    /// Write data to the device.
-    ///
-    /// # Args
-    ///
-    /// * `offset`: Offset in number of bytes.
-    ///
-    /// * `data`: Data to write.
-    ///
     /// * The API enables an optimization which temporarily changes `data` layout internally and
     ///   reduces the number of calls to `Self::write_blocks()` down to O(1) regardless of input's
     ///   alignment. This is the recommended usage.
     ///
     /// * Returns success when exactly `data.len()` number of bytes are written.
-    fn write_mut(&mut self, offset: u64, data: &mut [u8]) -> Result<()> {
+    fn write(&mut self, offset: u64, data: &mut [u8]) -> Result<()> {
         with_partitioned_scratch(self, |io, alignment_scratch, _, _| {
             write_bytes_mut(io, offset, data, alignment_scratch)
         })?
@@ -427,47 +442,15 @@ pub trait AsBlockDevice {
     ///
     /// Returns success when exactly `out.len()` of bytes are read successfully.
     fn read_gpt_partition(&mut self, part_name: &str, offset: u64, out: &mut [u8]) -> Result<()> {
-        with_partitioned_scratch(self, |io, alignment_scratch, gpt_buffer, _| {
-            gpt::read_gpt_partition(
-                io,
-                &mut Gpt::from_existing(gpt_buffer)?,
-                part_name,
-                offset,
-                out,
-                alignment_scratch,
-            )
-        })?
-    }
-
-    /// Write a GPT partition on a block device
-    ///
-    /// # Args
-    ///
-    /// * `part_name`: Name of the partition.
-    ///
-    /// * `offset`: Offset in number of bytes into the partition.
-    ///
-    /// * `data`: Data to write. See `data` passed to `BlockIo::write()` for details.
-    ///
-    /// # Returns
-    ///
-    /// Returns success when exactly `data.len()` of bytes are written successfully.
-    fn write_gpt_partition(&mut self, part_name: &str, offset: u64, data: &[u8]) -> Result<()> {
-        with_partitioned_scratch(self, |io, alignment_scratch, gpt_buffer, _| {
-            gpt::write_gpt_partition(
-                io,
-                &mut Gpt::from_existing(gpt_buffer)?,
-                part_name,
-                offset,
-                data,
-                alignment_scratch,
-            )
-        })?
+        let offset = with_partitioned_scratch(self, |_, _, gpt_buffer, _| {
+            check_gpt_rw_params(gpt_buffer, part_name, offset, out.len())
+        })??;
+        self.read(offset, out)
     }
 
     /// Write a GPT partition on a block device.
     /// Optimization for mutable buffers.
-    /// See `AsBlockDevice::write_mut` for details on alignment requirements
+    /// See `AsBlockDevice::write` for details on alignment requirements
     /// for optimized performance.
     ///
     /// # Args
@@ -481,22 +464,11 @@ pub trait AsBlockDevice {
     /// # Returns
     ///
     /// Returns success when exactly `data.len()` of bytes are written successfully.
-    fn write_gpt_partition_mut(
-        &mut self,
-        part_name: &str,
-        offset: u64,
-        data: &mut [u8],
-    ) -> Result<()> {
-        with_partitioned_scratch(self, |io, alignment_scratch, gpt_buffer, _| {
-            gpt::write_gpt_partition_mut(
-                io,
-                &mut Gpt::from_existing(gpt_buffer)?,
-                part_name,
-                offset,
-                data.into(),
-                alignment_scratch,
-            )
-        })?
+    fn write_gpt_partition(&mut self, part_name: &str, offset: u64, data: &mut [u8]) -> Result<()> {
+        let offset = with_partitioned_scratch(self, |_, _, gpt_buffer, _| {
+            check_gpt_rw_params(gpt_buffer, part_name, offset, data.len())
+        })??;
+        self.write(offset, data)
     }
 }
 
@@ -598,10 +570,7 @@ fn read_aligned_all(
     out: &mut [u8],
 ) -> Result<()> {
     let blk_offset = check_range(blk_io, offset, out).map(u64::try_from)??;
-    if blk_io.read_blocks(blk_offset, out) {
-        return Ok(());
-    }
-    Err(StorageError::BlockIoError)
+    Ok(blk_io.read_blocks(blk_offset, out)?)
 }
 
 /// Read with block-aligned offset and aligned buffer. Size don't need to be block aligned.
@@ -767,12 +736,13 @@ fn read(
     )
 }
 
-fn write_aligned_all(blk_io: &mut (impl BlockIo + ?Sized), offset: u64, data: &[u8]) -> Result<()> {
+fn write_aligned_all(
+    blk_io: &mut (impl BlockIo + ?Sized),
+    offset: u64,
+    data: &mut [u8],
+) -> Result<()> {
     let blk_offset = check_range(blk_io, offset, data)?;
-    if blk_io.write_blocks(blk_offset.try_into()?, data) {
-        return Ok(());
-    }
-    Err(StorageError::BlockIoError)
+    Ok(blk_io.write_blocks(blk_offset.try_into()?, data)?)
 }
 
 /// Write with block-aligned offset and aligned buffer. `data.len()` can be unaligned.
@@ -781,7 +751,7 @@ fn write_aligned_all(blk_io: &mut (impl BlockIo + ?Sized), offset: u64, data: &[
 fn write_aligned_offset_and_buffer(
     blk_io: &mut (impl BlockIo + ?Sized),
     offset: u64,
-    data: &[u8],
+    data: &mut [u8],
     scratch: &mut [u8],
 ) -> Result<()> {
     debug_assert!(is_aligned(offset.into(), blk_io.block_size().into())?);
@@ -790,7 +760,7 @@ fn write_aligned_offset_and_buffer(
     let aligned_write: usize =
         SafeNum::from(data.len()).round_down(blk_io.block_size()).try_into()?;
     if aligned_write > 0 {
-        write_aligned_all(blk_io, offset, &data[..aligned_write])?;
+        write_aligned_all(blk_io, offset, &mut data[..aligned_write])?;
     }
     let unaligned = &data[aligned_write..];
     if unaligned.len() == 0 {
@@ -803,52 +773,6 @@ fn write_aligned_offset_and_buffer(
     read_aligned_all(blk_io, unaligned_start, block_scratch)?;
     block_scratch[..unaligned.len()].clone_from_slice(unaligned);
     write_aligned_all(blk_io, unaligned_start, block_scratch)
-}
-
-/// Write data to the device with immutable input bytes slice. However, if `offset`/`data.len()`
-/// is not aligned to `blk_io.block_size()` or data.as_ptr() is not aligned to
-/// `blk_io.alignment()`, the API may reduce to a block by block read-modify-write in the worst
-/// case.
-fn write_bytes(
-    blk_io: &mut (impl BlockIo + ?Sized),
-    offset: u64,
-    data: &[u8],
-    scratch: &mut [u8],
-) -> Result<()> {
-    let (_, block_scratch) = split_scratch(blk_io, scratch)?;
-    let block_size = SafeNum::from(blk_io.block_size());
-    let mut data_offset = SafeNum::ZERO;
-    let mut offset = SafeNum::from(offset);
-    while usize::try_from(data_offset)? < data.len() {
-        if is_aligned(offset, block_size)?
-            && is_buffer_aligned(&data[data_offset.try_into()?..], blk_io.alignment())?
-        {
-            return write_aligned_offset_and_buffer(
-                blk_io,
-                offset.try_into()?,
-                &data[data_offset.try_into()?..],
-                block_scratch,
-            );
-        }
-
-        let block_offset = offset.round_down(block_size);
-        let copy_offset = offset - block_offset;
-        let copy_size =
-            min(data[data_offset.try_into()?..].len(), (block_size - copy_offset).try_into()?);
-        if copy_size < block_size.try_into()? {
-            // Partial block copy. Perform read-modify-write
-            read_aligned_all(blk_io, block_offset.try_into()?, block_scratch)?;
-        }
-        block_scratch[copy_offset.try_into()?..(copy_offset + copy_size).try_into()?]
-            .clone_from_slice(
-                &data[data_offset.try_into()?..(data_offset + copy_size).try_into()?],
-            );
-        write_aligned_all(blk_io, block_offset.try_into()?, block_scratch)?;
-        data_offset += copy_size;
-        offset += copy_size;
-    }
-
-    Ok(())
 }
 
 /// Swap the position of sub segment [0..pos] and [pos..]
@@ -888,7 +812,7 @@ fn write_aligned_buffer(
             write_aligned_offset_and_buffer(
                 blk_io,
                 aligned_start,
-                &data[aligned_relative_offset..],
+                &mut data[aligned_relative_offset..],
                 scratch,
             )?;
         } else {
@@ -896,8 +820,12 @@ fn write_aligned_buffer(
                 (SafeNum::from(data.len()) - aligned_relative_offset).try_into()?;
             // Swap the offset-aligned part to the beginning of the buffer (assumed aligned)
             swap_slice(data, aligned_relative_offset);
-            let res =
-                write_aligned_offset_and_buffer(blk_io, aligned_start, &data[..write_len], scratch);
+            let res = write_aligned_offset_and_buffer(
+                blk_io,
+                aligned_start,
+                &mut data[..write_len],
+                scratch,
+            );
             // Swap the two parts back before checking the result.
             swap_slice(data, write_len);
             res?;
@@ -1028,10 +956,11 @@ mod test {
     const READ_WRITE_BLOCKS_UPPER_BOUND: usize = 6;
 
     fn read_test_helper(case: &TestCase) {
+        let data = (0..case.storage_size).map(|v| v as u8).collect::<Vec<_>>();
         let mut blk = TestBlockDeviceBuilder::new()
             .set_alignment(case.alignment)
             .set_block_size(case.block_size)
-            .set_size(case.storage_size as usize)
+            .set_data(&data)
             .build();
         // Make an aligned buffer. A misaligned version is created by taking a sub slice that
         // starts at an unaligned offset. Because of this we need to allocate
@@ -1055,10 +984,11 @@ mod test {
     }
 
     fn write_test_helper(case: &TestCase, write_func: fn(&mut TestBlockDevice, u64, &mut [u8])) {
+        let data = (0..case.storage_size).map(|v| v as u8).collect::<Vec<_>>();
         let mut blk = TestBlockDeviceBuilder::new()
             .set_alignment(case.alignment)
             .set_block_size(case.block_size)
-            .set_size(case.storage_size as usize)
+            .set_data(&data)
             .build();
         // Write a reverse version of the current data.
         let rw_offset = SafeNum::from(case.rw_offset);
@@ -1106,31 +1036,11 @@ mod test {
                     read_test_helper(&TestCase::new(x0, x1, x2, x3, x4, x5));
                 }
 
-                // Input bytes slice is an immutable reference
-                #[test]
-                fn write_test() {
-                    let func = |blk: &mut TestBlockDevice, offset: u64, data: &mut [u8]| {
-                        blk.write(offset, data).unwrap();
-                    };
-                    write_test_helper(&TestCase::new($x0, $x1, $x2, $x3, $x4, $x5), func);
-                }
-
-                #[test]
-                fn write_scaled_test() {
-                    // Scaled all parameters by double and test again.
-                    let func = |blk: &mut TestBlockDevice, offset: u64, data: &mut [u8]| {
-                        blk.write(offset, data).unwrap();
-                    };
-                    let (x0, x1, x2, x3, x4, x5) =
-                        (2 * $x0, 2 * $x1, 2 * $x2, 2 * $x3, 2 * $x4, 2 * $x5);
-                    write_test_helper(&TestCase::new(x0, x1, x2, x3, x4, x5), func);
-                }
-
                 // Input bytes slice is a mutable reference
                 #[test]
                 fn write_mut_test() {
                     let func = |blk: &mut TestBlockDevice, offset: u64, data: &mut [u8]| {
-                        blk.write_mut(offset, data).unwrap();
+                        blk.write(offset, data).unwrap();
                         assert!(blk.io.num_reads <= READ_WRITE_BLOCKS_UPPER_BOUND);
                         assert!(blk.io.num_writes <= READ_WRITE_BLOCKS_UPPER_BOUND);
                     };
@@ -1143,7 +1053,7 @@ mod test {
                     let (x0, x1, x2, x3, x4, x5) =
                         (2 * $x0, 2 * $x1, 2 * $x2, 2 * $x3, 2 * $x4, 2 * $x5);
                     let func = |blk: &mut TestBlockDevice, offset: u64, data: &mut [u8]| {
-                        blk.write_mut(offset, data).unwrap();
+                        blk.write(offset, data).unwrap();
                         assert!(blk.io.num_reads <= READ_WRITE_BLOCKS_UPPER_BOUND);
                         assert!(blk.io.num_writes <= READ_WRITE_BLOCKS_UPPER_BOUND);
                     };
@@ -1431,11 +1341,8 @@ mod test {
             .set_max_gpt_entries(0)
             .set_size(512)
             .build();
-        assert!(blk.write_mut(512, vec![0u8; 1].as_mut_slice()).is_err());
-        assert!(blk.write_mut(0, vec![0u8; 513].as_mut_slice()).is_err());
-
-        assert!(blk.write(512, &vec![0u8; 1]).is_err());
-        assert!(blk.write(0, &vec![0u8; 513]).is_err());
+        assert!(blk.write(512, vec![0u8; 1].as_mut_slice()).is_err());
+        assert!(blk.write(0, vec![0u8; 513].as_mut_slice()).is_err());
     }
 
     #[test]
@@ -1446,8 +1353,7 @@ mod test {
             .set_max_gpt_entries(0)
             .set_size(512)
             .build();
-        assert!(blk.write_mut(u64::MAX, vec![0u8; 1].as_mut_slice()).is_err());
-        assert!(blk.write(u64::MAX, &vec![0u8; 1]).is_err());
+        assert!(blk.write(u64::MAX, vec![0u8; 1].as_mut_slice()).is_err());
     }
 
     #[test]
