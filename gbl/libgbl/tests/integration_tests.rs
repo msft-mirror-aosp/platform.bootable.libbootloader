@@ -14,7 +14,7 @@
 
 use gbl_storage::BlockIo;
 use gbl_storage_testlib::TestBlockIo;
-use libgbl::{BootImages, FuchsiaBootImages, GblBuilder, GblOps, GblOpsError};
+use libgbl::{BootImages, FuchsiaBootImages, Gbl, GblOps, GblOpsError};
 use std::{collections::VecDeque, vec::Vec};
 
 extern crate avb_sysdeps;
@@ -120,7 +120,7 @@ mod tests {
         let mut ops: TestGblOps = Default::default();
         ops.add_block_device(512, 512, 128, include_bytes!("../testdata/zircon_gpt.bin"));
         ops.boot_cb = Some(MustUse::new(&mut boot_cb));
-        let mut gbl = GblBuilder::new(&mut ops).build();
+        let mut gbl = Gbl::new(&mut ops);
         let mut load_buffer = vec![0u8; 64 * 1024];
         let _ = gbl.zircon_load_and_boot(&mut load_buffer[..]);
     }
