@@ -106,8 +106,9 @@ use gbl_async::block_on;
 // Selective export of submodule types.
 mod gpt;
 use gpt::check_gpt_rw_params;
-use gpt::Gpt;
-pub use gpt::{GptEntry, GptHeader, GPT_MAGIC, GPT_NAME_LEN_U16};
+pub use gpt::{
+    GptCache, GptEntry, GptHeader, Partition, PartitionIterator, GPT_MAGIC, GPT_NAME_LEN_U16,
+};
 
 use safemath::SafeNum;
 
@@ -294,64 +295,6 @@ impl BlockIoSync for &mut dyn BlockIoSync {
     }
 }
 
-/// `Partition` contains information about a GPT partition.
-#[derive(Debug, Copy, Clone)]
-pub struct Partition {
-    entry: GptEntry,
-    block_size: u64,
-}
-
-impl Partition {
-    /// Creates a new instance.
-    fn new(entry: GptEntry, block_size: u64) -> Self {
-        Self { entry, block_size }
-    }
-
-    /// Returns the partition size in bytes.
-    pub fn size(&self) -> Result<u64> {
-        (SafeNum::from(self.entry.blocks()?) * self.block_size)
-            .try_into()
-            .map_err(|e: safemath::Error| e.into())
-    }
-
-    /// Returns the block size of this partition.
-    pub fn block_size(&self) -> u64 {
-        self.block_size
-    }
-
-    /// Returns the partition entry structure in the GPT header.
-    pub fn gpt_entry(&self) -> &GptEntry {
-        &self.entry
-    }
-}
-
-/// `PartitionIterator` is returned by `AsBlockDevice::partition_iter()` and can be used to
-/// iterate all GPT partition entries.
-pub struct PartitionIterator<'a> {
-    dev: &'a mut dyn AsBlockDevice,
-    idx: usize,
-}
-
-impl Iterator for PartitionIterator<'_> {
-    type Item = Partition;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let res = with_partitioned_scratch(
-            self.dev,
-            |io, _, gpt_buffer, _| -> Result<Option<Partition>> {
-                Ok(Gpt::from_existing(gpt_buffer)?
-                    .entries()?
-                    .get(self.idx)
-                    .map(|v| Partition::new(*v, io.info().block_size)))
-            },
-        )
-        .ok()?
-        .ok()??;
-        self.idx += 1;
-        Some(res)
-    }
-}
-
 /// `AsBlockDevice` provides APIs for synchronous read/write of raw block storage or GPT
 /// partitions.
 ///
@@ -408,7 +351,7 @@ pub trait AsBlockDevice {
     /// * Returns success when exactly `out.len()` number of bytes are read.
     fn read(&mut self, offset: u64, out: &mut [u8]) -> Result<()> {
         with_partitioned_scratch(self, |io, alignment, _, _| {
-            block_on(read_async(&mut SyncAsAsync::new(io), offset, out, alignment))
+            block_on(AsyncBlockDevice::new(SyncAsAsync::new(io), alignment)?.read(offset, out))
         })?
     }
 
@@ -426,8 +369,8 @@ pub trait AsBlockDevice {
     ///
     /// * Returns success when exactly `data.len()` number of bytes are written.
     fn write(&mut self, offset: u64, data: &mut [u8]) -> Result<()> {
-        with_partitioned_scratch(self, |io, alignment_scratch, _, _| {
-            block_on(write_async(&mut SyncAsAsync::new(io), offset, data, alignment_scratch))
+        with_partitioned_scratch(self, |io, alignment, _, _| {
+            block_on(AsyncBlockDevice::new(SyncAsAsync::new(io), alignment)?.write(offset, data))
         })?
     }
 
@@ -440,20 +383,11 @@ pub trait AsBlockDevice {
     /// Returns success if GPT is loaded/restored successfully.
     fn sync_gpt(&mut self) -> Result<()> {
         with_partitioned_scratch(self, |io, alignment_scratch, gpt_buffer, max_entries| {
-            block_on(gpt::gpt_sync(
-                &mut SyncAsAsync::new(io),
-                &mut Gpt::new_from_buffer(max_entries, gpt_buffer)?,
-                alignment_scratch,
-            ))
+            block_on(
+                AsyncBlockDevice::new(SyncAsAsync::new(io), alignment_scratch)?
+                    .sync_gpt(&mut GptCache::from_uninit(max_entries, gpt_buffer)?),
+            )
         })?
-    }
-
-    /// Returns an iterator to GPT partition entries.
-    fn partition_iter(&mut self) -> PartitionIterator
-    where
-        Self: Sized,
-    {
-        PartitionIterator { dev: self, idx: 0 }
     }
 
     /// Returns the `Partition` for a partition.
@@ -462,11 +396,8 @@ pub trait AsBlockDevice {
     ///
     /// * `part`: Name of the partition.
     fn find_partition(&mut self, part: &str) -> Result<Partition> {
-        with_partitioned_scratch(self, |io, _, gpt_buffer, _| {
-            Ok(Partition::new(
-                *Gpt::from_existing(gpt_buffer)?.find_partition(part)?,
-                io.info().block_size,
-            ))
+        with_partitioned_scratch(self, |_, _, gpt_buffer, _| {
+            GptCache::from_existing(gpt_buffer)?.find_partition(part)
         })?
     }
 
@@ -539,12 +470,28 @@ impl AsBlockDevice for BlockDevice<'_, '_> {
     }
 }
 
+/// Iterates all partitions in a `AsBlockDevice`.
+pub fn for_each_partition<F: FnMut(&Partition) -> core::result::Result<(), E>, E>(
+    dev: &mut dyn AsBlockDevice,
+    mut f: F,
+) -> Result<core::result::Result<(), E>> {
+    with_partitioned_scratch(dev, |_, _, gpt_buffer, _| {
+        for ele in GptCache::from_existing(gpt_buffer)?.partition_iter() {
+            match f(&ele) {
+                Err(e) => return Ok(Err(e)),
+                _ => {}
+            }
+        }
+        Ok(Ok(()))
+    })?
+}
+
 /// Calculates the required scratch buffer size given a `BlockInfo` and maximum GPT entries.
 pub fn required_scratch_size(info: BlockInfo, max_gpt_entries: u64) -> Result<usize> {
     let alignment_size: SafeNum = alignment_scratch_size(info)?.into();
     let gpt_buffer_size = match max_gpt_entries {
         0 => 0,
-        v => Gpt::required_buffer_size(v)?,
+        v => GptCache::required_buffer_size(v)?,
     };
     (alignment_size + gpt_buffer_size).try_into().map_err(|e: safemath::Error| e.into())
 }
@@ -610,6 +557,124 @@ pub fn alignment_scratch_size(info: BlockInfo) -> Result<usize> {
 fn aligned_subslice(buffer: &mut [u8], alignment: u64) -> Result<&mut [u8]> {
     let addr = SafeNum::from(buffer.as_ptr() as usize);
     Ok(&mut buffer[(addr.round_up(alignment) - addr).try_into()?..])
+}
+
+/// `AsyncBlockDevice` provides APIs for asynchronous read/write of raw block or GPT partitions.
+pub struct AsyncBlockDevice<'a, T: BlockIoAsync> {
+    io: T,
+    scratch: &'a mut [u8],
+}
+
+impl<'a, T: BlockIoAsync> AsyncBlockDevice<'a, T> {
+    /// Creates a new instance with the given IO, scratch buffer and maximum GPT entries.
+    ///
+    /// * The scratch buffer is internally used for handling partial block read/write and unaligned
+    ///   input/output user buffers.
+    ///
+    /// * The necessary size for the scratch buffer depends on `BlockInfo::alignment`,
+    ///   `BlockInfo::block_size`. It can be computed using the helper API
+    ///   `Self::required_scratch_size()`. If the block device has no alignment requirement,
+    ///   i.e. both alignment and block size are 1, the total required scratch size is 0.
+    pub fn new(mut io: T, scratch: &'a mut [u8]) -> Result<Self> {
+        match scratch.len() < Self::required_scratch_size(&mut io)? {
+            true => Err(StorageError::ScratchTooSmall),
+            _ => Ok(Self { io, scratch }),
+        }
+    }
+
+    /// Computes the required scratch size.
+    pub fn required_scratch_size<B: BlockIoAsync>(io: &mut B) -> Result<usize> {
+        // `AsyncBlockDevice` doesn't manage GPT internally, thus max_entries passed here is 0.
+        required_scratch_size(io.info(), 0)
+    }
+
+    /// Returns the IO
+    pub fn io(&mut self) -> &mut T {
+        &mut self.io
+    }
+
+    /// Reads data from the block device.
+    ///
+    /// # Args
+    ///
+    /// * `offset`: Offset in number of bytes.
+    /// * `out`: Buffer to store the read data.
+    /// * Returns success when exactly `out.len()` number of bytes are read.
+    pub async fn read(&mut self, offset: u64, data: &mut [u8]) -> Result<()> {
+        read_async(&mut self.io, offset, data, self.scratch).await
+    }
+
+    /// Writes data to the device.
+    ///
+    /// # Args
+    ///
+    /// * `offset`: Offset in number of bytes.
+    /// * `data`: Data to write.
+    /// * The API enables an optimization which temporarily changes `data` layout internally and
+    ///   reduces the number of calls to `Self::write_blocks()` down to O(1) regardless of input's
+    ///   alignment. This is the recommended usage.
+    /// * Returns success when exactly `data.len()` number of bytes are written.
+    pub async fn write(&mut self, offset: u64, data: &mut [u8]) -> Result<()> {
+        write_async(&mut self.io, offset, data, self.scratch).await
+    }
+
+    /// Loads and syncs GPT from a block device.
+    ///
+    /// The API validates and restores primary/secondary GPT header.
+    ///
+    /// # Returns
+    ///
+    /// Returns success if GPT is loaded/restored successfully.
+    pub async fn sync_gpt(&mut self, gpt_cache: &mut GptCache<'_>) -> Result<()> {
+        gpt_cache.load_and_sync(&mut self.io, self.scratch).await
+    }
+
+    /// Reads a GPT partition on a block device
+    ///
+    /// # Args
+    ///
+    /// * `gpt_cache`: A `GptCache` initialized with `Self::sync_gpt()`.
+    /// * `part_name`: Name of the partition.
+    /// * `offset`: Offset in number of bytes into the partition.
+    /// * `out`: Buffer to store the read data.
+    ///
+    /// # Returns
+    ///
+    /// Returns success when exactly `out.len()` of bytes are read successfully.
+    pub async fn read_gpt_partition(
+        &mut self,
+        gpt_cache: &GptCache<'_>,
+        part_name: &str,
+        offset: u64,
+        out: &mut [u8],
+    ) -> Result<()> {
+        let offset = gpt_cache.check_range(part_name, offset, out.len())?;
+        self.read(offset, out).await
+    }
+
+    /// Writes a GPT partition on a block device.
+    ///
+    ///
+    /// # Args
+    ///
+    /// * `gpt_cache`: A `GptCache` initialized with `Self::sync_gpt()`.
+    /// * `part_name`: Name of the partition.
+    /// * `offset`: Offset in number of bytes into the partition.
+    /// * `data`: Data to write. See `data` passed to `BlockIoSync::write()` for details.
+    ///
+    /// # Returns
+    ///
+    /// Returns success when exactly `data.len()` of bytes are written successfully.
+    pub async fn write_gpt_partition(
+        &mut self,
+        gpt_cache: &GptCache<'_>,
+        part_name: &str,
+        offset: u64,
+        data: &mut [u8],
+    ) -> Result<()> {
+        let offset = gpt_cache.check_range(part_name, offset, data.len())?;
+        self.write(offset, data).await
+    }
 }
 
 #[cfg(test)]
