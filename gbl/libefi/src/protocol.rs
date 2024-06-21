@@ -17,6 +17,7 @@ use core::ptr::null_mut;
 use crate::defs::*;
 use crate::{DeviceHandle, EfiEntry, EfiResult};
 
+pub mod ab_slot;
 pub mod android_boot;
 pub mod block_io;
 pub mod device_path;
