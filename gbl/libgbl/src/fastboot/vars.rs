@@ -140,8 +140,8 @@ impl Variable for BlockDevice {
                 let id = next_arg_u64(&mut args, Err("Missing block device ID".into()))?;
                 let val_type = next_arg(&mut args, Err("Missing value type".into()))?;
                 let val = match val_type {
-                    TOTAL_BLOCKS => gbl_fb.storage().get(id)?.num_blocks()?,
-                    BLOCK_SIZE => gbl_fb.storage().get(id)?.block_size()?,
+                    TOTAL_BLOCKS => gbl_fb.storage().get(id)?.info().num_blocks,
+                    BLOCK_SIZE => gbl_fb.storage().get(id)?.info().block_size,
                     _ => return Err("Invalid type".into()),
                 };
                 Some(snprintf!(out, "{:#x}", val).len())
@@ -161,8 +161,12 @@ impl Variable for BlockDevice {
             let mut id_str = [0u8; 32];
             let id = snprintf!(id_str, "{:x}", id);
             res = (|| {
-                f(BLOCK_DEVICE, &[id, "total-blocks"], snprintf!(val, "{:#x}", blk.num_blocks()?))?;
-                f(BLOCK_DEVICE, &[id, "block-size"], snprintf!(val, "{:#x}", blk.block_size()?))
+                f(
+                    BLOCK_DEVICE,
+                    &[id, "total-blocks"],
+                    snprintf!(val, "{:#x}", blk.info().num_blocks),
+                )?;
+                f(BLOCK_DEVICE, &[id, "block-size"], snprintf!(val, "{:#x}", blk.info().block_size))
             })();
             res.is_err()
         })?;
