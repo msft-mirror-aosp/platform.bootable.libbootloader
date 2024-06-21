@@ -25,7 +25,7 @@ use efi::{
         simple_text_input::SimpleTextInputProtocol,
         Protocol,
     },
-    DeviceHandle, EfiEntry, EventType,
+    DeviceHandle, EfiEntry, Event, EventType,
 };
 use fdt::FdtHeader;
 use gbl_storage::{
@@ -218,6 +218,34 @@ pub fn ms_to_100ns(ms: u64) -> Result<u64> {
     Ok(ms.checked_mul(1000 * 10).ok_or(EfiAppError::ArithmeticOverflow)?)
 }
 
+/// `Timeout` provide APIs for checking timeout.
+pub struct Timeout<'a> {
+    efi_entry: &'a EfiEntry,
+    timer: Event<'a, 'static>,
+}
+
+impl<'a> Timeout<'a> {
+    /// Creates a new instance and starts the timeout timer.
+    pub fn new(efi_entry: &'a EfiEntry, timeout_ms: u64) -> Result<Self> {
+        let bs = efi_entry.system_table().boot_services();
+        let timer = bs.create_event(EventType::Timer, None)?;
+        bs.set_timer(&timer, EFI_TIMER_DELAY_TIMER_RELATIVE, ms_to_100ns(timeout_ms)?)?;
+        Ok(Self { efi_entry, timer })
+    }
+
+    /// Checks if it has timeout.
+    pub fn check(&self) -> Result<bool> {
+        Ok(self.efi_entry.system_table().boot_services().check_event(&self.timer)?)
+    }
+
+    /// Resets the timeout.
+    pub fn reset(&self, timeout_ms: u64) -> Result<()> {
+        let bs = self.efi_entry.system_table().boot_services();
+        bs.set_timer(&self.timer, EFI_TIMER_DELAY_TIMER_RELATIVE, ms_to_100ns(timeout_ms)?)?;
+        Ok(())
+    }
+}
+
 /// Repetitively runs a closure until it signals completion or timeout.
 ///
 /// * If `f` returns `Ok(R)`, an `Ok(Some(R))` is returned immediately.
@@ -228,17 +256,11 @@ pub fn loop_with_timeout<F, R>(efi_entry: &EfiEntry, timeout_ms: u64, mut f: F) 
 where
     F: FnMut() -> core::result::Result<R, bool>,
 {
-    let bs = efi_entry.system_table().boot_services();
-    let timer = bs.create_event(EventType::Timer, None)?;
-    bs.set_timer(&timer, EFI_TIMER_DELAY_TIMER_RELATIVE, ms_to_100ns(timeout_ms)?)?;
-    while !bs.check_event(&timer)? {
+    let timeout = Timeout::new(efi_entry, timeout_ms)?;
+    while !timeout.check()? {
         match f() {
-            Ok(v) => {
-                return Ok(Some(v));
-            }
-            Err(true) => {
-                bs.set_timer(&timer, EFI_TIMER_DELAY_TIMER_RELATIVE, ms_to_100ns(timeout_ms)?)?;
-            }
+            Ok(v) => return Ok(Some(v)),
+            Err(true) => timeout.reset(timeout_ms)?,
             _ => {}
         }
     }
