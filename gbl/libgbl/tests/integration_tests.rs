@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use gbl_storage::BlockIo;
+use gbl_storage::BlockIoSync;
 use gbl_storage_testlib::TestBlockIo;
 use libgbl::{BootImages, FuchsiaBootImages, Gbl, GblOps, GblOpsError};
 use std::{collections::VecDeque, vec::Vec};
@@ -51,7 +51,7 @@ impl TestGblOps<'_> {
 impl GblOps for TestGblOps<'_> {
     fn visit_block_devices(
         &mut self,
-        f: &mut dyn FnMut(&mut dyn BlockIo, u64, u64),
+        f: &mut dyn FnMut(&mut dyn BlockIoSync, u64, u64),
     ) -> Result<(), GblOpsError> {
         for (idx, ele) in self.block_io.iter_mut().enumerate() {
             f(&mut ele.io, idx.try_into().unwrap(), ele.max_gpt_entries);
