@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{aligned_subslice, read, write_bytes_mut, BlockIo, Result, StorageError};
+use crate::{aligned_subslice, read_async, write_async, BlockIoAsync, Result, StorageError};
 use core::default::Default;
 use core::mem::{align_of, size_of};
 use core::num::NonZeroU64;
@@ -248,23 +248,23 @@ impl<'a> Gpt<'a> {
     }
 
     /// Helper function for loading and validating GPT header and entries.
-    fn validate_gpt(
+    async fn validate_gpt(
         &mut self,
-        blk_dev: &mut (impl BlockIo + ?Sized),
+        io: &mut impl BlockIoAsync,
         scratch: &mut [u8],
         header_type: HeaderType,
     ) -> Result<bool> {
         let (header_start, header_bytes, entries) = match header_type {
             HeaderType::Primary => {
-                (blk_dev.block_size().into(), &mut self.primary_header, &mut self.primary_entries)
+                (io.info().block_size.into(), &mut self.primary_header, &mut self.primary_entries)
             }
             HeaderType::Secondary => (
-                (SafeNum::from(blk_dev.num_blocks()) - 1) * blk_dev.block_size(),
+                (SafeNum::from(io.info().num_blocks) - 1) * io.info().block_size,
                 &mut self.secondary_header,
                 &mut self.secondary_entries,
             ),
         };
-        read(blk_dev, header_start.try_into()?, header_bytes, scratch)?;
+        read_async(io, header_start.try_into()?, header_bytes, scratch).await?;
         let header =
             Ref::<_, GptHeader>::new_from_prefix(header_bytes.as_bytes()).unwrap().0.into_ref();
 
@@ -273,10 +273,10 @@ impl<'a> Gpt<'a> {
         }
 
         let entries_size = SafeNum::from(header.entries_count) * GPT_ENTRY_SIZE;
-        let entries_offset = SafeNum::from(header.entries) * blk_dev.block_size();
+        let entries_offset = SafeNum::from(header.entries) * io.info().block_size;
         if self.info.max_entries < header.entries_count.into()
             || u64::try_from(entries_size + entries_offset)?
-                > ((SafeNum::from(blk_dev.num_blocks()) - 1) * blk_dev.block_size()).try_into()?
+                > ((SafeNum::from(io.info().num_blocks) - 1) * io.info().block_size).try_into()?
         {
             return Ok(false);
         }
@@ -292,21 +292,21 @@ impl<'a> Gpt<'a> {
 
         // Load the entries
         let out = &mut entries[..entries_size.try_into()?];
-        read(blk_dev, entries_offset.try_into()?, out, scratch)?;
+        read_async(io, entries_offset.try_into()?, out, scratch).await?;
         // Validate entries crc32.
         Ok(header.entries_crc == crc32(out))
     }
 
     /// Load and sync GPT from a block device.
-    fn load_and_sync(
+    async fn load_and_sync(
         &mut self,
-        blk_dev: &mut (impl BlockIo + ?Sized),
+        io: &mut impl BlockIoAsync,
         scratch: &mut [u8],
     ) -> Result<()> {
         self.info.num_valid_entries = None;
 
-        let block_size = blk_dev.block_size();
-        let total_blocks: SafeNum = blk_dev.num_blocks().into();
+        let block_size = io.info().block_size;
+        let total_blocks: SafeNum = io.info().num_blocks.into();
 
         let primary_header_blk = 1;
         let primary_header_pos = block_size;
@@ -316,8 +316,8 @@ impl<'a> Gpt<'a> {
         // Entries position for restoring.
         let primary_entries_blk = 2;
         let primary_entries_pos = SafeNum::from(primary_entries_blk) * block_size;
-        let primary_valid = self.validate_gpt(blk_dev, scratch, HeaderType::Primary)?;
-        let secondary_valid = self.validate_gpt(blk_dev, scratch, HeaderType::Secondary)?;
+        let primary_valid = self.validate_gpt(io, scratch, HeaderType::Primary).await?;
+        let secondary_valid = self.validate_gpt(io, scratch, HeaderType::Secondary).await?;
 
         let primary_header = GptHeader::from_bytes(self.primary_header);
         let secondary_header = GptHeader::from_bytes(self.secondary_header);
@@ -333,13 +333,8 @@ impl<'a> Gpt<'a> {
             primary_header.entries = primary_entries_blk;
             primary_header.update_crc();
 
-            write_bytes_mut(blk_dev, primary_header_pos, primary_header.as_bytes_mut(), scratch)?;
-            write_bytes_mut(
-                blk_dev,
-                primary_entries_pos.try_into()?,
-                self.primary_entries,
-                scratch,
-            )?
+            write_async(io, primary_header_pos, primary_header.as_bytes_mut(), scratch).await?;
+            write_async(io, primary_entries_pos.try_into()?, self.primary_entries, scratch).await?
         } else if !secondary_valid {
             // Restore to secondary
             let secondary_entries_pos = secondary_header_pos
@@ -353,18 +348,15 @@ impl<'a> Gpt<'a> {
             secondary_header.entries = secondary_entries_blk.try_into()?;
             secondary_header.update_crc();
 
-            write_bytes_mut(
-                blk_dev,
+            write_async(
+                io,
                 secondary_header_pos.try_into()?,
                 secondary_header.as_bytes_mut(),
                 scratch,
-            )?;
-            write_bytes_mut(
-                blk_dev,
-                secondary_entries_pos.try_into()?,
-                self.secondary_entries,
-                scratch,
-            )?;
+            )
+            .await?;
+            write_async(io, secondary_entries_pos.try_into()?, self.secondary_entries, scratch)
+                .await?;
         }
 
         // Calculate actual number of GPT entries by finding the first invalid entry.
@@ -381,12 +373,12 @@ impl<'a> Gpt<'a> {
 }
 
 /// Wrapper of gpt.load_and_sync(). Library internal helper for AsBlockDevice::sync_gpt().
-pub(crate) fn gpt_sync(
-    blk_dev: &mut (impl BlockIo + ?Sized),
-    gpt: &mut Gpt,
+pub(crate) async fn gpt_sync(
+    io: &mut impl BlockIoAsync,
+    gpt: &mut Gpt<'_>,
     scratch: &mut [u8],
 ) -> Result<()> {
-    gpt.load_and_sync(blk_dev, scratch)
+    gpt.load_and_sync(io, scratch).await
 }
 
 /// Checks if a read/write range into a GPT partition overflows and returns the range's absolute
@@ -424,7 +416,8 @@ pub(crate) mod test {
     /// This function lives here and not as a method of TestBlockDevice so that
     /// the Gpt type doesn't have to be exported.
     fn gpt(dev: &mut TestBlockDevice) -> Gpt {
-        let (_, gpt) = dev.scratch.split_at_mut(alignment_scratch_size(&mut dev.io).unwrap());
+        let info = dev.info();
+        let (_, gpt) = dev.scratch.split_at_mut(alignment_scratch_size(info).unwrap());
         Gpt::from_existing(gpt).unwrap()
     }
 

@@ -29,7 +29,7 @@ use efi::{
 };
 use fdt::FdtHeader;
 use gbl_storage::{
-    required_scratch_size, AsBlockDevice, AsMultiBlockDevices, BlockInfo, BlockIo, BlockIoError,
+    required_scratch_size, AsBlockDevice, AsMultiBlockDevices, BlockInfo, BlockIoError, BlockIoSync,
 };
 
 pub const EFI_DTB_TABLE_GUID: EfiGuid =
@@ -63,7 +63,7 @@ pub fn aligned_subslice(bytes: &mut [u8], alignment: usize) -> Result<&mut [u8]>
 // Implement a block device on top of BlockIoProtocol
 pub struct EfiBlockIo<'a>(pub Protocol<'a, BlockIoProtocol>);
 
-impl BlockIo for EfiBlockIo<'_> {
+impl BlockIoSync for EfiBlockIo<'_> {
     fn info(&mut self) -> BlockInfo {
         BlockInfo {
             block_size: self.0.media().unwrap().block_size as u64,
@@ -105,13 +105,13 @@ impl<'a> EfiGptDevice<'a> {
     /// Initialize from a `BlockIoProtocol` EFI protocol
     pub fn new(protocol: Protocol<'a, BlockIoProtocol>) -> Result<Self> {
         let mut io = EfiBlockIo(protocol);
-        let scratch = vec![0u8; required_scratch_size(&mut io, MAX_GPT_ENTRIES)?];
+        let scratch = vec![0u8; required_scratch_size(io.info(), MAX_GPT_ENTRIES)?];
         Ok(Self { io, scratch })
     }
 }
 
 impl AsBlockDevice for EfiGptDevice<'_> {
-    fn with(&mut self, f: &mut dyn FnMut(&mut dyn BlockIo, &mut [u8], u64)) {
+    fn with(&mut self, f: &mut dyn FnMut(&mut dyn BlockIoSync, &mut [u8], u64)) {
         f(&mut self.io, &mut self.scratch[..], MAX_GPT_ENTRIES)
     }
 }

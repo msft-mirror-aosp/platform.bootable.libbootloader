@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{AsBlockDevice, BlockIo, Partition, Result, StorageError};
+use crate::{AsBlockDevice, BlockIoSync, Partition, Result, StorageError};
 
 /// `AsMultiBlockDevices` provides APIs for finding/reading/writing raw data or GPT partitions from
 /// multiple block devices.
@@ -138,7 +138,7 @@ pub struct SelectedBlockDevice<'a> {
 }
 
 impl AsBlockDevice for SelectedBlockDevice<'_> {
-    fn with(&mut self, f: &mut dyn FnMut(&mut dyn BlockIo, &mut [u8], u64)) {
+    fn with(&mut self, f: &mut dyn FnMut(&mut dyn BlockIoSync, &mut [u8], u64)) {
         let _ = with_id(self.devs, self.id, |dev| dev.with(f));
     }
 }
