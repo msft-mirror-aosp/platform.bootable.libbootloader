@@ -16,7 +16,7 @@ use crate::fastboot::{GblFastboot, GPT_NAME_LEN_U8};
 use core::fmt::Write;
 use core::str::{from_utf8, Split};
 use fastboot::{next_arg, next_arg_u64, snprintf, CommandError, FormattedBytes};
-use gbl_storage::{AsBlockDevice, AsMultiBlockDevices};
+use gbl_storage::{for_each_partition, AsBlockDevice, AsMultiBlockDevices};
 
 /// Internal trait that provides methods for getting and enumerating values for one or multiple
 /// related fastboot variables.
@@ -103,13 +103,13 @@ impl Variable for Partition {
             let mut id_str = [0u8; 32];
             let id = snprintf!(id_str, "{:x}", id);
             res = (|| {
-                for ptn in v.partition_iter() {
+                for_each_partition(v, |ptn| {
                     let sz: u64 = ptn.size()?;
                     let part = ptn.gpt_entry().name_to_str(part_name)?;
                     f(PARTITION_SIZE, &[part, id], snprintf!(size_str, "{:#x}", sz))?;
                     // Image type is not supported yet.
-                    f(PARTITION_TYPE, &[part, id], snprintf!(size_str, "raw"))?;
-                }
+                    f(PARTITION_TYPE, &[part, id], snprintf!(size_str, "raw"))
+                })??;
                 Ok(())
             })();
             res.is_err()
@@ -140,8 +140,8 @@ impl Variable for BlockDevice {
                 let id = next_arg_u64(&mut args, Err("Missing block device ID".into()))?;
                 let val_type = next_arg(&mut args, Err("Missing value type".into()))?;
                 let val = match val_type {
-                    TOTAL_BLOCKS => gbl_fb.storage().get(id)?.num_blocks()?,
-                    BLOCK_SIZE => gbl_fb.storage().get(id)?.block_size()?,
+                    TOTAL_BLOCKS => gbl_fb.storage().get(id)?.info().num_blocks,
+                    BLOCK_SIZE => gbl_fb.storage().get(id)?.info().block_size,
                     _ => return Err("Invalid type".into()),
                 };
                 Some(snprintf!(out, "{:#x}", val).len())
@@ -161,8 +161,12 @@ impl Variable for BlockDevice {
             let mut id_str = [0u8; 32];
             let id = snprintf!(id_str, "{:x}", id);
             res = (|| {
-                f(BLOCK_DEVICE, &[id, "total-blocks"], snprintf!(val, "{:#x}", blk.num_blocks()?))?;
-                f(BLOCK_DEVICE, &[id, "block-size"], snprintf!(val, "{:#x}", blk.block_size()?))
+                f(
+                    BLOCK_DEVICE,
+                    &[id, "total-blocks"],
+                    snprintf!(val, "{:#x}", blk.info().num_blocks),
+                )?;
+                f(BLOCK_DEVICE, &[id, "block-size"], snprintf!(val, "{:#x}", blk.info().block_size))
             })();
             res.is_err()
         })?;

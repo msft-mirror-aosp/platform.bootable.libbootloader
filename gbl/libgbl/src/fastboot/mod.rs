@@ -141,7 +141,7 @@ impl<'a> GblFastboot<'a> {
         let (blk_id, max_size) = match part {
             "" => {
                 let blk_id = blk_id.ok_or("Must provide a block device ID")?;
-                (blk_id, devs.get(blk_id)?.total_size()?)
+                (blk_id, devs.get(blk_id)?.info().total_size()?)
             }
             gpt => match blk_id {
                 Some(id) => (id, devs.get(id)?.find_partition(gpt)?.size()?),
