@@ -25,7 +25,7 @@ use core::{
     result::Result,
 };
 use gbl_storage::{
-    required_scratch_size, AsBlockDevice, AsMultiBlockDevices, BlockDevice, BlockIo,
+    required_scratch_size, AsBlockDevice, AsMultiBlockDevices, BlockDevice, BlockIoSync,
 };
 use safemath::SafeNum;
 
@@ -75,7 +75,7 @@ pub trait GblOps {
     /// be returned. Dynamic media change is not supported for now.
     fn visit_block_devices(
         &mut self,
-        f: &mut dyn FnMut(&mut dyn BlockIo, u64, u64),
+        f: &mut dyn FnMut(&mut dyn BlockIoSync, u64, u64),
     ) -> Result<(), GblOpsError>;
 
     /// Prints a ASCII character to the platform console.
@@ -129,7 +129,7 @@ pub trait GblOps {
         let mut res = Ok(());
         self.visit_block_devices(&mut |io, id, max_gpt_entries| {
             res = (|| {
-                total += required_scratch_size(io, max_gpt_entries).unwrap();
+                total += required_scratch_size(io.info(), max_gpt_entries).unwrap();
                 Ok(())
             })();
         })?;
@@ -172,7 +172,8 @@ impl<T: GblOps> AsMultiBlockDevices for GblUtils<'_, '_, T> {
         self.ops
             .visit_block_devices(&mut |io, id, max_gpt_entries| {
                 // Not expected to fail as `Self::new()` should have checked any overflow.
-                let scratch_size: usize = required_scratch_size(io, max_gpt_entries).unwrap();
+                let scratch_size: usize =
+                    required_scratch_size(io.info(), max_gpt_entries).unwrap();
                 let scratch =
                     &mut self.scratch[scratch_offset.try_into().unwrap()..][..scratch_size];
                 scratch_offset += scratch_size;
@@ -198,7 +199,7 @@ pub struct DefaultGblOps {}
 impl GblOps for DefaultGblOps {
     fn visit_block_devices(
         &mut self,
-        f: &mut dyn FnMut(&mut dyn BlockIo, u64, u64),
+        f: &mut dyn FnMut(&mut dyn BlockIoSync, u64, u64),
     ) -> Result<(), GblOpsError> {
         Err(GblOpsError(Some("unimplemented")))
     }
