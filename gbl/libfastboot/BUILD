@@ -23,6 +23,7 @@ rust_library(
     srcs = ["src/lib.rs"],
     crate_name = "fastboot",
     edition = "2021",
+    deps = ["@gbl//libasync"],
 )
 
 rust_test(
