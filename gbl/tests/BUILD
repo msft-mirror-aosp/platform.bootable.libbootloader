@@ -17,6 +17,7 @@ test_suite(
     tests = [
         "@gbl//:readme_test",
         "@gbl//libabr:libabr_tests",
+        "@gbl//libasync:libasync_test",
         "@gbl//libbootconfig:libbootconfig_test",
         "@gbl//libbootimg:libbootimg_test",
         "@gbl//libefi:libefi_test",
