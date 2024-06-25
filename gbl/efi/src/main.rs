@@ -27,10 +27,11 @@ use core::fmt::Write;
 
 use efi::defs::EfiSystemTable;
 use efi::protocol::android_boot::AndroidBootProtocol;
-use efi::{efi_print, efi_println, initialize};
+use efi::{efi_print, efi_println, initialize, panic};
 
 #[macro_use]
 mod utils;
+use core::panic::PanicInfo;
 use error::Result;
 use utils::{loaded_image_path, wait_key_stroke};
 
@@ -43,6 +44,11 @@ mod error;
 mod fastboot;
 mod fuchsia_boot;
 mod net;
+
+#[panic_handler]
+fn handle_panic(p_info: &PanicInfo) -> ! {
+    panic(p_info)
+}
 
 fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -> Result<()> {
     // SAFETY: Called only once here upon EFI app entry.
