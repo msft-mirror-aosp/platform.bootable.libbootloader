@@ -44,6 +44,7 @@ rust_binary(
     deps = [
         "@avb",
         "@avb//:avb_crypto_ops_sha_impl_staticlib",
+        "@gbl//libasync",
         "@gbl//libavb:sysdeps",
         "@gbl//libboot",
         "@gbl//libbootconfig",
