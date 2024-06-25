@@ -18,13 +18,14 @@ use core::str::Split;
 use fastboot::{
     next_arg, next_arg_u64, CommandError, FastbootImplementation, FastbootUtils, UploadBuilder,
 };
+use gbl_async::block_on;
 use gbl_storage::{AsBlockDevice, AsMultiBlockDevices, GPT_NAME_LEN_U16};
 
 mod vars;
 use vars::{BlockDevice, Partition, Variable};
 
 mod sparse;
-use sparse::{is_sparse_image, write_sparse_image};
+use sparse::{is_sparse_image, write_sparse_image, SparseRawWriter};
 
 pub(crate) const GPT_NAME_LEN_U8: usize = GPT_NAME_LEN_U16 * 2;
 
@@ -95,6 +96,13 @@ impl<'a> GblFbPartitionIo<'a> {
     /// Returns the size of the GBL Fastboot partition.
     pub fn size(&mut self) -> u64 {
         self.part.window_size
+    }
+}
+
+impl SparseRawWriter for GblFbPartitionIo<'_> {
+    /// Writes bytes from `data` to the destination storage at offset `off`
+    async fn write(&mut self, off: u64, data: &mut [u8]) -> Result<(), CommandError> {
+        self.write(off, data)
     }
 }
 
@@ -206,9 +214,10 @@ impl FastbootImplementation for GblFastboot<'_> {
         let part = self.parse_partition(part.split(':'))?;
         match is_sparse_image(self.download_buffer) {
             // Passes the entire download buffer so that more can be used as fill buffer.
-            Ok(_) => write_sparse_image(self.download_buffer, |off, data| {
-                GblFbPartitionIo::new(part, self.storage).write(off, data)
-            })
+            Ok(_) => block_on(write_sparse_image(
+                self.download_buffer,
+                &mut GblFbPartitionIo::new(part, self.storage),
+            ))
             .map(|_| ()),
             _ => GblFbPartitionIo::new(part, self.storage)
                 .write(0, &mut self.download_buffer[..utils.download_data_size()]),
