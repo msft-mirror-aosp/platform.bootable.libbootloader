@@ -116,6 +116,7 @@ impl YieldCounter {
 mod test {
     use super::*;
 
+    #[test]
     fn test() {
         let mut counter = YieldCounter::new(1);
         let mut fut = pin!(async move {
