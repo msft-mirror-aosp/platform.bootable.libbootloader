@@ -28,6 +28,7 @@ rust_library(
         "@bitflags",
         "@crc32fast",
         "@cstr",
+        "@gbl//libasync",
         "@gbl//libfastboot",
         "@gbl//libsafemath",
         "@gbl//libstorage",
