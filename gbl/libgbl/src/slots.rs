@@ -339,23 +339,21 @@ pub trait Manager: private::SlotGet {
         self.slots_iter().max_by_key(|slot| (slot.priority, slot.suffix.rank())).unwrap()
     }
 
-    /// Given a boot target, updates internal metadata (usually the retry count)
-    /// indicating that the system will have tried to boot the slot.
+    /// Updates internal metadata (usually the retry count)
+    /// indicating that the system will have tried to boot the current active slot.
     /// Returns Ok(BootToken) on success to verify that boot attempt metadata has been updated.
     /// The token must be consumed by `kernel_jump`.
     ///
-    /// Can return Err if the designated slot does not exist,
-    /// if it is ineligible to try,
-    /// or for other, backend reasons.
+    /// If the current boot target is a recovery target,
+    /// or if the oneshot target is a recovery target,
+    /// no metadata is updated but the boot token is still returned.
+    ///
+    /// Returns Err if `mark_boot_attempt` has already been called.
     ///
     /// Note: mark_boot_attempt is NOT idempotent.
     /// It is intended to be called EXACTLY once,
     /// right before jumping into the kernel.
-    ///
-    /// Note: mark_boot_attempt takes a BootTarget to facilitate generating
-    /// the boot token when booting to recovery. If the boot target is recovery,
-    /// then implementations SHOULD NOT update internal metadata.
-    fn mark_boot_attempt(&mut self, boot_target: BootTarget) -> Result<BootToken, Error>;
+    fn mark_boot_attempt(&mut self) -> Result<BootToken, Error>;
 
     /// Attempts to set the active slot.
     ///
