@@ -105,11 +105,45 @@ def gen_writeback_test_bin():
     )
 
 
+def sha256_hash(path: pathlib.Path) -> bytes:
+    """Returns the SHA256 hash of the given file."""
+    hash_hex = (
+        subprocess.run(
+            ["sha256sum", path],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        .stdout.split()[0]  # output is "<hash> <filename>".
+        .strip()
+    )
+    return bytes.fromhex(hash_hex)
+
+
 def gen_vbmeta():
     """Creates the vbmeta keys and signs some images."""
     # Use the test vbmeta keys from libavb.
-    for name in ["testkey_rsa4096.pem", "testkey_rsa4096_pub.pem"]:
+    for name in [
+        "testkey_rsa4096.pem",
+        "testkey_rsa4096_pub.pem",
+        "testkey_cert_psk.pem",
+        "cert_metadata.bin",
+        "cert_permanent_attributes.bin",
+    ]:
         shutil.copyfile(AVB_TEST_DATA_DIR / name, SCRIPT_DIR / name)
+
+    # We need the permanent attribute SHA256 hash for libavb_cert callbacks.
+    hash_bytes = sha256_hash(SCRIPT_DIR / "cert_permanent_attributes.bin")
+    (SCRIPT_DIR / "cert_permanent_attributes.hash").write_bytes(hash_bytes)
+
+    # Also create a corrupted version of the permanent attributes to test failure.
+    # This is a little bit of a pain but we don't have an easy way to do a SHA256 in Rust
+    # at the moment so we can't generate it on the fly.
+    bad_attrs = bytearray((SCRIPT_DIR / "cert_permanent_attributes.bin").read_bytes())
+    bad_attrs[4] ^= 0x01  # Bytes 0-3 = version, byte 4 starts the public key.
+    (SCRIPT_DIR / "cert_permanent_attributes.bad.bin").write_bytes(bad_attrs)
+    hash_bytes = sha256_hash(SCRIPT_DIR / "cert_permanent_attributes.bad.bin")
+    (SCRIPT_DIR / "cert_permanent_attributes.bad.hash").write_bytes(hash_bytes)
 
     # Convert the public key to raw bytes for use in verification.
     subprocess.run(
@@ -163,6 +197,24 @@ def gen_vbmeta():
                 SCRIPT_DIR / "zircon_a.vbmeta",
             ],
             check=True,
+        )
+
+        # Also create a vbmeta using the libavb_cert extension.
+        subprocess.run(
+            [
+                AVB_TOOL,
+                "make_vbmeta_image",
+                "--key",
+                SCRIPT_DIR / "testkey_cert_psk.pem",
+                "--public_key_metadata",
+                SCRIPT_DIR / "cert_metadata.bin",
+                "--algorithm",
+                "SHA512_RSA4096",
+                "--include_descriptors_from_image",
+                hash_descriptor_path,
+                "--output",
+                SCRIPT_DIR / "zircon_a.vbmeta.cert",
+            ]
         )
 
 
