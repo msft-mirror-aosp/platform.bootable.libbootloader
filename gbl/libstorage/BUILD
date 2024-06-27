@@ -21,6 +21,7 @@ package(
 rust_library(
     name = "libstorage",
     srcs = [
+        "src/algorithm.rs",
         "src/gpt.rs",
         "src/lib.rs",
         "src/multi_blocks.rs",
@@ -29,6 +30,7 @@ rust_library(
     edition = "2021",
     deps = [
         "@crc32fast",
+        "@gbl//libasync",
         "@gbl//libsafemath",
         "@zerocopy",
     ],
@@ -44,6 +46,7 @@ rust_library(
     deps = [
         ":libstorage",
         "@crc32fast",
+        "@gbl//libasync",
         "@gbl//libsafemath",
         "@zerocopy",
     ],
