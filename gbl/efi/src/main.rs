@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// This EFI application implements a demo for booting Android/Fuchsia from disk. See
-// bootable/libbootloader/gbl/README.md for how to run the demo. See comments of
-// `android_boot:android_boot_demo()` and `fuchsia_boot:fuchsia_boot_demo()` for
-// supported/unsupported features at the moment.
+//! This EFI application implements a demo for booting Android/Fuchsia from disk. See
+//! bootable/libbootloader/gbl/README.md for how to run the demo. See comments of
+//! `android_boot:android_boot_demo()` and `fuchsia_boot:fuchsia_boot_demo()` for
+//! supported/unsupported features at the moment.
 
 #![no_std]
 #![no_main]
@@ -83,6 +83,7 @@ fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -
     Ok(())
 }
 
+/// EFI application entry point. Does not return.
 #[no_mangle]
 pub extern "C" fn efi_main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) {
     main(image_handle, systab_ptr).unwrap();
