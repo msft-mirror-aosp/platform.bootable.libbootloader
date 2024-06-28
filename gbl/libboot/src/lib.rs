@@ -12,15 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Functionality to boot kernels on X86, ARM, and RISC-V boards.
+
 #![cfg_attr(not(test), no_std)]
 
-// Library error type.
+/// Library error type.
 #[derive(Debug)]
 pub enum BootError {
+    /// Value overflow while setting up structures for kernel jump.
     IntegerOverflow,
+    /// Data provided was either too small to be valid or not properly aligned.
     InvalidInput,
+    /// Data provided does not look like a valid kernel zimage (x86 only).
     InvalidZImage,
+    /// The kernel zimage is not a supported version (x86 only).
     UnsupportedZImage,
+    /// The e820 memory map callback failed (x86 only).
     E820MemoryMapCallbackError(i64),
 }
 
