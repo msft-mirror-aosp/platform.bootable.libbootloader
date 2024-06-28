@@ -78,16 +78,21 @@ mod error {
     use super::defs::EFI_STATUS_SUCCESS;
     use super::EfiStatus;
 
+    /// Wrapper for [EfiStatus] to split the `EFI_SUCCESS` and error cases.
     #[derive(Debug, Copy, Clone, PartialEq)]
     pub enum ErrorTypes {
+        /// Unknown state, e.g. trying to create [ErrorTypes] from `EFI_SUCCESS`.
         Unknown,
+        /// An [EfiStatus] error code.
         EfiStatusError(EfiStatus),
     }
 
+    /// Wraps [ErrorTypes] to provide some additional functionality.
     #[derive(Debug, PartialEq)]
     pub struct EfiError(ErrorTypes);
 
     impl EfiError {
+        /// Returns the underlying [ErrorTypes] enum.
         pub fn err(&self) -> ErrorTypes {
             self.0
         }
@@ -511,7 +516,9 @@ impl<'a> RuntimeServices<'a> {
     }
 }
 
-/// EFI Event type to pass to BootServicess::create_event;
+/// EFI Event type to pass to BootServicess::create_event.
+/// See UEFI documentation for details.
+#[allow(missing_docs)]
 #[repr(u32)]
 pub enum EventType {
     Timer = EFI_EVENT_TYPE_TIMER,
@@ -526,6 +533,8 @@ pub enum EventType {
 }
 
 /// EFI task level priority setting for event notify function.
+/// See UEFI documentation for details.
+#[allow(missing_docs)]
 #[repr(usize)]
 #[derive(Copy, Clone)]
 pub enum Tpl {
@@ -544,6 +553,7 @@ pub struct EventNotify<'e> {
 }
 
 impl<'e> EventNotify<'e> {
+    /// Creates a new [EventNotify].
     pub fn new(tpl: Tpl, cb: &'e mut dyn FnMut(EfiEvent)) -> Self {
         Self { tpl, cb }
     }
@@ -711,6 +721,7 @@ macro_rules! efi_print {
     };
 }
 
+/// Similar to [efi_print!], but automatically adds the UEFI newline sequence (`\r\n`).
 #[macro_export]
 macro_rules! efi_println {
     ( $efi_entry:expr, $( $x:expr ),* ) => {
@@ -814,10 +825,16 @@ mod test {
         assert_eq!(attr, EFI_OPEN_PROTOCOL_ATTRIBUTE_BY_HANDLE_PROTOCOL);
         EFI_CALL_TRACES.with(|traces| {
             let trace = &mut traces.borrow_mut().open_protocol_trace;
-            trace.inputs.push_back((DeviceHandle(handle), *protocol_guid, agent_handle));
+            trace.inputs.push_back((
+                DeviceHandle(handle),
+                // SAFETY: function safety docs require valid `protocol_guid`.
+                unsafe { *protocol_guid },
+                agent_handle,
+            ));
 
             let (intf_handle, status) = trace.outputs.pop_front().unwrap();
-            *intf = intf_handle;
+            // SAFETY: function safety docs require valid `intf`.
+            unsafe { *intf = intf_handle };
 
             status
         })
@@ -844,7 +861,8 @@ mod test {
         EFI_CALL_TRACES.with(|traces| {
             traces.borrow_mut().close_protocol_trace.inputs.push_back((
                 DeviceHandle(handle),
-                *protocol_guid,
+                // SAFETY: function safety docs require valid `protocol_guid`.
+                unsafe { *protocol_guid },
                 agent_handle,
             ));
             EFI_STATUS_SUCCESS
@@ -863,8 +881,8 @@ mod test {
     /// Mock of the `EFI_BOOT_SERVICE.LocateHandleBuffer` C API in test environment.
     ///
     /// # Safety
-    ///
-    ///   Caller should guarantee that `num_handles` and `buf` point to valid memory locations.
+    /// Caller should guarantee that `protocol`, `num_handles`, and `buf` point to valid memory
+    /// locations.
     unsafe extern "C" fn locate_handle_buffer(
         search_type: EfiLocateHandleSearchType,
         protocol: *const EfiGuid,
@@ -876,11 +894,14 @@ mod test {
         assert_eq!(search_key, null_mut());
         EFI_CALL_TRACES.with(|traces| {
             let trace = &mut traces.borrow_mut().locate_handle_buffer_trace;
-            trace.inputs.push_back(*protocol);
+            // SAFETY: function safety docs require valid `protocol`.
+            unsafe { trace.inputs.push_back(*protocol) };
 
             let (num, handles) = trace.outputs.pop_front().unwrap();
-            *num_handles = num as usize;
-            *buf = handles as *mut EfiHandle;
+            // SAFETY: function safety docs require valid `num_handles`.
+            unsafe { *num_handles = num as usize };
+            // SAFETY: function safety docs require valid `buf`.
+            unsafe { *buf = handles as *mut EfiHandle };
 
             EFI_STATUS_SUCCESS
         })
@@ -911,8 +932,10 @@ mod test {
         EFI_CALL_TRACES.with(|traces| {
             let trace = &mut traces.borrow_mut().get_memory_map_trace;
             trace.inputs.push_back((unsafe { *memory_map_size }, memory_map));
-            (*map_key, *memory_map_size) = trace.outputs.pop_front().unwrap();
-            *desc_size = size_of::<EfiMemoryDescriptor>();
+            // SAFETY: function safety docs require valid `memory_map_size`and `map_key`.
+            unsafe { (*map_key, *memory_map_size) = trace.outputs.pop_front().unwrap() };
+            // SAFETY: function safety docs require valid `desc_size`.
+            unsafe { *desc_size = size_of::<EfiMemoryDescriptor>() };
             EFI_STATUS_SUCCESS
         })
     }
@@ -957,7 +980,8 @@ mod test {
         EFI_CALL_TRACES.with(|traces| {
             let trace = &mut traces.borrow_mut().create_event_trace;
             trace.inputs.push_back((type_, notify_tpl, notify_fn, notify_ctx));
-            *event = trace.outputs.pop_front().unwrap();
+            // SAFETY: function safety docs require valid `event`.
+            unsafe { *event = trace.outputs.pop_front().unwrap() };
             EFI_STATUS_SUCCESS
         })
     }
