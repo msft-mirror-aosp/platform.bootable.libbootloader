@@ -33,20 +33,27 @@ use super::slots;
 
 /// `AndroidBootImages` contains references to loaded images for booting Android.
 pub struct AndroidBootImages<'a> {
+    /// Kernel image.
     pub kernel: &'a mut [u8],
+    /// Ramdisk to pass to the kernel.
     pub ramdisk: &'a mut [u8],
+    /// FDT To pass to the kernel.
     pub fdt: &'a mut [u8],
 }
 
 /// `FuchsiaBootImages` contains references to loaded images for booting Zircon.
 pub struct FuchsiaBootImages<'a> {
+    /// Kernel image.
     pub zbi_kernel: &'a mut [u8],
+    /// ZBI container with items to pass to the kernel.
     pub zbi_items: &'a mut [u8],
 }
 
-/// `BootImages` contains images for booting Android/Zircon kernel.
+/// Images required to boot the supported kernels.
 pub enum BootImages<'a> {
+    /// Android boot images.
     Android(AndroidBootImages<'a>),
+    /// Fuchsia boot images.
     Fuchsia(FuchsiaBootImages<'a>),
 }
 

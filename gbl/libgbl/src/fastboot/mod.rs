@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Fastboot backend for libgbl.
+
 use core::cmp::min;
 use core::ffi::CStr;
 use core::str::Split;
@@ -108,6 +110,7 @@ impl SparseRawWriter for GblFbPartitionIo<'_> {
 
 /// `GblFastboot` implements fastboot commands in the GBL context.
 pub struct GblFastboot<'a> {
+    /// Block I/O access.
     pub storage: &'a mut dyn AsMultiBlockDevices,
     download_buffer: &'a mut [u8],
 }
