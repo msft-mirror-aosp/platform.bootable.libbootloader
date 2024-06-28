@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Rust wrapper for `EFI_LOADED_IMAGE_PROTOCOL`.
+
 use crate::defs::{EfiGuid, EfiLoadedImageProtocol};
 use crate::protocol::{Protocol, ProtocolInfo};
 use crate::{DeviceHandle, EfiResult};
@@ -27,6 +29,7 @@ impl ProtocolInfo for LoadedImageProtocol {
 }
 
 impl<'a> Protocol<'a, LoadedImageProtocol> {
+    /// Wraps `EFI_LOADED_IMAGE_PROTOCOL.DeviceHandle`.
     pub fn device_handle(&self) -> EfiResult<DeviceHandle> {
         Ok(DeviceHandle(self.interface()?.device_handle))
     }

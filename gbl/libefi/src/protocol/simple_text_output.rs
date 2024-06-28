@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Rust wrapper for `EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL`.
+
 use crate::defs::{
     char16_t, EfiGuid, EfiSimpleTextOutputProtocol, EFI_STATUS_NOT_FOUND, EFI_STATUS_UNSUPPORTED,
 };
