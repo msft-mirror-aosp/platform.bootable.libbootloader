@@ -573,8 +573,8 @@ mod test {
     #[test]
     fn test_mark_slot_tried_slotted_recovery() {
         let mut sb: SlotBlock<BootloaderControl> = Default::default();
-        sb.set_slot_unbootable('a'.into(), UnbootableReason::UserRequested);
-        sb.set_slot_unbootable('b'.into(), UnbootableReason::UserRequested);
+        assert!(sb.set_slot_unbootable('a'.into(), UnbootableReason::UserRequested).is_ok());
+        assert!(sb.set_slot_unbootable('b'.into(), UnbootableReason::UserRequested).is_ok());
         assert_eq!(sb.mark_boot_attempt(), Ok(BootToken(())));
     }
 
