@@ -13,49 +13,22 @@
 # limitations under the License.
 
 load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_static_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(
     default_visibility = ["//visibility:public"],
 )
 
 rust_library(
-    name = "libabr",
+    name = "libasync",
     srcs = ["src/lib.rs"],
-    crate_name = "abr",
+    crate_name = "gbl_async",
     edition = "2021",
     rustc_flags = ANDROID_RUST_LINTS,
 )
 
 rust_test(
-    name = "libabr_test",
-    crate = ":libabr",
+    name = "libasync_test",
+    crate = ":libasync",
     rustc_flags = ANDROID_RUST_LINTS,
-)
-
-rust_static_library(
-    name = "libabr_c",
-    srcs = [
-        "src/c_staticlib.rs",
-        "src/utils.rs",
-    ],
-    crate_name = "abr_c",
-    crate_root = "src/c_staticlib.rs",
-    edition = "2021",
-    rustc_flags = ANDROID_RUST_LINTS,
-    deps = [":libabr"],
-)
-
-rust_test(
-    name = "libabr_c_test",
-    crate = ":libabr_c",
-    rustc_flags = ANDROID_RUST_LINTS,
-)
-
-test_suite(
-    name = "libabr_tests",
-    tests = [
-        ":libabr_c_test",
-        ":libabr_test",
-    ],
 )
