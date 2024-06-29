@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Rust wrapper for `EFI_ANDROID_BOOT_PROTOCOL`.
+
 use crate::defs::{EfiAndroidBootProtocol, EfiGuid, EFI_STATUS_NOT_FOUND};
 use crate::protocol::{Protocol, ProtocolInfo};
 use crate::{efi_call, map_efi_err, EfiResult, Event};

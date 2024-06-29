@@ -13,6 +13,7 @@
 # limitations under the License.
 
 load("@gbl//toolchain:gbl_toolchain.bzl", "link_static_cc_library")
+load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@gbl_llvm_prebuilts//:info.bzl", "LLVM_PREBUILTS_C_INCLUDE")
 load("@rules_rust//bindgen:defs.bzl", "rust_bindgen")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
@@ -74,6 +75,7 @@ rust_library(
     srcs = ["src/lib.rs"],
     crate_name = "fdt",
     edition = "2021",
+    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         ":libfdt_c_def",
         ":libfdt_c_static",
@@ -86,6 +88,7 @@ rust_test(
     name = "libfdt_test",
     compile_data = ["@gbl//libfdt/test:test.dtb"],
     crate = ":libfdt",
+    rustc_flags = ANDROID_RUST_LINTS,
 )
 
 link_static_cc_library(

@@ -11,6 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
+//! Utilities for writing tests with libstorage, e.g. creating fake block devices.
+
 use crc32fast::Hasher;
 use gbl_async::block_on;
 pub use gbl_storage::{
@@ -37,6 +40,7 @@ pub struct TestBlockIo {
 }
 
 impl TestBlockIo {
+    /// Creates a new [TestBlockIo].
     pub fn new(block_size: u64, alignment: u64, data: Vec<u8>) -> Self {
         Self { block_size, alignment, storage: data, num_writes: 0, num_reads: 0 }
     }
@@ -128,7 +132,9 @@ impl Default for TestBlockDevice {
 /// OR a size in bytes if the device or partition can be initialized in a blank state.
 #[derive(Copy, Clone)]
 pub enum BackingStore<'a> {
+    /// Exact data to use for the storage.
     Data(&'a [u8]),
+    /// Data size to use, will be initialized as zeros.
     Size(usize),
 }
 

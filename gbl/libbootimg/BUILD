@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_rust//bindgen:defs.bzl", "rust_bindgen")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
@@ -55,7 +56,10 @@ rust_bindgen(
         "--with-derive-default",
         "--blocklist-type={}".format(BLOCKED_TYPES_RE),
         "--blocklist-item={}".format(BLOCKED_ITEMS_RE),
-        "--with-derive-custom-struct={}={}".format(CUSTOM_STRUCT_RE, CUSTOM_STRUCT_DERIVES),
+        "--with-derive-custom-struct={}={}".format(
+            CUSTOM_STRUCT_RE,
+            CUSTOM_STRUCT_DERIVES,
+        ),
         "--raw-line",
         """
 #![allow(non_camel_case_types)]
@@ -64,11 +68,13 @@ rust_bindgen(
 use zerocopy::{AsBytes, FromBytes, FromZeroes};""",
     ],
     cc_lib = ":bootimg_cc_header",
-    clang_flags = select({
-        # For x86_32, we need to explicitly specify 32bit architecture.
-        "@gbl//toolchain:gbl_rust_uefi_x86_32": ["-m32"],
-        "//conditions:default": ["-m64"],
-    }) + [
+    clang_flags = select(
+        {
+            # For x86_32, we need to explicitly specify 32bit architecture.
+            "@gbl//toolchain:gbl_rust_uefi_x86_32": ["-m32"],
+            "//conditions:default": ["-m64"],
+        },
+    ) + [
         "-x",
         "c++",
         "-nostdinc",
@@ -114,6 +120,7 @@ rust_library(
     ],
     crate_name = "bootimg",
     data = [":bootimg_sources_gen"],
+    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         ":bootimg_private",
         "@zerocopy",
@@ -123,4 +130,5 @@ rust_library(
 rust_test(
     name = "libbootimg_test",
     crate = ":libbootimg",
+    rustc_flags = ANDROID_RUST_LINTS,
 )
