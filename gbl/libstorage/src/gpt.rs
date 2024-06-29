@@ -21,24 +21,40 @@ use safemath::SafeNum;
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 
 const GPT_GUID_LEN: usize = 16;
+/// The maximum number of UTF-16 characters in a GPT partition name, including termination.
 pub const GPT_NAME_LEN_U16: usize = 36;
 
+/// The top-level GPT header.
 #[repr(C, packed)]
 #[derive(Debug, Default, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
 pub struct GptHeader {
+    /// Magic bytes; must be [GPT_MAGIC].
     pub magic: u64,
+    /// Header version.
     pub revision: u32,
+    /// Header size in bytes.
     pub size: u32,
+    /// CRC of the first `size` bytes, calculated with this field zeroed.
     pub crc32: u32,
+    /// Reserved; must be set to 0.
     pub reserved0: u32,
+    /// The on-disk block location of this header.
     pub current: u64,
+    /// The on-disk block location of the other header.
     pub backup: u64,
+    /// First usable block for partition contents.
     pub first: u64,
+    /// Last usable block for partition contents (inclusive).
     pub last: u64,
+    /// Disk GUID.
     pub guid: [u8; GPT_GUID_LEN],
+    /// Starting block for the partition entries array.
     pub entries: u64,
+    /// Number of partition entries.
     pub entries_count: u32,
+    /// The size of each partition entry in bytes.
     pub entries_size: u32,
+    /// CRC of the partition entries array.
     pub entries_crc: u32,
 }
 
@@ -59,11 +75,17 @@ impl GptHeader {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
 pub struct GptEntry {
+    /// Partition type GUID.
     pub part_type: [u8; GPT_GUID_LEN],
+    /// Unique partition GUID.
     pub guid: [u8; GPT_GUID_LEN],
+    /// First block.
     pub first: u64,
+    /// Last block (inclusive).
     pub last: u64,
+    /// Partition flags.
     pub flags: u64,
+    /// Partition name in UTF-16.
     pub name: [u16; GPT_NAME_LEN_U16],
 }
 
@@ -117,6 +139,7 @@ const GPT_MAX_NUM_ENTRIES: u64 = 128;
 const GPT_HEADER_SIZE: u64 = size_of::<GptHeader>() as u64; // 92 bytes.
 const GPT_HEADER_SIZE_PADDED: u64 =
     (GPT_HEADER_SIZE + GPT_ENTRY_ALIGNMENT - 1) / GPT_ENTRY_ALIGNMENT * GPT_ENTRY_ALIGNMENT;
+/// GPT header magic bytes ("EFI PART" in ASCII).
 pub const GPT_MAGIC: u64 = 0x5452415020494645;
 
 enum HeaderType {

@@ -545,18 +545,24 @@ mod tests {
     extern crate avb_sysdeps;
     extern crate avb_test;
     use super::*;
-    use avb::IoResult as AvbIoResult;
-    use avb::PublicKeyForPartitionInfo;
-    use avb::{IoError, SlotVerifyError};
+    use avb::{CertPermanentAttributes, SlotVerifyError};
     use avb_test::{FakeVbmetaKey, TestOps};
     use std::{fs, path::Path};
+    use zerocopy::FromBytes;
 
     const TEST_ZIRCON_PARTITION_NAME: &str = "zircon_a";
     const TEST_ZIRCON_PARTITION_NAME_CSTR: &CStr = c"zircon_a";
     const TEST_ZIRCON_IMAGE_PATH: &str = "zircon_a.bin";
     const TEST_ZIRCON_VBMETA_PATH: &str = "zircon_a.vbmeta";
+    const TEST_ZIRCON_VBMETA_CERT_PATH: &str = "zircon_a.vbmeta.cert";
     const TEST_PUBLIC_KEY_PATH: &str = "testkey_rsa4096_pub.bin";
+    const TEST_PERMANENT_ATTRIBUTES_PATH: &str = "cert_permanent_attributes.bin";
+    const TEST_PERMANENT_ATTRIBUTES_HASH_PATH: &str = "cert_permanent_attributes.hash";
+    const TEST_BAD_PERMANENT_ATTRIBUTES_PATH: &str = "cert_permanent_attributes.bad.bin";
+    const TEST_BAD_PERMANENT_ATTRIBUTES_HASH_PATH: &str = "cert_permanent_attributes.bad.hash";
     const TEST_VBMETA_ROLLBACK_LOCATION: usize = 0; // Default value, we don't explicitly set this.
+    pub const TEST_CERT_PIK_VERSION: u64 = 42;
+    pub const TEST_CERT_PSK_VERSION: u64 = 42;
 
     /// Returns the contents of a test data file.
     ///
@@ -592,6 +598,31 @@ mod tests {
         });
         avb_ops.rollbacks.insert(TEST_VBMETA_ROLLBACK_LOCATION, 0);
         avb_ops.unlock_state = Ok(false);
+
+        avb_ops
+    }
+
+    /// Similar to `test_avb_ops()`, but with the avb_cert extension enabled.
+    fn test_avb_cert_ops() -> TestOps<'static> {
+        let mut avb_ops = test_avb_ops();
+
+        // Replace vbmeta with the cert-signed version.
+        avb_ops.add_partition("vbmeta", testdata(TEST_ZIRCON_VBMETA_CERT_PATH));
+
+        // Tell `avb_ops` to use cert APIs and to route the default key through cert validation.
+        avb_ops.use_cert = true;
+        avb_ops.default_vbmeta_key = Some(FakeVbmetaKey::Cert);
+
+        // Add the permanent attributes.
+        let perm_attr_bytes = testdata(TEST_PERMANENT_ATTRIBUTES_PATH);
+        let perm_attr_hash = testdata(TEST_PERMANENT_ATTRIBUTES_HASH_PATH);
+        avb_ops.cert_permanent_attributes =
+            Some(CertPermanentAttributes::read_from(&perm_attr_bytes[..]).unwrap());
+        avb_ops.cert_permanent_attributes_hash = Some(perm_attr_hash.try_into().unwrap());
+
+        // Add the rollbacks for the cert keys.
+        avb_ops.rollbacks.insert(avb::CERT_PIK_VERSION_LOCATION, TEST_CERT_PIK_VERSION);
+        avb_ops.rollbacks.insert(avb::CERT_PSK_VERSION_LOCATION, TEST_CERT_PSK_VERSION);
 
         avb_ops
     }
@@ -649,5 +680,46 @@ mod tests {
             None,
         );
         assert_eq!(res.unwrap_err(), IntegrationError::AvbSlotVerifyError(SlotVerifyError::Io));
+    }
+
+    #[test]
+    fn test_load_and_verify_image_with_cert_success() {
+        let mut gbl_ops = DefaultGblOps {};
+        let mut gbl = Gbl::new(&mut gbl_ops);
+        let mut avb_ops = test_avb_cert_ops();
+
+        let res = gbl.load_and_verify_image(
+            &mut avb_ops,
+            &mut [&TEST_ZIRCON_PARTITION_NAME_CSTR],
+            SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_NONE,
+            None,
+        );
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_load_and_verify_image_with_cert_permanent_attribute_mismatch_error() {
+        let mut gbl_ops = DefaultGblOps {};
+        let mut gbl = Gbl::new(&mut gbl_ops);
+        let mut avb_ops = test_avb_cert_ops();
+
+        // Swap in the corrupted permanent attributes, which should cause the vbmeta image to fail
+        // validation due to key mismatch.
+        let perm_attr_bytes = testdata(TEST_BAD_PERMANENT_ATTRIBUTES_PATH);
+        let perm_attr_hash = testdata(TEST_BAD_PERMANENT_ATTRIBUTES_HASH_PATH);
+        avb_ops.cert_permanent_attributes =
+            Some(CertPermanentAttributes::read_from(&perm_attr_bytes[..]).unwrap());
+        avb_ops.cert_permanent_attributes_hash = Some(perm_attr_hash.try_into().unwrap());
+
+        let res = gbl.load_and_verify_image(
+            &mut avb_ops,
+            &mut [&TEST_ZIRCON_PARTITION_NAME_CSTR],
+            SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_NONE,
+            None,
+        );
+        assert_eq!(
+            res.unwrap_err(),
+            IntegrationError::AvbSlotVerifyError(SlotVerifyError::PublicKeyRejected)
+        );
     }
 }

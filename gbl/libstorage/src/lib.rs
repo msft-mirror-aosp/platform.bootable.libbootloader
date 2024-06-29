@@ -124,18 +124,31 @@ pub type Result<T> = core::result::Result<T, StorageError>;
 /// Error code for this library.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum StorageError {
+    /// Numeric overflow; the contained value reports when the overflow occurred.
     ArithmeticOverflow(safemath::Error),
+    /// Failed to locate the block device.
     BlockDeviceNotFound,
+    /// I/O error occurred while accessing the block device.
     BlockIoError(BlockIoError),
+    /// [AsBlockDevice::with] failed to execute the requested callback.
     BlockIoNotProvided,
+    /// Failed to find a block device matching the requested criteria.
     FailedGettingBlockDevices(Option<&'static str>),
+    /// I/O was aborted before completion.
     IoAborted,
+    /// A function parameter was invalid.
     InvalidInput,
+    /// Failed to find a valid GPT.
     NoValidGpt,
+    /// The requested partition does not exist.
     NotExist,
+    /// The block device is not ready.
     NotReady,
+    /// Attempted to access outside the partition.
     OutOfRange,
+    /// The requested partition matched multiple entries.
     PartitionNotUnique,
+    /// The provided scratch buffer is too small.
     ScratchTooSmall,
 }
 
@@ -186,6 +199,7 @@ impl BlockInfo {
 /// `BlockIoAsync` interfaces.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum BlockIoError {
+    /// Custom error; contained value may provide a string error message.
     Others(Option<&'static str>),
 }
 
@@ -459,6 +473,14 @@ pub struct BlockDevice<'a, 'b> {
 }
 
 impl<'a, 'b> BlockDevice<'a, 'b> {
+    /// Creates a new [BlockDevice].
+    ///
+    /// # Arguments
+    /// * `io`: the [BlockIoSync] implementation to use.
+    /// * `scratch`: scratch buffer to use; if this is smaller than the size indicated by
+    ///              [required_scratch_size], operations on the returned device may return
+    ///              [StorageError::ScratchTooSmall].
+    /// * `max_gpt_entries`: the maximum GPT entries to support.
     pub fn new(io: &'a mut dyn BlockIoSync, scratch: &'b mut [u8], max_gpt_entries: u64) -> Self {
         Self { io, scratch, max_gpt_entries }
     }

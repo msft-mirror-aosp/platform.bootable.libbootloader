@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Rust wrapper for `RISCV_EFI_BOOT_PROTOCOL`.
+
 use crate::defs::{EfiGuid, EfiRiscvBootProtocol, EFI_STATUS_NOT_FOUND};
 use crate::protocol::{Protocol, ProtocolInfo};
 use crate::{efi_call, map_efi_err, EfiResult};
@@ -27,6 +29,7 @@ impl ProtocolInfo for RiscvBootProtocol {
 }
 
 impl<'a> Protocol<'a, RiscvBootProtocol> {
+    /// Wraps `RISCV_EFI_BOOT_PROTOCOL.GetBootHartId()`.
     pub fn get_boot_hartid(&self) -> EfiResult<usize> {
         let mut boot_hart_id: usize = 0;
         // SAFETY:
@@ -40,6 +43,7 @@ impl<'a> Protocol<'a, RiscvBootProtocol> {
         Ok(boot_hart_id)
     }
 
+    /// Wraps `RISCV_EFI_BOOT_PROTOCOL.Revision`.
     pub fn revision(&self) -> EfiResult<u64> {
         Ok(self.interface()?.revision)
     }
