@@ -74,18 +74,34 @@ use core::{
 };
 use gbl_async::{block_on, yield_now};
 
+/// Maximum packet size that can be accepted from the host.
+///
+/// The transport layer may have its own size limits that reduce the packet size further.
 pub const MAX_COMMAND_SIZE: usize = 4096;
+/// Maximum packet size that will be sent to the host.
+///
+/// The `fastboot` host tool originally had a 64-byte packet size max, but this was increased
+/// to 256 in 2020, so any reasonably recent host binary should be able to support 256.
+///
+/// The transport layer may have its own size limits that reduce the packet size further.
 pub const MAX_RESPONSE_SIZE: usize = 256;
+
 const OKAY: &'static str = "OKAY";
 
 /// Transport errors.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum TransportError {
-    InvalidHanshake,
+    /// Failed to initialize communication with the host.
+    InvalidHandshake,
+    /// Internal error; library got into an unexpected state.
     InvalidState,
+    /// Attempted to send or receive a packet that cause a numeric overflow (larger than u64).
     PacketSizeOverflow,
+    /// Host sent a packet larger than the transport maximum size.
     PacketSizeExceedMaximum,
+    /// Upload command errored out before all the data was sent.
     NotEnoughUpload,
+    /// Custom error that contains a string indicating what went wrong.
     Others(&'static str),
 }
 
@@ -95,6 +111,12 @@ impl Display for TransportError {
     }
 }
 
+/// Trait to provide the transport layer for a fastboot implementation.
+///
+/// Fastboot supports these transports:
+/// * USB
+/// * TCP
+/// * UDP
 pub trait Transport {
     /// Fetches the next fastboot packet into `out`.
     ///
@@ -130,6 +152,7 @@ pub trait TcpStream {
     async fn write_exact(&mut self, data: &[u8]) -> Result<(), TransportError>;
 }
 
+/// Implements [Transport] on a [TcpStream].
 pub struct TcpTransport<'a, T: TcpStream>(&'a mut T);
 
 impl<'a, T: TcpStream> TcpTransport<'a, T> {
@@ -140,7 +163,7 @@ impl<'a, T: TcpStream> TcpTransport<'a, T> {
         block_on(tcp_stream.read_exact(&mut handshake[..]))?;
         match handshake == *TCP_HANDSHAKE_MESSAGE {
             true => Ok(Self(tcp_stream)),
-            _ => Err(TransportError::InvalidHanshake),
+            _ => Err(TransportError::InvalidHandshake),
         }
     }
 }
@@ -396,7 +419,7 @@ macro_rules! fastboot_info {
 /// `FastbootUtil` provides utilities APIs getting the current downloaded data size and sending
 /// fastboot INFO messages.
 pub trait FastbootUtils {
-    // Returns the size of the most recent download.
+    /// Returns the size of the most recent download.
     fn download_data_size(&self) -> usize;
 
     /// Sends a Fastboot "INFO<`msg`>" packet.
@@ -502,6 +525,8 @@ where
 }
 
 pub mod test_utils {
+    //! Test utilities to help users of this library write unit tests.
+
     use crate::{CommandError, UploadBuilder};
 
     /// Runs a closure with a mock uploader for user implementation to test
@@ -920,6 +945,11 @@ impl<T: AsMut<[u8]>> FormattedBytes<T> {
         self.1
     }
 
+    /// Appends the given `bytes` to the contents.
+    ///
+    /// If `bytes` exceeds the remaining buffer space, any excess bytes are discarded.
+    ///
+    /// Returns the resulting contents.
     pub fn append(&mut self, bytes: &[u8]) -> &mut [u8] {
         let buf = &mut self.0.as_mut()[self.1..];
         // Only write as much as the size of the bytes buffer. Additional write is silently
@@ -1555,7 +1585,7 @@ mod test {
         tcp_stream.add_input(b"ABCD");
         assert_eq!(
             block_on(fastboot.run_tcp_session(&mut tcp_stream, &mut fastboot_impl)).unwrap_err(),
-            TransportError::InvalidHanshake
+            TransportError::InvalidHandshake
         );
     }
 
