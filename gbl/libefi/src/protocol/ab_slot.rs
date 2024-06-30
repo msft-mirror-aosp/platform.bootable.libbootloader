@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Rust wrapper for `EFI_GBL_SLOT_PROTOCOL`.
+
 use crate::defs::{
     EfiBootReason, EfiGblSlotInfo, EfiGblSlotMetadataBlock, EfiGblSlotProtocol, EfiGuid,
     EfiUnbootableReason, EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_NOT_FOUND,
@@ -19,6 +21,7 @@ use crate::defs::{
 use crate::protocol::{Protocol, ProtocolInfo};
 use crate::{efi_call, error::EfiError, map_efi_err, EfiResult};
 
+/// Wraps `EFI_GBL_SLOT_PROTOCOL`.
 pub struct GblSlotProtocol;
 
 impl ProtocolInfo for GblSlotProtocol {
