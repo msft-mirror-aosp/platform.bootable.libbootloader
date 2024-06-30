@@ -144,9 +144,12 @@ use core::fmt;
 use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Rem, RemAssign, Sub, SubAssign};
 use core::panic::Location;
 
+/// The underlying primitive type used for [SafeNum] operations.
 pub type Primitive = u64;
+/// Safe math error type, which points to the location of the original failed operation.
 pub type Error = &'static Location<'static>;
 
+/// Wraps a raw [Primitive] type for safe-by-default math. See module docs for info and usage.
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct SafeNum(Result<Primitive, Error>);
 
@@ -160,8 +163,11 @@ impl fmt::Debug for SafeNum {
 }
 
 impl SafeNum {
+    /// The maximum [SafeNum].
     pub const MAX: SafeNum = SafeNum(Ok(u64::MAX));
+    /// The minimum [SafeNum].
     pub const MIN: SafeNum = SafeNum(Ok(u64::MIN));
+    /// Zero as a [SafeNum].
     pub const ZERO: SafeNum = SafeNum(Ok(0));
 
     /// Round `self` down to the nearest multiple of `rhs`.

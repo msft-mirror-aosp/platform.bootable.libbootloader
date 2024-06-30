@@ -61,12 +61,17 @@ const LOAD_ADDR_HIGH: usize = 0x10_0000;
 // Flag value to use high address for protected mode kernel.
 const LOAD_FLAG_LOADED_HIGH: u8 = 0x1;
 
-/// Constant for E820 address range type.
+/// E820 RAM address range type.
 pub const E820_ADDRESS_TYPE_RAM: u32 = 1;
+/// E820 reserved address range type.
 pub const E820_ADDRESS_TYPE_RESERVED: u32 = 2;
+/// E820 ACPI address range type.
 pub const E820_ADDRESS_TYPE_ACPI: u32 = 3;
+/// E820 NVS address range type.
 pub const E820_ADDRESS_TYPE_NVS: u32 = 4;
+/// E820 unusable address range type.
 pub const E820_ADDRESS_TYPE_UNUSABLE: u32 = 5;
+/// E820 PMEM address range type.
 pub const E820_ADDRESS_TYPE_PMEM: u32 = 7;
 
 /// Wrapper for `struct boot_params {}` C structure

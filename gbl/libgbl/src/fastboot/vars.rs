@@ -80,7 +80,7 @@ impl Variable for Partition {
     ) -> Result<Option<usize>, CommandError> {
         let part = gbl_fb.parse_partition(args)?;
         Ok(match name {
-            PARTITION_SIZE => Some(snprintf!(out, "{:#x}", gbl_fb.partition_io(part).size()).len()),
+            PARTITION_SIZE => Some(snprintf!(out, "{:#x}", part.size()).len()),
             PARTITION_TYPE => Some(snprintf!(out, "raw").len()), // Image type not supported yet.
             _ => None,
         })
