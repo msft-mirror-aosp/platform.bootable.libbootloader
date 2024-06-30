@@ -28,6 +28,7 @@ rust_library(
         "@bitflags",
         "@crc32fast",
         "@cstr",
+        "@gbl//libasync",
         "@gbl//libfastboot",
         "@gbl//libsafemath",
         "@gbl//libstorage",
@@ -46,6 +47,11 @@ rust_test(
     crate = ":libgbl",
     crate_features = ["uuid"],
     data = [
+        "@gbl//libgbl/testdata:cert_metadata.bin",
+        "@gbl//libgbl/testdata:cert_permanent_attributes.bad.bin",
+        "@gbl//libgbl/testdata:cert_permanent_attributes.bad.hash",
+        "@gbl//libgbl/testdata:cert_permanent_attributes.bin",
+        "@gbl//libgbl/testdata:cert_permanent_attributes.hash",
         "@gbl//libgbl/testdata:sparse_test.bin",
         "@gbl//libgbl/testdata:sparse_test_blk1024.bin",
         "@gbl//libgbl/testdata:sparse_test_raw.bin",
@@ -53,6 +59,7 @@ rust_test(
         "@gbl//libgbl/testdata:writeback_test_disk.bin",
         "@gbl//libgbl/testdata:zircon_a.bin",
         "@gbl//libgbl/testdata:zircon_a.vbmeta",
+        "@gbl//libgbl/testdata:zircon_a.vbmeta.cert",
     ],
     deps = [
         "@avb//:avb_crypto_ops_sha_impl_staticlib",

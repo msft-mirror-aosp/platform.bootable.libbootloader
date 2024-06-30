@@ -722,9 +722,9 @@ macro_rules! efi_println {
 /// Provides a builtin panic handler.
 /// In the long term, to improve flexibility, consider allowing application to install a custom
 /// handler into `EfiEntry` to be called here.
+/// Don't set this as the panic handler so that other crates' tests can depend on libefi.
 #[cfg(not(test))]
-#[panic_handler]
-fn panic(panic: &PanicInfo) -> ! {
+pub fn panic(panic: &PanicInfo) -> ! {
     // If there is a valid internal `efi_entry` from global allocator, print the panic info.
     let entry = allocation::internal_efi_entry();
     if let Some(e) = entry {
