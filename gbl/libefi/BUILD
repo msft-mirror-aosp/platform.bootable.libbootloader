@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@gbl_llvm_prebuilts//:info.bzl", "LLVM_PREBUILTS_C_INCLUDE")
 load("@rules_rust//bindgen:defs.bzl", "rust_bindgen")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
@@ -73,14 +74,17 @@ rust_bindgen(
         """
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
+#![allow(missing_docs)]
 use zerocopy::{AsBytes, FromBytes, FromZeroes};""",
     ],
     cc_lib = ":efi_c_headers",
     # For x86_32, we need to explicitly specify 32bit architecture.
-    clang_flags = select({
-        "@gbl//toolchain:gbl_rust_uefi_x86_32": ["-m32"],
-        "//conditions:default": ["-m64"],
-    }) + [
+    clang_flags = select(
+        {
+            "@gbl//toolchain:gbl_rust_uefi_x86_32": ["-m32"],
+            "//conditions:default": ["-m64"],
+        },
+    ) + [
         "-I{}".format(LLVM_PREBUILTS_C_INCLUDE),
         "-nostdinc",
     ],
@@ -115,10 +119,12 @@ rust_library(
     ],
     crate_name = "efi",
     data = [":efi_defs_genrule"],
+    rustc_flags = ANDROID_RUST_LINTS,
     deps = ["@zerocopy"],
 )
 
 rust_test(
     name = "libefi_test",
     crate = ":libefi",
+    rustc_flags = ANDROID_RUST_LINTS,
 )
