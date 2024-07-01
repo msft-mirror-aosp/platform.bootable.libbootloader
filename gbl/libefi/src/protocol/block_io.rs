@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Rust wrapper for `EFI_BLOCK_IO_PROTOCOL`.
+
 use crate::defs::{
     EfiBlockIoMedia, EfiBlockIoProtocol, EfiGuid, EFI_STATUS_INVALID_PARAMETER,
     EFI_STATUS_NOT_FOUND,
@@ -51,7 +53,7 @@ impl Protocol<'_, BlockIoProtocol> {
     }
 
     /// Wrapper of `EFI_BLOCK_IO_PROTOCOL.write_blocks()`
-    pub fn write_blocks(&self, lba: u64, buffer: &[u8]) -> EfiResult<()> {
+    pub fn write_blocks(&self, lba: u64, buffer: &mut [u8]) -> EfiResult<()> {
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
         // established by `Protocol::new()`.
@@ -64,7 +66,7 @@ impl Protocol<'_, BlockIoProtocol> {
                 self.media()?.media_id,
                 lba,
                 buffer.len(),
-                buffer.as_ptr() as *const _
+                buffer.as_mut_ptr() as _
             )
         }
     }

@@ -26,6 +26,7 @@ pub type Result<T> = core::result::Result<T, IntegrationError>;
 #[derive(Debug, PartialEq, Eq)]
 /// Errors originating from GBL native logic.
 pub enum Error {
+    /// Unexpected overflow in size/length calculation.
     ArithmeticOverflow,
     /// Fail to hand off to kernel.
     BootFailed,
@@ -42,6 +43,8 @@ pub enum Error {
     /// AvbOps were already borrowed. This would happen on second `load_and_verify_image()` call
     /// unless `reuse()` is called before.
     AvbOpsBusy,
+    /// Buffers overlap and can cause undefined behavior and data corruption.
+    BufferOverlap,
 }
 
 impl Display for Error {
@@ -55,6 +58,7 @@ impl Display for Error {
             Error::OperationProhibited => write!(f, "Operation is prohibited"),
             Error::Internal => write!(f, "Internal error"),
             Error::AvbOpsBusy => write!(f, "AvbOps were already borrowed"),
+            Error::BufferOverlap => write!(f, "Buffers overlap"),
         }
     }
 }
@@ -104,6 +108,7 @@ macro_rules! composite_enum {
             $(,)*
         }
     ) => {
+        #[allow(missing_docs)]
         // Copy over enum declaration as it is.
         $(#[$outer])*
         $vis enum $name {
