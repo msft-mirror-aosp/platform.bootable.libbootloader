@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Rust wrapper for `EFI_SIMPLE_NETWORK_PROTOCOL`.
+
 use crate::defs::{
     EfiGuid, EfiMacAddress, EfiSimpleNetworkMode, EfiSimpleNetworkProtocol, EFI_STATUS_NOT_FOUND,
 };
@@ -110,7 +112,8 @@ impl<'a> Protocol<'a, SimpleNetworkProtocol> {
         mut dest: EfiMacAddress,
         mut protocol: u16,
     ) -> EfiResult<()> {
-        let buf = buf.as_mut().unwrap();
+        // SAFETY: function safety docs require valid `buf`.
+        let buf = unsafe { buf.as_mut() }.unwrap();
         // SAFETY:
         // See safety reasoning of `start()`.
         // All pointers passed are valid, outlive the call and are not retained by the call.

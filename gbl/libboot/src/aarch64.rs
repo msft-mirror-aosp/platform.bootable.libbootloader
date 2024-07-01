@@ -18,6 +18,8 @@
 
 use core::arch::asm;
 
+/// ARM exception levels.
+#[allow(missing_docs)]
 #[derive(Debug, PartialEq)]
 pub enum ExceptionLevel {
     EL0,
@@ -77,14 +79,18 @@ unsafe fn jump_kernel(addr: usize, arg0: usize, arg1: usize, arg2: usize, arg3: 
     // be trusted, including stack memory. Therefore all needed data including local variables must
     // be ensured to be loaded to registers first. `disable_cache_mmu_and_jump` only operates on
     // registers and does not access stack or any other memory.
-    asm!(
-        "b disable_cache_mmu_and_jump",
-        in("x0") arg0,
-        in("x1") arg1,
-        in("x2") arg2,
-        in("x3") arg3,
-        in("x4") addr,
-    );
+    //
+    // SAFETY: By safety requirement of this function, `addr` contains valid execution code.
+    unsafe {
+        asm!(
+            "b disable_cache_mmu_and_jump",
+            in("x0") arg0,
+            in("x1") arg1,
+            in("x2") arg2,
+            in("x3") arg3,
+            in("x4") addr,
+        )
+    };
     unreachable!();
 }
 

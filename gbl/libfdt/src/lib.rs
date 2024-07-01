@@ -32,8 +32,11 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 /// libfdt error type.
 #[derive(Debug)]
 pub enum FdtError {
+    /// The underlying libfdt C API returned an error with the given message.
     CLibError(&'static str),
+    /// The provided buffer doesn't look like a valid FDT.
     InvalidInput,
+    /// Overflow while calculating offsets or lengths.
     IntegerOverflow,
 }
 
@@ -94,6 +97,7 @@ fn fdt_subnode_offset(
     })
 }
 
+/// Rust wrapper for the FDT header data.
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes, PartialEq)]
 pub struct FdtHeader(fdt_header);
@@ -154,11 +158,13 @@ pub struct Fdt<T>(T);
 
 /// Read only APIs.
 impl<T: AsRef<[u8]>> Fdt<T> {
+    /// Creates a new [Fdt] wrapping the contents of `init`.
     pub fn new(init: T) -> Result<Self> {
         fdt_check_header(init.as_ref())?;
         Ok(Fdt(init))
     }
 
+    /// Returns the [FdtHeader], or an error if the underlying buffer was invalid.
     pub fn header_ref(&self) -> Result<&FdtHeader> {
         FdtHeader::from_bytes_ref(self.0.as_ref())
     }
@@ -209,6 +215,7 @@ impl<T: AsRef<[u8]>> Fdt<T> {
 
 /// APIs when data can be modified.
 impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
+    /// Creates a mutable [Fdt] copied from `init`.
     pub fn new_from_init(mut fdt: T, init: &[u8]) -> Result<Self> {
         fdt_check_header(init)?;
         // SAFETY: API from libfdt_c.
