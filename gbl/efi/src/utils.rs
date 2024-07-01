@@ -25,10 +25,12 @@ use efi::{
         simple_text_input::SimpleTextInputProtocol,
         Protocol,
     },
-    DeviceHandle, EfiEntry, EventType,
+    DeviceHandle, EfiEntry, Event, EventType,
 };
 use fdt::FdtHeader;
-use gbl_storage::{required_scratch_size, AsBlockDevice, AsMultiBlockDevices, BlockIo};
+use gbl_storage::{
+    required_scratch_size, AsBlockDevice, AsMultiBlockDevices, BlockInfo, BlockIoError, BlockIoSync,
+};
 
 pub const EFI_DTB_TABLE_GUID: EfiGuid =
     EfiGuid::new(0xb1b621d5, 0xf19c, 0x41a5, [0x83, 0x0b, 0xd9, 0x15, 0x2c, 0x69, 0xaa, 0xe0]);
@@ -61,25 +63,33 @@ pub fn aligned_subslice(bytes: &mut [u8], alignment: usize) -> Result<&mut [u8]>
 // Implement a block device on top of BlockIoProtocol
 pub struct EfiBlockIo<'a>(pub Protocol<'a, BlockIoProtocol>);
 
-impl BlockIo for EfiBlockIo<'_> {
-    fn block_size(&mut self) -> u64 {
-        self.0.media().unwrap().block_size as u64
+impl BlockIoSync for EfiBlockIo<'_> {
+    fn info(&mut self) -> BlockInfo {
+        BlockInfo {
+            block_size: self.0.media().unwrap().block_size as u64,
+            num_blocks: (self.0.media().unwrap().last_block + 1) as u64,
+            alignment: core::cmp::max(1, self.0.media().unwrap().io_align as u64),
+        }
     }
 
-    fn num_blocks(&mut self) -> u64 {
-        (self.0.media().unwrap().last_block + 1) as u64
+    fn read_blocks(
+        &mut self,
+        blk_offset: u64,
+        out: &mut [u8],
+    ) -> core::result::Result<(), BlockIoError> {
+        self.0
+            .read_blocks(blk_offset, out)
+            .map_err(|_| BlockIoError::Others(Some("EFI BLOCK_IO protocol read error")))
     }
 
-    fn alignment(&mut self) -> u64 {
-        core::cmp::max(1, self.0.media().unwrap().io_align as u64)
-    }
-
-    fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> bool {
-        self.0.read_blocks(blk_offset, out).is_ok()
-    }
-
-    fn write_blocks(&mut self, blk_offset: u64, data: &[u8]) -> bool {
-        self.0.write_blocks(blk_offset, data).is_ok()
+    fn write_blocks(
+        &mut self,
+        blk_offset: u64,
+        data: &mut [u8],
+    ) -> core::result::Result<(), BlockIoError> {
+        self.0
+            .write_blocks(blk_offset, data)
+            .map_err(|_| BlockIoError::Others(Some("EFI BLOCK_IO protocol write error")))
     }
 }
 
@@ -95,13 +105,13 @@ impl<'a> EfiGptDevice<'a> {
     /// Initialize from a `BlockIoProtocol` EFI protocol
     pub fn new(protocol: Protocol<'a, BlockIoProtocol>) -> Result<Self> {
         let mut io = EfiBlockIo(protocol);
-        let scratch = vec![0u8; required_scratch_size(&mut io, MAX_GPT_ENTRIES)?];
+        let scratch = vec![0u8; required_scratch_size(io.info(), MAX_GPT_ENTRIES)?];
         Ok(Self { io, scratch })
     }
 }
 
 impl AsBlockDevice for EfiGptDevice<'_> {
-    fn with(&mut self, f: &mut dyn FnMut(&mut dyn BlockIo, &mut [u8], u64)) {
+    fn with(&mut self, f: &mut dyn FnMut(&mut dyn BlockIoSync, &mut [u8], u64)) {
         f(&mut self.io, &mut self.scratch[..], MAX_GPT_ENTRIES)
     }
 }
@@ -208,6 +218,34 @@ pub fn ms_to_100ns(ms: u64) -> Result<u64> {
     Ok(ms.checked_mul(1000 * 10).ok_or(EfiAppError::ArithmeticOverflow)?)
 }
 
+/// `Timeout` provide APIs for checking timeout.
+pub struct Timeout<'a> {
+    efi_entry: &'a EfiEntry,
+    timer: Event<'a, 'static>,
+}
+
+impl<'a> Timeout<'a> {
+    /// Creates a new instance and starts the timeout timer.
+    pub fn new(efi_entry: &'a EfiEntry, timeout_ms: u64) -> Result<Self> {
+        let bs = efi_entry.system_table().boot_services();
+        let timer = bs.create_event(EventType::Timer, None)?;
+        bs.set_timer(&timer, EFI_TIMER_DELAY_TIMER_RELATIVE, ms_to_100ns(timeout_ms)?)?;
+        Ok(Self { efi_entry, timer })
+    }
+
+    /// Checks if it has timeout.
+    pub fn check(&self) -> Result<bool> {
+        Ok(self.efi_entry.system_table().boot_services().check_event(&self.timer)?)
+    }
+
+    /// Resets the timeout.
+    pub fn reset(&self, timeout_ms: u64) -> Result<()> {
+        let bs = self.efi_entry.system_table().boot_services();
+        bs.set_timer(&self.timer, EFI_TIMER_DELAY_TIMER_RELATIVE, ms_to_100ns(timeout_ms)?)?;
+        Ok(())
+    }
+}
+
 /// Repetitively runs a closure until it signals completion or timeout.
 ///
 /// * If `f` returns `Ok(R)`, an `Ok(Some(R))` is returned immediately.
@@ -218,17 +256,11 @@ pub fn loop_with_timeout<F, R>(efi_entry: &EfiEntry, timeout_ms: u64, mut f: F) 
 where
     F: FnMut() -> core::result::Result<R, bool>,
 {
-    let bs = efi_entry.system_table().boot_services();
-    let timer = bs.create_event(EventType::Timer, None)?;
-    bs.set_timer(&timer, EFI_TIMER_DELAY_TIMER_RELATIVE, ms_to_100ns(timeout_ms)?)?;
-    while !bs.check_event(&timer)? {
+    let timeout = Timeout::new(efi_entry, timeout_ms)?;
+    while !timeout.check()? {
         match f() {
-            Ok(v) => {
-                return Ok(Some(v));
-            }
-            Err(true) => {
-                bs.set_timer(&timer, EFI_TIMER_DELAY_TIMER_RELATIVE, ms_to_100ns(timeout_ms)?)?;
-            }
+            Ok(v) => return Ok(Some(v)),
+            Err(true) => timeout.reset(timeout_ms)?,
             _ => {}
         }
     }
