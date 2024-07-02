@@ -161,3 +161,39 @@ android_rust_prebuilts = repository_rule(
         "build_file": attr.label(mandatory = True),
     },
 )
+
+# This should match upstream Android defaults at
+# https://cs.android.com/android/platform/superproject/main/+/main:build/soong/rust/config/lints.go.
+#
+# We can't add these to the global flags in //toolchain:common_lint_opts
+# because it breaks some third-party packages which don't use these lints.
+# The global options also come later on the commandline so can't be overriden
+# by a package.
+#
+# Instead we add these to `rustc_flags` for all our modules explicitly.
+ANDROID_RUST_LINTS = [
+    "-A",
+    "deprecated",
+    "-A",
+    "unknown_lints",
+    "-D",
+    "missing-docs",
+    "-D",
+    "warnings",
+    "-D",
+    "unsafe_op_in_unsafe_fn",
+    "-A",
+    "clippy::disallowed_names",
+    "-A",
+    "clippy::type-complexity",
+    "-A",
+    "clippy::unnecessary_fallible_conversions",
+    "-A",
+    "clippy::unnecessary-wraps",
+    "-A",
+    "clippy::unusual-byte-groupings",
+    "-A",
+    "clippy::upper-case-acronyms",
+    "-D",
+    "clippy::undocumented_unsafe_blocks",
+]
