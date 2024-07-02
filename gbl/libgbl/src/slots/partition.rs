@@ -130,7 +130,7 @@ impl<'a, MB: MetadataBytes> SlotBlock<'a, MB> {
     ///
     /// Does NOT write back to disk if no changes have been made and the cache is clean.
     /// Panics if the write attempt fails.
-    pub fn sync_to_disk<BlockDev: gbl_storage::AsBlockDevice>(&mut self, block_dev: &mut BlockDev) {
+    pub fn sync_to_disk(&mut self, block_dev: &mut dyn gbl_storage::AsBlockDevice) {
         if self.cache_status == CacheStatus::Clean {
             return;
         }

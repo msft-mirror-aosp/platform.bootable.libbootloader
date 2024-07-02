@@ -322,10 +322,21 @@ impl<'a> GptCache<'a> {
     /// Return the list of GPT entries.
     ///
     /// If the object does not contain a valid GPT, the method returns Error.
-    pub(crate) fn entries(&self) -> Result<&[GptEntry]> {
+    fn entries(&self) -> Result<&[GptEntry]> {
         self.check_valid()?;
         Ok(&Ref::<_, [GptEntry]>::new_slice(&self.primary_entries[..]).unwrap().into_slice()
             [..self.info.num_valid_entries()?.try_into()?])
+    }
+
+    /// Returns the total number of partitions.
+    pub fn num_partitions(&self) -> Result<usize> {
+        Ok(self.entries()?.len())
+    }
+
+    /// Gets the `idx`th partition.
+    pub fn get_partition(&self, idx: usize) -> Result<Partition> {
+        let entry = *self.entries()?.get(idx).ok_or(StorageError::OutOfRange)?;
+        Ok(Partition::new(entry, self.info.block_size))
     }
 
     /// Returns the `Partition` for a partition.

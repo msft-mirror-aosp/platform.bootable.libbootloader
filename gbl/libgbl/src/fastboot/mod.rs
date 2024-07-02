@@ -14,17 +14,16 @@
 
 //! Fastboot backend for libgbl.
 
-use core::cmp::min;
-use core::ffi::CStr;
-use core::str::Split;
+use core::{cmp::min, ffi::CStr, str::Split};
 use fastboot::{
     next_arg, next_arg_u64, CommandError, FastbootImplementation, FastbootUtils, UploadBuilder,
+    Uploader, VarSender,
 };
 use gbl_async::block_on;
 use gbl_storage::{AsBlockDevice, AsMultiBlockDevices, GPT_NAME_LEN_U16};
 
 mod vars;
-use vars::{BlockDevice, Partition, Variable};
+use vars::{fb_vars_get, fb_vars_get_all};
 
 mod sparse;
 use sparse::{is_sparse_image, write_sparse_image, SparseRawWriter};
@@ -116,16 +115,6 @@ pub struct GblFastboot<'a> {
 }
 
 impl<'a> GblFastboot<'a> {
-    /// Native GBL fastboot variables.
-    const NATIVE_VARS: &'static [&'static dyn Variable] = &[
-        &("version-bootloader", "1.0"), // Placeholder for now.
-        // GBL Fastboot can internally handle uploading in batches, thus there is no limit on
-        // max-fetch-size.
-        &("max-fetch-size", "0xffffffffffffffff"),
-        &BlockDevice {},
-        &Partition {},
-    ];
-
     /// Creates a new instance.
     pub fn new(storage: &'a mut dyn AsMultiBlockDevices, download_buffer: &'a mut [u8]) -> Self {
         Self { storage, download_buffer }
@@ -187,33 +176,34 @@ impl<'a> GblFastboot<'a> {
 }
 
 impl FastbootImplementation for GblFastboot<'_> {
-    fn get_var(
+    async fn get_var(
         &mut self,
         var: &str,
-        args: Split<char>,
+        args: Split<'_, char>,
         out: &mut [u8],
-        _utils: &mut dyn FastbootUtils,
+        _utils: &mut impl FastbootUtils,
     ) -> Result<usize, CommandError> {
-        Self::NATIVE_VARS
-            .iter()
-            .find_map(|v| v.get(self, var, args.clone(), out).transpose())
-            .ok_or::<CommandError>("No such variable".into())?
+        Ok(fb_vars_get(self, var, args, out).await?.ok_or("No such variable")?)
     }
 
-    fn get_var_all(
+    async fn get_var_all(
         &mut self,
-        f: &mut dyn FnMut(&str, &[&str], &str) -> Result<(), CommandError>,
-        _utils: &mut dyn FastbootUtils,
+        var_logger: &mut impl VarSender,
+        _utils: &mut impl FastbootUtils,
     ) -> Result<(), CommandError> {
-        Self::NATIVE_VARS.iter().find_map(|v| v.get_all(self, f).err()).map_or(Ok(()), |e| Err(e))
+        fb_vars_get_all(self, var_logger).await
     }
 
     /// Backend for getting download buffer
-    fn get_download_buffer(&mut self) -> &mut [u8] {
+    async fn get_download_buffer(&mut self) -> &mut [u8] {
         self.download_buffer
     }
 
-    fn flash(&mut self, part: &str, utils: &mut dyn FastbootUtils) -> Result<(), CommandError> {
+    async fn flash(
+        &mut self,
+        part: &str,
+        utils: &mut impl FastbootUtils,
+    ) -> Result<(), CommandError> {
         let part = self.parse_partition(part.split(':'))?;
         match is_sparse_image(self.download_buffer) {
             // Passes the entire download buffer so that more can be used as fill buffer.
@@ -227,21 +217,21 @@ impl FastbootImplementation for GblFastboot<'_> {
         }
     }
 
-    fn upload(
+    async fn upload(
         &mut self,
-        _upload_builder: UploadBuilder,
-        _utils: &mut dyn FastbootUtils,
+        _: impl UploadBuilder,
+        _: &mut impl FastbootUtils,
     ) -> Result<(), CommandError> {
         Err("Unimplemented".into())
     }
 
-    fn fetch(
+    async fn fetch(
         &mut self,
         part: &str,
         offset: u64,
         size: u64,
-        upload_builder: UploadBuilder,
-        utils: &mut dyn FastbootUtils,
+        upload_builder: impl UploadBuilder,
+        utils: &mut impl FastbootUtils,
     ) -> Result<(), CommandError> {
         let part = self.parse_partition(part.split(':'))?;
         let buffer = &mut self.download_buffer[..];
@@ -249,24 +239,24 @@ impl FastbootImplementation for GblFastboot<'_> {
             .map_err::<CommandError, _>(|_| "buffer size overflow".into())?;
         let end = add(offset, size)?;
         let mut curr = offset;
-        let mut uploader = upload_builder.start(size)?;
+        let mut uploader = upload_builder.start(size).await?;
         while curr < end {
             let to_send = min(end - curr, buffer_len);
             GblFbPartitionIo::new(part, self.storage)
                 .read(curr, &mut buffer[..to_usize(to_send)?])?;
-            uploader.upload(&mut buffer[..to_usize(to_send)?])?;
+            uploader.upload(&mut buffer[..to_usize(to_send)?]).await?;
             curr += to_send;
         }
         Ok(())
     }
 
-    fn oem<'a>(
+    async fn oem<'a>(
         &mut self,
         _cmd: &str,
-        utils: &mut dyn FastbootUtils,
+        utils: &mut impl FastbootUtils,
         _res: &'a mut [u8],
     ) -> Result<&'a [u8], CommandError> {
-        let _ = utils.send_info("GBL OEM not implemented yet")?;
+        let _ = utils.send_info("GBL OEM not implemented yet").await?;
         Err("Unimplemented".into())
     }
 }
@@ -289,7 +279,8 @@ fn sub(lhs: u64, rhs: u64) -> Result<u64, CommandError> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use fastboot::{test_utils::with_mock_upload_builder, TransportError};
+    use fastboot::{test_utils::TestUploadBuilder, TransportError};
+    use gbl_async::block_on;
     use gbl_storage_testlib::{TestBlockDeviceBuilder, TestMultiBlockDevices};
     use std::string::String;
     use Vec;
@@ -313,7 +304,7 @@ mod test {
         }
 
         /// Sends a Fastboot "INFO<`msg`>" packet.
-        fn send_info(&mut self, _: &str) -> Result<(), CommandError> {
+        async fn send_info(&mut self, _: &str) -> Result<(), CommandError> {
             Ok(())
         }
 
@@ -328,7 +319,8 @@ mod test {
         let mut utils: TestFastbootUtils = Default::default();
         let mut out = vec![0u8; fastboot::MAX_RESPONSE_SIZE];
         assert_eq!(
-            gbl_fb.get_var_as_str(var, args.split(':'), &mut out[..], &mut utils).unwrap(),
+            block_on(gbl_fb.get_var_as_str(var, args.split(':'), &mut out[..], &mut utils))
+                .unwrap(),
             expected
         );
     }
@@ -366,9 +358,23 @@ mod test {
 
         let mut utils: TestFastbootUtils = Default::default();
         let mut out = vec![0u8; fastboot::MAX_RESPONSE_SIZE];
-        assert!(gbl_fb
-            .get_var_as_str("partition", "non-existent".split(':'), &mut out[..], &mut utils)
-            .is_err());
+        assert!(block_on(gbl_fb.get_var_as_str(
+            "partition",
+            "non-existent".split(':'),
+            &mut out[..],
+            &mut utils
+        ))
+        .is_err());
+    }
+
+    /// `TestVarSender` implements `TestVarSender`. It stores outputs in a vector of string.
+    struct TestVarSender(Vec<String>);
+
+    impl VarSender for TestVarSender {
+        async fn send(&mut self, name: &str, args: &[&str], val: &str) -> Result<(), CommandError> {
+            self.0.push(format!("{}:{}: {}", name, args.join(":"), val));
+            Ok(())
+        }
     }
 
     #[test]
@@ -382,18 +388,10 @@ mod test {
         let mut gbl_fb = GblFastboot::new(&mut devs, download_buffer);
 
         let mut utils: TestFastbootUtils = Default::default();
-        let mut out: Vec<String> = Default::default();
-        gbl_fb
-            .get_var_all(
-                &mut |name, args, val| {
-                    out.push(format!("{}:{}: {}", name, args.join(":"), val));
-                    Ok(())
-                },
-                &mut utils,
-            )
-            .unwrap();
+        let mut logger = TestVarSender(vec![]);
+        block_on(gbl_fb.get_var_all(&mut logger, &mut utils)).unwrap();
         assert_eq!(
-            out,
+            logger.0,
             [
                 "version-bootloader:: 1.0",
                 "max-fetch-size:: 0xffffffffffffffff",
@@ -424,12 +422,9 @@ mod test {
         let download_buffer = vec![0u8; core::cmp::max(1, usize::try_from(size).unwrap() / 2usize)];
         let mut utils: TestFastbootUtils = Default::default();
         let mut upload_out = vec![0u8; usize::try_from(size).unwrap()];
-        let mut res = Ok(());
-        let (uploaded, _) = with_mock_upload_builder(&mut upload_out[..], |upload_builder| {
-            res = fb.fetch(part.as_str(), off, size, upload_builder, &mut utils)
-        });
-        assert!(res.is_err() || uploaded == usize::try_from(size).unwrap());
-        res.map(|_| upload_out)
+        let test_uploader = TestUploadBuilder(&mut upload_out[..]);
+        block_on(fb.fetch(part.as_str(), off, size, test_uploader, &mut utils))?;
+        Ok(upload_out)
     }
 
     #[test]
@@ -548,13 +543,13 @@ mod test {
         let download = expected.to_vec();
         let mut utils: TestFastbootUtils = Default::default();
         set_download(fb, &download[..], &mut utils);
-        fb.flash(part, &mut utils).unwrap();
+        block_on(fb.flash(part, &mut utils)).unwrap();
         assert_eq!(fetch(fb, part.into(), 0, dl_size.try_into().unwrap()).unwrap(), download);
 
         // Also flashes bit-wise reversed version in case the initial content is the same.
         let download = expected.iter().map(|v| !(*v)).collect::<Vec<_>>();
         set_download(fb, &download[..], &mut utils);
-        fb.flash(part, &mut utils).unwrap();
+        block_on(fb.flash(part, &mut utils)).unwrap();
         assert_eq!(fetch(fb, part.into(), 0, dl_size.try_into().unwrap()).unwrap(), download);
     }
 
@@ -597,7 +592,7 @@ mod test {
         let download = sparse.to_vec();
         let mut utils: TestFastbootUtils = Default::default();
         set_download(&mut gbl_fb, &download[..], &mut utils);
-        gbl_fb.flash(":0", &mut utils).unwrap();
+        block_on(gbl_fb.flash(":0", &mut utils)).unwrap();
         assert_eq!(fetch(&mut gbl_fb, ":0".into(), 0, raw.len().try_into().unwrap()).unwrap(), raw);
     }
 }

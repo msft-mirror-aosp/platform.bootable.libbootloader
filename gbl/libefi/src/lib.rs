@@ -74,6 +74,9 @@ pub mod protocol;
 use protocol::simple_text_output::SimpleTextOutputProtocol;
 use protocol::{Protocol, ProtocolInfo};
 
+/// The Android EFI protocol implementation of an A/B slot manager.
+pub mod ab_slots;
+
 mod error {
     use super::defs::EFI_STATUS_SUCCESS;
     use super::EfiStatus;
@@ -678,6 +681,13 @@ impl<'a: 'b, 'b> IntoIterator for &'b EfiMemoryMap<'a> {
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct DeviceHandle(EfiHandle);
 
+impl DeviceHandle {
+    /// Public constructor
+    pub fn new(handle: EfiHandle) -> Self {
+        Self(handle)
+    }
+}
+
 /// `LocatedHandles` holds the array of handles return by
 /// `BootServices::locate_handle_buffer_by_protocol()`.
 pub struct LocatedHandles<'a> {
@@ -1050,7 +1060,7 @@ mod test {
     }
 
     /// Get the pointer to an object as an EfiHandle type.
-    fn as_efi_handle<T>(val: &mut T) -> EfiHandle {
+    pub fn as_efi_handle<T>(val: &mut T) -> EfiHandle {
         val as *mut T as *mut _
     }
 

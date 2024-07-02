@@ -13,13 +13,18 @@
 // limitations under the License.
 
 //! Rust wrapper for `EFI_GBL_SLOT_PROTOCOL`.
+extern crate libgbl;
 
 use crate::defs::{
     EfiBootReason, EfiGblSlotInfo, EfiGblSlotMetadataBlock, EfiGblSlotProtocol, EfiGuid,
     EfiUnbootableReason, EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_NOT_FOUND,
+    EFI_UNBOOTABLE_REASON_NO_MORE_TRIES, EFI_UNBOOTABLE_REASON_SYSTEM_UPDATE,
+    EFI_UNBOOTABLE_REASON_USER_REQUESTED, EFI_UNBOOTABLE_REASON_VERIFICATION_FAILURE,
 };
 use crate::protocol::{Protocol, ProtocolInfo};
 use crate::{efi_call, error::EfiError, map_efi_err, EfiResult};
+
+use libgbl::slots::{Bootability, Slot, UnbootableReason};
 
 /// Wraps `EFI_GBL_SLOT_PROTOCOL`.
 pub struct GblSlotProtocol;
@@ -29,6 +34,31 @@ impl ProtocolInfo for GblSlotProtocol {
 
     const GUID: EfiGuid =
         EfiGuid::new(0xDEADBEEF, 0xCAFE, 0xD00D, [0xCA, 0xBB, 0xA6, 0xE5, 0xCA, 0xBB, 0xA6, 0xE5]);
+}
+
+fn from_efi_unbootable_reason(reason: EfiUnbootableReason) -> UnbootableReason {
+    match reason {
+        EFI_UNBOOTABLE_REASON_NO_MORE_TRIES => UnbootableReason::NoMoreTries,
+        EFI_UNBOOTABLE_REASON_SYSTEM_UPDATE => UnbootableReason::SystemUpdate,
+        EFI_UNBOOTABLE_REASON_USER_REQUESTED => UnbootableReason::UserRequested,
+        EFI_UNBOOTABLE_REASON_VERIFICATION_FAILURE => UnbootableReason::VerificationFailure,
+        _ => UnbootableReason::Unknown,
+    }
+}
+
+impl TryFrom<EfiGblSlotInfo> for libgbl::slots::Slot {
+    type Error = libgbl::slots::Error;
+    fn try_from(info: EfiGblSlotInfo) -> Result<Self, Self::Error> {
+        Ok(Slot {
+            suffix: info.suffix.try_into()?,
+            priority: info.priority.into(),
+            bootability: match (info.successful, info.tries) {
+                (s, _) if s != 0 => Bootability::Successful,
+                (0, t) if t > 0 => Bootability::Retriable(info.tries.into()),
+                _ => Bootability::Unbootable(from_efi_unbootable_reason(info.unbootable_reason)),
+            },
+        })
+    }
 }
 
 impl<'a> Protocol<'a, GblSlotProtocol> {
