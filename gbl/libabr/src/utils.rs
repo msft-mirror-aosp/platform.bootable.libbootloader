@@ -43,7 +43,8 @@ pub extern "C" fn AbrIsOneShotRecoveryBootSet(flags: u8) -> bool {
 #[no_mangle]
 #[allow(non_snake_case)]
 pub unsafe extern "C" fn AbrIsOneShotRecoveryBoot(abr_data: *const AbrData) -> bool {
-    AbrIsOneShotRecoveryBootSet(abr_data.as_ref().unwrap().one_shot_flags)
+    // SAFETY: function safety requires `abr_data` to be a valid pointer.
+    AbrIsOneShotRecoveryBootSet(unsafe { abr_data.as_ref() }.unwrap().one_shot_flags)
 }
 
 /// Checks if one-shot bootloader boot is set in the given one-shot flags
@@ -61,7 +62,8 @@ pub extern "C" fn AbrIsOneShotBootloaderBootSet(flags: u8) -> bool {
 #[no_mangle]
 #[allow(non_snake_case)]
 pub unsafe extern "C" fn AbrIsOneShotBootloaderBoot(abr_data: *const AbrData) -> bool {
-    AbrIsOneShotBootloaderBootSet(abr_data.as_ref().unwrap().one_shot_flags)
+    // SAFETY: function safety requires `abr_data` to be a valid pointer.
+    AbrIsOneShotBootloaderBootSet(unsafe { abr_data.as_ref() }.unwrap().one_shot_flags)
 }
 
 /// Sets the one-shot recovery flag in the given AbrData.
@@ -72,7 +74,8 @@ pub unsafe extern "C" fn AbrIsOneShotBootloaderBoot(abr_data: *const AbrData) ->
 #[no_mangle]
 #[allow(non_snake_case)]
 pub unsafe extern "C" fn AbrSetOneShotRecoveryBoot(abr_data: *mut AbrData, enable: bool) {
-    abr_data.as_mut().unwrap().set_one_shot_recovery(enable);
+    // SAFETY: function safety requires `abr_data` to be a valid pointer.
+    unsafe { abr_data.as_mut() }.unwrap().set_one_shot_recovery(enable);
 }
 
 /// Sets the one-shot bootloader flag in the given AbrData.
@@ -83,5 +86,6 @@ pub unsafe extern "C" fn AbrSetOneShotRecoveryBoot(abr_data: *mut AbrData, enabl
 #[no_mangle]
 #[allow(non_snake_case)]
 pub unsafe extern "C" fn AbrSetOneShotBootloaderBoot(abr_data: *mut AbrData, enable: bool) {
-    abr_data.as_mut().unwrap().set_one_shot_bootloader(enable);
+    // SAFETY: function safety requires `abr_data` to be a valid pointer.
+    unsafe { abr_data.as_mut() }.unwrap().set_one_shot_bootloader(enable);
 }
