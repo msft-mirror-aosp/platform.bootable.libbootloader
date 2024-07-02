@@ -377,7 +377,7 @@ impl Manager for SlotBlock<'_, BootloaderControl> {
 
     fn clear_oneshot_status(&mut self) {}
 
-    fn write_back<B: gbl_storage::AsBlockDevice>(&mut self, block_dev: &mut B) {
+    fn write_back(&mut self, block_dev: &mut dyn gbl_storage::AsBlockDevice) {
         self.sync_to_disk(block_dev)
     }
 }
