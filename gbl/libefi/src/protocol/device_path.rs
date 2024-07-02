@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Rust wrapper for `EFI_DEVICE_PATH_PROTOCOL`.
+
 use crate::defs::{
     EfiDevicePathProtocol, EfiDevicePathToTextProtocol, EfiGuid, EFI_STATUS_NOT_FOUND,
 };
@@ -61,8 +63,8 @@ impl<'a> Protocol<'a, DevicePathToTextProtocol> {
     }
 }
 
-// `DevicePathText` is a wrapper for the return type of
-// EFI_DEVICE_PATH_TO_TEXT_PROTOCOL.ConvertDevicePathToText().
+/// `DevicePathText` is a wrapper for the return type of
+/// EFI_DEVICE_PATH_TO_TEXT_PROTOCOL.ConvertDevicePathToText().
 pub struct DevicePathText<'a> {
     text: Option<&'a [u16]>,
     efi_entry: &'a EfiEntry,
