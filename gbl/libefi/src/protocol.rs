@@ -12,11 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! EFI protocol wrappers to provide Rust-safe APIs for usage.
+
 use core::ptr::null_mut;
 
 use crate::defs::*;
 use crate::{DeviceHandle, EfiEntry, EfiResult};
 
+pub mod ab_slot;
 pub mod android_boot;
 pub mod block_io;
 pub mod device_path;
@@ -94,11 +97,28 @@ impl<T: ProtocolInfo> Drop for Protocol<'_, T> {
 }
 
 impl EfiGuid {
+    /// Returns a new `[EfiGuid]` using the given data.
     pub const fn new(data1: u32, data2: u16, data3: u16, data4: [u8; 8usize]) -> Self {
         EfiGuid { data1, data2, data3, data4 }
     }
 }
 
+/// Macro to perform an EFI protocol function call.
+///
+/// The first argument is the function pointer, and the following arguments are passed through
+/// as protocol args.
+///
+/// With our [Protocol] struct, usage generally looks something like:
+///
+/// ```
+/// efi_call!(
+///   self.interface()?.protocol_function_name,
+///   self.interface,
+///   arg1,
+///   arg2,
+///   ...
+/// )
+/// ```
 #[macro_export]
 macro_rules! efi_call {
     ( $method:expr, $($x:expr),*$(,)? ) => {

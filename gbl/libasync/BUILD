@@ -20,16 +20,15 @@ package(
 )
 
 rust_library(
-    name = "libfastboot",
+    name = "libasync",
     srcs = ["src/lib.rs"],
-    crate_name = "fastboot",
+    crate_name = "gbl_async",
     edition = "2021",
     rustc_flags = ANDROID_RUST_LINTS,
-    deps = ["@gbl//libasync"],
 )
 
 rust_test(
-    name = "libfastboot_test",
-    crate = ":libfastboot",
+    name = "libasync_test",
+    crate = ":libasync",
     rustc_flags = ANDROID_RUST_LINTS,
 )
