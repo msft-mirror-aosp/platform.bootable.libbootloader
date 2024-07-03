@@ -283,7 +283,7 @@ impl Manager for SlotBlock<'_, AbrData> {
         }
     }
 
-    fn write_back<B: gbl_storage::AsBlockDevice>(&mut self, block_dev: &mut B) {
+    fn write_back(&mut self, block_dev: &mut dyn gbl_storage::AsBlockDevice) {
         self.sync_to_disk(block_dev);
     }
 }
@@ -645,7 +645,6 @@ mod test {
             include_bytes!("../../testdata/writeback_test_disk.bin").as_slice().into();
         assert!(block_dev.sync_gpt().is_ok());
         let mut read_buffer: [u8; size_of::<AbrData>()] = Default::default();
-        let mut abr_data;
 
         let mut sb: SlotBlock<AbrData> = Default::default();
         sb.partition = PARTITION;
@@ -653,16 +652,12 @@ mod test {
 
         // New block to trigger drop on the cursor.
         {
-            let mut cursor = Cursor { ctx: sb, block_dev: &mut block_dev };
+            let cursor = Cursor { ctx: &mut sb, block_dev: &mut block_dev };
             assert!(cursor.ctx.set_active_slot('b'.into()).is_ok());
-            abr_data = cursor.ctx.get_data().clone();
         }
 
-        // Need to manually recalculate crc because the cursor updates that
-        // right before writing to disk.
-        abr_data.prepare_for_sync();
         let res = block_dev.read_gpt_partition(PARTITION, OFFSET, &mut read_buffer);
         assert!(res.is_ok());
-        assert_eq!(read_buffer, abr_data.as_bytes());
+        assert_eq!(read_buffer, sb.get_data().as_bytes());
     }
 }
