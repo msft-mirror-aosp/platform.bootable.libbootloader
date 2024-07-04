@@ -38,6 +38,7 @@ cc_library(
         "defs/efi.h",
         "defs/protocols/ab_slot_protocol.h",
         "defs/protocols/android_boot_protocol.h",
+        "defs/protocols/block_io2_protocol.h",
         "defs/protocols/block_io_protocol.h",
         "defs/protocols/device_path_protocol.h",
         "defs/protocols/loaded_image_protocol.h",
@@ -108,6 +109,7 @@ rust_library(
     data = [":efi_defs_genrule"],
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
+        "@gbl//libasync",
         "@gbl//libgbl",
         "@gbl//libstorage",
         "@zerocopy",
