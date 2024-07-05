@@ -8,6 +8,11 @@ and can require other protocols for certain targets or to enable optional featur
 The BlockIo protocol is required for loading system images from disk.
 If a target supports Fastboot mode, it is also used for writing images to disk.
 
+#### BlockIo2Protocol
+
+The BlockIo2 protocol can be optionally provided which will enable non-blocking
+disk IO features.
+
 #### SimpleTextOutputProtocol
 
 The SimpleTextOutput protocol is used for logging
