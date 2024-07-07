@@ -33,20 +33,27 @@ use super::slots;
 
 /// `AndroidBootImages` contains references to loaded images for booting Android.
 pub struct AndroidBootImages<'a> {
+    /// Kernel image.
     pub kernel: &'a mut [u8],
+    /// Ramdisk to pass to the kernel.
     pub ramdisk: &'a mut [u8],
+    /// FDT To pass to the kernel.
     pub fdt: &'a mut [u8],
 }
 
 /// `FuchsiaBootImages` contains references to loaded images for booting Zircon.
 pub struct FuchsiaBootImages<'a> {
+    /// Kernel image.
     pub zbi_kernel: &'a mut [u8],
+    /// ZBI container with items to pass to the kernel.
     pub zbi_items: &'a mut [u8],
 }
 
-/// `BootImages` contains images for booting Android/Zircon kernel.
+/// Images required to boot the supported kernels.
 pub enum BootImages<'a> {
+    /// Android boot images.
     Android(AndroidBootImages<'a>),
+    /// Fuchsia boot images.
     Fuchsia(FuchsiaBootImages<'a>),
 }
 
@@ -76,19 +83,27 @@ pub trait GblOps {
     fn visit_block_devices(
         &mut self,
         f: &mut dyn FnMut(&mut dyn BlockIoSync, u64, u64),
-    ) -> Result<(), GblOpsError>;
+    ) -> Result<(), GblOpsError> {
+        Err(GblOpsError(Some("not defined yet")))
+    }
 
     /// Prints a ASCII character to the platform console.
-    fn console_put_char(&mut self, ch: u8) -> Result<(), GblOpsError>;
+    fn console_put_char(&mut self, ch: u8) -> Result<(), GblOpsError> {
+        Err(GblOpsError(Some("not defined yet")))
+    }
 
     /// This method can be used to implement platform specific mechanism for deciding whether boot
     /// should abort and enter Fastboot mode.
-    fn should_stop_in_fastboot(&mut self) -> Result<bool, GblOpsError>;
+    fn should_stop_in_fastboot(&mut self) -> Result<bool, GblOpsError> {
+        Err(GblOpsError(Some("not defined yet")))
+    }
 
     /// Platform specific kernel boot implementation.
     ///
     /// Implementation is not expected to return on success.
-    fn boot(&mut self, boot_images: BootImages) -> Result<(), GblOpsError>;
+    fn boot(&mut self, boot_images: BootImages) -> Result<(), GblOpsError> {
+        Err(GblOpsError(Some("not defined yet")))
+    }
 
     // TODO(b/334962570): figure out how to plumb ops-provided hash implementations into
     // libavb. The tricky part is that libavb hashing APIs are global with no way to directly
@@ -102,7 +117,7 @@ pub trait GblOps {
     // Nevertype could be used here when it is stable https://github.com/serde-rs/serde/issues/812
     fn do_fastboot<B: gbl_storage::AsBlockDevice>(
         &self,
-        cursor: &mut slots::Cursor<B, impl slots::Manager>,
+        cursor: &mut slots::Cursor<B>,
     ) -> GblResult<()> {
         Err(Error::NotImplemented.into())
     }
@@ -115,11 +130,11 @@ pub trait GblOps {
     }
 
     /// Load and initialize a slot manager and return a cursor over the manager on success.
-    fn load_slot_interface<'b, B: gbl_storage::AsBlockDevice, M: slots::Manager>(
-        &mut self,
-        block_device: &'b mut B,
+    fn load_slot_interface<'a, B: gbl_storage::AsBlockDevice>(
+        &'a mut self,
+        block_device: &'a mut B,
         boot_token: slots::BootToken,
-    ) -> GblResult<slots::Cursor<'b, B, M>> {
+    ) -> GblResult<slots::Cursor<'a, B>> {
         Err(Error::OperationProhibited.into())
     }
 
