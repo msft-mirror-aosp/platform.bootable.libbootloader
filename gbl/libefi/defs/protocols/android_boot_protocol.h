@@ -18,10 +18,10 @@
 // This is a custom protocol introduced by GBL.
 // See gbl/docs/EFI_ANDROID_BOOT_PROTOCOL.md for details.
 
-#include "types.h"
-
 #ifndef __ANDROID_BOOT_PROTOCOL_H__
 #define __ANDROID_BOOT_PROTOCOL_H__
+
+#include "types.h"
 
 typedef struct EfiAndroidBootProtocol {
   uint64_t revision;

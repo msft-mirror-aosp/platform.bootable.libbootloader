@@ -22,6 +22,7 @@ use crate::{DeviceHandle, EfiEntry, EfiResult};
 pub mod ab_slot;
 pub mod android_boot;
 pub mod block_io;
+pub mod block_io2;
 pub mod device_path;
 pub mod loaded_image;
 pub mod riscv;
