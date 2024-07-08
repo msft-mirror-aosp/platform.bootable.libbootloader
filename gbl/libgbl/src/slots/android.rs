@@ -377,7 +377,7 @@ impl Manager for SlotBlock<'_, BootloaderControl> {
 
     fn clear_oneshot_status(&mut self) {}
 
-    fn write_back<B: gbl_storage::AsBlockDevice>(&mut self, block_dev: &mut B) {
+    fn write_back(&mut self, block_dev: &mut dyn gbl_storage::AsBlockDevice) {
         self.sync_to_disk(block_dev)
     }
 }
@@ -573,8 +573,8 @@ mod test {
     #[test]
     fn test_mark_slot_tried_slotted_recovery() {
         let mut sb: SlotBlock<BootloaderControl> = Default::default();
-        sb.set_slot_unbootable('a'.into(), UnbootableReason::UserRequested);
-        sb.set_slot_unbootable('b'.into(), UnbootableReason::UserRequested);
+        assert!(sb.set_slot_unbootable('a'.into(), UnbootableReason::UserRequested).is_ok());
+        assert!(sb.set_slot_unbootable('b'.into(), UnbootableReason::UserRequested).is_ok());
         assert_eq!(sb.mark_boot_attempt(), Ok(BootToken(())));
     }
 
