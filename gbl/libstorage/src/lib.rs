@@ -109,11 +109,7 @@ use gpt::check_gpt_rw_params;
 pub use gpt::{
     GptCache, GptEntry, GptHeader, Partition, PartitionIterator, GPT_MAGIC, GPT_NAME_LEN_U16,
 };
-
 use safemath::SafeNum;
-
-mod multi_blocks;
-pub use multi_blocks::AsMultiBlockDevices;
 
 mod algorithm;
 pub use algorithm::{read_async, write_async, AsyncAsSync, SyncAsAsync};
@@ -177,6 +173,7 @@ impl core::fmt::Display for StorageError {
 }
 
 /// `BlockInfo` contains information for a block device.
+#[derive(Clone, Copy, Debug)]
 pub struct BlockInfo {
     /// Native block size of the block device.
     pub block_size: u64,
@@ -245,6 +242,28 @@ pub trait BlockIoAsync {
     ) -> core::result::Result<(), BlockIoError>;
 }
 
+impl<T: BlockIoAsync> BlockIoAsync for &mut T {
+    fn info(&mut self) -> BlockInfo {
+        (*self).info()
+    }
+
+    async fn read_blocks(
+        &mut self,
+        blk_offset: u64,
+        out: &mut [u8],
+    ) -> core::result::Result<(), BlockIoError> {
+        (*self).read_blocks(blk_offset, out).await
+    }
+
+    async fn write_blocks(
+        &mut self,
+        blk_offset: u64,
+        data: &mut [u8],
+    ) -> core::result::Result<(), BlockIoError> {
+        (*self).write_blocks(blk_offset, data).await
+    }
+}
+
 /// `BlockIoSync` provide interfaces for synchronous read and write.
 pub trait BlockIoSync {
     /// Gets the `BlockInfo` for this block device
@@ -306,6 +325,28 @@ impl BlockIoSync for &mut dyn BlockIoSync {
         data: &mut [u8],
     ) -> core::result::Result<(), BlockIoError> {
         (*self).write_blocks(blk_offset, data)
+    }
+}
+
+impl<T: BlockIoAsync> BlockIoSync for T {
+    fn info(&mut self) -> BlockInfo {
+        (*self).info()
+    }
+
+    fn read_blocks(
+        &mut self,
+        blk_offset: u64,
+        out: &mut [u8],
+    ) -> core::result::Result<(), BlockIoError> {
+        block_on((*self).read_blocks(blk_offset, out))
+    }
+
+    fn write_blocks(
+        &mut self,
+        blk_offset: u64,
+        data: &mut [u8],
+    ) -> core::result::Result<(), BlockIoError> {
+        block_on((*self).write_blocks(blk_offset, data))
     }
 }
 
@@ -518,6 +559,18 @@ pub fn required_scratch_size(info: BlockInfo, max_gpt_entries: u64) -> Result<us
     (alignment_size + gpt_buffer_size).try_into().map_err(|e: safemath::Error| e.into())
 }
 
+/// Partitions a raw buffer into scratch buffer and GPT cache buffer.
+fn partition_scratch(
+    info: BlockInfo,
+    max_gpt_entries: u64,
+    buffer: &mut [u8],
+) -> Result<(&mut [u8], &mut [u8])> {
+    if buffer.len() < required_scratch_size(info, max_gpt_entries)? {
+        return Err(StorageError::ScratchTooSmall);
+    }
+    Ok(buffer.split_at_mut(alignment_scratch_size(info)?))
+}
+
 /// A helper that wraps `AsBlockDevice::with` and additionally partitions the scratch buffer into
 /// alignment scratch and GPT buffers.
 fn with_partitioned_scratch<F, R>(dev: &mut (impl AsBlockDevice + ?Sized), mut f: F) -> Result<R>
@@ -527,10 +580,7 @@ where
     let mut res: Result<R> = Err(StorageError::BlockIoNotProvided);
     dev.with(&mut |io, scratch, max_entries| {
         res = (|| {
-            if scratch.len() < required_scratch_size(io.info(), max_entries)? {
-                return Err(StorageError::ScratchTooSmall);
-            }
-            let (alignment, gpt) = scratch.split_at_mut(alignment_scratch_size(io.info())?);
+            let (alignment, gpt) = partition_scratch(io.info(), max_entries, scratch)?;
             Ok(f(io, alignment, gpt, max_entries))
         })();
     });
@@ -602,6 +652,11 @@ impl<'a, T: BlockIoAsync> AsyncBlockDevice<'a, T> {
             true => Err(StorageError::ScratchTooSmall),
             _ => Ok(Self { io, scratch }),
         }
+    }
+
+    /// Creates a new `AsyncBlockDevice` instance that borrows the internal data of this instance.
+    pub fn as_mut_instance(&mut self) -> AsyncBlockDevice<'_, &'_ mut T> {
+        AsyncBlockDevice::<&mut T>::new(&mut self.io, &mut self.scratch[..]).unwrap()
     }
 
     /// Computes the required scratch size.
@@ -699,11 +754,174 @@ impl<'a, T: BlockIoAsync> AsyncBlockDevice<'a, T> {
     }
 }
 
+/// `AsyncGptDevice` wraps a `AsyncBlockDevice` and `GptCache` and provides simpler APIs for
+/// reading/writing GPT partitions.
+pub struct AsyncGptDevice<'a, T: BlockIoAsync> {
+    blk: AsyncBlockDevice<'a, T>,
+    gpt_cache: GptCache<'a>,
+}
+
+impl<'a, T: BlockIoAsync> AsyncGptDevice<'a, T> {
+    /// Creates a new instance.
+    pub fn new(blk: AsyncBlockDevice<'a, T>, gpt_cache: GptCache<'a>) -> Self {
+        Self { blk, gpt_cache }
+    }
+
+    /// Creates a new instance from a raw `BlockIoAsync` and a raw buffer. The API will attempt to
+    /// partition the `buffer` into scratch buffer and GPT cache buffer.
+    pub fn new_from_monotonic_buffer(
+        mut io: T,
+        buffer: &'a mut [u8],
+        max_gpt_entries: u64,
+    ) -> Result<Self> {
+        let (scratch, gpt) = partition_scratch(io.info(), max_gpt_entries, buffer)?;
+        Ok(Self::new(
+            AsyncBlockDevice::new(io, scratch)?,
+            GptCache::from_uninit(max_gpt_entries, gpt)?,
+        ))
+    }
+
+    /// Returns the `AsyncBlockDevice`.
+    pub fn blk(&mut self) -> &mut AsyncBlockDevice<'a, T> {
+        &mut self.blk
+    }
+
+    /// Returns the `GptCache`.
+    pub fn gpt_cache(&self) -> &GptCache<'a> {
+        &self.gpt_cache
+    }
+
+    /// Creates a new `AsyncGptDevice` instance that borrows the internal data of this instance.
+    pub fn as_mut_instance(&mut self) -> AsyncGptDevice<'_, &'_ mut T> {
+        AsyncGptDevice::new(self.blk.as_mut_instance(), self.gpt_cache.as_mut_instance())
+    }
+
+    /// Unpacks into an `AsyncBlockDevice` and `GptCache`
+    pub fn into_blk_and_gpt(self) -> (AsyncBlockDevice<'a, T>, GptCache<'a>) {
+        (self.blk, self.gpt_cache)
+    }
+
+    /// Loads and syncs GPT from a block device.
+    ///
+    /// The API validates and restores primary/secondary GPT header.
+    ///
+    /// # Returns
+    ///
+    /// Returns success if GPT is loaded/restored successfully.
+    pub async fn sync_gpt(&mut self) -> Result<()> {
+        self.blk.sync_gpt(&mut self.gpt_cache).await
+    }
+
+    /// Reads a GPT partition on a block device
+    ///
+    /// # Args
+    ///
+    /// * `part_name`: Name of the partition.
+    /// * `offset`: Offset in number of bytes into the partition.
+    /// * `out`: Buffer to store the read data.
+    ///
+    /// # Returns
+    ///
+    /// Returns success when exactly `out.len()` of bytes are read successfully.
+    pub async fn read_gpt_partition(
+        &mut self,
+        part_name: &str,
+        offset: u64,
+        out: &mut [u8],
+    ) -> Result<()> {
+        self.blk.read_gpt_partition(&mut self.gpt_cache, part_name, offset, out).await
+    }
+
+    /// Writes a GPT partition on a block device.
+    ///
+    ///
+    /// # Args
+    ///
+    /// * `part_name`: Name of the partition.
+    /// * `offset`: Offset in number of bytes into the partition.
+    /// * `data`: Data to write. See `data` passed to `BlockIoSync::write()` for details.
+    ///
+    /// # Returns
+    ///
+    /// Returns success when exactly `data.len()` of bytes are written successfully.
+    pub async fn write_gpt_partition(
+        &mut self,
+        part_name: &str,
+        offset: u64,
+        data: &mut [u8],
+    ) -> Result<()> {
+        self.blk.write_gpt_partition(&mut self.gpt_cache, part_name, offset, data).await
+    }
+}
+
+/// `AsAsyncGptDeviceIter` defines an iterface for getting an iterator of `AsyncGptDevice`.
+pub trait AsAsyncGptDeviceIter {
+    /// The type that implements the `BlockIoAsync` trait for `AsyncGptDevice`.
+    type BlockIo<'a>: BlockIoAsync
+    where
+        Self: 'a;
+
+    /// Gets an iterator for `AsyncGptDevice`.
+    fn iter(&mut self) -> impl IntoIterator<Item = AsyncGptDevice<'_, Self::BlockIo<'_>>>;
+}
+
+// Built-in implementation for an array of `AsyncGptDevice`.
+impl<B: BlockIoAsync> AsAsyncGptDeviceIter for [AsyncGptDevice<'_, B>] {
+    type BlockIo<'a> = &'a mut B where Self: 'a;
+
+    fn iter(&mut self) -> impl IntoIterator<Item = AsyncGptDevice<'_, Self::BlockIo<'_>>> {
+        self.iter_mut().map(move |v| v.as_mut_instance())
+    }
+}
+
+/// Checks that a partition exists and is unique.
+///
+/// On Success, returns the offset of the block device in the list, the `Partition` and the
+/// corresponding `AsyncGptDevice<'a, B>`.
+pub fn check_part_unique<'a, B: BlockIoAsync>(
+    devs: &'a mut (impl AsAsyncGptDeviceIter<BlockIo<'a> = B> + ?Sized),
+    part: &str,
+) -> Result<(usize, Partition, AsyncGptDevice<'a, B>)> {
+    let mut idx = 0usize;
+    let mut res = Err(StorageError::NotExist);
+    for dev in devs.iter() {
+        res = match dev.gpt_cache().find_partition(part).map(|v| (idx, v, dev)) {
+            Ok(_) if res.is_ok() => return Err(StorageError::PartitionNotUnique),
+            v => v.or(res),
+        };
+        idx += 1;
+    }
+    res
+}
+
+/// Checks that a partition is unique among a list of GPT devices and reads from it
+pub async fn read_unique_gpt_partition<'a, B: BlockIoAsync>(
+    devs: &'a mut (impl AsAsyncGptDeviceIter<BlockIo<'a> = B> + ?Sized),
+    part: &str,
+    off: u64,
+    out: &mut [u8],
+) -> Result<()> {
+    check_part_unique(devs, part)?.2.read_gpt_partition(part, off, out).await
+}
+
+/// Checks that a partition is unique among a list of GPT devices and writes to it.
+pub async fn write_unique_gpt_partition<'a, B: BlockIoAsync>(
+    devs: &'a mut (impl AsAsyncGptDeviceIter<BlockIo<'a> = B> + ?Sized),
+    part: &str,
+    off: u64,
+    data: &mut [u8],
+) -> Result<()> {
+    check_part_unique(devs, part)?.2.write_gpt_partition(part, off, data).await
+}
+
 #[cfg(test)]
 mod test {
     use core::mem::size_of;
+    use gbl_async::block_on;
     use gbl_storage_testlib::{
-        required_scratch_size, AsBlockDevice, TestBlockDevice, TestBlockDeviceBuilder,
+        read_unique_gpt_partition, required_scratch_size, write_unique_gpt_partition,
+        AsBlockDevice, AsyncGptDevice, TestBlockDevice, TestBlockDeviceBuilder, TestBlockIo,
+        TestMultiBlockDevices,
     };
     use safemath::SafeNum;
 
@@ -1170,5 +1388,102 @@ mod test {
         // If this ever fails we need to adjust all code for >64 bit pointers and size.
         assert!(size_of::<u64>() >= size_of::<*const u8>());
         assert!(size_of::<u64>() >= size_of::<usize>());
+    }
+
+    /// A test helper for `read_unique_gpt_partition`
+    /// It verifies that data read partition `part` at offset `off` is the same as
+    /// `expected`.
+    fn check_read_partition(
+        devs: &mut [AsyncGptDevice<&mut TestBlockIo>],
+        part: &str,
+        off: usize,
+        expected: &[u8],
+    ) {
+        let mut out = vec![0u8; expected.len()];
+        block_on(read_unique_gpt_partition(devs, part, off.try_into().unwrap(), &mut out)).unwrap();
+        assert_eq!(out, expected.to_vec());
+    }
+
+    #[test]
+    fn test_multi_block_gpt_read() {
+        let off = 512usize; // Randomly selected offset.
+
+        let mut devs = TestMultiBlockDevices(vec![
+            include_bytes!("../test/gpt_test_1.bin").as_slice().into(),
+            include_bytes!("../test/gpt_test_2.bin").as_slice().into(),
+        ]);
+        let mut devs = devs.as_gpt_devs();
+        devs.iter_mut().for_each(|v| block_on(v.sync_gpt()).unwrap());
+
+        let expect_boot_a = include_bytes!("../test/boot_a.bin");
+        let expect_boot_b = include_bytes!("../test/boot_b.bin");
+
+        check_read_partition(&mut devs, "boot_a", off, &expect_boot_a[off..]);
+        check_read_partition(&mut devs, "boot_b", off, &expect_boot_b[off..]);
+
+        let expect_vendor_boot_a = include_bytes!("../test/vendor_boot_a.bin");
+        let expect_vendor_boot_b = include_bytes!("../test/vendor_boot_b.bin");
+
+        check_read_partition(&mut devs, "vendor_boot_a", off, &expect_vendor_boot_a[off..]);
+        check_read_partition(&mut devs, "vendor_boot_b", off, &expect_vendor_boot_b[off..]);
+    }
+
+    /// A test helper for `write_unique_gpt_partition`
+    /// It verifies that `data` is correctly written to partition `part` at offset `off`.
+    fn check_write_partition(
+        devs: &mut [AsyncGptDevice<&mut TestBlockIo>],
+        part: &str,
+        off: usize,
+        to_write: &mut [u8],
+    ) {
+        block_on(write_unique_gpt_partition(devs, part, off.try_into().unwrap(), to_write))
+            .unwrap();
+        check_read_partition(devs, part, off, &to_write);
+
+        to_write.reverse();
+        block_on(write_unique_gpt_partition(devs, part, off.try_into().unwrap(), to_write))
+            .unwrap();
+        check_read_partition(devs, part, off, &to_write);
+    }
+
+    #[test]
+    fn test_multi_block_gpt_write() {
+        let off = 512usize; // Randomly selected offset.
+
+        let mut devs = TestMultiBlockDevices(vec![
+            include_bytes!("../test/gpt_test_1.bin").as_slice().into(),
+            include_bytes!("../test/gpt_test_2.bin").as_slice().into(),
+        ]);
+        let mut devs = devs.as_gpt_devs();
+        devs.iter_mut().for_each(|v| block_on(v.sync_gpt()).unwrap());
+
+        let expect_boot_a = &mut include_bytes!("../test/boot_a.bin").to_vec();
+        let expect_boot_b = &mut include_bytes!("../test/boot_b.bin").to_vec();
+
+        expect_boot_a.reverse();
+        expect_boot_b.reverse();
+        check_write_partition(&mut devs, "boot_a", off, &mut expect_boot_a[off..]);
+        check_write_partition(&mut devs, "boot_b", off, &mut expect_boot_b[off..]);
+
+        let expect_vendor_boot_a = &mut include_bytes!("../test/vendor_boot_a.bin").to_vec();
+        let expect_vendor_boot_b = &mut include_bytes!("../test/vendor_boot_b.bin").to_vec();
+
+        expect_boot_a.reverse();
+        expect_boot_b.reverse();
+        check_write_partition(&mut devs, "vendor_boot_a", off, &mut expect_vendor_boot_a[off..]);
+        check_write_partition(&mut devs, "vendor_boot_b", off, &mut expect_vendor_boot_b[off..]);
+    }
+
+    #[test]
+    fn test_none_block_id_fail_with_non_unique_partition() {
+        let mut devs = TestMultiBlockDevices(vec![
+            include_bytes!("../test/gpt_test_1.bin").as_slice().into(),
+            include_bytes!("../test/gpt_test_1.bin").as_slice().into(),
+        ]);
+        let mut devs = devs.as_gpt_devs();
+        let devs = devs.as_mut_slice();
+        devs.iter_mut().for_each(|v| block_on(v.sync_gpt()).unwrap());
+        assert!(block_on(read_unique_gpt_partition(devs, "boot_a", 0, &mut [],)).is_err());
+        assert!(block_on(write_unique_gpt_partition(devs, "boot_a", 0, &mut [],)).is_err())
     }
 }
