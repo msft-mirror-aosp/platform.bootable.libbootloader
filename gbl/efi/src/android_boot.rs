@@ -20,13 +20,12 @@ use bootconfig::{BootConfigBuilder, BootConfigError};
 use bootimg::{BootImage, VendorImageHeader};
 use efi::{efi_print, efi_println, exit_boot_services, EfiEntry};
 use fdt::Fdt;
-use gbl_storage::AsMultiBlockDevices;
 use misc::{AndroidBootMode, BootloaderMessage};
 
-use crate::error::{EfiAppError, GblEfiError, Result};
-use crate::utils::{
-    aligned_subslice, cstr_bytes_to_str, find_gpt_devices, get_efi_fdt, usize_add, usize_roundup,
-    EfiMultiBlockDevices,
+use crate::{
+    efi_blocks::{find_block_devices, EfiMultiBlockDevices},
+    error::{EfiAppError, GblEfiError, Result},
+    utils::{aligned_subslice, cstr_bytes_to_str, get_efi_fdt, usize_add, usize_roundup},
 };
 
 use crate::avb::GblEfiAvbOps;
@@ -97,19 +96,19 @@ pub fn load_android_simple<'a>(
     efi_entry: &EfiEntry,
     load: &'a mut [u8],
 ) -> Result<(&'a mut [u8], &'a mut [u8], &'a mut [u8], &'a mut [u8])> {
-    let mut gpt_devices = find_gpt_devices(efi_entry)?;
+    let mut gpt_devices = find_block_devices(efi_entry)?;
 
     const PAGE_SIZE: usize = 4096; // V3/V4 image has fixed page size 4096;
 
     let (bcb_buffer, load) = load.split_at_mut(BootloaderMessage::SIZE_BYTES);
-    gpt_devices.read_gpt_partition("misc", 0, bcb_buffer)?;
+    gpt_devices.read_gpt_partition_sync("misc", 0, bcb_buffer)?;
     let bcb = BootloaderMessage::from_bytes_ref(bcb_buffer)?;
     let boot_mode = bcb.boot_mode()?;
     efi_println!(efi_entry, "boot mode from BCB: {}", boot_mode);
 
     // Parse boot header.
     let (boot_header_buffer, load) = load.split_at_mut(PAGE_SIZE);
-    gpt_devices.read_gpt_partition("boot_a", 0, boot_header_buffer)?;
+    gpt_devices.read_gpt_partition_sync("boot_a", 0, boot_header_buffer)?;
     let boot_header = BootImage::parse(boot_header_buffer)?;
     let (kernel_size, cmdline, kernel_hdr_size) = match boot_header {
         BootImage::V3(ref hdr) => (hdr.kernel_size as usize, &hdr.cmdline[..], PAGE_SIZE),
@@ -126,7 +125,7 @@ pub fn load_android_simple<'a>(
 
     // Parse vendor boot header.
     let (vendor_boot_header_buffer, load) = load.split_at_mut(PAGE_SIZE);
-    gpt_devices.read_gpt_partition("vendor_boot_a", 0, vendor_boot_header_buffer)?;
+    gpt_devices.read_gpt_partition_sync("vendor_boot_a", 0, vendor_boot_header_buffer)?;
     let vendor_boot_header = VendorImageHeader::parse(vendor_boot_header_buffer)?;
     let (vendor_ramdisk_size, vendor_hdr_size, vendor_cmdline) = match vendor_boot_header {
         VendorImageHeader::V3(ref hdr) => (
@@ -145,7 +144,7 @@ pub fn load_android_simple<'a>(
 
     // Parse init_boot header
     let init_boot_header_buffer = &mut load[..PAGE_SIZE];
-    gpt_devices.read_gpt_partition("init_boot_a", 0, init_boot_header_buffer)?;
+    gpt_devices.read_gpt_partition_sync("init_boot_a", 0, init_boot_header_buffer)?;
     let init_boot_header = BootImage::parse(init_boot_header_buffer)?;
     let (generic_ramdisk_size, init_boot_hdr_size) = match init_boot_header {
         BootImage::V3(ref hdr) => (hdr.ramdisk_size as usize, PAGE_SIZE),
@@ -172,7 +171,7 @@ pub fn load_android_simple<'a>(
             .ok_or_else(|| EfiAppError::BufferTooSmall)?
     };
     let (load, kernel_tail_buffer) = load.split_at_mut(kernel_load_offset);
-    gpt_devices.read_gpt_partition(
+    gpt_devices.read_gpt_partition_sync(
         "boot_a",
         kernel_hdr_size.try_into().unwrap(),
         &mut kernel_tail_buffer[..kernel_size],
@@ -180,7 +179,7 @@ pub fn load_android_simple<'a>(
 
     // Load vendor ramdisk
     let mut ramdisk_load_curr = 0;
-    gpt_devices.read_gpt_partition(
+    gpt_devices.read_gpt_partition_sync(
         "vendor_boot_a",
         vendor_hdr_size.try_into().unwrap(),
         &mut load[ramdisk_load_curr..][..vendor_ramdisk_size],
@@ -188,7 +187,7 @@ pub fn load_android_simple<'a>(
     ramdisk_load_curr = usize_add(ramdisk_load_curr, vendor_ramdisk_size)?;
 
     // Load generic ramdisk
-    gpt_devices.read_gpt_partition(
+    gpt_devices.read_gpt_partition_sync(
         "init_boot_a",
         init_boot_hdr_size.try_into().unwrap(),
         &mut load[ramdisk_load_curr..][..generic_ramdisk_size],
@@ -233,7 +232,7 @@ pub fn load_android_simple<'a>(
         }
         bootconfig_builder.add_with(|out| {
             gpt_devices
-                .read_gpt_partition(
+                .read_gpt_partition_sync(
                     "vendor_boot_a",
                     bootconfig_offset.try_into().unwrap(),
                     &mut out[..hdr.bootconfig_size as usize],
@@ -243,8 +242,8 @@ pub fn load_android_simple<'a>(
         })?;
     }
     // Check if there is a device specific bootconfig partition.
-    match gpt_devices.find_partition("bootconfig").and_then(|v| v.size()) {
-        Ok(sz) => {
+    match gpt_devices.find_partition("bootconfig").map(|v| v.size()) {
+        Ok(Ok(sz)) => {
             bootconfig_builder.add_with(|out| {
                 // For proof-of-concept only, we just load as much as possible and figure out the
                 // actual bootconfig string length after. This however, can introduce large amount
@@ -252,7 +251,7 @@ pub fn load_android_simple<'a>(
                 // page by page or find way to know the actual length first.
                 let max_size = core::cmp::min(sz.try_into().unwrap(), out.len());
                 gpt_devices
-                    .read_gpt_partition("bootconfig", 0, &mut out[..max_size])
+                    .read_gpt_partition_sync("bootconfig", 0, &mut out[..max_size])
                     .map_err(|_| BootConfigError::GenericReaderError(-1))?;
                 // Compute the actual config string size. The config is a null-terminated string.
                 Ok(CStr::from_bytes_until_nul(&out[..])
