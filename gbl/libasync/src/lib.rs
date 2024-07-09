@@ -112,9 +112,26 @@ impl YieldCounter {
     }
 }
 
+/// Repetitively polls two futures until both of them finish.
+pub async fn join<L, LO, R, RO>(fut_lhs: L, fut_rhs: R) -> (LO, RO)
+where
+    L: Future<Output = LO>,
+    R: Future<Output = RO>,
+{
+    let mut fut_lhs = pin!(fut_lhs);
+    let mut fut_rhs = pin!(fut_rhs);
+    loop {
+        match (poll(&mut fut_lhs), poll(&mut fut_rhs)) {
+            (Some(l), Some(r)) => return (l, r),
+            _ => yield_now().await,
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::sync::Mutex;
 
     #[test]
     fn test() {
@@ -127,5 +144,36 @@ mod test {
         assert!(poll(&mut fut).is_none());
         assert!(poll(&mut fut).is_none());
         assert!(poll(&mut fut).is_some());
+    }
+
+    #[test]
+    fn test_join() {
+        let val1 = Mutex::new(0);
+        let val2 = Mutex::new(1);
+
+        let mut join_fut = pin!(join(
+            async {
+                *val1.try_lock().unwrap() += 1;
+                yield_now().await;
+                *val1.try_lock().unwrap() += 1;
+                yield_now().await;
+            },
+            async {
+                *val2.try_lock().unwrap() += 1;
+                yield_now().await;
+                *val2.try_lock().unwrap() += 1;
+                yield_now().await;
+            }
+        ));
+
+        assert!(poll(&mut join_fut).is_none());
+        assert_eq!(*val1.try_lock().unwrap(), 1);
+        assert_eq!(*val2.try_lock().unwrap(), 2);
+
+        assert!(poll(&mut join_fut).is_none());
+        assert_eq!(*val1.try_lock().unwrap(), 2);
+        assert_eq!(*val2.try_lock().unwrap(), 3);
+
+        assert!(poll(&mut join_fut).is_some());
     }
 }
