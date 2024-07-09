@@ -89,6 +89,14 @@ impl TryFrom<usize> for Suffix {
     }
 }
 
+impl TryFrom<u32> for Suffix {
+    type Error = Error;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        char::from_u32(value).ok_or(Error::Other).map(Self)
+    }
+}
+
 // Includes a null terminator
 const SUFFIX_CSTR_MAX_BYTES: usize = size_of::<Suffix>() + 1;
 
@@ -273,6 +281,8 @@ pub enum Error {
     NoSuchSlot(Suffix),
     /// The backend policy has denied permission for the given operation.
     OperationProhibited,
+    /// Similar to NoSuchSlot but used when index is used for lookup internally.
+    BadSlotIndex(usize),
     /// Unspecified error.
     Other,
 }
@@ -329,11 +339,15 @@ pub trait Manager: private::SlotGet {
 
     /// Returns the current active slot,
     /// or Recovery if the system will try to boot to recovery.
+    ///
+    /// TODO(b/350572566): change to return Result after conducting integration tests
     fn get_boot_target(&self) -> BootTarget;
 
     /// Returns the slot last set active.
     /// Note that this is different from get_boot_target in that
     /// the slot last set active cannot be Recovery.
+    ///
+    /// TODO(b/350572566): change to return Result after conducting integration tests
     fn get_slot_last_set_active(&self) -> Slot {
         // We can safely assume that we have at least one slot.
         self.slots_iter().max_by_key(|slot| (slot.priority, slot.suffix.rank())).unwrap()
@@ -370,6 +384,8 @@ pub trait Manager: private::SlotGet {
     ) -> Result<(), Error>;
 
     /// Default for initial tries
+    ///
+    /// TODO(b/350572566): change to return Result after conducting integration tests
     fn get_max_retries(&self) -> Tries {
         7u8.into()
     }
@@ -406,19 +422,19 @@ pub trait Manager: private::SlotGet {
     /// This is useful for partition based slot setups,
     /// where we do not write back every interaction in order to coalesce writes
     /// and preserve disk lifetime.
-    fn write_back<B: gbl_storage::AsBlockDevice>(&mut self, block_dev: &mut B) {}
+    fn write_back(&mut self, block_dev: &mut dyn gbl_storage::AsBlockDevice) {}
 }
 
 /// RAII helper object for coalescing changes.
-pub struct Cursor<'a, B: gbl_storage::AsBlockDevice, M: Manager> {
+pub struct Cursor<'a, B: gbl_storage::AsBlockDevice> {
     /// The backing manager for slot metadata.
-    pub ctx: M,
+    pub ctx: &'a mut dyn Manager,
     /// The backing disk. Used for partition-backed metadata implementations
     /// and for fastboot.
     pub block_dev: &'a mut B,
 }
 
-impl<'a, B: gbl_storage::AsBlockDevice, M: Manager> Drop for Cursor<'a, B, M> {
+impl<'a, B: gbl_storage::AsBlockDevice> Drop for Cursor<'a, B> {
     fn drop(&mut self) {
         self.ctx.write_back(&mut self.block_dev);
     }
