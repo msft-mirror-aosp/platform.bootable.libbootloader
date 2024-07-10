@@ -40,6 +40,7 @@ mod riscv64;
 
 mod android_boot;
 mod avb;
+mod efi_blocks;
 mod error;
 mod fastboot;
 mod fuchsia_boot;

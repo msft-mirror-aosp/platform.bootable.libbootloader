@@ -22,6 +22,7 @@ use fdt::FdtError;
 use gbl_storage::StorageError;
 use libgbl::composite_enum;
 use misc::BcbError;
+use safemath::Error as SafeMathError;
 use smoltcp::socket::tcp::{ListenError, RecvError, SendError};
 use zbi::ZbiError;
 
@@ -55,6 +56,7 @@ composite_enum! {
         ImageError(ImageError),
         ListenError(ListenError),
         RecvError(RecvError),
+        SafeMathError(SafeMathError),
         SendError(SendError),
         SlotVerifyError(SlotVerifyError<'static>),
         StorageError(StorageError),
