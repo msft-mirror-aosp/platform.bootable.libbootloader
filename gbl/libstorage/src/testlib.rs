@@ -15,12 +15,7 @@
 //! Utilities for writing tests with libstorage, e.g. creating fake block devices.
 
 use crc32fast::Hasher;
-use gbl_async::block_on;
-pub use gbl_storage::{
-    alignment_scratch_size, is_aligned, is_buffer_aligned, required_scratch_size, AsBlockDevice,
-    AsMultiBlockDevices, BlockInfo, BlockIoAsync, BlockIoError, BlockIoSync, GptEntry, GptHeader,
-    GPT_MAGIC, GPT_NAME_LEN_U16,
-};
+pub use gbl_storage::*;
 use safemath::SafeNum;
 use std::collections::BTreeMap;
 use zerocopy::AsBytes;
@@ -84,22 +79,6 @@ impl BlockIoAsync for TestBlockIo {
     }
 }
 
-impl BlockIoSync for TestBlockIo {
-    fn info(&mut self) -> BlockInfo {
-        BlockIoAsync::info(self)
-    }
-
-    fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> Result<(), BlockIoError> {
-        block_on(BlockIoAsync::read_blocks(self, blk_offset, out)).unwrap();
-        Ok(())
-    }
-
-    fn write_blocks(&mut self, blk_offset: u64, data: &mut [u8]) -> Result<(), BlockIoError> {
-        block_on(BlockIoAsync::write_blocks(self, blk_offset, data)).unwrap();
-        Ok(())
-    }
-}
-
 /// Simple RAM based block device used by unit tests.
 pub struct TestBlockDevice {
     /// The mock block device.
@@ -124,6 +103,18 @@ impl AsBlockDevice for TestBlockDevice {
 impl Default for TestBlockDevice {
     fn default() -> Self {
         TestBlockDeviceBuilder::new().build()
+    }
+}
+
+impl TestBlockDevice {
+    /// Creates an instance of `AsyncGptDevice`
+    pub fn as_gpt_dev(&mut self) -> AsyncGptDevice<'_, &mut TestBlockIo> {
+        AsyncGptDevice::<&mut TestBlockIo>::new_from_monotonic_buffer(
+            &mut self.io,
+            &mut self.scratch[..],
+            self.max_gpt_entries,
+        )
+        .unwrap()
     }
 }
 
@@ -430,17 +421,10 @@ fn partitions_to_disk_data(
 /// Simple RAM based multi-block device used for unit tests.
 pub struct TestMultiBlockDevices(pub Vec<TestBlockDevice>);
 
-impl AsMultiBlockDevices for TestMultiBlockDevices {
-    fn for_each(
-        &mut self,
-        f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64),
-    ) -> core::result::Result<(), Option<&'static str>> {
-        let _ = self
-            .0
-            .iter_mut()
-            .enumerate()
-            .for_each(|(idx, ele)| f(ele, u64::try_from(idx).unwrap()));
-        Ok(())
+impl TestMultiBlockDevices {
+    /// Creates a vector of `AsyncGptDevice`;
+    pub fn as_gpt_devs(&mut self) -> Vec<AsyncGptDevice<&mut TestBlockIo>> {
+        self.0.iter_mut().map(|v| v.as_gpt_dev()).collect::<Vec<_>>()
     }
 }
 
