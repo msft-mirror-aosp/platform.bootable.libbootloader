@@ -20,7 +20,7 @@ use fastboot::{
     Uploader, VarSender,
 };
 use gbl_async::block_on;
-use gbl_storage::{AsBlockDevice, AsMultiBlockDevices, GPT_NAME_LEN_U16};
+use gbl_storage::{check_part_unique, AsyncGptDevice, BlockIoAsync, GPT_NAME_LEN_U16};
 
 mod vars;
 use vars::{fb_vars_get, fb_vars_get_all};
@@ -36,7 +36,7 @@ pub(crate) const GPT_NAME_LEN_U8: usize = GPT_NAME_LEN_U16 * 2;
 pub(crate) struct GblFbPartition {
     // GPT partition if it is a non-null string, raw block otherwise.
     part: [u8; GPT_NAME_LEN_U8],
-    blk_id: u64,
+    blk_id: usize,
     // The offset where the window starts.
     window_start: u64,
     // The size of the window.
@@ -56,13 +56,13 @@ impl GblFbPartition {
 }
 
 /// `GblFbPartitionIo` provides read/write/size methods for a GBL Fastboot partition.
-pub(crate) struct GblFbPartitionIo<'a> {
+pub(crate) struct GblFbPartitionIo<'a, 'b, B: BlockIoAsync> {
     part: GblFbPartition,
-    devs: &'a mut dyn AsMultiBlockDevices,
+    devs: &'b mut [AsyncGptDevice<'a, B>],
 }
 
-impl<'a> GblFbPartitionIo<'a> {
-    fn new(part: GblFbPartition, devs: &'a mut dyn AsMultiBlockDevices) -> Self {
+impl<'a, 'b, B: BlockIoAsync> GblFbPartitionIo<'a, 'b, B> {
+    fn new(part: GblFbPartition, devs: &'b mut [AsyncGptDevice<'a, B>]) -> Self {
         Self { part, devs }
     }
 
@@ -77,20 +77,20 @@ impl<'a> GblFbPartitionIo<'a> {
     /// Reads from the GBL Fastboot partition.
     pub fn read(&mut self, offset: u64, out: &mut [u8]) -> Result<(), CommandError> {
         let offset = self.check_range(offset, out.len())?;
-        let mut dev = (&mut self.devs).get(self.part.blk_id)?;
+        let dev = &mut self.devs[self.part.blk_id];
         Ok(match self.part.part() {
-            "" => dev.read(offset, out),
-            part => dev.read_gpt_partition(part, offset, out),
+            "" => block_on(dev.blk().read(offset, out)),
+            part => block_on(dev.read_gpt_partition(part, offset, out)),
         }?)
     }
 
     /// Writes to the GBL Fastboot partition.
     pub fn write(&mut self, offset: u64, data: &mut [u8]) -> Result<(), CommandError> {
         let offset = self.check_range(offset, data.len())?;
-        let mut dev = (&mut self.devs).get(self.part.blk_id)?;
+        let dev = &mut self.devs[self.part.blk_id];
         Ok(match self.part.part() {
-            "" => dev.write(offset, data),
-            part => dev.write_gpt_partition(part, offset, data),
+            "" => block_on(dev.blk().write(offset, data)),
+            part => block_on(dev.write_gpt_partition(part, offset, data)),
         }?)
     }
 
@@ -100,7 +100,7 @@ impl<'a> GblFbPartitionIo<'a> {
     }
 }
 
-impl SparseRawWriter for GblFbPartitionIo<'_> {
+impl<B: BlockIoAsync> SparseRawWriter for GblFbPartitionIo<'_, '_, B> {
     /// Writes bytes from `data` to the destination storage at offset `off`
     async fn write(&mut self, off: u64, data: &mut [u8]) -> Result<(), CommandError> {
         self.write(off, data)
@@ -108,32 +108,28 @@ impl SparseRawWriter for GblFbPartitionIo<'_> {
 }
 
 /// `GblFastboot` implements fastboot commands in the GBL context.
-pub struct GblFastboot<'a> {
+pub struct GblFastboot<'a, 'b, B: BlockIoAsync> {
     /// Block I/O access.
-    pub storage: &'a mut dyn AsMultiBlockDevices,
-    download_buffer: &'a mut [u8],
+    pub storage: &'b mut [AsyncGptDevice<'a, B>],
+    download_buffer: &'b mut [u8],
 }
 
-impl<'a> GblFastboot<'a> {
+impl<'a, 'b, B: BlockIoAsync> GblFastboot<'a, 'b, B> {
     /// Creates a new instance.
-    pub fn new(storage: &'a mut dyn AsMultiBlockDevices, download_buffer: &'a mut [u8]) -> Self {
+    pub fn new(storage: &'b mut [AsyncGptDevice<'a, B>], download_buffer: &'a mut [u8]) -> Self {
         Self { storage, download_buffer }
     }
 
     /// Returns the storage object.
-    ///
-    /// `AsMultiBlockDevices` has methods with `Self: Sized` constraint. Thus we return a
-    /// `&mut &mut dyn AsMultiBlockDevices` which also implements `AsMultiBlockDevices` but meets
-    /// the `Sized` bound.
-    pub fn storage(&mut self) -> &mut &'a mut dyn AsMultiBlockDevices {
+    pub fn storage(&mut self) -> &mut [AsyncGptDevice<'a, B>] {
         &mut self.storage
     }
 
     /// Parses and checks partition name, block device ID and offset from the arguments and
     /// returns an instance of `GblFbPartition`.
-    pub(crate) fn parse_partition<'b>(
+    pub(crate) fn parse_partition<'c>(
         &mut self,
-        mut args: Split<'b, char>,
+        mut args: Split<'c, char>,
     ) -> Result<GblFbPartition, CommandError> {
         let devs = self.storage();
         // Copies over partition name string
@@ -145,18 +141,23 @@ impl<'a> GblFastboot<'a> {
             .clone_from_slice(part.as_bytes());
         // Parses block device ID.
         let blk_id = next_arg_u64(&mut args, Err("".into())).ok();
+        let blk_id = blk_id.map(|v| usize::try_from(v)).transpose()?;
+        let blk_id = blk_id
+            .map(|id| (devs.get_mut(id).ok_or("Invalid block index").map(|v| (v, id))))
+            .transpose()?;
         // Parses offset
         let window_start = next_arg_u64(&mut args, Ok(0))?;
         // Checks blk_id and computes maximum partition size.
         let (blk_id, max_size) = match part {
             "" => {
-                let blk_id = blk_id.ok_or("Must provide a block device ID")?;
-                (blk_id, devs.get(blk_id)?.info().total_size()?)
+                let (blk, id) = blk_id.ok_or("Must provide a block device ID")?;
+                (id, blk.blk().io().info().total_size()?)
             }
             gpt => match blk_id {
-                Some(id) => (id, devs.get(id)?.find_partition(gpt)?.size()?),
+                Some((blk, id)) => (id, blk.gpt_cache().find_partition(gpt)?.size()?),
                 _ => {
-                    devs.check_part(gpt).map(|(id, p)| Ok::<_, CommandError>((id, p.size()?)))??
+                    let (id, p, _) = check_part_unique(&mut devs[..], gpt)?;
+                    (id, p.size()?)
                 }
             },
         };
@@ -175,7 +176,7 @@ impl<'a> GblFastboot<'a> {
     }
 }
 
-impl FastbootImplementation for GblFastboot<'_> {
+impl<B: BlockIoAsync> FastbootImplementation for GblFastboot<'_, '_, B> {
     async fn get_var(
         &mut self,
         var: &str,
@@ -281,7 +282,7 @@ mod test {
     use super::*;
     use fastboot::{test_utils::TestUploadBuilder, TransportError};
     use gbl_async::block_on;
-    use gbl_storage_testlib::{TestBlockDeviceBuilder, TestMultiBlockDevices};
+    use gbl_storage_testlib::{TestBlockDeviceBuilder, TestBlockIo, TestMultiBlockDevices};
     use std::string::String;
     use Vec;
 
@@ -314,8 +315,10 @@ mod test {
         }
     }
 
+    type TestGblFastboot<'a, 'b> = GblFastboot<'a, 'b, &'b mut TestBlockIo>;
+
     /// Helper to test fastboot variable value.
-    fn check_var(gbl_fb: &mut GblFastboot, var: &str, args: &str, expected: &str) {
+    fn check_var(gbl_fb: &mut TestGblFastboot, var: &str, args: &str, expected: &str) {
         let mut utils: TestFastbootUtils = Default::default();
         let mut out = vec![0u8; fastboot::MAX_RESPONSE_SIZE];
         assert_eq!(
@@ -326,7 +329,7 @@ mod test {
     }
 
     /// A helper to set the download content.
-    fn set_download(gbl_fb: &mut GblFastboot, data: &[u8], utils: &mut TestFastbootUtils) {
+    fn set_download(gbl_fb: &mut TestGblFastboot, data: &[u8], utils: &mut TestFastbootUtils) {
         gbl_fb.download_buffer[..data.len()].clone_from_slice(data);
         utils.download_data_size = data.len();
     }
@@ -337,7 +340,8 @@ mod test {
             include_bytes!("../../../libstorage/test/gpt_test_1.bin").as_slice().into(),
             include_bytes!("../../../libstorage/test/gpt_test_2.bin").as_slice().into(),
         ]);
-        devs.sync_gpt_all(&mut |_, _, _| panic!("GPT sync failed"));
+        let mut devs = devs.as_gpt_devs();
+        sync_gpt_all(&mut devs[..]);
         let download_buffer = &mut vec![0u8; 128 * 1024][..];
         let mut gbl_fb = GblFastboot::new(&mut devs, download_buffer);
 
@@ -367,6 +371,11 @@ mod test {
         .is_err());
     }
 
+    /// A helper for syncing all test GPT devices.
+    fn sync_gpt_all(devs: &mut [AsyncGptDevice<&mut TestBlockIo>]) {
+        devs.iter_mut().for_each(|v| block_on(v.sync_gpt()).unwrap());
+    }
+
     /// `TestVarSender` implements `TestVarSender`. It stores outputs in a vector of string.
     struct TestVarSender(Vec<String>);
 
@@ -383,7 +392,8 @@ mod test {
             include_bytes!("../../../libstorage/test/gpt_test_1.bin").as_slice().into(),
             include_bytes!("../../../libstorage/test/gpt_test_2.bin").as_slice().into(),
         ]);
-        devs.sync_gpt_all(&mut |_, _, _| panic!("GPT sync failed"));
+        let mut devs = devs.as_gpt_devs();
+        sync_gpt_all(&mut devs[..]);
         let download_buffer = &mut vec![0u8; 128 * 1024][..];
         let mut gbl_fb = GblFastboot::new(&mut devs, download_buffer);
 
@@ -413,7 +423,7 @@ mod test {
 
     /// A helper for fetching partition from a `GblFastboot`
     fn fetch(
-        fb: &mut GblFastboot,
+        fb: &mut TestGblFastboot,
         part: String,
         off: u64,
         size: u64,
@@ -434,7 +444,8 @@ mod test {
             include_bytes!("../../../libstorage/test/gpt_test_2.bin").as_slice().into(),
             include_bytes!("../../../libstorage/test/gpt_test_2.bin").as_slice().into(),
         ]);
-        devs.sync_gpt_all(&mut |_, _, _| panic!("GPT sync failed"));
+        let mut devs = devs.as_gpt_devs();
+        sync_gpt_all(&mut devs[..]);
         let download_buffer = &mut vec![0u8; 128 * 1024][..];
         let mut gbl_fb = GblFastboot::new(&mut devs, download_buffer);
 
@@ -458,7 +469,7 @@ mod test {
 
     /// A helper for testing raw block upload. It verifies that data read from block device
     /// `blk_id` in range [`off`, `off`+`size`) is the same as `disk[off..][..size]`
-    fn check_blk_upload(fb: &mut GblFastboot, blk_id: u64, off: u64, size: u64, disk: &[u8]) {
+    fn check_blk_upload(fb: &mut TestGblFastboot, blk_id: u64, off: u64, size: u64, disk: &[u8]) {
         let expected = disk[off.try_into().unwrap()..][..size.try_into().unwrap()].to_vec();
         // offset/size as part of the partition string.
         let part = format!(":{:#x}:{:#x}:{:#x}", blk_id, off, size);
@@ -474,7 +485,8 @@ mod test {
         let disk_1 = include_bytes!("../../../libstorage/test/gpt_test_2.bin");
         let mut devs =
             TestMultiBlockDevices(vec![disk_0.as_slice().into(), disk_1.as_slice().into()]);
-        devs.sync_gpt_all(&mut |_, _, _| panic!("GPT sync failed"));
+        let mut devs = devs.as_gpt_devs();
+        sync_gpt_all(&mut devs[..]);
         let download_buffer = &mut vec![0u8; 128 * 1024][..];
         let mut gbl_fb = GblFastboot::new(&mut devs, download_buffer);
 
@@ -488,7 +500,7 @@ mod test {
     /// `part` at disk `blk_id` in range [`off`, `off`+`size`) is the same as
     /// `partition_data[off..][..size]`.
     fn check_gpt_upload(
-        fb: &mut GblFastboot,
+        fb: &mut TestGblFastboot,
         part: &str,
         off: u64,
         size: u64,
@@ -512,7 +524,8 @@ mod test {
             include_bytes!("../../../libstorage/test/gpt_test_1.bin").as_slice().into(),
             include_bytes!("../../../libstorage/test/gpt_test_2.bin").as_slice().into(),
         ]);
-        devs.sync_gpt_all(&mut |_, _, _| panic!("GPT sync failed"));
+        let mut devs = devs.as_gpt_devs();
+        sync_gpt_all(&mut devs[..]);
         let download_buffer = &mut vec![0u8; 128 * 1024][..];
         let mut gbl_fb = GblFastboot::new(&mut devs, download_buffer);
 
@@ -537,7 +550,7 @@ mod test {
     }
 
     /// A helper for testing GPT partition flashing.
-    fn check_flash_part(fb: &mut GblFastboot, part: &str, expected: &[u8]) {
+    fn check_flash_part(fb: &mut TestGblFastboot, part: &str, expected: &[u8]) {
         // Prepare a download buffer.
         let dl_size = expected.len();
         let download = expected.to_vec();
@@ -559,7 +572,8 @@ mod test {
         let disk_1 = include_bytes!("../../../libstorage/test/gpt_test_2.bin");
         let mut devs =
             TestMultiBlockDevices(vec![disk_0.as_slice().into(), disk_1.as_slice().into()]);
-        devs.sync_gpt_all(&mut |_, _, _| panic!("GPT sync failed"));
+        let mut devs = devs.as_gpt_devs();
+        sync_gpt_all(&mut devs[..]);
 
         let download_buffer = &mut vec![0u8; 128 * 1024][..];
         let mut gbl_fb = GblFastboot::new(&mut devs, download_buffer);
@@ -586,6 +600,7 @@ mod test {
         let sparse = include_bytes!("../../testdata/sparse_test.bin");
         let mut devs =
             TestMultiBlockDevices(vec![TestBlockDeviceBuilder::new().set_size(raw.len()).build()]);
+        let mut devs = devs.as_gpt_devs();
         let download_buffer = &mut vec![0u8; 128 * 1024][..];
         let mut gbl_fb = GblFastboot::new(&mut devs, download_buffer);
 
