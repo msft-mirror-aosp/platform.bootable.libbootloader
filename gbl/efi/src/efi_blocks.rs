@@ -132,7 +132,7 @@ impl<'a> EfiBlockDevice<'a> {
 }
 
 /// `EfiMultiBlockDevices` wraps a vector of `EfiBlockDevice`.
-pub struct EfiMultiBlockDevices<'a>(Vec<EfiBlockDevice<'a>>);
+pub struct EfiMultiBlockDevices<'a>(pub Vec<EfiBlockDevice<'a>>);
 
 impl<'a> AsAsyncGptDeviceIter for EfiMultiBlockDevices<'a> {
     type BlockIo<'b> = &'b mut EfiBlockDeviceIo<'a> where Self:'b;
@@ -151,11 +151,6 @@ impl<'a> EfiMultiBlockDevices<'a> {
     /// Checks uniqueness of and reads from a GPT partition synchronously.
     pub fn read_gpt_partition_sync(&mut self, part: &str, off: u64, out: &mut [u8]) -> Result<()> {
         block_on(self.read_gpt_partition(part, off, out))
-    }
-
-    /// Creates a vector of `EfiAsyncGptDevice`.
-    pub fn as_gpt_devs(&mut self) -> Vec<EfiAsyncGptDevice<'a, '_>> {
-        self.0.iter_mut().map(|v| v.as_gpt_dev()).collect::<Vec<_>>()
     }
 
     /// Finds a partition.

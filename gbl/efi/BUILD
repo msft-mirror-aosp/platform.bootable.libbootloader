@@ -49,6 +49,7 @@ rust_binary(
         "@avb",
         "@avb//:avb_crypto_ops_sha_impl_staticlib",
         "@gbl//libasync",
+        "@gbl//libasync:cyclic_executor",
         "@gbl//libavb:sysdeps",
         "@gbl//libboot",
         "@gbl//libbootconfig",
@@ -62,6 +63,7 @@ rust_binary(
         "@gbl//libstorage",
         "@gbl//third_party/libzbi",
         "@smoltcp",
+        "@spin",
         "@uuid",
         "@zerocopy",
     ] + select(
