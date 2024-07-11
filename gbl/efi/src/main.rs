@@ -60,10 +60,10 @@ fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -
         efi_println!(entry, "Image path: {}", v);
     }
 
-    efi_println!(entry, "Press 'f' to enter fastboot.");
-    match wait_key_stroke(&entry, 'f', 2000) {
+    efi_println!(entry, "Press Backspace to enter fastboot.");
+    match wait_key_stroke(&entry, '\x08', 2000) {
         Ok(true) => {
-            efi_println!(entry, "'f' pressed.");
+            efi_println!(entry, "Backspace pressed.");
             let android_boot_protocol = entry
                 .system_table()
                 .boot_services()
