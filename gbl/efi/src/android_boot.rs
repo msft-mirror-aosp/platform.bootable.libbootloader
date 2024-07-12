@@ -144,16 +144,22 @@ pub fn load_android_simple<'a>(
 
     // Parse init_boot header
     let init_boot_header_buffer = &mut load[..PAGE_SIZE];
-    gpt_devices.read_gpt_partition_sync("init_boot_a", 0, init_boot_header_buffer)?;
-    let init_boot_header = BootImage::parse(init_boot_header_buffer)?;
-    let (generic_ramdisk_size, init_boot_hdr_size) = match init_boot_header {
-        BootImage::V3(ref hdr) => (hdr.ramdisk_size as usize, PAGE_SIZE),
-        BootImage::V4(ref hdr) => (hdr._base.ramdisk_size as usize, PAGE_SIZE),
-        _ => {
-            efi_println!(efi_entry, "V0/V1/V2 images are not supported");
-            return Err(GblEfiError::EfiAppError(EfiAppError::Unsupported));
-        }
-    };
+    let (generic_ramdisk_size, init_boot_hdr_size) =
+        match gpt_devices.find_partition("init_boot_a").map(|v| v.size()) {
+            Ok(Ok(_sz)) => {
+                gpt_devices.read_gpt_partition_sync("init_boot_a", 0, init_boot_header_buffer)?;
+                let init_boot_header = BootImage::parse(init_boot_header_buffer)?;
+                match init_boot_header {
+                    BootImage::V3(ref hdr) => (hdr.ramdisk_size as usize, PAGE_SIZE),
+                    BootImage::V4(ref hdr) => (hdr._base.ramdisk_size as usize, PAGE_SIZE),
+                    _ => {
+                        efi_println!(efi_entry, "V0/V1/V2 images are not supported");
+                        return Err(GblEfiError::EfiAppError(EfiAppError::Unsupported));
+                    }
+                }
+            }
+            _ => (0, 0),
+        };
     efi_println!(efi_entry, "init_boot image size: {}", generic_ramdisk_size);
 
     // Load and prepare various images.
@@ -187,12 +193,14 @@ pub fn load_android_simple<'a>(
     ramdisk_load_curr = usize_add(ramdisk_load_curr, vendor_ramdisk_size)?;
 
     // Load generic ramdisk
-    gpt_devices.read_gpt_partition_sync(
-        "init_boot_a",
-        init_boot_hdr_size.try_into().unwrap(),
-        &mut load[ramdisk_load_curr..][..generic_ramdisk_size],
-    )?;
-    ramdisk_load_curr = usize_add(ramdisk_load_curr, generic_ramdisk_size)?;
+    if generic_ramdisk_size > 0 {
+        gpt_devices.read_gpt_partition_sync(
+            "init_boot_a",
+            init_boot_hdr_size.try_into().unwrap(),
+            &mut load[ramdisk_load_curr..][..generic_ramdisk_size],
+        )?;
+        ramdisk_load_curr = usize_add(ramdisk_load_curr, generic_ramdisk_size)?;
+    }
 
     // Prepare partition data for avb verification
     let (vendor_boot_load_buffer, remains) = load.split_at_mut(vendor_ramdisk_size);
