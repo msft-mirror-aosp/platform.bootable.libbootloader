@@ -17,9 +17,11 @@
 // `android_boot:android_boot_demo()` and `fuchsia_boot:fuchsia_boot_demo()` for
 // supported/unsupported features at the moment.
 
-use crate::error::{EfiAppError, GblEfiError, Result as GblResult};
-use crate::net::{with_efi_network, EfiTcpSocket};
-use crate::utils::find_gpt_devices;
+use crate::{
+    efi_blocks::{find_block_devices, EfiBlockDeviceIo},
+    error::{EfiAppError, GblEfiError, Result as GblResult},
+    net::{with_efi_network, EfiTcpSocket},
+};
 use core::{cmp::min, fmt::Write, result::Result};
 use efi::{
     defs::{EFI_STATUS_NOT_READY, EFI_STATUS_NOT_STARTED},
@@ -143,7 +145,7 @@ impl Transport for UsbTransport<'_, '_> {
 /// Loops and polls both USB and TCP transport. Runs Fastboot if any is available.
 async fn fastboot_loop(
     efi_entry: &EfiEntry,
-    gbl_fb: &mut GblFastboot<'_>,
+    gbl_fb: &mut GblFastboot<'_, '_, &'_ mut EfiBlockDeviceIo<'_>>,
     fastboot: &mut Fastboot,
     mut socket: Option<&mut EfiTcpSocket<'_, '_>>,
     mut usb: Option<&mut UsbTransport<'_, '_>>,
@@ -225,7 +227,9 @@ pub fn run_fastboot(
 ) -> GblResult<()> {
     // TODO(b/328786603): Figure out where to get download buffer size.
     let mut download_buffer = vec![0u8; 512 * 1024 * 1024];
-    let mut gpt_devices = find_gpt_devices(efi_entry)?;
+    let mut gpt_devices = find_block_devices(efi_entry)?;
+    let mut gpt_devices = gpt_devices.as_gpt_devs();
+
     let mut gbl_fb = GblFastboot::new(&mut gpt_devices, &mut download_buffer[..]);
     let mut fastboot = Fastboot::new();
 
