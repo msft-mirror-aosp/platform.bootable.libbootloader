@@ -26,6 +26,7 @@ rust_binary(
     srcs = [
         "src/android_boot.rs",
         "src/avb.rs",
+        "src/efi_blocks.rs",
         "src/error.rs",
         "src/fastboot.rs",
         "src/fuchsia_boot.rs",
@@ -57,6 +58,7 @@ rust_binary(
         "@gbl//libfdt",
         "@gbl//libgbl",
         "@gbl//libmisc",
+        "@gbl//libsafemath",
         "@gbl//libstorage",
         "@gbl//third_party/libzbi",
         "@smoltcp",
