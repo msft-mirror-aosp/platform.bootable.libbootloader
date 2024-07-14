@@ -299,6 +299,17 @@ impl<'a> GptCache<'a> {
         })
     }
 
+    /// Creates a new `GptCache` instance that borrows the internal data of this instance.
+    pub fn as_mut_instance(&mut self) -> GptCache<'_> {
+        GptCache {
+            info: &mut self.info,
+            primary_header: &mut self.primary_header,
+            primary_entries: &mut self.primary_entries,
+            secondary_header: &mut self.secondary_header,
+            secondary_entries: &mut self.secondary_entries,
+        }
+    }
+
     /// Returns an iterator to GPT partition entries.
     pub fn partition_iter(&self) -> PartitionIterator {
         PartitionIterator { gpt_cache: self, idx: 0 }

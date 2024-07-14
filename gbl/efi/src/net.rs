@@ -62,7 +62,7 @@ fn reset_simple_network<'a>(snp: &Protocol<'a, SimpleNetworkProtocol>) -> Result
         }
         _ => {}
     };
-    snp.initialize(0, 0).unwrap();
+    snp.initialize(0, 0)?;
     Ok(snp.reset(true)?)
 }
 
