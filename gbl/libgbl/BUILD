@@ -67,6 +67,7 @@ rust_test(
     deps = [
         "@avb//:avb_crypto_ops_sha_impl_staticlib",
         "@avb//:avb_test",
+        "@gbl//libasync:cyclic_executor",
         "@gbl//libavb:sysdeps",
         "@gbl//libstorage:libstorage_testlib",
         "@itertools",
