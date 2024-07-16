@@ -23,7 +23,9 @@
 #include <stdint.h>
 
 #include "boot_service.h"
+#include "protocols/ab_slot_protocol.h"
 #include "protocols/android_boot_protocol.h"
+#include "protocols/block_io2_protocol.h"
 #include "protocols/block_io_protocol.h"
 #include "protocols/device_path_protocol.h"
 #include "protocols/loaded_image_protocol.h"

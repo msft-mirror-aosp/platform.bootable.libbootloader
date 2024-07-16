@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Boot logic for RISC-V.
+
 use core::arch::asm;
 
 /// Boots a Linux kernel with the given boot hart ID and FDT blob.
