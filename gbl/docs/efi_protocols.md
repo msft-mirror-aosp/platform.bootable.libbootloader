@@ -53,6 +53,12 @@ that GBL is running and can interact with the UEFI environment.
 
 The DevicePathToText protocol converts device paths and nodes to text.
 
+#### GblOsConfigurationProtocol
+
+This protocol provides the firmware an opportunity to apply runtime fixups to
+OS configuration data such as the kernel command line or devicetree. See
+the [doc](./gbl_os_configuration_protocol.md) for more details.
+
 #### LoadedImageProtocol
 
 The LoadedImage protocol can be used on the handle of an image to provide
