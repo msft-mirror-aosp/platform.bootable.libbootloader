@@ -69,7 +69,7 @@ fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -
                 .boot_services()
                 .find_first_and_open::<AndroidBootProtocol>()
                 .ok();
-            fastboot::run_fastboot(&entry, android_boot_protocol.as_ref())?;
+            fastboot::fastboot(&entry, android_boot_protocol.as_ref())?;
         }
         _ => {}
     }
