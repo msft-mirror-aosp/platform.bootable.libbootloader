@@ -15,9 +15,10 @@
 //! Utilities for writing tests with libstorage, e.g. creating fake block devices.
 
 use crc32fast::Hasher;
+use gbl_async::yield_now;
 pub use gbl_storage::*;
 use safemath::SafeNum;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use zerocopy::AsBytes;
 
 /// Helper `gbl_storage::BlockIoSync` struct for TestBlockDevice.
@@ -32,12 +33,21 @@ pub struct TestBlockIo {
     pub num_writes: usize,
     /// The number of successful read calls.
     pub num_reads: usize,
+    /// Injected errors.
+    pub errors: VecDeque<BlockIoError>,
 }
 
 impl TestBlockIo {
     /// Creates a new [TestBlockIo].
     pub fn new(block_size: u64, alignment: u64, data: Vec<u8>) -> Self {
-        Self { block_size, alignment, storage: data, num_writes: 0, num_reads: 0 }
+        Self {
+            block_size,
+            alignment,
+            storage: data,
+            num_writes: 0,
+            num_reads: 0,
+            errors: Default::default(),
+        }
     }
 
     fn check_alignment(&mut self, buffer: &[u8]) -> bool {
@@ -63,8 +73,11 @@ impl BlockIoAsync for TestBlockIo {
     ) -> core::result::Result<(), BlockIoError> {
         assert!(self.check_alignment(out));
         let offset = (SafeNum::from(blk_offset) * self.block_size).try_into().unwrap();
-        out.clone_from_slice(&self.storage[offset..][..out.len()]);
-        Ok(())
+        yield_now().await; // yield once to simulate IO pending.
+        match self.errors.pop_front() {
+            Some(e) => Err(e),
+            _ => Ok(out.clone_from_slice(&self.storage[offset..][..out.len()])),
+        }
     }
 
     async fn write_blocks(
@@ -74,8 +87,11 @@ impl BlockIoAsync for TestBlockIo {
     ) -> core::result::Result<(), BlockIoError> {
         assert!(self.check_alignment(data));
         let offset = (SafeNum::from(blk_offset) * self.block_size).try_into().unwrap();
-        self.storage[offset..][..data.len()].clone_from_slice(data);
-        Ok(())
+        yield_now().await; // yield once to simulate IO pending.
+        match self.errors.pop_front() {
+            Some(e) => Err(e),
+            _ => Ok(self.storage[offset..][..data.len()].clone_from_slice(data)),
+        }
     }
 }
 

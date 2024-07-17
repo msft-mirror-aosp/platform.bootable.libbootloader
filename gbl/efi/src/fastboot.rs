@@ -22,16 +22,19 @@ use crate::{
     error::{EfiAppError, GblEfiError, Result as GblResult},
     net::{with_efi_network, EfiTcpSocket},
 };
-use core::{cmp::min, fmt::Write, result::Result};
+use alloc::vec::Vec;
+use core::{cmp::min, fmt::Write, future::Future, result::Result};
 use efi::{
     defs::{EFI_STATUS_NOT_READY, EFI_STATUS_NOT_STARTED},
     efi_print, efi_println,
     protocol::{android_boot::AndroidBootProtocol, Protocol},
     EfiEntry,
 };
-use fastboot::{Fastboot, TcpStream, Transport, TransportError};
-use gbl_async::{block_on, yield_now, YieldCounter};
-use libgbl::fastboot::GblFastboot;
+use fastboot::{CommandError, Fastboot, TcpStream, Transport, TransportError};
+use gbl_async::{yield_now, YieldCounter};
+use gbl_cyclic_executor::CyclicExecutor;
+use libgbl::fastboot::{GblFastboot, GblFbResource, TasksExecutor};
+use spin::Mutex;
 
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 const FASTBOOT_TCP_PORT: u16 = 5554;
@@ -143,17 +146,13 @@ impl Transport for UsbTransport<'_, '_> {
 }
 
 /// Loops and polls both USB and TCP transport. Runs Fastboot if any is available.
-async fn fastboot_loop(
+async fn fastboot_loop<'a>(
     efi_entry: &EfiEntry,
-    gbl_fb: &mut GblFastboot<'_, '_, &'_ mut EfiBlockDeviceIo<'_>>,
+    gbl_fb: &mut GblFastboot<'_, 'a, EfiFbTaskExecutor<'a>, &'_ mut EfiBlockDeviceIo<'_>>,
     fastboot: &mut Fastboot,
     mut socket: Option<&mut EfiTcpSocket<'_, '_>>,
     mut usb: Option<&mut UsbTransport<'_, '_>>,
-) -> GblResult<()> {
-    if socket.is_none() && usb.is_none() {
-        return Err(EfiAppError::Unsupported.into());
-    }
-
+) {
     efi_println!(efi_entry, "Fastboot USB: {}", usb.as_ref().map_or("No", |_| "Yes"));
     if let Some(socket) = socket.as_ref() {
         efi_println!(efi_entry, "Fastboot TCP: Yes");
@@ -205,6 +204,8 @@ async fn fastboot_loop(
                 }
             }
         }
+
+        yield_now().await;
     }
 }
 
@@ -220,18 +221,58 @@ fn init_usb<'a, 'b>(
     Ok(UsbTransport::new(protocol.fastboot_usb_interface_start()?, protocol))
 }
 
+/// `EfiFbTaskExecutor` implements the `TasksExecutor` trait used by GBL fastboot for scheduling
+/// disk IO tasks.
+#[derive(Default)]
+struct EfiFbTaskExecutor<'a>(Mutex<CyclicExecutor<'a>>);
+
+impl<'a> TasksExecutor<'a> for EfiFbTaskExecutor<'a> {
+    fn spawn_task(&self, task: impl Future<Output = ()> + 'a) -> Result<(), CommandError> {
+        Ok(self.0.lock().spawn_task(task))
+    }
+}
+
+/// Spawns and runs Fastboot tasks.
+fn run_fastboot<'a>(
+    efi_entry: &EfiEntry,
+    gbl_fb: &mut GblFastboot<'_, 'a, EfiFbTaskExecutor<'a>, &'_ mut EfiBlockDeviceIo<'_>>,
+    fastboot: &mut Fastboot,
+    blk_io_executor: &EfiFbTaskExecutor<'a>,
+    socket: Option<&mut EfiTcpSocket<'_, '_>>,
+    usb: Option<&mut UsbTransport<'_, '_>>,
+) -> GblResult<()> {
+    if socket.is_none() && usb.is_none() {
+        return Err(EfiAppError::Unsupported.into());
+    }
+    let mut task_executor: CyclicExecutor = Default::default();
+    // Fastboot command loop task.
+    task_executor.spawn_task(fastboot_loop(efi_entry, gbl_fb, fastboot, socket, usb));
+    // Disk IO task.
+    task_executor.spawn_task(async {
+        loop {
+            blk_io_executor.0.lock().poll();
+            yield_now().await;
+        }
+    });
+    task_executor.run();
+    Ok(())
+}
+
 /// Runs Fastboot.
-pub fn run_fastboot(
+pub fn fastboot(
     efi_entry: &EfiEntry,
     android_boot_protocol: Option<&Protocol<'_, AndroidBootProtocol>>,
 ) -> GblResult<()> {
     // TODO(b/328786603): Figure out where to get download buffer size.
-    let mut download_buffer = vec![0u8; 512 * 1024 * 1024];
-    let mut gpt_devices = find_block_devices(efi_entry)?;
-    let mut gpt_devices = gpt_devices.as_gpt_devs();
-
-    let mut gbl_fb = GblFastboot::new(&mut gpt_devices, &mut download_buffer[..]);
-    let mut fastboot = Fastboot::new();
+    let mut download_buffers = vec![vec![0u8; 512 * 1024 * 1024]; 2];
+    let mut gbl_fb_download_buffers =
+        download_buffers.iter_mut().map(|v| v.as_mut_slice()).collect::<Vec<_>>();
+    let mut blks = find_block_devices(efi_entry)?;
+    let mut gbl_fb_devs = blks.0.iter_mut().map(|v| v.as_gpt_dev().into()).collect::<Vec<_>>();
+    let shared_state = GblFbResource::new(&mut gbl_fb_devs[..], &mut gbl_fb_download_buffers[..]);
+    let blk_io_executor: EfiFbTaskExecutor = Default::default();
+    let gbl_fb = &mut GblFastboot::new(&blk_io_executor, &shared_state);
+    let fastboot = &mut Fastboot::new();
 
     let mut usb = match init_usb(&android_boot_protocol) {
         Ok(v) => Some(v),
@@ -241,12 +282,12 @@ pub fn run_fastboot(
         }
     };
 
-    match with_efi_network(efi_entry, |socket| -> GblResult<()> {
-        block_on(fastboot_loop(efi_entry, &mut gbl_fb, &mut fastboot, Some(socket), usb.as_mut()))
+    match with_efi_network(efi_entry, |socket| {
+        run_fastboot(efi_entry, gbl_fb, fastboot, &blk_io_executor, Some(socket), usb.as_mut())
     }) {
         Err(e) => {
             efi_println!(efi_entry, "Failed to start EFI network. {:?}.", e);
-            block_on(fastboot_loop(efi_entry, &mut gbl_fb, &mut fastboot, None, usb.as_mut()))
+            run_fastboot(efi_entry, gbl_fb, fastboot, &blk_io_executor, None, usb.as_mut())
         }
         v => v?,
     }
