@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Fuchsia A/B/R boot slot library.
+
 #![cfg_attr(not(test), no_std)]
 
 use core::{cmp::min, ffi::c_uint, fmt::Write, mem::size_of};
@@ -34,10 +36,15 @@ const ABR_MAX_TRIES_REMAINING: u8 = 7;
 /// Error type for this library.
 #[derive(Debug)]
 pub enum Error {
+    /// Failed to find the magic bytes indicating A/B/R metadata.
     BadMagic,
+    /// Metadata version is not supported by this library.
     UnsupportedVersion,
+    /// Metadata checksum didn't match contents.
     BadChecksum,
+    /// Data is in an invalid state e.g. trying to mark R as active.
     InvalidData,
+    /// Error occurred in the [Ops] callbacks; optional error message can be provided.
     OpsError(Option<&'static str>),
 }
 
@@ -74,8 +81,12 @@ macro_rules! avb_print {
 /// `SlotIndex` represents the A/B/R slot index.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum SlotIndex {
+    /// A slot; normal boot.
     A,
+    /// B slot; normal boot.
     B,
+    /// R slot; recovery boot. Doesn't have any associated metadata (e.g. cannot be active, no
+    /// retries), but is unconditionally used as a fallback if both A and B are unbootable.
     R,
 }
 
@@ -117,14 +128,20 @@ impl TryFrom<c_uint> for SlotIndex {
 
 /// `SlotInfo` represents the current state of a A/B/R slot.
 pub enum SlotState {
+    /// Slot has successfully booted.
     Successful,
-    Bootable(u8), // u8 = tries remaining
+    /// Slot can be attempted but is not known to be successful. Contained value is the number
+    /// of boot attempts remaining before being marked as `Unbootable`.
+    Bootable(u8),
+    /// Slot is unbootable.
     Unbootable,
 }
 
 /// `SlotInfo` contains the current state and active status of a A/B/R slot.
 pub struct SlotInfo {
+    /// The [SlotState] describing the bootability.
     pub state: SlotState,
+    /// Whether this is currently the active slot.
     pub is_active: bool,
 }
 
@@ -135,9 +152,13 @@ pub type AbrResult<T> = Result<T, Error>;
 #[repr(C, packed)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct AbrSlotData {
+    /// Slot priority. Unbootable slots should always have priority 0.
     pub priority: u8,
+    /// Boot attempts remaining.
     pub tries_remaining: u8,
+    /// Whether this slot is known successful.
     pub successful_boot: u8,
+    /// Reserved for future use; must be set to 0.
     pub reserved: u8,
 }
 
@@ -202,13 +223,21 @@ impl AbrSlotData {
 #[repr(C, packed)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct AbrData {
+    /// Magic value; must be [ABR_MAGIC].
     pub magic: [u8; 4],
+    /// Metadata major version, incremented when changes may break backwards compatibility.
     pub version_major: u8,
+    /// Metadata minor version, incremented when changes do not break backwards compatibility.
     pub version_minor: u8,
+    /// Reserved for future use; must be 0.
     pub reserved: [u8; 2],
+    /// A/B slot data.
     pub slot_data: [AbrSlotData; 2],
+    /// One-shot to bootloader/recovery.
     pub one_shot_flags: u8,
+    /// Reserved for future use; must be 0.
     pub reserved2: [u8; 11],
+    /// CRC32 checksum of this struct.
     pub crc32: u32,
 }
 

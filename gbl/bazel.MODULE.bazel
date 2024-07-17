@@ -55,6 +55,11 @@ local_path_override(
 )
 
 local_path_override(
+    module_name = "bazel_features",
+    path = "external/bazel-contrib-bazel_features",
+)
+
+local_path_override(
     module_name = "bazel_skylib",
     path = "external/bazel-skylib",
 )
