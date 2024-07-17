@@ -47,7 +47,7 @@ const ETHERNET_FRAME_SIZE: usize = 1536;
 // Update period in milliseconds for `NETWORK_TIMESTAMP`.
 const NETWORK_TIMESTAMP_UPDATE_PERIOD: u64 = 50;
 // Size of the socket tx/rx application data buffer.
-const SOCKET_TX_RX_BUFFER: usize = 64 * 1024;
+const SOCKET_TX_RX_BUFFER: usize = 256 * 1024;
 
 /// Performs a shutdown and restart of the simple network protocol.
 fn reset_simple_network<'a>(snp: &Protocol<'a, SimpleNetworkProtocol>) -> Result<()> {
