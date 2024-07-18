@@ -14,7 +14,7 @@
 
 use crate::{
     error::{EfiAppError, Result},
-    utils::{get_device_path, loop_with_timeout, ms_to_100ns, Timeout},
+    utils::{get_device_path, loop_with_timeout},
 };
 use alloc::{boxed::Box, vec::Vec};
 use core::{
@@ -28,6 +28,7 @@ use efi::{
     },
     efi_print, efi_println,
     protocol::{simple_network::SimpleNetworkProtocol, Protocol},
+    utils::{ms_to_100ns, Timeout},
     DeviceHandle, EfiEntry, EventNotify, EventType, Tpl,
 };
 use gbl_async::{yield_now, YieldCounter};

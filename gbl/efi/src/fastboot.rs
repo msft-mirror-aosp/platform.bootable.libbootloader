@@ -28,6 +28,7 @@ use efi::{
     defs::{EFI_STATUS_NOT_READY, EFI_STATUS_NOT_STARTED},
     efi_print, efi_println,
     protocol::{android_boot::AndroidBootProtocol, Protocol},
+    utils::Timeout,
     EfiEntry,
 };
 use fastboot::{CommandError, Fastboot, TcpStream, Transport, TransportError};
@@ -92,7 +93,7 @@ impl<'a, 'b> UsbTransport<'a, 'b> {
 
     /// Waits for the previous send to complete up to `DEFAULT_TIMEOUT_MS` timeout.
     async fn wait_for_send(&self) -> GblResult<()> {
-        let timer = crate::utils::Timeout::new(self.protocol.efi_entry(), DEFAULT_TIMEOUT_MS)?;
+        let timer = Timeout::new(self.protocol.efi_entry(), DEFAULT_TIMEOUT_MS)?;
         let bs = self.protocol.efi_entry().system_table().boot_services();
         while !timer.check()? {
             match bs.check_event(&self.protocol.wait_for_send_completion()?)? {
