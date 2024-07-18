@@ -18,6 +18,7 @@ use core::{
     cmp::min,
     fmt::Write,
     future::Future,
+    mem::take,
     str::{from_utf8, Split},
 };
 use fastboot::{
@@ -96,6 +97,7 @@ pub struct GblFastboot<'a, 'b, T: TasksExecutor<'b>, B: BlockIoAsync> {
     blk_io_executor: &'a T,
     shared_resource: &'b GblFbResource<'b, B>,
     current_download_buffer: Option<ScopedGblFbDownloadBuffer<'b, 'b, B>>,
+    current_download_size: usize,
     enable_async_block_io: bool,
 }
 
@@ -106,6 +108,7 @@ impl<'a, 'b, T: TasksExecutor<'b>, B: BlockIoAsync> GblFastboot<'a, 'b, T, B> {
             blk_io_executor,
             shared_resource,
             current_download_buffer: None,
+            current_download_size: 0,
             enable_async_block_io: false,
         }
     }
@@ -239,6 +242,11 @@ impl<'b, T: TasksExecutor<'b>, B: BlockIoAsync> FastbootImplementation
         self.ensure_download_buffer().await
     }
 
+    async fn download_complete(&mut self, download_size: usize) -> Result<(), CommandError> {
+        self.current_download_size = download_size;
+        Ok(())
+    }
+
     async fn flash(
         &mut self,
         part: &str,
@@ -247,7 +255,7 @@ impl<'b, T: TasksExecutor<'b>, B: BlockIoAsync> FastbootImplementation
         let (blk_idx, part) = self.parse_partition(part.split(':'))?;
         let mut blk = self.sync_block(blk_idx).await?;
         let mut download_buffer = self.current_download_buffer.take().ok_or("No download")?;
-        let download_data_size = utils.download_data_size();
+        let download_data_size = take(&mut self.current_download_size);
         let write_task = async move {
             match is_sparse_image(&download_buffer) {
                 Ok(_) => {
@@ -366,16 +374,9 @@ mod test {
 
     /// A test implementation of FastbootUtils.
     #[derive(Default)]
-    struct TestFastbootUtils {
-        download_data_size: usize,
-    }
+    struct TestFastbootUtils {}
 
     impl FastbootUtils for TestFastbootUtils {
-        // Returns the size of the most recent download.
-        fn download_data_size(&self) -> usize {
-            self.download_data_size
-        }
-
         /// Sends a Fastboot "INFO<`msg`>" packet.
         async fn send_info(&mut self, _: &str) -> Result<(), CommandError> {
             Ok(())
@@ -417,10 +418,10 @@ mod test {
     }
 
     /// A helper to set the download content.
-    fn set_download(gbl_fb: &mut TestGblFastboot, data: &[u8], utils: &mut TestFastbootUtils) {
+    fn set_download(gbl_fb: &mut TestGblFastboot, data: &[u8]) {
         block_on(gbl_fb.ensure_download_buffer());
         gbl_fb.current_download_buffer.as_mut().unwrap()[..data.len()].clone_from_slice(data);
-        utils.download_data_size = data.len();
+        gbl_fb.current_download_size = data.len();
     }
 
     /// `TestGblFbExecutor` wraps a `CyclicExecutor` and implements `TasksExecutor` trait.
@@ -671,13 +672,13 @@ mod test {
         let dl_size = expected.len();
         let download = expected.to_vec();
         let mut utils: TestFastbootUtils = Default::default();
-        set_download(fb, &download[..], &mut utils);
+        set_download(fb, &download[..]);
         block_on(fb.flash(part, &mut utils)).unwrap();
         assert_eq!(fetch(fb, part.into(), 0, dl_size.try_into().unwrap()).unwrap(), download);
 
         // Also flashes bit-wise reversed version in case the initial content is the same.
         let download = flipped_bits(expected);
-        set_download(fb, &download[..], &mut utils);
+        set_download(fb, &download[..]);
         block_on(fb.flash(part, &mut utils)).unwrap();
         assert_eq!(fetch(fb, part.into(), 0, dl_size.try_into().unwrap()).unwrap(), download);
     }
@@ -727,7 +728,7 @@ mod test {
 
         let download = sparse.to_vec();
         let mut utils: TestFastbootUtils = Default::default();
-        set_download(&mut gbl_fb, &download[..], &mut utils);
+        set_download(&mut gbl_fb, &download[..]);
         block_on(gbl_fb.flash(":0", &mut utils)).unwrap();
         assert_eq!(fetch(&mut gbl_fb, ":0".into(), 0, raw.len().try_into().unwrap()).unwrap(), raw);
     }
@@ -774,11 +775,11 @@ mod test {
 
         // Flashes "boot_a".
         let expect_boot_a = flipped_bits(include_bytes!("../../../libstorage/test/boot_a.bin"));
-        set_download(&mut gbl_fb, expect_boot_a.as_slice(), &mut utils);
+        set_download(&mut gbl_fb, expect_boot_a.as_slice());
         block_on(gbl_fb.flash("boot_a", &mut utils)).unwrap();
 
         // Flashes the "sparse" partition on the different block device.
-        set_download(&mut gbl_fb, sparse, &mut utils);
+        set_download(&mut gbl_fb, sparse);
         block_on(gbl_fb.flash("sparse", &mut utils)).unwrap();
 
         // The two blocks should be in the pending state.
@@ -836,12 +837,12 @@ mod test {
 
         // Flashes boot_a partition.
         let expect_boot_a = flipped_bits(include_bytes!("../../../libstorage/test/boot_a.bin"));
-        set_download(&mut gbl_fb, expect_boot_a.as_slice(), &mut utils);
+        set_download(&mut gbl_fb, expect_boot_a.as_slice());
         block_on(gbl_fb.flash("boot_a", &mut utils)).unwrap();
 
         // Flashes boot_b partition.
         let expect_boot_b = flipped_bits(include_bytes!("../../../libstorage/test/boot_b.bin"));
-        set_download(&mut gbl_fb, expect_boot_b.as_slice(), &mut utils);
+        set_download(&mut gbl_fb, expect_boot_b.as_slice());
         {
             let flash_boot_b_fut = &mut pin!(gbl_fb.flash("boot_b", &mut utils));
             // Previous IO has not completed. Block is busy.
@@ -893,12 +894,12 @@ mod test {
             .is_ok());
         // Flashes boot_a partition.
         let expect_boot_a = flipped_bits(include_bytes!("../../../libstorage/test/boot_a.bin"));
-        set_download(&mut gbl_fb, expect_boot_a.as_slice(), &mut utils);
+        set_download(&mut gbl_fb, expect_boot_a.as_slice());
         block_on(gbl_fb.flash("boot_a", &mut utils)).unwrap();
         // Schedules the disk IO tasks to completion.
         blk_io_executor.0.lock().unwrap().run();
         // New flash to "boot_a" should fail due to previous error
-        set_download(&mut gbl_fb, expect_boot_a.as_slice(), &mut utils);
+        set_download(&mut gbl_fb, expect_boot_a.as_slice());
         assert!(block_on(gbl_fb.flash("boot_a", &mut utils)).is_err());
         // "oem gbl-sync-blocks" should fail.
         assert!(block_on(oem(&mut gbl_fb, "gbl-sync-blocks", &mut utils)).is_err());
