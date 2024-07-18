@@ -33,4 +33,5 @@ rust_library(
     crate_name = "avb_sysdeps",
     edition = "2021",
     rustc_flags = ANDROID_RUST_LINTS,
+    deps = ["@gbl//libc"],
 )

@@ -23,8 +23,8 @@ use core::mem::size_of;
 use core::slice::{from_raw_parts, from_raw_parts_mut};
 
 use libfdt_c_def::{
-    fdt_add_subnode_namelen, fdt_header, fdt_setprop, fdt_setprop_placeholder, fdt_strerror,
-    fdt_subnode_offset_namelen,
+    fdt_add_subnode_namelen, fdt_del_node, fdt_header, fdt_setprop, fdt_setprop_placeholder,
+    fdt_strerror, fdt_subnode_offset_namelen,
 };
 
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
@@ -247,6 +247,16 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
         Ok(())
     }
 
+    /// Delete node by `path``. Fail if node doesn't exist.
+    pub fn delete_node(&mut self, path: &str) -> Result<()> {
+        let node = self.find_node(path)?;
+        // SAFETY:
+        // * `self.0` is guaranteed to be a proper fdt header reference
+        // * `node` is offset of the node to delete within `self.0` fdt buffer
+        map_result(unsafe { fdt_del_node(self.0.as_mut().as_mut_ptr() as *mut _, node) })?;
+        Ok(())
+    }
+
     /// Set the value of a node's property. Create the node and property if it doesn't exist.
     pub fn set_property(&mut self, path: &str, name: &CStr, val: &[u8]) -> Result<()> {
         let node = self.find_or_add_node(path)?;
@@ -360,6 +370,42 @@ mod test {
         let data = vec![0x11u8, 0x22u8, 0x33u8];
         fdt.set_property("/new-node", &to_cstr("custom"), &data).unwrap();
         assert_eq!(fdt.get_property("/new-node", &to_cstr("custom")).unwrap().to_vec(), data);
+    }
+
+    #[test]
+    fn test_delete_node() {
+        let init = include_bytes!("../test/test.dtb").to_vec();
+        let mut fdt_buf = vec![0u8; init.len()];
+        let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
+
+        assert_eq!(
+            CStr::from_bytes_with_nul(
+                fdt.get_property("/dev-2/dev-2.2/dev-2.2.1", &to_cstr("property-1")).unwrap()
+            )
+            .unwrap()
+            .to_str()
+            .unwrap(),
+            "dev-2.2.1-property-1"
+        );
+
+        fdt.delete_node("dev-2").unwrap();
+
+        assert!(
+            fdt.get_property("/dev-2/dev-2.2/dev-2.2.1", &to_cstr("property-1")).is_err(),
+            "dev-2.2.1-property-1 expected to be deleted"
+        );
+    }
+
+    #[test]
+    fn test_delete_nost_existed_node_is_failed() {
+        let init = include_bytes!("../test/test.dtb").to_vec();
+        let mut fdt_buf = vec![0u8; init.len()];
+        let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
+
+        assert!(
+            fdt.delete_node("/non-existent").is_err(),
+            "expected failed to delete non existent node"
+        );
     }
 
     #[test]
