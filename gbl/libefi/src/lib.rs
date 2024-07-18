@@ -70,12 +70,13 @@ mod allocation;
 #[cfg(not(test))]
 pub use allocation::{efi_free, efi_malloc};
 
-pub mod protocol;
-use protocol::simple_text_output::SimpleTextOutputProtocol;
-use protocol::{Protocol, ProtocolInfo};
-
 /// The Android EFI protocol implementation of an A/B slot manager.
 pub mod ab_slots;
+pub mod protocol;
+pub mod utils;
+
+use protocol::simple_text_output::SimpleTextOutputProtocol;
+use protocol::{Protocol, ProtocolInfo};
 
 mod error {
     use super::defs::EFI_STATUS_SUCCESS;
@@ -735,8 +736,10 @@ macro_rules! efi_print {
 #[macro_export]
 macro_rules! efi_println {
     ( $efi_entry:expr, $( $x:expr ),* ) => {
-        efi_print!($efi_entry, $($x,)*);
-        efi_print!($efi_entry, "\r\n");
+        {
+            efi_print!($efi_entry, $($x,)*);
+            efi_print!($efi_entry, "\r\n");
+        }
     };
 }
 
