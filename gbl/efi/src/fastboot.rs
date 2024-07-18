@@ -27,7 +27,7 @@ use core::{cmp::min, fmt::Write, future::Future, result::Result};
 use efi::{
     defs::{EFI_STATUS_NOT_READY, EFI_STATUS_NOT_STARTED},
     efi_print, efi_println,
-    protocol::{android_boot::AndroidBootProtocol, Protocol},
+    protocol::{gbl_efi_fastboot_usb::GblFastbootUsbProtocol, Protocol},
     utils::Timeout,
     EfiEntry,
 };
@@ -70,16 +70,16 @@ impl TcpStream for EfiFastbootTcpTransport<'_, '_, '_> {
 }
 
 /// `UsbTransport` implements the `fastboot::Transport` trait using USB interfaces from
-/// EFI_ANDROID_BOOT_PROTOCOL.
-pub struct UsbTransport<'a, 'b> {
+/// GBL_EFI_FASTBOOT_USB_PROTOCOL.
+pub struct UsbTransport<'a> {
     last_err: GblResult<()>,
     max_packet_size: usize,
-    protocol: &'b Protocol<'a, AndroidBootProtocol>,
+    protocol: Protocol<'a, GblFastbootUsbProtocol>,
     io_yield_counter: YieldCounter,
 }
 
-impl<'a, 'b> UsbTransport<'a, 'b> {
-    fn new(max_packet_size: usize, protocol: &'b Protocol<'a, AndroidBootProtocol>) -> Self {
+impl<'a> UsbTransport<'a> {
+    fn new(max_packet_size: usize, protocol: Protocol<'a, GblFastbootUsbProtocol>) -> Self {
         Self {
             last_err: Ok(()),
             max_packet_size,
@@ -107,7 +107,7 @@ impl<'a, 'b> UsbTransport<'a, 'b> {
     }
 }
 
-impl Transport for UsbTransport<'_, '_> {
+impl Transport for UsbTransport<'_> {
     async fn receive_packet(&mut self, out: &mut [u8]) -> Result<usize, TransportError> {
         let mut out_size = 0;
         self.last_err = Ok(());
@@ -153,7 +153,7 @@ async fn fastboot_loop<'a>(
     efi_entry: &EfiEntry,
     gbl_fb: &mut GblFastboot<'_, 'a, EfiFbTaskExecutor<'a>, &'_ mut EfiBlockDeviceIo<'_>>,
     mut socket: Option<&mut EfiTcpSocket<'_, '_>>,
-    mut usb: Option<&mut UsbTransport<'_, '_>>,
+    mut usb: Option<&mut UsbTransport<'_>>,
 ) {
     efi_println!(efi_entry, "Fastboot USB: {}", usb.as_ref().map_or("No", |_| "Yes"));
     if let Some(socket) = socket.as_ref() {
@@ -212,10 +212,9 @@ async fn fastboot_loop<'a>(
 }
 
 /// Initializes the Fastboot USB interface and returns a `UsbTransport`.
-fn init_usb<'a, 'b>(
-    android_boot_protocol: &Option<&'b Protocol<'a, AndroidBootProtocol>>,
-) -> GblResult<UsbTransport<'a, 'b>> {
-    let protocol = android_boot_protocol.ok_or(EfiAppError::Unsupported)?;
+fn init_usb(efi_entry: &EfiEntry) -> GblResult<UsbTransport> {
+    let protocol =
+        efi_entry.system_table().boot_services().find_first_and_open::<GblFastbootUsbProtocol>()?;
     match protocol.fastboot_usb_interface_stop() {
         Err(e) if !e.is_efi_err(EFI_STATUS_NOT_STARTED) => return Err(e.into()),
         _ => {}
@@ -237,10 +236,10 @@ impl<'a> TasksExecutor<'a> for EfiFbTaskExecutor<'a> {
 /// Spawns and runs Fastboot tasks.
 fn run_fastboot<'a>(
     efi_entry: &EfiEntry,
-    gbl_fb: &mut GblFastboot<'_, 'a, EfiFbTaskExecutor<'a>, &'_ mut EfiBlockDeviceIo<'_>>,
+    gbl_fb: &mut GblFastboot<'_, 'a, EfiFbTaskExecutor<'a>, &mut EfiBlockDeviceIo>,
     blk_io_executor: &EfiFbTaskExecutor<'a>,
-    socket: Option<&mut EfiTcpSocket<'_, '_>>,
-    usb: Option<&mut UsbTransport<'_, '_>>,
+    socket: Option<&mut EfiTcpSocket>,
+    usb: Option<&mut UsbTransport>,
 ) -> GblResult<()> {
     if socket.is_none() && usb.is_none() {
         return Err(EfiAppError::Unsupported.into());
@@ -260,10 +259,7 @@ fn run_fastboot<'a>(
 }
 
 /// Runs Fastboot.
-pub fn fastboot(
-    efi_entry: &EfiEntry,
-    android_boot_protocol: Option<&Protocol<'_, AndroidBootProtocol>>,
-) -> GblResult<()> {
+pub fn fastboot(efi_entry: &EfiEntry) -> GblResult<()> {
     // TODO(b/328786603): Figure out where to get download buffer size.
     let mut download_buffers = vec![vec![0u8; 512 * 1024 * 1024]; 2];
     let mut gbl_fb_download_buffers =
@@ -274,7 +270,7 @@ pub fn fastboot(
     let blk_io_executor: EfiFbTaskExecutor = Default::default();
     let gbl_fb = &mut GblFastboot::new(&blk_io_executor, &shared_state);
 
-    let mut usb = match init_usb(&android_boot_protocol) {
+    let mut usb = match init_usb(efi_entry) {
         Ok(v) => Some(v),
         Err(e) => {
             efi_println!(efi_entry, "Failed to start Fastboot over USB. {:?}.", e);

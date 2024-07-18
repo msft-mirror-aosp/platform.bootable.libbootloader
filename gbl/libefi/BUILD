@@ -37,10 +37,10 @@ cc_library(
         "defs/boot_service.h",
         "defs/efi.h",
         "defs/protocols/ab_slot_protocol.h",
-        "defs/protocols/android_boot_protocol.h",
         "defs/protocols/block_io2_protocol.h",
         "defs/protocols/block_io_protocol.h",
         "defs/protocols/device_path_protocol.h",
+        "defs/protocols/gbl_efi_fastboot_usb.h",
         "defs/protocols/loaded_image_protocol.h",
         "defs/protocols/riscv_efi_boot_protocol.h",
         "defs/protocols/simple_network_protocol.h",
@@ -70,7 +70,7 @@ rust_bindgen(
         "--with-derive-default",
         "--with-derive-custom-struct=EfiMemoryDescriptor=AsBytes,FromBytes,FromZeroes",
         "--allowlist-type",
-        "(Efi.*)",
+        "(Efi.*)|(GblEfi.*)",
         "--raw-line",
         """
 #![allow(non_camel_case_types)]
