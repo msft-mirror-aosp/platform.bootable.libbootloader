@@ -29,11 +29,11 @@ Only required for RISC-V targets.
 
 ### Optional Protocols
 
-#### AndroidBootProtocol
+#### GblFastbootUsbProtocol
 
 This is a custom protocol intended to provide
 specific functionality needed to boot Android.
-A full description is available [here](./EFI_ANDROID_BOOT_PROTOCOL.md).
+A full description is available [here](./GBL_EFI_FASTBOOT_USB_PROTOCOL.md).
 
 #### DevicePathProtocol
 
