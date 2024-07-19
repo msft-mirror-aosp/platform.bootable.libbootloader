@@ -15,13 +15,14 @@
 use crate::error::{EfiAppError, Result};
 use core::ffi::CStr;
 use efi::{
-    defs::{EfiGuid, EFI_TIMER_DELAY_TIMER_RELATIVE},
+    defs::EfiGuid,
     protocol::{
         device_path::{DevicePathProtocol, DevicePathText, DevicePathToTextProtocol},
         loaded_image::LoadedImageProtocol,
         simple_text_input::SimpleTextInputProtocol,
     },
-    DeviceHandle, EfiEntry, Event, EventType,
+    utils::Timeout,
+    DeviceHandle, EfiEntry,
 };
 use fdt::FdtHeader;
 
@@ -117,39 +118,6 @@ pub fn cstr_bytes_to_str(data: &[u8]) -> Result<&str> {
         .map_err(|_| EfiAppError::InvalidString)?
         .to_str()
         .map_err(|_| EfiAppError::InvalidString)?)
-}
-
-/// Converts 1 ms to number of 100 nano seconds
-pub fn ms_to_100ns(ms: u64) -> Result<u64> {
-    Ok(ms.checked_mul(1000 * 10).ok_or(EfiAppError::ArithmeticOverflow)?)
-}
-
-/// `Timeout` provide APIs for checking timeout.
-pub struct Timeout<'a> {
-    efi_entry: &'a EfiEntry,
-    timer: Event<'a, 'static>,
-}
-
-impl<'a> Timeout<'a> {
-    /// Creates a new instance and starts the timeout timer.
-    pub fn new(efi_entry: &'a EfiEntry, timeout_ms: u64) -> Result<Self> {
-        let bs = efi_entry.system_table().boot_services();
-        let timer = bs.create_event(EventType::Timer, None)?;
-        bs.set_timer(&timer, EFI_TIMER_DELAY_TIMER_RELATIVE, ms_to_100ns(timeout_ms)?)?;
-        Ok(Self { efi_entry, timer })
-    }
-
-    /// Checks if it has timeout.
-    pub fn check(&self) -> Result<bool> {
-        Ok(self.efi_entry.system_table().boot_services().check_event(&self.timer)?)
-    }
-
-    /// Resets the timeout.
-    pub fn reset(&self, timeout_ms: u64) -> Result<()> {
-        let bs = self.efi_entry.system_table().boot_services();
-        bs.set_timer(&self.timer, EFI_TIMER_DELAY_TIMER_RELATIVE, ms_to_100ns(timeout_ms)?)?;
-        Ok(())
-    }
 }
 
 /// Repetitively runs a closure until it signals completion or timeout.
