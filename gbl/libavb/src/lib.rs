@@ -19,15 +19,8 @@
 // These are implementations of required C functions, see libavb sysdeps for docs.
 #![allow(missing_docs)]
 
-extern crate alloc;
-use alloc::alloc::{alloc, dealloc};
-use core::{
-    alloc::Layout,
-    cmp::{min, Ord},
-    ffi::CStr,
-    mem::size_of,
-    ptr::{null_mut, NonNull},
-};
+use core::ffi::{c_char, c_int, c_void};
+use libc::{gbl_free, gbl_malloc, memcmp, memcpy, memset, strcmp, strlen, strncmp};
 
 /// `avb_malloc_()` requires allocation to be word aligned.
 const AVB_MALLOC_ALIGNMENT: usize = 2;
@@ -38,49 +31,23 @@ pub extern "C" fn avb_abort() -> ! {
 }
 
 #[no_mangle]
-pub extern "C" fn avb_malloc_(size: usize) -> *mut core::ffi::c_void {
-    (|| {
-        // Allocate extra to store the size value.
-        let size = size_of::<usize>().checked_add(size)?;
-        // SAFETY:
-        // *  On success, `alloc` guarantees to allocate enough memory.
-        // * `size.to_le_bytes().as_ptr()` is guaranteed valid memory.
-        // * Alignment is 1 for bytes copy.
-        unsafe {
-            let ptr =
-                NonNull::new(alloc(Layout::from_size_align(size, AVB_MALLOC_ALIGNMENT).ok()?))?;
-            ptr.as_ptr().copy_from(size.to_le_bytes().as_ptr(), size_of::<usize>());
-            let ptr = ptr.as_ptr().add(size_of::<usize>());
-            Some(ptr)
-        }
-    })()
-    .unwrap_or(null_mut()) as _
+pub extern "C" fn avb_malloc_(size: usize) -> *mut c_void {
+    // SAFETY: libavb calls are compatible with libc counterparts, alignment the same as
+    // avb_free
+    unsafe { gbl_malloc(size, AVB_MALLOC_ALIGNMENT) }
 }
 
 #[no_mangle]
-pub extern "C" fn avb_free(ptr: *mut core::ffi::c_void) {
-    assert_ne!(ptr, null_mut());
-    let mut ptr = ptr as *mut u8;
-    let mut size_bytes = [0u8; size_of::<usize>()];
-    // SAFETY:
-    // * `ptr` is allocated by `avb_malloc_` and guarantees to have enough memory for a preceding
-    //   usize value and payload.
-    // * `size_bytes.as_mut_ptr()` is a valid memory location.
-    // * Alignment is 1 for bytes copy.
-    unsafe {
-        ptr = ptr.sub(size_of::<usize>());
-        ptr.copy_to(size_bytes.as_mut_ptr(), size_of::<usize>())
-    };
-    let size = usize::from_le_bytes(size_bytes);
-    // SAFETY: Call to global allocator.
-    unsafe { dealloc(ptr, Layout::from_size_align(size, AVB_MALLOC_ALIGNMENT).unwrap()) };
+pub extern "C" fn avb_free(ptr: *mut c_void) {
+    // SAFETY: libavb calls are compatible with libc counterparts, alignment the same as
+    // avb_malloc_
+    unsafe { gbl_free(ptr, AVB_MALLOC_ALIGNMENT) }
 }
 
 #[no_mangle]
-pub extern "C" fn avb_strlen(s: *const core::ffi::c_char) -> usize {
-    // SAFETY: libavb guarantees to pass valid NULL-terminated strings to this function. The
-    // returned reference is only used to compute string length.
-    unsafe { CStr::from_ptr(s as *const _) }.to_bytes().len()
+pub extern "C" fn avb_strlen(s: *const c_char) -> usize {
+    // SAFETY: libavb calls are compatible with libc counterparts
+    unsafe { strlen(s) }
 }
 
 #[no_mangle]
@@ -93,64 +60,31 @@ pub extern "C" fn avb_div_by_10(dividend: *mut u64) -> u32 {
 }
 
 #[no_mangle]
-pub extern "C" fn avb_memcpy(
-    dest: *mut core::ffi::c_void,
-    src: *const core::ffi::c_void,
-    n: usize,
-) -> *mut core::ffi::c_void {
-    // SAFETY: libavb guarantees to pass valid pointers.
-    unsafe { (src.cast::<u8>()).copy_to(dest as *mut _, n) };
-    dest
+pub extern "C" fn avb_memcpy(dest: *mut c_void, src: *const c_void, n: usize) -> *mut c_void {
+    // SAFETY: libavb calls are compatible with libc counterparts
+    unsafe { memcpy(dest, src, n) }
 }
 
 #[no_mangle]
-pub extern "C" fn avb_memcmp(
-    src1: *const core::ffi::c_void,
-    src2: *const core::ffi::c_void,
-    n: usize,
-) -> core::ffi::c_int {
-    // SAFETY: libavb guarantees to pass valid pointers. References are only used within function.
-    let (lhs, rhs) = unsafe {
-        (
-            core::slice::from_raw_parts(src1 as *const u8, n),
-            core::slice::from_raw_parts(src2 as *const u8, n),
-        )
-    };
-    Ord::cmp(lhs, rhs) as i32
+pub extern "C" fn avb_memcmp(src1: *const c_void, src2: *const c_void, n: usize) -> c_int {
+    // SAFETY: libavb calls are compatible with libc counterparts
+    unsafe { memcmp(src1, src2, n) }
 }
 
 #[no_mangle]
-pub extern "C" fn avb_strcmp(
-    s1: *const core::ffi::c_char,
-    s2: *const core::ffi::c_char,
-) -> core::ffi::c_int {
-    // SAFETY: libavb guarantees to pass valid NULL-terminated strings. References are only used
-    // within function.
-    let (lhs, rhs) = unsafe { (CStr::from_ptr(s1 as *const _), CStr::from_ptr(s2 as *const _)) };
-    Ord::cmp(lhs, rhs) as i32
+pub extern "C" fn avb_memset(dest: *mut c_void, c: c_int, n: usize) -> *mut c_void {
+    // SAFETY: libavb calls are compatible with libc counterparts
+    unsafe { memset(dest, c, n) }
 }
 
 #[no_mangle]
-pub extern "C" fn avb_strncmp(
-    s1: *const core::ffi::c_char,
-    s2: *const core::ffi::c_char,
-    n: usize,
-) -> core::ffi::c_int {
-    // SAFETY: libavb guarantees to pass valid NULL-terminated strings. References are only used
-    // within function.
-    let (lhs, rhs) = unsafe { (CStr::from_ptr(s1 as *const _), CStr::from_ptr(s2 as *const _)) };
-    let cmp_size = min(min(lhs.to_bytes().len(), rhs.to_bytes().len()), n);
-    Ord::cmp(&lhs.to_bytes()[..cmp_size], &rhs.to_bytes()[..cmp_size]) as i32
+pub extern "C" fn avb_strcmp(s1: *const c_char, s2: *const c_char) -> c_int {
+    // SAFETY: libavb calls are compatible with libc counterparts
+    unsafe { strcmp(s1, s2) }
 }
 
 #[no_mangle]
-pub extern "C" fn avb_memset(
-    dest: *mut core::ffi::c_void,
-    c: core::ffi::c_int,
-    n: usize,
-) -> *mut core::ffi::c_void {
-    // SAFETY: libavb guarantees to pass valid buffer. Reference is only used within function.
-    let arr = unsafe { core::slice::from_raw_parts_mut(dest as *mut u8, n) };
-    arr.fill(c as u8);
-    dest
+pub extern "C" fn avb_strncmp(s1: *const c_char, s2: *const c_char, n: usize) -> c_int {
+    // SAFETY: libavb calls are compatible with libc counterparts
+    unsafe { strncmp(s1, s2, n) }
 }

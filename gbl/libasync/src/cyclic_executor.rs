@@ -54,6 +54,11 @@ impl<'a> CyclicExecutor<'a> {
             self.poll();
         }
     }
+
+    /// Returns the current number of tasks.
+    pub fn num_tasks(&self) -> usize {
+        self.tasks.len()
+    }
 }
 
 #[cfg(test)]
