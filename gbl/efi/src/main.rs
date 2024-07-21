@@ -26,7 +26,6 @@ extern crate alloc;
 use core::fmt::Write;
 
 use efi::defs::EfiSystemTable;
-use efi::protocol::android_boot::AndroidBootProtocol;
 use efi::{efi_print, efi_println, initialize, panic};
 
 #[macro_use]
@@ -64,12 +63,7 @@ fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -
     match wait_key_stroke(&entry, '\x08', 2000) {
         Ok(true) => {
             efi_println!(entry, "Backspace pressed.");
-            let android_boot_protocol = entry
-                .system_table()
-                .boot_services()
-                .find_first_and_open::<AndroidBootProtocol>()
-                .ok();
-            fastboot::fastboot(&entry, android_boot_protocol.as_ref())?;
+            fastboot::fastboot(&entry)?;
         }
         _ => {}
     }

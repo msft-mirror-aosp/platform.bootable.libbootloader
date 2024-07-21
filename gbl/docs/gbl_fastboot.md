@@ -7,7 +7,7 @@ This document describes Fastboot in the [GBL UEFI bootloader](../efi/BUILD).
 The GBL UEFI bootloader supports both Fastboot over TCP and USB. To enable
 Fastboot over TCP, the UEFI loader needs to implement the
 `EFI_SIMPLE_NETWORK_PROTOCOL` protocol. To enable Fastboot over USB, the
-[EFI_ANDROID_BOOT_PROTOCOL](./EFI_ANDROID_BOOT_PROTOCOL.md) protocol is needed.
+[GBL_EFI_FASTBOOT_USB_PROTOCOL](./GBL_EFI_FASTBOOT_USB_PROTOCOL.md) protocol is needed.
 GBL automatically establishes the corresponding transport channel if the needed
 protocol is available.
 
