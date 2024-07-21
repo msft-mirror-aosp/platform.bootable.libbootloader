@@ -211,6 +211,11 @@ impl CommandError {
     pub fn to_str(&self) -> &str {
         from_utf8(&self.0 .0[..self.0 .1]).unwrap_or("")
     }
+
+    /// Clones the error.
+    pub fn clone(&self) -> Self {
+        self.to_str().into()
+    }
 }
 
 impl Debug for CommandError {
