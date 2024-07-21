@@ -14,7 +14,7 @@
 
 use crate::{
     error::{EfiAppError, Result},
-    utils::{get_device_path, loop_with_timeout, ms_to_100ns, Timeout},
+    utils::{get_device_path, loop_with_timeout},
 };
 use alloc::{boxed::Box, vec::Vec};
 use core::{
@@ -28,6 +28,7 @@ use efi::{
     },
     efi_print, efi_println,
     protocol::{simple_network::SimpleNetworkProtocol, Protocol},
+    utils::{ms_to_100ns, Timeout},
     DeviceHandle, EfiEntry, EventNotify, EventType, Tpl,
 };
 use gbl_async::{yield_now, YieldCounter};
@@ -47,7 +48,7 @@ const ETHERNET_FRAME_SIZE: usize = 1536;
 // Update period in milliseconds for `NETWORK_TIMESTAMP`.
 const NETWORK_TIMESTAMP_UPDATE_PERIOD: u64 = 50;
 // Size of the socket tx/rx application data buffer.
-const SOCKET_TX_RX_BUFFER: usize = 64 * 1024;
+const SOCKET_TX_RX_BUFFER: usize = 256 * 1024;
 
 /// Performs a shutdown and restart of the simple network protocol.
 fn reset_simple_network<'a>(snp: &Protocol<'a, SimpleNetworkProtocol>) -> Result<()> {
