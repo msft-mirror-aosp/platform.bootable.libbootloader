@@ -583,6 +583,8 @@ impl<'a, 'n> Event<'a, 'n> {
     }
 
     /// Creates an  unowned `Event`. The `Event` is not closed when going out of scope.
+    // TODO allow unused?
+    #[allow(dead_code)]
     fn new_unowned(efi_event: EfiEvent) -> Self {
         Self { efi_entry: None, efi_event: efi_event, _cb: None }
     }
