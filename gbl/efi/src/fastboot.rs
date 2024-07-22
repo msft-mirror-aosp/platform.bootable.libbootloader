@@ -23,12 +23,11 @@ use crate::{
     net::{with_efi_network, EfiTcpSocket},
 };
 use alloc::vec::Vec;
-use core::{cmp::min, fmt::Write, future::Future, result::Result};
+use core::{cmp::min, fmt::Write, future::Future, mem::take, result::Result};
 use efi::{
-    defs::{EFI_STATUS_NOT_READY, EFI_STATUS_NOT_STARTED},
+    defs::EFI_STATUS_NOT_STARTED,
     efi_print, efi_println,
     protocol::{gbl_efi_fastboot_usb::GblFastbootUsbProtocol, Protocol},
-    utils::Timeout,
     EfiEntry,
 };
 use fastboot::{
@@ -37,7 +36,7 @@ use fastboot::{
 use gbl_async::{yield_now, YieldCounter};
 use gbl_cyclic_executor::CyclicExecutor;
 use libgbl::fastboot::{GblFastboot, GblFbResource, TasksExecutor};
-use spin::Mutex;
+use spin::{Mutex, MutexGuard};
 
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 const FASTBOOT_TCP_PORT: u16 = 5554;
@@ -76,6 +75,10 @@ pub struct UsbTransport<'a> {
     max_packet_size: usize,
     protocol: Protocol<'a, GblFastbootUsbProtocol>,
     io_yield_counter: YieldCounter,
+    // Buffer for prefetching an incoming packet in `wait_for_packet()`.
+    // Alternatively we can also consider adding an EFI event for packet arrive. But UEFI firmware
+    // may be more complicated.
+    prefetched: (Vec<u8>, usize),
 }
 
 impl<'a> UsbTransport<'a> {
@@ -85,6 +88,7 @@ impl<'a> UsbTransport<'a> {
             max_packet_size,
             protocol,
             io_yield_counter: YieldCounter::new(u64::MAX),
+            prefetched: (vec![0u8; max_packet_size], 0),
         }
     }
 
@@ -93,37 +97,47 @@ impl<'a> UsbTransport<'a> {
         self.io_yield_counter = YieldCounter::new(threshold)
     }
 
-    /// Waits for the previous send to complete up to `DEFAULT_TIMEOUT_MS` timeout.
-    async fn wait_for_send(&self) -> GblResult<()> {
-        let timer = Timeout::new(self.protocol.efi_entry(), DEFAULT_TIMEOUT_MS)?;
-        let bs = self.protocol.efi_entry().system_table().boot_services();
-        while !timer.check()? {
-            match bs.check_event(&self.protocol.wait_for_send_completion()?)? {
-                true => return Ok(()),
-                _ => yield_now().await,
+    /// Reads the next packet from the EFI USB protocol into the given buffer.
+    async fn receive_next_from_efi(&mut self, out: &mut [u8]) -> Result<usize, TransportError> {
+        match self.protocol.receive_packet(out).await {
+            Ok(sz) => {
+                // Forces a yield to the executor if the data received/sent reaches a certain
+                // threshold. This is to prevent the async code from holding up the CPU for too long
+                // in case IO speed is high and the executor uses cooperative scheduling.
+                self.io_yield_counter.increment(sz.try_into().unwrap()).await;
+                return Ok(sz);
+            }
+            Err(e) => {
+                self.last_err = Err(e.into());
+                return Err(TransportError::Others("USB receive error"));
             }
         }
-        Err(EfiAppError::Timeout.into())
+    }
+
+    /// Waits until a packet is cached into an internal buffer.
+    async fn cache_next_packet(&mut self) -> Result<(), TransportError> {
+        match &mut self.prefetched {
+            (pkt, len) if *len == 0 => {
+                let mut packet = take(pkt);
+                let len = self.receive_next_from_efi(&mut packet[..]).await?;
+                self.prefetched = (packet, len);
+            }
+            _ => {}
+        }
+        Ok(())
     }
 }
 
 impl Transport for UsbTransport<'_> {
     async fn receive_packet(&mut self, out: &mut [u8]) -> Result<usize, TransportError> {
-        let mut out_size = 0;
-        self.last_err = Ok(());
-        match self.protocol.fastboot_usb_receive(out, &mut out_size) {
-            Ok(()) => {
-                // Forces a yield to the executor if the data received/sent reaches a certain
-                // threshold. This is to prevent the async code from holding up the CPU for too long
-                // in case IO speed is high and the executor uses cooperative scheduling.
-                self.io_yield_counter.increment(out_size.try_into().unwrap()).await;
-                Ok(out_size)
+        match &mut self.prefetched {
+            (pkt, len) if *len > 0 => {
+                let out = out.get_mut(..*len).ok_or(TransportError::Others("Buffer too small"))?;
+                let src = pkt.get(..*len).ok_or(TransportError::Others("Invalid USB read size"))?;
+                out.clone_from_slice(src);
+                return Ok(take(len));
             }
-            Err(e) if e.is_efi_err(EFI_STATUS_NOT_READY) => Ok(0),
-            Err(e) => {
-                self.last_err = Err(e.into());
-                Err(TransportError::Others("USB receive error"))
-            }
+            _ => self.receive_next_from_efi(out).await,
         }
     }
 
@@ -132,82 +146,17 @@ impl Transport for UsbTransport<'_> {
             let mut curr = &packet[..];
             while !curr.is_empty() {
                 let to_send = min(curr.len(), self.max_packet_size);
-                let mut out_size = 0;
-                self.protocol.fastboot_usb_send(&curr[..to_send], &mut out_size)?;
+                self.protocol.send_packet(&curr[..to_send], DEFAULT_TIMEOUT_MS).await?;
                 // Forces a yield to the executor if the data received/sent reaches a certain
                 // threshold. This is to prevent the async code from holding up the CPU for too long
                 // in case IO speed is high and the executor uses cooperative scheduling.
                 self.io_yield_counter.increment(to_send.try_into().unwrap()).await;
                 curr = &curr[to_send..];
-                self.wait_for_send().await?;
             }
             Ok(())
         }
         .await;
         Ok(*self.last_err.as_ref().map_err(|_| TransportError::Others("USB send error"))?)
-    }
-}
-
-/// Loops and polls both USB and TCP transport. Runs Fastboot if any is available.
-async fn fastboot_loop<'a>(
-    efi_entry: &EfiEntry,
-    gbl_fb: &mut GblFastboot<'_, 'a, EfiFbTaskExecutor<'a>, &'_ mut EfiBlockDeviceIo<'_>>,
-    mut socket: Option<&mut EfiTcpSocket<'_, '_>>,
-    mut usb: Option<&mut UsbTransport<'_>>,
-) {
-    efi_println!(efi_entry, "Fastboot USB: {}", usb.as_ref().map_or("No", |_| "Yes"));
-    if let Some(socket) = socket.as_ref() {
-        efi_println!(efi_entry, "Fastboot TCP: Yes");
-        efi_println!(efi_entry, "Device IP addresses:");
-        socket.interface().ip_addrs().iter().for_each(|v| {
-            efi_println!(efi_entry, "\t{}", v.address());
-        });
-    } else {
-        efi_println!(efi_entry, "Fastboot TCP: No");
-    }
-
-    let mut listen_start_timestamp = EfiTcpSocket::timestamp(0);
-    loop {
-        // Checks and processes commands over USB.
-        if let Some(usb) = usb.as_mut() {
-            usb.set_io_yield_threshold(1024 * 1024); // 1MB
-            if process_next_command(*usb, gbl_fb).await.is_err() {
-                efi_println!(efi_entry, "Fastboot USB error: {:?}", usb.last_err);
-            }
-        }
-
-        // Checks and processes commands over TCP.
-        if let Some(socket) = socket.as_mut() {
-            socket.set_io_yield_threshold(1024 * 1024); // 1MB
-            socket.poll();
-            let mut reset_socket = false;
-            if socket.check_active() {
-                let remote = socket.get_socket().remote_endpoint().unwrap();
-                efi_println!(efi_entry, "TCP connection from {}", remote);
-                let mut transport = EfiFastbootTcpTransport::new(socket);
-                let _ = run_tcp_session(&mut transport, gbl_fb).await;
-                match transport.last_err {
-                    Ok(()) | Err(GblEfiError::EfiAppError(EfiAppError::PeerClosed)) => {}
-                    Err(e) => {
-                        efi_println!(efi_entry, "Fastboot TCP error {:?}", e);
-                    }
-                }
-                reset_socket = true;
-            } else if EfiTcpSocket::timestamp(listen_start_timestamp) > DEFAULT_TIMEOUT_MS {
-                // Reset once in a while in case a remote client disconnects in the middle of
-                // TCP handshake and leaves the socket in a half open state.
-                reset_socket = true;
-            }
-
-            if reset_socket {
-                listen_start_timestamp = EfiTcpSocket::timestamp(0);
-                if let Err(e) = socket.listen(FASTBOOT_TCP_PORT) {
-                    efi_println!(efi_entry, "TCP listen error: {:?}", e);
-                }
-            }
-        }
-
-        yield_now().await;
     }
 }
 
@@ -233,27 +182,115 @@ impl<'a> TasksExecutor<'a> for EfiFbTaskExecutor<'a> {
     }
 }
 
+/// A convenient type alias of `GblFastboot` in the EFI context with all generics parameters
+/// resolved.
+type EfiGblFbImpl<'a, 'b, 'c, 'd> =
+    GblFastboot<'a, 'b, EfiFbTaskExecutor<'b>, &'c mut EfiBlockDeviceIo<'d>>;
+
+/// Waits until a shared resource protected by a mutex is acquired successfully.
+async fn lock<T>(resource: &Mutex<T>) -> MutexGuard<T> {
+    loop {
+        // Yield first so that repetitive calls guarantees at least one yield.
+        yield_now().await;
+        match resource.try_lock() {
+            Some(v) => return v,
+            _ => {}
+        }
+    }
+}
+
+/// Task routine for Fastboot over USB.
+async fn fastboot_usb(
+    efi_entry: &EfiEntry,
+    gbl_fb: &Mutex<&mut EfiGblFbImpl<'_, '_, '_, '_>>,
+    usb: &mut UsbTransport<'_>,
+) {
+    usb.set_io_yield_threshold(1024 * 1024); // 1MB
+    loop {
+        match usb.cache_next_packet().await {
+            Err(_) => efi_println!(efi_entry, "Fastboot USB error: {:?}", usb.last_err),
+            _ => match process_next_command(usb, *lock(gbl_fb).await).await {
+                Err(_) => efi_println!(efi_entry, "Fastboot USB error: {:?}", usb.last_err),
+                _ => {}
+            },
+        }
+    }
+}
+
+/// Task routine for Fastboot over TCP.
+async fn fastboot_tcp(
+    efi_entry: &EfiEntry,
+    gbl_fb: &Mutex<&mut EfiGblFbImpl<'_, '_, '_, '_>>,
+    socket: &mut EfiTcpSocket<'_, '_>,
+) {
+    socket.set_io_yield_threshold(1024 * 1024); // 1MB
+    let mut listen_start_timestamp = EfiTcpSocket::timestamp(0);
+    loop {
+        socket.poll();
+        let mut reset_socket = false;
+        if socket.check_active() {
+            let remote = socket.get_socket().remote_endpoint().unwrap();
+            efi_println!(efi_entry, "TCP connection from {}", remote);
+            let mut transport = EfiFastbootTcpTransport::new(socket);
+            let _ = run_tcp_session(&mut transport, *lock(gbl_fb).await).await;
+            match transport.last_err {
+                Ok(()) | Err(GblEfiError::EfiAppError(EfiAppError::PeerClosed)) => {}
+                Err(e) => efi_println!(efi_entry, "Fastboot TCP error {:?}", e),
+            }
+            reset_socket = true;
+        }
+        // Reset once in a while in case a remote client disconnects in the middle of
+        // TCP handshake and leaves the socket in a half open state.
+        if reset_socket || EfiTcpSocket::timestamp(listen_start_timestamp) > DEFAULT_TIMEOUT_MS {
+            listen_start_timestamp = EfiTcpSocket::timestamp(0);
+            if let Err(e) = socket.listen(FASTBOOT_TCP_PORT) {
+                efi_println!(efi_entry, "TCP listen error: {:?}", e);
+            }
+        }
+        // Necessary because our executor uses cooperative scheduling.
+        yield_now().await;
+    }
+}
+
 /// Spawns and runs Fastboot tasks.
 fn run_fastboot<'a>(
     efi_entry: &EfiEntry,
     gbl_fb: &mut GblFastboot<'_, 'a, EfiFbTaskExecutor<'a>, &mut EfiBlockDeviceIo>,
-    blk_io_executor: &EfiFbTaskExecutor<'a>,
     socket: Option<&mut EfiTcpSocket>,
     usb: Option<&mut UsbTransport>,
 ) -> GblResult<()> {
-    if socket.is_none() && usb.is_none() {
-        return Err(EfiAppError::Unsupported.into());
-    }
+    assert!(socket.is_some() || usb.is_some());
+    let blk_io_executor = gbl_fb.blk_io_executor();
+    let gbl_fb = gbl_fb.into();
     let mut task_executor: CyclicExecutor = Default::default();
-    // Fastboot command loop task.
-    task_executor.spawn_task(fastboot_loop(efi_entry, gbl_fb, socket, usb));
-    // Disk IO task.
+    // Fastboot over USB task.
+    match usb {
+        Some(v) => {
+            efi_println!(efi_entry, "Started Fastboot over USB.");
+            task_executor.spawn_task(fastboot_usb(efi_entry, &gbl_fb, v));
+        }
+        _ => {}
+    }
+    // Fastboot over TCP task.
+    match socket {
+        Some(v) => {
+            efi_println!(efi_entry, "Started Fastboot over TCP");
+            efi_println!(efi_entry, "IP address:");
+            v.interface().ip_addrs().iter().for_each(|v| {
+                efi_println!(efi_entry, "\t{}", v.address());
+            });
+            task_executor.spawn_task(fastboot_tcp(efi_entry, &gbl_fb, v));
+        }
+        _ => {}
+    }
+    // Task for scheduling disk IO tasks spawned by Fastboot.
     task_executor.spawn_task(async {
         loop {
             blk_io_executor.0.lock().poll();
             yield_now().await;
         }
     });
+    // Run all tasks.
     task_executor.run();
     Ok(())
 }
@@ -279,11 +316,11 @@ pub fn fastboot(efi_entry: &EfiEntry) -> GblResult<()> {
     };
 
     match with_efi_network(efi_entry, |socket| {
-        run_fastboot(efi_entry, gbl_fb, &blk_io_executor, Some(socket), usb.as_mut())
+        run_fastboot(efi_entry, gbl_fb, Some(socket), usb.as_mut())
     }) {
         Err(e) => {
             efi_println!(efi_entry, "Failed to start EFI network. {:?}.", e);
-            run_fastboot(efi_entry, gbl_fb, &blk_io_executor, None, usb.as_mut())
+            run_fastboot(efi_entry, gbl_fb, None, usb.as_mut())
         }
         v => v?,
     }
