@@ -120,8 +120,6 @@ pub trait Transport {
     ///
     /// Returns the actual size of the packet on success.
     ///
-    /// If no packet is available, Ok(0) should be returned.
-    ///
     /// TODO(b/322540167): In the future, we may want to support using `[MaybeUninit<u8>]` as the
     /// download buffer to avoid expensive initialization at the beginning. This would require an
     /// interface where the implementation provides the buffer for us to copy instead of us.

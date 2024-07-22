@@ -14,9 +14,16 @@
 
 //! Rust wrapper for `GBL_EFI_FASTBOOT_USB_PROTOCOL`.
 
-use crate::defs::{EfiGuid, GblEfiFastbootUsbProtocol, EFI_STATUS_NOT_FOUND};
-use crate::protocol::{Protocol, ProtocolInfo};
-use crate::{efi_call, map_efi_err, EfiResult, Event};
+use crate::{
+    defs::{
+        EfiGuid, GblEfiFastbootUsbProtocol, EFI_STATUS_NOT_FOUND, EFI_STATUS_NOT_READY,
+        EFI_STATUS_TIMEOUT,
+    },
+    protocol::{Protocol, ProtocolInfo},
+    utils::with_timeout,
+    {efi_call, map_efi_err, EfiResult, Event},
+};
+use gbl_async::yield_now;
 
 /// GBL_EFI_FASTBOOT_USB_PROTOCOL
 pub struct GblFastbootUsbProtocol;
@@ -96,5 +103,36 @@ impl Protocol<'_, GblFastbootUsbProtocol> {
     /// Returns the `GBL_EFI_FASTBOOT_USB_PROTOCOL.wait_for_send_completion` EFI event.
     pub fn wait_for_send_completion(&self) -> EfiResult<Event> {
         Ok(Event::new_unowned(self.interface()?.wait_for_send_completion))
+    }
+
+    /// Receives the next packet from the USB.
+    pub async fn receive_packet(&self, out: &mut [u8]) -> EfiResult<usize> {
+        loop {
+            let mut out_size = 0;
+            match self.fastboot_usb_receive(out, &mut out_size) {
+                Ok(()) => return Ok(out_size),
+                Err(e) if e.is_efi_err(EFI_STATUS_NOT_READY) => yield_now().await,
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// A helper to wait for the send event to signal.
+    async fn wait_send(&self) -> EfiResult<()> {
+        let bs = self.efi_entry().system_table().boot_services();
+        while !bs.check_event(&self.wait_for_send_completion()?)? {
+            yield_now().await;
+        }
+        Ok(())
+    }
+
+    /// Sends a packet over the USB.
+    pub async fn send_packet(&self, data: &[u8], timeout_ms: u64) -> EfiResult<()> {
+        let mut out_size = 0;
+        self.fastboot_usb_send(data, &mut out_size)?;
+        match with_timeout(self.efi_entry(), self.wait_send(), timeout_ms).await? {
+            None => Err(EFI_STATUS_TIMEOUT.into()),
+            Some(_) => Ok(()),
+        }
     }
 }
