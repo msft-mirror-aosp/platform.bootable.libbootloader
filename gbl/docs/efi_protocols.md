@@ -74,3 +74,11 @@ TODO: remove this protocol
 If present, the system is expected to boot Android. This protocol abstracts over
 implementation details in the system AB metadata and provides a common interface
 for GBL.
+
+#### GblImageLoadingProtocol
+
+This is optional protocol.
+
+If implemented, the GblImageLoadingProtocol is used to provide buffers to load
+different images for verification and boot process.  In addition this protocol
+provides a list of partitions to be verified before booting.
