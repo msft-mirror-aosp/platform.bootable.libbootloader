@@ -15,9 +15,12 @@
 extern crate gbl_storage;
 extern crate libgbl as gbl;
 
+use core::convert::TryInto;
+
+pub use gbl::slots::Error;
 use gbl::slots::{
-    BootTarget, BootToken, Error, Manager, OneShot, RecoveryTarget, Slot, SlotIterator, Suffix,
-    Tries, UnbootableReason,
+    BootTarget, BootToken, Manager, OneShot, RecoveryTarget, Slot, SlotIterator, Suffix, Tries,
+    UnbootableReason,
 };
 
 use crate::defs::{
@@ -54,33 +57,30 @@ impl gbl::slots::private::SlotGet for ABManager<'_> {
 }
 
 impl Manager for ABManager<'_> {
-    fn get_boot_target(&self) -> BootTarget {
-        let slot = self.get_slot_last_set_active();
+    fn get_boot_target(&self) -> Result<BootTarget, Error> {
+        let slot = self.get_slot_last_set_active()?;
         let mut subreason = [0u8; SUBREASON_BUF_LEN];
-        let (reason, _) = self.protocol.get_boot_reason(subreason.as_mut_slice()).unwrap();
+        let (reason, _) = self.protocol.get_boot_reason(subreason.as_mut_slice())?;
         // Don't currently care about the subreason
-        // CStr::from_bytes_until_nul(&subreason[..strlen]).unwrap()
-        if reason == EFI_BOOT_REASON_RECOVERY {
-            BootTarget::Recovery(RecoveryTarget::Slotted(slot))
-        } else {
-            BootTarget::NormalBoot(slot)
-        }
+        // CStr::from_bytes_until_nul(&subreason[..strlen])?
+        let target = match reason {
+            EFI_BOOT_REASON_RECOVERY => BootTarget::Recovery(RecoveryTarget::Slotted(slot)),
+            _ => BootTarget::NormalBoot(slot),
+        };
+        Ok(target)
     }
 
     fn slots_iter(&self) -> SlotIterator {
         SlotIterator::new(self)
     }
 
-    fn get_slot_last_set_active(&self) -> Slot {
+    fn get_slot_last_set_active(&self) -> Result<Slot, Error> {
         use gbl::slots::private::SlotGet;
 
         if let Some(idx) = self.last_set_active_idx {
-            self.get_slot_by_number(idx.into()).expect("cannot get slot last set active")
+            self.get_slot_by_number(idx.into())
         } else {
-            self.protocol
-                .get_current_slot()
-                .map(|efi_slot| efi_slot.try_into().expect("invalid slot info from protocol"))
-                .expect("cannot get current slot")
+            self.protocol.get_current_slot()?.try_into()
         }
     }
 
@@ -120,9 +120,8 @@ impl Manager for ABManager<'_> {
         self.protocol.set_slot_unbootable(idx, u8::from(reason).into()).or(Err(Error::Other))
     }
 
-    fn get_max_retries(&self) -> Tries {
-        let block = self.protocol.load_boot_data().unwrap();
-        block.max_retries.into()
+    fn get_max_retries(&self) -> Result<Tries, Error> {
+        Ok(self.protocol.load_boot_data()?.max_retries.into())
     }
 
     fn get_oneshot_status(&self) -> Option<OneShot> {
@@ -388,13 +387,13 @@ mod test {
                 priority: 7usize.into(),
                 bootability: Bootability::Successful,
             };
-            assert_eq!(cursor.ctx.get_boot_target(), BootTarget::NormalBoot(slot));
-            assert_eq!(cursor.ctx.get_slot_last_set_active(), slot);
+            assert_eq!(cursor.ctx.get_boot_target().unwrap(), BootTarget::NormalBoot(slot));
+            assert_eq!(cursor.ctx.get_slot_last_set_active().unwrap(), slot);
 
             BOOT_REASON.with(|r| r.store(EFI_BOOT_REASON_RECOVERY, Ordering::Relaxed));
 
             assert_eq!(
-                cursor.ctx.get_boot_target(),
+                cursor.ctx.get_boot_target().unwrap(),
                 BootTarget::Recovery(RecoveryTarget::Slotted(slot))
             );
         });
@@ -463,7 +462,7 @@ mod test {
             let mut test_ops = TestGblOps::new(protocol);
             let mut gbl = Gbl::<TestGblOps>::new(&mut test_ops);
             let cursor = gbl.load_slot_interface(&mut block_device).unwrap();
-            assert_eq!(cursor.ctx.get_max_retries(), 66usize.into());
+            assert_eq!(cursor.ctx.get_max_retries().unwrap(), 66usize.into());
         });
     }
 

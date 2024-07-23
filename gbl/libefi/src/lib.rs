@@ -79,6 +79,8 @@ use protocol::simple_text_output::SimpleTextOutputProtocol;
 use protocol::{Protocol, ProtocolInfo};
 
 mod error {
+    use crate::ab_slots;
+
     use super::defs::EFI_STATUS_SUCCESS;
     use super::EfiStatus;
 
@@ -117,6 +119,13 @@ mod error {
                     efi_status & !(1 << (core::mem::size_of::<EfiStatus>() * 8 - 1)),
                 ),
             })
+        }
+    }
+
+    impl From<EfiError> for ab_slots::Error {
+        fn from(_err: EfiError) -> ab_slots::Error {
+            // Lazy default
+            ab_slots::Error::Other
         }
     }
 }
@@ -583,6 +592,8 @@ impl<'a, 'n> Event<'a, 'n> {
     }
 
     /// Creates an  unowned `Event`. The `Event` is not closed when going out of scope.
+    // TODO allow unused?
+    #[allow(dead_code)]
     fn new_unowned(efi_event: EfiEvent) -> Self {
         Self { efi_entry: None, efi_event: efi_event, _cb: None }
     }
