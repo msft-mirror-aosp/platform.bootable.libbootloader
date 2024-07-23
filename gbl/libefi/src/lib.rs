@@ -70,14 +70,17 @@ mod allocation;
 #[cfg(not(test))]
 pub use allocation::{efi_free, efi_malloc};
 
+/// The Android EFI protocol implementation of an A/B slot manager.
+pub mod ab_slots;
 pub mod protocol;
+pub mod utils;
+
 use protocol::simple_text_output::SimpleTextOutputProtocol;
 use protocol::{Protocol, ProtocolInfo};
 
-/// The Android EFI protocol implementation of an A/B slot manager.
-pub mod ab_slots;
-
 mod error {
+    use crate::ab_slots;
+
     use super::defs::EFI_STATUS_SUCCESS;
     use super::EfiStatus;
 
@@ -116,6 +119,13 @@ mod error {
                     efi_status & !(1 << (core::mem::size_of::<EfiStatus>() * 8 - 1)),
                 ),
             })
+        }
+    }
+
+    impl From<EfiError> for ab_slots::Error {
+        fn from(_err: EfiError) -> ab_slots::Error {
+            // Lazy default
+            ab_slots::Error::Other
         }
     }
 }
@@ -582,6 +592,8 @@ impl<'a, 'n> Event<'a, 'n> {
     }
 
     /// Creates an  unowned `Event`. The `Event` is not closed when going out of scope.
+    // TODO allow unused?
+    #[allow(dead_code)]
     fn new_unowned(efi_event: EfiEvent) -> Self {
         Self { efi_entry: None, efi_event: efi_event, _cb: None }
     }
@@ -735,8 +747,10 @@ macro_rules! efi_print {
 #[macro_export]
 macro_rules! efi_println {
     ( $efi_entry:expr, $( $x:expr ),* ) => {
-        efi_print!($efi_entry, $($x,)*);
-        efi_print!($efi_entry, "\r\n");
+        {
+            efi_print!($efi_entry, $($x,)*);
+            efi_print!($efi_entry, "\r\n");
+        }
     };
 }
 

@@ -29,11 +29,11 @@ Only required for RISC-V targets.
 
 ### Optional Protocols
 
-#### AndroidBootProtocol
+#### GblFastbootUsbProtocol
 
 This is a custom protocol intended to provide
 specific functionality needed to boot Android.
-A full description is available [here](./EFI_ANDROID_BOOT_PROTOCOL.md).
+A full description is available [here](./GBL_EFI_FASTBOOT_USB_PROTOCOL.md).
 
 #### DevicePathProtocol
 
@@ -74,3 +74,11 @@ TODO: remove this protocol
 If present, the system is expected to boot Android. This protocol abstracts over
 implementation details in the system AB metadata and provides a common interface
 for GBL.
+
+#### GblImageLoadingProtocol
+
+This is optional protocol.
+
+If implemented, the GblImageLoadingProtocol is used to provide buffers to load
+different images for verification and boot process.  In addition this protocol
+provides a list of partitions to be verified before booting.
