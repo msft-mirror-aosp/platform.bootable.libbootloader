@@ -68,6 +68,20 @@ pub trait Ops {
     fn console(&mut self) -> Option<&mut dyn Write>;
 }
 
+impl Ops for [u8; ABR_DATA_SIZE] {
+    fn read_abr_metadata(&mut self, out: &mut [u8]) -> Result<(), Option<&'static str>> {
+        Ok(out.clone_from_slice(self.get(..out.len()).ok_or(Some("Out of range"))?))
+    }
+
+    fn write_abr_metadata(&mut self, data: &mut [u8]) -> Result<(), Option<&'static str>> {
+        Ok(self.get_mut(..data.len()).ok_or(Some("Out of range"))?.clone_from_slice(data))
+    }
+
+    fn console(&mut self) -> Option<&mut dyn Write> {
+        None
+    }
+}
+
 /// Helper macro for printing ABR log messages.
 macro_rules! avb_print {
     ( $abr_ops:expr, $( $x:expr ),* $(,)? ) => {
@@ -150,7 +164,7 @@ pub type AbrResult<T> = Result<T, Error>;
 
 /// `AbrSlotData` is the wire format metadata for A/B slot.
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
 pub struct AbrSlotData {
     /// Slot priority. Unbootable slots should always have priority 0.
     pub priority: u8,
@@ -241,7 +255,8 @@ pub struct AbrData {
     pub crc32: u32,
 }
 
-const ABR_DATA_SIZE: usize = size_of::<AbrData>();
+/// Size of `AbrData`
+pub const ABR_DATA_SIZE: usize = size_of::<AbrData>();
 
 impl AbrData {
     /// Returns the numeric index value for a `SlotIndex`. This is for indexing into
@@ -265,7 +280,7 @@ impl AbrData {
     }
 
     /// Reads, parses and checks metadata from persistent storage.
-    fn deserialize(abr_ops: &mut dyn Ops) -> AbrResult<Self> {
+    pub fn deserialize(abr_ops: &mut dyn Ops) -> AbrResult<Self> {
         let mut bytes = [0u8; ABR_DATA_SIZE];
         abr_ops.read_abr_metadata(&mut bytes[..])?;
         // Usually, the parsing below should be done using the zerocopy crate. However, the Fuchsia
@@ -304,7 +319,7 @@ impl AbrData {
     }
 
     /// Updates CRC32 and writes metadata to persistent storage.
-    fn serialize(&mut self) -> [u8; ABR_DATA_SIZE] {
+    pub fn serialize(&mut self) -> [u8; ABR_DATA_SIZE] {
         let mut res = [0u8; ABR_DATA_SIZE];
         res[..4].clone_from_slice(&self.magic);
         res[4] = self.version_major;
