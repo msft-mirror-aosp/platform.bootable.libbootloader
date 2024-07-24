@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 rust_library(
@@ -20,31 +21,77 @@ rust_library(
         ["**/*.rs"],
         exclude = ["tests/**/*.rs"],
     ),
+    aliases = {"@itertools_noalloc": "itertools_noalloc"},
     edition = "2021",
+    rustc_flags = ANDROID_RUST_LINTS,
     visibility = ["//visibility:public"],
     deps = [
         "@avb",
         "@bitflags",
         "@crc32fast",
         "@cstr",
+        "@gbl//libasync",
+        "@gbl//libfastboot",
+        "@gbl//libsafemath",
+        "@gbl//libstorage",
         "@gbl//third_party/libzbi",
+        "@itertools_noalloc",
         "@spin",
+        "@static_assertions",
         "@zerocopy",
     ],
 )
 
 rust_test(
     name = "libgbl_test",
+    aliases = {"@itertools_noalloc": "itertools_noalloc"},
+    compile_data = ["@gbl//libstorage/test:test_data"],
     crate = ":libgbl",
     crate_features = ["uuid"],
     data = [
-        "@gbl//libgbl/testdata:test_image.img",
-        "@gbl//libgbl/testdata:testkey_rsa4096.pem",
-        "@gbl//libgbl/testdata:testkey_rsa4096.pub.pem",
+        "@gbl//libgbl/testdata:cert_metadata.bin",
+        "@gbl//libgbl/testdata:cert_permanent_attributes.bad.bin",
+        "@gbl//libgbl/testdata:cert_permanent_attributes.bad.hash",
+        "@gbl//libgbl/testdata:cert_permanent_attributes.bin",
+        "@gbl//libgbl/testdata:cert_permanent_attributes.hash",
+        "@gbl//libgbl/testdata:sparse_test.bin",
+        "@gbl//libgbl/testdata:sparse_test_blk1024.bin",
+        "@gbl//libgbl/testdata:sparse_test_raw.bin",
+        "@gbl//libgbl/testdata:testkey_rsa4096_pub.bin",
+        "@gbl//libgbl/testdata:writeback_test_disk.bin",
+        "@gbl//libgbl/testdata:zircon_a.bin",
+        "@gbl//libgbl/testdata:zircon_a.vbmeta",
+        "@gbl//libgbl/testdata:zircon_a.vbmeta.cert",
     ],
+    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
+        "@avb//:avb_crypto_ops_sha_impl_staticlib",
         "@avb//:avb_test",
+        "@gbl//libasync:cyclic_executor",
+        "@gbl//libavb:sysdeps",
+        "@gbl//libstorage:libstorage_testlib",
+        "@itertools",
+        "@itertools_noalloc",
         "@static_assertions",
         "@uuid",
+    ],
+)
+
+rust_test(
+    name = "integration_test",
+    srcs = ["tests/integration_tests.rs"],
+    compile_data = [
+        "@gbl//libgbl/testdata:zircon_a.bin",
+        "@gbl//libgbl/testdata:zircon_b.bin",
+        "@gbl//libgbl/testdata:zircon_r.bin",
+        "@gbl//libgbl/testdata:zircon_gpt.bin",
+    ],
+    rustc_flags = ANDROID_RUST_LINTS,
+    deps = [
+        ":libgbl",
+        "@avb//:avb_crypto_ops_sha_impl_staticlib",
+        "@gbl//libavb:sysdeps",
+        "@gbl//libstorage",
+        "@gbl//libstorage:libstorage_testlib",
     ],
 )

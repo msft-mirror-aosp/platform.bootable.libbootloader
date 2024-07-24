@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// This EFI application implements a demo for booting Android/Fuchsia from disk. See
-// bootable/libbootloader/gbl/README.md for how to run the demo. See comments of
-// `android_boot:android_boot_demo()` and `fuchsia_boot:fuchsia_boot_demo()` for
-// supported/unsupported features at the moment.
+//! This EFI application implements a demo for booting Android/Fuchsia from disk. See
+//! bootable/libbootloader/gbl/README.md for how to run the demo. See comments of
+//! `android_boot:android_boot_demo()` and `fuchsia_boot:fuchsia_boot_demo()` for
+//! supported/unsupported features at the moment.
 
 #![no_std]
 #![no_main]
@@ -26,20 +26,29 @@ extern crate alloc;
 use core::fmt::Write;
 
 use efi::defs::EfiSystemTable;
-use efi::{efi_print, efi_println, initialize};
+use efi::{efi_print, efi_println, initialize, panic};
 
 #[macro_use]
 mod utils;
+use core::panic::PanicInfo;
 use error::Result;
-use utils::loaded_image_path;
+use utils::{loaded_image_path, wait_key_stroke};
 
 #[cfg(target_arch = "riscv64")]
 mod riscv64;
 
 mod android_boot;
 mod avb;
+mod efi_blocks;
 mod error;
+mod fastboot;
 mod fuchsia_boot;
+mod net;
+
+#[panic_handler]
+fn handle_panic(p_info: &PanicInfo) -> ! {
+    panic(p_info)
+}
 
 fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -> Result<()> {
     // SAFETY: Called only once here upon EFI app entry.
@@ -48,6 +57,15 @@ fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -
     efi_println!(entry, "****Rust EFI Application****");
     if let Ok(v) = loaded_image_path(&entry) {
         efi_println!(entry, "Image path: {}", v);
+    }
+
+    efi_println!(entry, "Press Backspace to enter fastboot.");
+    match wait_key_stroke(&entry, '\x08', 2000) {
+        Ok(true) => {
+            efi_println!(entry, "Backspace pressed.");
+            fastboot::fastboot(&entry)?;
+        }
+        _ => {}
     }
 
     // For simplicity, we pick bootflow based on GPT layout.
@@ -60,6 +78,7 @@ fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -
     Ok(())
 }
 
+/// EFI application entry point. Does not return.
 #[no_mangle]
 pub extern "C" fn efi_main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) {
     main(image_handle, systab_ptr).unwrap();

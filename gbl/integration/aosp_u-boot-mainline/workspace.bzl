@@ -21,7 +21,7 @@ load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
 load("@gbl//toolchain:gbl_workspace_util.bzl", "android_rust_prebuilts", "gbl_llvm_prebuilts")
 load("@kernel_toolchain_info//:dict.bzl", "CLANG_VERSION")
 
-def rust_crate_build_file(name, deps = [], features = [], rustc_flags = []):
+def rust_crate_build_file(name, crate_name = "", deps = [], features = [], rustc_flags = []):
     """Generate BUILD file content for a rust crate
 
     This helper is suitable for crates that have straightforward build rules. Specifically, the
@@ -30,6 +30,7 @@ def rust_crate_build_file(name, deps = [], features = [], rustc_flags = []):
 
     Args:
         name (String): name of the rust_library target.
+        crate_name (String): name of the rust_library crate, same as name by default.
         deps (List of strings): The `deps` field.
         features (List of strings): The `features` field.
         rustc_flags (List of strings): The `rustc_flags` field.
@@ -37,6 +38,7 @@ def rust_crate_build_file(name, deps = [], features = [], rustc_flags = []):
     Returns:
         A string for the BUILD file content.
     """
+    crate_name = name if len(crate_name) == 0 else crate_name
     deps = "[{}]".format(",".join(["\"{}\"".format(ele) for ele in deps]))
     features = "[{}]".format(",".join(["\"{}\"".format(ele) for ele in features]))
     rustc_flags = "[{}]".format(",".join(["\"{}\"".format(ele) for ele in rustc_flags]))
@@ -45,6 +47,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library")
 
 rust_library(
     name = \"{}\",
+    crate_name = \"{}\",
     srcs = glob(["**/*.rs"]),
     crate_features = {},
     edition = "2021",
@@ -52,7 +55,7 @@ rust_library(
     visibility = ["//visibility:public"],
     deps = {},
 )
-""".format(name, features, rustc_flags, deps)
+""".format(name, crate_name, features, rustc_flags, deps)
 
 def define_gbl_workspace(name = None):
     """Set up worksapce dependencies for GBL
@@ -180,6 +183,78 @@ cc_library(
         name = "static_assertions",
         path = "external/rust/crates/static_assertions",
         build_file_content = rust_crate_build_file("static_assertions"),
+    )
+
+    native.new_local_repository(
+        name = "managed",
+        path = "external/rust/crates/managed",
+        build_file_content = rust_crate_build_file(
+            "managed",
+            features = ["map"],
+            rustc_flags = [
+                "-A",
+                "unused_macros",
+                "-A",
+                "redundant_semicolons",
+            ],
+        ),
+    )
+
+    native.new_local_repository(
+        name = "itertools",
+        path = "external/rust/crates/itertools",
+        build_file_content = rust_crate_build_file(
+            "itertools",
+            deps = ["@either"],
+            features = ["default", "use_std", "use_alloc"],
+            rustc_flags = ["-A", "dead_code"],
+        ),
+    )
+
+    native.new_local_repository(
+        name = "itertools_noalloc",
+        path = "external/rust/crates/itertools",
+        build_file_content = rust_crate_build_file(
+            "itertools_noalloc",
+            crate_name = "itertools",
+            features = [],
+            deps = ["@either_noalloc"],
+            rustc_flags = ["-A", "dead_code"],
+        ),
+    )
+
+    native.new_local_repository(
+        name = "either",
+        path = "external/rust/crates/either",
+        build_file_content = rust_crate_build_file(
+            "either",
+            features = ["default", "use_std"],
+        ),
+    )
+
+    native.new_local_repository(
+        name = "either_noalloc",
+        path = "external/rust/crates/either",
+        build_file_content = rust_crate_build_file(
+            "either_noalloc",
+            crate_name = "either",
+            features = [],
+        ),
+    )
+
+    native.new_local_repository(
+        name = "smoltcp",
+        path = "external/rust/crates/smoltcp",
+        build_file = "@gbl//smoltcp:BUILD.smoltcp.bazel",
+    )
+
+    native.new_local_repository(
+        name = "arrayvec",
+        path = "external/rust/crates/arrayvec",
+        build_file_content = rust_crate_build_file(
+            "arrayvec",
+            rustc_flags = ["-A", "dead_code"],
+        ),
     )
 
     # Following are third party rust crates dependencies.

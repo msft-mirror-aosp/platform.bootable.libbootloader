@@ -55,6 +55,10 @@ cc_library(
         "libavb/avb_version.h",
         "libavb/libavb.h",
         "libavb/sha/avb_crypto_ops_impl.h",
+        "libavb_cert/avb_cert_ops.h",
+        "libavb_cert/avb_cert_types.h",
+        "libavb_cert/avb_cert_validate.h",
+        "libavb_cert/libavb_cert.h",
     ],
     includes = [
         ".",
@@ -81,6 +85,7 @@ cc_library(
         "libavb/avb_util.c",
         "libavb/avb_vbmeta_image.c",
         "libavb/avb_version.c",
+        "libavb_cert/avb_cert_validate.c",
 
         # Contains noop placeholder for avb_printv/avb_printf
         "@gbl//libavb:print.c",
@@ -131,28 +136,24 @@ link_static_cc_library(
 
 rust_bindgen(
     name = "libavb_c_bindgen",
+    # Flags should match Soong definition in external/avb/rust/Android.bp.
     bindgen_flags = [
-        "--ctypes-prefix",
-        "core::ffi",
-        "--use-core",
         "--constified-enum-module=AvbDescriptorTag",
         "--bitfield-enum=Avb.*Flags",
         "--default-enum-style=rust",
         "--with-derive-default",
         "--with-derive-custom=Avb.*Descriptor=FromZeroes,FromBytes",
+        "--with-derive-custom=AvbCertPermanentAttributes=FromZeroes,FromBytes,AsBytes",
+        "--with-derive-custom=AvbCertCertificate.*=FromZeroes,FromBytes,AsBytes",
+        "--with-derive-custom=AvbCertUnlock.*=FromZeroes,FromBytes,AsBytes",
         "--allowlist-type=AvbDescriptorTag",
         "--allowlist-type=Avb.*Flags",
         "--allowlist-function=.*",
         "--allowlist-var=AVB.*",
-        "--raw-line",
-        """
-#![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
-#![allow(dead_code)]
-#![cfg_attr(not(test), no_std)]
-
-use zerocopy::{FromBytes, FromZeroes};
-""",
+        "--use-core",
+        "--raw-line=#![no_std]",
+        "--raw-line=use zerocopy::{AsBytes, FromBytes, FromZeroes};",
+        "--ctypes-prefix=core::ffi",
     ],
     cc_lib = "headers",
     # For x86_32, we need to explicitly specify 32bit architecture.
@@ -163,12 +164,16 @@ use zerocopy::{FromBytes, FromZeroes};
         "-I{}".format(LLVM_PREBUILTS_C_INCLUDE),
         "-nostdinc",
     ],
-    header = "libavb/libavb.h",
+    header = "libavb_cert/libavb_cert.h",
 )
 
 rust_library(
     name = "avb_bindgen",
     srcs = [":libavb_c_bindgen"],
+    rustc_flags = [
+        "--allow=non_snake_case",
+        "--allow=non_camel_case_types",
+    ],
     deps = ["@zerocopy"],
 )
 

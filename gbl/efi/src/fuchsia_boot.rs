@@ -12,8 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::error::{EfiAppError, Result};
-use crate::utils::{aligned_subslice, find_gpt_devices, get_efi_fdt, usize_add};
+use crate::{
+    efi_blocks::find_block_devices,
+    error::{EfiAppError, Result},
+    utils::{aligned_subslice, get_efi_fdt, to_usize, usize_add},
+};
 use core::fmt::Write;
 use core::mem::size_of;
 use efi::{efi_print, efi_println, EfiEntry};
@@ -35,7 +38,7 @@ struct ZbiKernelHeader {
 // https://fuchsia.googlesource.com/fuchsia/+/4f204d8a0243e84a86af4c527a8edcc1ace1615f/zircon/kernel/target/arm64/boot-shim/BUILD.gn#38
 const ZIRCON_KERNEL_ALIGN: usize = 64 * 1024;
 
-/// Relocates a ZBI kernel to a different buffer and returns the kernel entry address.
+/// Relocates a ZBI kernel to a different buffer and returns the kernel entry offset.
 pub fn relocate_kernel(kernel: &[u8], dest: &mut [u8]) -> Result<usize> {
     if (dest.as_ptr() as usize % ZIRCON_KERNEL_ALIGN) != 0 {
         return Err(EfiAppError::BufferAlignment.into());
@@ -59,7 +62,7 @@ pub fn relocate_kernel(kernel: &[u8], dest: &mut [u8]) -> Result<usize> {
     dest_kernel_header.container_header.length = (kernel_size - size_of::<ZbiHeader>())
         .try_into()
         .map_err(|_| EfiAppError::ArithmeticOverflow)?;
-    Ok(usize_add(dest_kernel_header.entry, dest.as_ptr() as usize)?)
+    Ok(to_usize(dest_kernel_header.entry)?)
 }
 
 /// A helper for getting the total size of a ZBI container, including payload and header.
@@ -78,7 +81,7 @@ fn zbi_get_unused_buffer(zbi: &mut [u8]) -> Result<(&mut [u8], &mut [u8])> {
 
 /// Relocate a ZBI kernel to the trailing unused buffer.
 ///
-/// Returns the original kernel subslice, relocated kernel subslice, and kernel entry address.
+/// Returns the original kernel subslice, relocated kernel subslice, and kernel entry offset.
 fn relocate_to_tail(kernel: &mut [u8]) -> Result<(&mut [u8], &mut [u8], usize)> {
     let (original, relocated) = zbi_get_unused_buffer(kernel)?;
     let relocated = aligned_subslice(relocated, ZIRCON_KERNEL_ALIGN)?;
@@ -92,7 +95,7 @@ fn relocate_to_tail(kernel: &mut [u8]) -> Result<(&mut [u8], &mut [u8], usize)> 
 fn load_fuchsia_simple<'a>(efi_entry: &EfiEntry, load: &'a mut [u8]) -> Result<&'a mut [u8]> {
     let load = aligned_subslice(load, ZBI_ALIGNMENT_USIZE)?;
 
-    let mut gpt_devices = find_gpt_devices(&efi_entry)?;
+    let mut gpt_devices = find_block_devices(&efi_entry)?;
 
     // Gets FDT from EFI configuration table.
     let (_, fdt_bytes) = get_efi_fdt(&efi_entry).ok_or_else(|| EfiAppError::NoFdt).unwrap();
@@ -113,7 +116,9 @@ fn load_fuchsia_simple<'a>(efi_entry: &EfiEntry, load: &'a mut [u8]) -> Result<&
     let load = aligned_subslice(load, ZIRCON_KERNEL_ALIGN)?;
 
     // Reads ZBI header to compute image length.
-    gpt_devices.read_gpt_partition("zircon_a", 0, &mut load[..size_of::<ZbiHeader>()]).unwrap();
+    gpt_devices
+        .read_gpt_partition_sync("zircon_a", 0, &mut load[..size_of::<ZbiHeader>()])
+        .unwrap();
     let image_length = Ref::<_, ZbiHeader>::new_from_prefix(&mut load[..])
         .ok_or_else(|| EfiAppError::NoZbiImage)?
         .0
@@ -122,7 +127,7 @@ fn load_fuchsia_simple<'a>(efi_entry: &EfiEntry, load: &'a mut [u8]) -> Result<&
 
     // Reads the entire image.
     gpt_devices
-        .read_gpt_partition(
+        .read_gpt_partition_sync(
             "zircon_a",
             0,
             &mut load[..usize_add(size_of::<ZbiHeader>(), image_length)?],
@@ -147,7 +152,7 @@ fn load_fuchsia_simple<'a>(efi_entry: &EfiEntry, load: &'a mut [u8]) -> Result<&
 
 /// Check if the disk GPT layout is a Fuchsia device layout.
 pub fn is_fuchsia_gpt(efi_entry: &EfiEntry) -> Result<()> {
-    let mut gpt_devices = find_gpt_devices(&efi_entry)?;
+    let mut gpt_devices = find_block_devices(&efi_entry)?;
     let partitions: [&[&str]; 8] = [
         &["zircon_a"],
         &["zircon_b"],
@@ -159,7 +164,9 @@ pub fn is_fuchsia_gpt(efi_entry: &EfiEntry) -> Result<()> {
         &["fvm"],
     ];
     for partition in partitions {
-        gpt_devices.partition_size_with_aliases(partition)?;
+        if !partition.iter().any(|v| gpt_devices.find_partition(*v).is_ok()) {
+            return Err(EfiAppError::NotFound.into());
+        }
     }
     Ok(())
 }
@@ -199,7 +206,7 @@ pub fn fuchsia_boot_demo(efi_entry: EfiEntry) -> Result<()> {
         let (_, remains) = zbi_get_unused_buffer(relocated)?;
         let _ = efi::exit_boot_services(efi_entry, remains).unwrap();
         // SAFETY: For demo, we assume images are provided valid.
-        unsafe { boot::aarch64::jump_zircon_el2_or_lower(kernel_entry, original) };
+        unsafe { boot::aarch64::jump_zircon_el2_or_lower(relocated, kernel_entry, original) };
     }
 
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]

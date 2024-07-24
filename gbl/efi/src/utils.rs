@@ -12,23 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::vec::Vec;
-use core::ffi::CStr;
-
 use crate::error::{EfiAppError, Result};
-use efi::defs::EfiGuid;
+use core::ffi::CStr;
 use efi::{
-    BlockIoProtocol, DeviceHandle, DevicePathProtocol, DevicePathText, DevicePathToTextProtocol,
-    EfiEntry, LoadedImageProtocol, Protocol,
+    defs::EfiGuid,
+    protocol::{
+        device_path::{DevicePathProtocol, DevicePathText, DevicePathToTextProtocol},
+        loaded_image::LoadedImageProtocol,
+        simple_text_input::SimpleTextInputProtocol,
+    },
+    utils::Timeout,
+    DeviceHandle, EfiEntry,
 };
 use fdt::FdtHeader;
-use gbl_storage::{required_scratch_size, AsBlockDevice, BlockIo, GptEntry};
 
 pub const EFI_DTB_TABLE_GUID: EfiGuid =
     EfiGuid::new(0xb1b621d5, 0xf19c, 0x41a5, [0x83, 0x0b, 0xd9, 0x15, 0x2c, 0x69, 0xaa, 0xe0]);
 
 /// Checks and converts an integer into usize
-fn to_usize<T: TryInto<usize>>(val: T) -> Result<usize> {
+pub fn to_usize<T: TryInto<usize>>(val: T) -> Result<usize> {
     Ok(val.try_into().map_err(|_| EfiAppError::ArithmeticOverflow)?)
 }
 
@@ -46,122 +48,10 @@ pub fn usize_add<L: TryInto<usize>, R: TryInto<usize>>(lhs: L, rhs: R) -> Result
     Ok(to_usize(lhs)?.checked_add(to_usize(rhs)?).ok_or_else(|| EfiAppError::ArithmeticOverflow)?)
 }
 
-/// Multiply two usize convertible numbers and checks overflow.
-pub fn usize_mul<L: TryInto<usize>, R: TryInto<usize>>(lhs: L, rhs: R) -> Result<usize> {
-    Ok(to_usize(lhs)?.checked_mul(to_usize(rhs)?).ok_or_else(|| EfiAppError::ArithmeticOverflow)?)
-}
-
 /// Gets a subslice of the given slice with aligned address according to `alignment`
 pub fn aligned_subslice(bytes: &mut [u8], alignment: usize) -> Result<&mut [u8]> {
     let addr = bytes.as_ptr() as usize;
     Ok(&mut bytes[usize_roundup(addr, alignment)? - addr..])
-}
-
-// Implement a block device on top of BlockIoProtocol
-pub struct EfiBlockIo<'a>(pub Protocol<'a, BlockIoProtocol>);
-
-impl BlockIo for EfiBlockIo<'_> {
-    fn block_size(&mut self) -> u64 {
-        self.0.media().unwrap().block_size as u64
-    }
-
-    fn num_blocks(&mut self) -> u64 {
-        (self.0.media().unwrap().last_block + 1) as u64
-    }
-
-    fn alignment(&mut self) -> u64 {
-        core::cmp::max(1, self.0.media().unwrap().io_align as u64)
-    }
-
-    fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> bool {
-        self.0.read_blocks(blk_offset, out).is_ok()
-    }
-
-    fn write_blocks(&mut self, blk_offset: u64, data: &[u8]) -> bool {
-        self.0.write_blocks(blk_offset, data).is_ok()
-    }
-}
-
-/// `EfiGptDevice` wraps a `EfiBlockIo` and implements `AsBlockDevice` interface.
-pub struct EfiGptDevice<'a> {
-    io: EfiBlockIo<'a>,
-    scratch: Vec<u8>,
-}
-
-const MAX_GPT_ENTRIES: u64 = 128;
-
-impl<'a> EfiGptDevice<'a> {
-    /// Initialize from a `BlockIoProtocol` EFI protocol
-    pub fn new(protocol: Protocol<'a, BlockIoProtocol>) -> Result<Self> {
-        let mut io = EfiBlockIo(protocol);
-        let scratch = vec![0u8; required_scratch_size(&mut io, MAX_GPT_ENTRIES)?];
-        Ok(Self { io, scratch })
-    }
-}
-
-impl AsBlockDevice for EfiGptDevice<'_> {
-    fn get(&mut self) -> (&mut dyn BlockIo, &mut [u8], u64) {
-        (&mut self.io, &mut self.scratch[..], MAX_GPT_ENTRIES)
-    }
-}
-
-/// A helper type that searches and reads/writes from multiple GPT devices.
-/// Platforms like cuttlefish may have additional block devices for storing device specific data
-/// such as bootconfig.
-pub struct MultiGptDevices<'a> {
-    gpt_devices: Vec<EfiGptDevice<'a>>,
-}
-
-impl<'a> MultiGptDevices<'a> {
-    pub fn new(gpt_devices: Vec<EfiGptDevice<'a>>) -> Self {
-        Self { gpt_devices }
-    }
-
-    /// Find a partition on the first match.
-    pub fn find_partition(&mut self, part: &str) -> Result<(usize, GptEntry)> {
-        for (idx, device) in &mut self.gpt_devices[..].iter_mut().enumerate() {
-            match device.gpt()?.find_partition(part)? {
-                Some(p) => {
-                    return Ok((idx, *p));
-                }
-                _ => {}
-            }
-        }
-        Err(EfiAppError::NotFound.into())
-    }
-
-    /// Finds a partition given by a set of possible aliases on the first match.
-    pub fn find_partition_with_aliases(&mut self, aliases: &[&str]) -> Result<(usize, GptEntry)> {
-        for alias in aliases {
-            match self.find_partition(alias) {
-                Ok(v) => return Ok(v),
-                _ => {}
-            }
-        }
-        Err(EfiAppError::NotFound.into())
-    }
-
-    /// Finds size of a partition given by a set of possible aliases.
-    pub fn partition_size_with_aliases(&mut self, aliases: &[&str]) -> Result<usize> {
-        let (idx, part) = self.find_partition_with_aliases(aliases)?;
-        Ok(usize_mul(part.blocks()?, self.gpt_devices[idx].block_io().block_size())?)
-    }
-
-    /// Returns the size of the target partition on the first match.
-    pub fn partition_size(&mut self, part: &str) -> Result<usize> {
-        self.partition_size_with_aliases(&[part])
-    }
-
-    /// Traverse all gpt devices and read the given partition on the first match.
-    pub fn read_gpt_partition(
-        &mut self,
-        part_name: &str,
-        offset: u64,
-        out: &mut [u8],
-    ) -> Result<()> {
-        let (idx, _) = self.find_partition(part_name)?;
-        Ok(self.gpt_devices[idx].read_gpt_partition(part_name, offset, out)?)
-    }
 }
 
 /// Helper function to get the `DevicePathText` from a `DeviceHandle`.
@@ -200,23 +90,6 @@ pub fn get_efi_fdt<'a>(entry: &'a EfiEntry) -> Option<(&FdtHeader, &[u8])> {
     None
 }
 
-/// Find all block devices that have a valid GPT and returns them as a `MultiGptDevices`.
-pub fn find_gpt_devices(efi_entry: &EfiEntry) -> Result<MultiGptDevices> {
-    let bs = efi_entry.system_table().boot_services();
-    let block_dev_handles = bs.locate_handle_buffer_by_protocol::<BlockIoProtocol>()?;
-    let mut gpt_devices = Vec::<EfiGptDevice>::new();
-    for handle in block_dev_handles.handles() {
-        let mut gpt_dev = EfiGptDevice::new(bs.open_protocol::<BlockIoProtocol>(*handle)?)?;
-        match gpt_dev.sync_gpt() {
-            Ok(_) => {
-                gpt_devices.push(gpt_dev);
-            }
-            _ => {}
-        };
-    }
-    Ok(MultiGptDevices::new(gpt_devices))
-}
-
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 pub fn efi_to_e820_mem_type(efi_mem_type: u32) -> u32 {
     match efi_mem_type {
@@ -245,4 +118,46 @@ pub fn cstr_bytes_to_str(data: &[u8]) -> Result<&str> {
         .map_err(|_| EfiAppError::InvalidString)?
         .to_str()
         .map_err(|_| EfiAppError::InvalidString)?)
+}
+
+/// Repetitively runs a closure until it signals completion or timeout.
+///
+/// * If `f` returns `Ok(R)`, an `Ok(Some(R))` is returned immediately.
+/// * If `f` has been repetitively called and returning `Err(false)` for `timeout_ms`,  an
+///   `Ok(None)` is returned. This is the time out case.
+/// * If `f` returns `Err(true)` the timeout is reset.
+pub fn loop_with_timeout<F, R>(efi_entry: &EfiEntry, timeout_ms: u64, mut f: F) -> Result<Option<R>>
+where
+    F: FnMut() -> core::result::Result<R, bool>,
+{
+    let timeout = Timeout::new(efi_entry, timeout_ms)?;
+    while !timeout.check()? {
+        match f() {
+            Ok(v) => return Ok(Some(v)),
+            Err(true) => timeout.reset(timeout_ms)?,
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
+/// Waits for a key stroke value from simple text input.
+///
+/// Returns `Ok(true)` if the expected key stroke is read, `Ok(false)` if timeout, `Err` otherwise.
+pub fn wait_key_stroke(efi_entry: &EfiEntry, expected: char, timeout_ms: u64) -> Result<bool> {
+    let input = efi_entry
+        .system_table()
+        .boot_services()
+        .find_first_and_open::<SimpleTextInputProtocol>()?;
+    loop_with_timeout(efi_entry, timeout_ms, || -> core::result::Result<Result<bool>, bool> {
+        match input.read_key_stroke() {
+            Ok(Some(key)) => match char::decode_utf16([key.unicode_char]).next().unwrap() {
+                Ok(ch) if ch == expected => Ok(Ok(true)),
+                _ => Err(false),
+            },
+            Ok(None) => Err(false),
+            Err(e) => Ok(Err(e.into())),
+        }
+    })?
+    .unwrap_or(Ok(false))
 }

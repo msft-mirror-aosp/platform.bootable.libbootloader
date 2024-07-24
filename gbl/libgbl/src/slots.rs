@@ -15,6 +15,12 @@
 /// Export the default implementation
 pub mod fuchsia;
 
+/// Reference Android implementation
+pub mod android;
+
+/// Generic functionality for partition backed ABR schemes
+pub mod partition;
+
 use core::mem::size_of;
 
 /// A type safe container for describing the number of retries a slot has left
@@ -56,6 +62,19 @@ impl From<u8> for Priority {
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Suffix(pub(crate) char);
 
+impl Suffix {
+    // We want lexigraphically lower suffixes
+    // to have higher priority.
+    // A cheater way to do this is to compare
+    // their negative values.
+    // A char is 4 bytes, and a signed 64 bit int
+    // can comfortably contain the negative of a
+    // number represented by an unsigned 32 bit int.
+    fn rank(&self) -> i64 {
+        -i64::from(u32::from(self.0))
+    }
+}
+
 impl From<char> for Suffix {
     fn from(c: char) -> Self {
         Self(c)
@@ -67,6 +86,14 @@ impl TryFrom<usize> for Suffix {
 
     fn try_from(value: usize) -> Result<Self, Self::Error> {
         u32::try_from(value).ok().and_then(char::from_u32).ok_or(Error::Other).map(Self)
+    }
+}
+
+impl TryFrom<u32> for Suffix {
+    type Error = Error;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        char::from_u32(value).ok_or(Error::Other).map(Self)
     }
 }
 
@@ -254,6 +281,8 @@ pub enum Error {
     NoSuchSlot(Suffix),
     /// The backend policy has denied permission for the given operation.
     OperationProhibited,
+    /// Similar to NoSuchSlot but used when index is used for lookup internally.
+    BadSlotIndex(usize),
     /// Unspecified error.
     Other,
 }
@@ -310,30 +339,30 @@ pub trait Manager: private::SlotGet {
 
     /// Returns the current active slot,
     /// or Recovery if the system will try to boot to recovery.
-    fn get_boot_target(&self) -> BootTarget;
+    fn get_boot_target(&self) -> Result<BootTarget, Error>;
 
     /// Returns the slot last set active.
     /// Note that this is different from get_boot_target in that
     /// the slot last set active cannot be Recovery.
-    fn get_slot_last_set_active(&self) -> Slot;
+    fn get_slot_last_set_active(&self) -> Result<Slot, Error> {
+        self.slots_iter().max_by_key(|slot| (slot.priority, slot.suffix.rank())).ok_or(Error::Other)
+    }
 
-    /// Given a boot target, updates internal metadata (usually the retry count)
-    /// indicating that the system will have tried to boot the slot.
+    /// Updates internal metadata (usually the retry count)
+    /// indicating that the system will have tried to boot the current active slot.
     /// Returns Ok(BootToken) on success to verify that boot attempt metadata has been updated.
     /// The token must be consumed by `kernel_jump`.
     ///
-    /// Can return Err if the designated slot does not exist,
-    /// if it is ineligible to try,
-    /// or for other, backend reasons.
+    /// If the current boot target is a recovery target,
+    /// or if the oneshot target is a recovery target,
+    /// no metadata is updated but the boot token is still returned.
+    ///
+    /// Returns Err if `mark_boot_attempt` has already been called.
     ///
     /// Note: mark_boot_attempt is NOT idempotent.
     /// It is intended to be called EXACTLY once,
     /// right before jumping into the kernel.
-    ///
-    /// Note: mark_boot_attempt takes a BootTarget to facilitate generating
-    /// the boot token when booting to recovery. If the boot target is recovery,
-    /// then implementations SHOULD NOT update internal metadata.
-    fn mark_boot_attempt(&mut self, boot_target: BootTarget) -> Result<BootToken, Error>;
+    fn mark_boot_attempt(&mut self) -> Result<BootToken, Error>;
 
     /// Attempts to set the active slot.
     ///
@@ -350,8 +379,8 @@ pub trait Manager: private::SlotGet {
     ) -> Result<(), Error>;
 
     /// Default for initial tries
-    fn get_max_retries(&self) -> Tries {
-        7u8.into()
+    fn get_max_retries(&self) -> Result<Tries, Error> {
+        Ok(7u8.into())
     }
 
     /// Optional oneshot boot support
@@ -386,18 +415,21 @@ pub trait Manager: private::SlotGet {
     /// This is useful for partition based slot setups,
     /// where we do not write back every interaction in order to coalesce writes
     /// and preserve disk lifetime.
-    fn write_back(&mut self) {}
+    fn write_back(&mut self, block_dev: &mut dyn gbl_storage::AsBlockDevice) {}
 }
 
 /// RAII helper object for coalescing changes.
-pub struct Cursor<'a> {
+pub struct Cursor<'a, B: gbl_storage::AsBlockDevice> {
     /// The backing manager for slot metadata.
     pub ctx: &'a mut dyn Manager,
+    /// The backing disk. Used for partition-backed metadata implementations
+    /// and for fastboot.
+    pub block_dev: &'a mut B,
 }
 
-impl<'a> Drop for Cursor<'a> {
+impl<'a, B: gbl_storage::AsBlockDevice> Drop for Cursor<'a, B> {
     fn drop(&mut self) {
-        self.ctx.write_back();
+        self.ctx.write_back(&mut self.block_dev);
     }
 }
 

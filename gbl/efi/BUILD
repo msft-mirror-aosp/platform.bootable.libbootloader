@@ -13,6 +13,7 @@
 # limitations under the License.
 
 load("@gbl//toolchain:gbl_toolchain.bzl", "build_with_platform")
+load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@gbl_llvm_prebuilts//:info.bzl", "gbl_llvm_tool_path")
 load("@rules_rust//rust:defs.bzl", "rust_binary")
 
@@ -25,62 +26,93 @@ rust_binary(
     srcs = [
         "src/android_boot.rs",
         "src/avb.rs",
+        "src/efi_blocks.rs",
         "src/error.rs",
+        "src/fastboot.rs",
         "src/fuchsia_boot.rs",
         "src/main.rs",
+        "src/net.rs",
         "src/riscv64.rs",
         "src/utils.rs",
     ],
-    linker_script = select({
-        "@gbl//toolchain:gbl_rust_elf_riscv64": "@gbl//efi/arch/riscv64:riscv64_efi.lds",
-        "//conditions:default": None,
-    }),
-    rustc_flags = [
+    linker_script = select(
+        {
+            "@gbl//toolchain:gbl_rust_elf_riscv64": "@gbl//efi/arch/riscv64:riscv64_efi.lds",
+            "//conditions:default": None,
+        },
+    ),
+    rustc_flags = ANDROID_RUST_LINTS + [
         "-C",
         "panic=abort",
     ],
     deps = [
         "@avb",
         "@avb//:avb_crypto_ops_sha_impl_staticlib",
+        "@gbl//libasync",
+        "@gbl//libasync:cyclic_executor",
+        "@gbl//libavb:sysdeps",
         "@gbl//libboot",
         "@gbl//libbootconfig",
         "@gbl//libbootimg",
         "@gbl//libefi",
+        "@gbl//libfastboot",
         "@gbl//libfdt",
         "@gbl//libgbl",
+        "@gbl//libmisc",
+        "@gbl//libsafemath",
         "@gbl//libstorage",
         "@gbl//third_party/libzbi",
+        "@smoltcp",
+        "@spin",
         "@uuid",
         "@zerocopy",
-    ] + select({
-        "@gbl//toolchain:gbl_rust_elf_riscv64": ["@gbl//efi/arch/riscv64:efi_arch_deps_riscv64"],
-        "//conditions:default": [],
-    }),
+    ] + select(
+        {
+            "@gbl//toolchain:gbl_rust_elf_riscv64": [
+                "@gbl//efi/arch/riscv64:efi_arch_deps_riscv64",
+            ],
+            "@gbl//toolchain:gbl_rust_uefi_x86_64": [
+                "@gbl//efi/arch/x86_64:efi_arch_deps_x86_64",
+            ],
+            "@gbl//toolchain:gbl_rust_uefi_x86_32": [
+                "@gbl//efi/arch/x86:efi_arch_deps_x86",
+            ],
+            "//conditions:default": [],
+        },
+    ),
 )
 
 genrule(
     name = "gbl_efi",
     srcs = [":main"],
     outs = ["gbl.efi"],
-    cmd = select({
-        # For RISCV target, existing toolchain can only generate ELF format image.
-        # The current solution is to manually add a PE/COFF header at image
-        # start and use objcopy to remove the ELF header to make it a PE/COFF image.
-        # Also use `elf_static_relocation_checker` to check that our relocation library
-        # can handle all the generated relocation types. The following expands to two commands:
-        #
-        # 1. `llvm-objcopy <elf image> -O binary <efi image>`
-        # 2. `elf_static_relocation_checker <elf image> <efi image>`
-        "@gbl//toolchain:gbl_rust_elf_riscv64": """
+    cmd = select(
+        {
+            # For RISCV target, existing toolchain can only generate ELF format image.
+            # The current solution is to manually add a PE/COFF header at image
+            # start and use objcopy to remove the ELF header to make it a PE/COFF image.
+            # Also use `elf_static_relocation_checker` to check that our relocation library
+            # can handle all the generated relocation types. The following expands to two commands:
+            #
+            # 1. `llvm-objcopy <elf image> -O binary <efi image>`
+            # 2. `elf_static_relocation_checker <elf image> <efi image>`
+            "@gbl//toolchain:gbl_rust_elf_riscv64": """
             {} -O binary $(location @gbl//efi:main) $(OUTS) && \\
             $(location @gbl//libelf:elf_static_relocation_checker) $(SRCS) $(OUTS)
-        """.format(gbl_llvm_tool_path("llvm-objcopy")),
-        "//conditions:default": "cp $(SRCS) $(OUTS)",
-    }),
-    tools = select({
-        "@gbl//toolchain:gbl_rust_elf_riscv64": ["@gbl//libelf:elf_static_relocation_checker"],
-        "//conditions:default": [],
-    }),
+        """.format(
+                gbl_llvm_tool_path("llvm-objcopy"),
+            ),
+            "//conditions:default": "cp $(SRCS) $(OUTS)",
+        },
+    ),
+    tools = select(
+        {
+            "@gbl//toolchain:gbl_rust_elf_riscv64": [
+                "@gbl//libelf:elf_static_relocation_checker",
+            ],
+            "//conditions:default": [],
+        },
+    ),
 )
 
 build_with_platform(

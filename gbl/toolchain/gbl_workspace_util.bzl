@@ -125,12 +125,15 @@ gbl_llvm_prebuilts = repository_rule(
     environ = ["GBL_LLVM_PREBUILTS", "GBL_LINUX_SYSROOT"],
 )
 
+# The current rust version used by GBL. This needs to be manually udpated when new version of
+# prebuilts is uploaded to https://android.googlesource.com/platform/prebuilts/rust/
+GBL_RUST_VERSION = "1.77.1.p1"
+
 def _android_rust_prebuilts_impl(repo_ctx):
     """Assemble a rust toolchain repo from the Android rust prebuilts repo.
 
     The Android rust prebuilts repo is expected to be from
-    https://android.googlesource.com/platform/prebuilts/rust/. The repository rule auto-detects
-    the current version of toolchain from the repo.
+    https://android.googlesource.com/platform/prebuilts/rust/.
 
     Attributes:
         path (String): Relative path to the Android rust prebuilts repo.
@@ -140,20 +143,8 @@ def _android_rust_prebuilts_impl(repo_ctx):
     # We only support linux x86 platform.
     path = repo_ctx.workspace_root.get_child(repo_ctx.attr.path).get_child("linux-x86")
 
-    # Scan sub directoires
-    curr_ver = None
-    for entry in [ele.basename for ele in path.readdir()]:
-        # Different versions of toolchains are organized into their own subdirs named afer the
-        # version i.e. "1.71.0/", "1.72.0/" etc.
-        arr = entry.split(".")
-        if len(arr) == 3 and all([ele.isdigit() for ele in arr]):
-            curr_ver = max(curr_ver or entry, entry)
-
-    if not curr_ver:
-        fail("Failed to find rust toolchain prebuilt from {}".format(path))
-
     # Symlink everything into the assembled repo.
-    path = path.get_child(curr_ver)
+    path = path.get_child(GBL_RUST_VERSION)
     for entry in path.readdir():
         # Ignore native BUILD file as we'll use override from `ctx.attr.build_file` instead.
         if entry.basename == "BUILD" or entry.basename == "BUILD.bazel":
@@ -170,3 +161,39 @@ android_rust_prebuilts = repository_rule(
         "build_file": attr.label(mandatory = True),
     },
 )
+
+# This should match upstream Android defaults at
+# https://cs.android.com/android/platform/superproject/main/+/main:build/soong/rust/config/lints.go.
+#
+# We can't add these to the global flags in //toolchain:common_lint_opts
+# because it breaks some third-party packages which don't use these lints.
+# The global options also come later on the commandline so can't be overriden
+# by a package.
+#
+# Instead we add these to `rustc_flags` for all our modules explicitly.
+ANDROID_RUST_LINTS = [
+    "-A",
+    "deprecated",
+    "-A",
+    "unknown_lints",
+    "-D",
+    "missing-docs",
+    "-D",
+    "warnings",
+    "-D",
+    "unsafe_op_in_unsafe_fn",
+    "-A",
+    "clippy::disallowed_names",
+    "-A",
+    "clippy::type-complexity",
+    "-A",
+    "clippy::unnecessary_fallible_conversions",
+    "-A",
+    "clippy::unnecessary-wraps",
+    "-A",
+    "clippy::unusual-byte-groupings",
+    "-A",
+    "clippy::upper-case-acronyms",
+    "-D",
+    "clippy::undocumented_unsafe_blocks",
+]

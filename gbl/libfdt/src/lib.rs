@@ -23,8 +23,8 @@ use core::mem::size_of;
 use core::slice::{from_raw_parts, from_raw_parts_mut};
 
 use libfdt_c_def::{
-    fdt_add_subnode_namelen, fdt_header, fdt_setprop, fdt_setprop_placeholder, fdt_strerror,
-    fdt_subnode_offset_namelen,
+    fdt_add_subnode_namelen, fdt_del_node, fdt_header, fdt_setprop, fdt_setprop_placeholder,
+    fdt_strerror, fdt_subnode_offset_namelen,
 };
 
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
@@ -32,8 +32,11 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 /// libfdt error type.
 #[derive(Debug)]
 pub enum FdtError {
+    /// The underlying libfdt C API returned an error with the given message.
     CLibError(&'static str),
+    /// The provided buffer doesn't look like a valid FDT.
     InvalidInput,
+    /// Overflow while calculating offsets or lengths.
     IntegerOverflow,
 }
 
@@ -94,6 +97,7 @@ fn fdt_subnode_offset(
     })
 }
 
+/// Rust wrapper for the FDT header data.
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes, PartialEq)]
 pub struct FdtHeader(fdt_header);
@@ -154,11 +158,13 @@ pub struct Fdt<T>(T);
 
 /// Read only APIs.
 impl<T: AsRef<[u8]>> Fdt<T> {
+    /// Creates a new [Fdt] wrapping the contents of `init`.
     pub fn new(init: T) -> Result<Self> {
         fdt_check_header(init.as_ref())?;
         Ok(Fdt(init))
     }
 
+    /// Returns the [FdtHeader], or an error if the underlying buffer was invalid.
     pub fn header_ref(&self) -> Result<&FdtHeader> {
         FdtHeader::from_bytes_ref(self.0.as_ref())
     }
@@ -209,6 +215,7 @@ impl<T: AsRef<[u8]>> Fdt<T> {
 
 /// APIs when data can be modified.
 impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
+    /// Creates a mutable [Fdt] copied from `init`.
     pub fn new_from_init(mut fdt: T, init: &[u8]) -> Result<Self> {
         fdt_check_header(init)?;
         // SAFETY: API from libfdt_c.
@@ -237,6 +244,16 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
     pub fn shrink_to_fit(&mut self) -> Result<()> {
         let actual = self.header_ref()?.actual_size();
         self.header_mut()?.set_totalsize(actual.try_into().unwrap());
+        Ok(())
+    }
+
+    /// Delete node by `path``. Fail if node doesn't exist.
+    pub fn delete_node(&mut self, path: &str) -> Result<()> {
+        let node = self.find_node(path)?;
+        // SAFETY:
+        // * `self.0` is guaranteed to be a proper fdt header reference
+        // * `node` is offset of the node to delete within `self.0` fdt buffer
+        map_result(unsafe { fdt_del_node(self.0.as_mut().as_mut_ptr() as *mut _, node) })?;
         Ok(())
     }
 
@@ -353,6 +370,42 @@ mod test {
         let data = vec![0x11u8, 0x22u8, 0x33u8];
         fdt.set_property("/new-node", &to_cstr("custom"), &data).unwrap();
         assert_eq!(fdt.get_property("/new-node", &to_cstr("custom")).unwrap().to_vec(), data);
+    }
+
+    #[test]
+    fn test_delete_node() {
+        let init = include_bytes!("../test/test.dtb").to_vec();
+        let mut fdt_buf = vec![0u8; init.len()];
+        let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
+
+        assert_eq!(
+            CStr::from_bytes_with_nul(
+                fdt.get_property("/dev-2/dev-2.2/dev-2.2.1", &to_cstr("property-1")).unwrap()
+            )
+            .unwrap()
+            .to_str()
+            .unwrap(),
+            "dev-2.2.1-property-1"
+        );
+
+        fdt.delete_node("dev-2").unwrap();
+
+        assert!(
+            fdt.get_property("/dev-2/dev-2.2/dev-2.2.1", &to_cstr("property-1")).is_err(),
+            "dev-2.2.1-property-1 expected to be deleted"
+        );
+    }
+
+    #[test]
+    fn test_delete_nost_existed_node_is_failed() {
+        let init = include_bytes!("../test/test.dtb").to_vec();
+        let mut fdt_buf = vec![0u8; init.len()];
+        let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
+
+        assert!(
+            fdt.delete_node("/non-existent").is_err(),
+            "expected failed to delete non existent node"
+        );
     }
 
     #[test]

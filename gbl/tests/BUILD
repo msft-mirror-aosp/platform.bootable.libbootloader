@@ -15,14 +15,21 @@
 test_suite(
     name = "tests",
     tests = [
+        "@gbl//:readme_test",
+        "@gbl//libabr:libabr_tests",
+        "@gbl//libasync:cyclic_executor_test",
+        "@gbl//libasync:libasync_test",
         "@gbl//libbootconfig:libbootconfig_test",
         "@gbl//libbootimg:libbootimg_test",
         "@gbl//libefi:libefi_test",
         "@gbl//libfastboot:libfastboot_test",
         "@gbl//libfdt:libfdt_test",
+        "@gbl//libgbl:integration_test",
         "@gbl//libgbl:libgbl_test",
+        "@gbl//libsafemath:libsafemath_test",
         "@gbl//libstorage:libstorage_doc_test",
         "@gbl//libstorage:libstorage_test",
+        "@gbl//libstorage:libstorage_testlib_test",
         "@gbl//third_party/libzbi:libzbi_test",
     ],
 )

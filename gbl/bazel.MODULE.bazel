@@ -1,0 +1,90 @@
+# Copyright (C) 2024 The Android Open Source Project
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Custom MODULE.bazel definition for GBL.
+
+Ideally, MODULE.bazel from Kleaf should be used instead because Kleaf is the
+root module. However, rules_rust_tinyjson and other crates needs to be resolved
+properly so it can be vendored.
+
+Do not fork this file for other projects!
+"""
+
+# TODO(b/328465178): Use MODULE.bazel from Kleaf instead.
+
+module(
+    name = "uefi-gbl",
+    version = "0.0.0",
+)
+
+kernel_toolchain_ext = use_extension("//build/kernel/kleaf:kernel_toolchain_ext.bzl", "kernel_toolchain_ext")
+use_repo(kernel_toolchain_ext, "kernel_toolchain_info")
+use_repo(kernel_toolchain_ext, "kleaf_clang_toolchain")
+use_repo(kernel_toolchain_ext, "kleaf_host_tools")
+
+register_toolchains(
+    "@kleaf_clang_toolchain//:all",
+    "//build/kernel:hermetic_tools_toolchain",
+    "//prebuilts/build-tools:py_toolchain",
+)
+
+bazel_dep(
+    name = "bazel_skylib",
+)
+bazel_dep(
+    name = "platforms",
+)
+bazel_dep(
+    name = "rules_cc",
+)
+
+local_path_override(
+    module_name = "apple_support",
+    path = "external/bazelbuild-apple_support",
+)
+
+local_path_override(
+    module_name = "bazel_features",
+    path = "external/bazel-contrib-bazel_features",
+)
+
+local_path_override(
+    module_name = "bazel_skylib",
+    path = "external/bazel-skylib",
+)
+
+local_path_override(
+    module_name = "platforms",
+    path = "external/bazelbuild-platforms",
+)
+
+local_path_override(
+    module_name = "rules_cc",
+    path = "external/bazelbuild-rules_cc",
+)
+
+local_path_override(
+    module_name = "rules_java",
+    path = "external/bazelbuild-rules_java",
+)
+
+local_path_override(
+    module_name = "rules_license",
+    path = "external/bazelbuild-rules_license",
+)
+
+local_path_override(
+    module_name = "rules_python",
+    path = "external/bazelbuild-rules_python",
+)
