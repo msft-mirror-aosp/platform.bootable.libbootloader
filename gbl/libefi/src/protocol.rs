@@ -24,6 +24,7 @@ pub mod block_io;
 pub mod block_io2;
 pub mod device_path;
 pub mod gbl_efi_fastboot_usb;
+pub mod gbl_efi_os_configuration;
 pub mod image_loading;
 pub mod loaded_image;
 pub mod riscv;
