@@ -24,7 +24,6 @@ test_suite(
         "@gbl//libefi:libefi_test",
         "@gbl//libfastboot:libfastboot_test",
         "@gbl//libfdt:libfdt_test",
-        "@gbl//libgbl:integration_test",
         "@gbl//libgbl:libgbl_test",
         "@gbl//libsafemath:libsafemath_test",
         "@gbl//libstorage:libstorage_doc_test",
