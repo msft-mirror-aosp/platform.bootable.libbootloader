@@ -154,7 +154,23 @@ verify that data before use.
 
 ## GBL_EFI_OS_CONFIGURATION_PROTOCOL.FixupBootconfig() {#FixupBootconfig}
 
-TODO(b/353272981)
+### Summary
+
+GBL will call this function after loading and verifying the base bootconfig, to
+give the device an opportunity to supply any runtime modifications.
+
+### Description
+
+[Bootconfig](https://source.android.com/docs/core/architecture/bootloader/implementing-bootconfig)
+is very similar to the kernel command line, but the format is slightly
+different, and the contents are intended for user space consumption rather than
+kernel.
+
+This implementation only needs to update the bootconfig parameters, GBL will automatically update
+the bootconfig trailer metadata afterwards.
+
+This function's API, usage, and security guidelines are exactly identical to
+[`FixupKernelCommandline`](#FixupKernelCommandline); see those docs for details.
 
 ## GBL_EFI_OS_CONFIGURATION_PROTOCOL.FixupDevicetree() {#FixupDevicetree}
 
