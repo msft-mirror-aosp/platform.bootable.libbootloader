@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Fuchsia A/B/R boot slot library.
+
 #![cfg_attr(not(test), no_std)]
 
 use core::{cmp::min, ffi::c_uint, fmt::Write, mem::size_of};
@@ -34,10 +36,15 @@ const ABR_MAX_TRIES_REMAINING: u8 = 7;
 /// Error type for this library.
 #[derive(Debug)]
 pub enum Error {
+    /// Failed to find the magic bytes indicating A/B/R metadata.
     BadMagic,
+    /// Metadata version is not supported by this library.
     UnsupportedVersion,
+    /// Metadata checksum didn't match contents.
     BadChecksum,
+    /// Data is in an invalid state e.g. trying to mark R as active.
     InvalidData,
+    /// Error occurred in the [Ops] callbacks; optional error message can be provided.
     OpsError(Option<&'static str>),
 }
 
@@ -61,6 +68,20 @@ pub trait Ops {
     fn console(&mut self) -> Option<&mut dyn Write>;
 }
 
+impl Ops for [u8; ABR_DATA_SIZE] {
+    fn read_abr_metadata(&mut self, out: &mut [u8]) -> Result<(), Option<&'static str>> {
+        Ok(out.clone_from_slice(self.get(..out.len()).ok_or(Some("Out of range"))?))
+    }
+
+    fn write_abr_metadata(&mut self, data: &mut [u8]) -> Result<(), Option<&'static str>> {
+        Ok(self.get_mut(..data.len()).ok_or(Some("Out of range"))?.clone_from_slice(data))
+    }
+
+    fn console(&mut self) -> Option<&mut dyn Write> {
+        None
+    }
+}
+
 /// Helper macro for printing ABR log messages.
 macro_rules! avb_print {
     ( $abr_ops:expr, $( $x:expr ),* $(,)? ) => {
@@ -74,8 +95,12 @@ macro_rules! avb_print {
 /// `SlotIndex` represents the A/B/R slot index.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum SlotIndex {
+    /// A slot; normal boot.
     A,
+    /// B slot; normal boot.
     B,
+    /// R slot; recovery boot. Doesn't have any associated metadata (e.g. cannot be active, no
+    /// retries), but is unconditionally used as a fallback if both A and B are unbootable.
     R,
 }
 
@@ -117,14 +142,20 @@ impl TryFrom<c_uint> for SlotIndex {
 
 /// `SlotInfo` represents the current state of a A/B/R slot.
 pub enum SlotState {
+    /// Slot has successfully booted.
     Successful,
-    Bootable(u8), // u8 = tries remaining
+    /// Slot can be attempted but is not known to be successful. Contained value is the number
+    /// of boot attempts remaining before being marked as `Unbootable`.
+    Bootable(u8),
+    /// Slot is unbootable.
     Unbootable,
 }
 
 /// `SlotInfo` contains the current state and active status of a A/B/R slot.
 pub struct SlotInfo {
+    /// The [SlotState] describing the bootability.
     pub state: SlotState,
+    /// Whether this is currently the active slot.
     pub is_active: bool,
 }
 
@@ -133,11 +164,15 @@ pub type AbrResult<T> = Result<T, Error>;
 
 /// `AbrSlotData` is the wire format metadata for A/B slot.
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
 pub struct AbrSlotData {
+    /// Slot priority. Unbootable slots should always have priority 0.
     pub priority: u8,
+    /// Boot attempts remaining.
     pub tries_remaining: u8,
+    /// Whether this slot is known successful.
     pub successful_boot: u8,
+    /// Reserved for future use; must be set to 0.
     pub reserved: u8,
 }
 
@@ -202,17 +237,26 @@ impl AbrSlotData {
 #[repr(C, packed)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct AbrData {
+    /// Magic value; must be [ABR_MAGIC].
     pub magic: [u8; 4],
+    /// Metadata major version, incremented when changes may break backwards compatibility.
     pub version_major: u8,
+    /// Metadata minor version, incremented when changes do not break backwards compatibility.
     pub version_minor: u8,
+    /// Reserved for future use; must be 0.
     pub reserved: [u8; 2],
+    /// A/B slot data.
     pub slot_data: [AbrSlotData; 2],
+    /// One-shot to bootloader/recovery.
     pub one_shot_flags: u8,
+    /// Reserved for future use; must be 0.
     pub reserved2: [u8; 11],
+    /// CRC32 checksum of this struct.
     pub crc32: u32,
 }
 
-const ABR_DATA_SIZE: usize = size_of::<AbrData>();
+/// Size of `AbrData`
+pub const ABR_DATA_SIZE: usize = size_of::<AbrData>();
 
 impl AbrData {
     /// Returns the numeric index value for a `SlotIndex`. This is for indexing into
@@ -236,7 +280,7 @@ impl AbrData {
     }
 
     /// Reads, parses and checks metadata from persistent storage.
-    fn deserialize(abr_ops: &mut dyn Ops) -> AbrResult<Self> {
+    pub fn deserialize(abr_ops: &mut dyn Ops) -> AbrResult<Self> {
         let mut bytes = [0u8; ABR_DATA_SIZE];
         abr_ops.read_abr_metadata(&mut bytes[..])?;
         // Usually, the parsing below should be done using the zerocopy crate. However, the Fuchsia
@@ -275,7 +319,7 @@ impl AbrData {
     }
 
     /// Updates CRC32 and writes metadata to persistent storage.
-    fn serialize(&mut self) -> [u8; ABR_DATA_SIZE] {
+    pub fn serialize(&mut self) -> [u8; ABR_DATA_SIZE] {
         let mut res = [0u8; ABR_DATA_SIZE];
         res[..4].clone_from_slice(&self.magic);
         res[4] = self.version_major;

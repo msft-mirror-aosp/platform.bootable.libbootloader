@@ -16,23 +16,23 @@
  */
 
 // This is a custom protocol introduced by GBL.
-// See gbl/docs/EFI_ANDROID_BOOT_PROTOCOL.md for details.
+// See gbl/docs/GBL_EFI_FASTBOOT_USB_PROTOCOL.md for details.
+
+#ifndef __GBL_EFI_FASTBOOT_USB_H__
+#define __GBL_EFI_FASTBOOT_USB_H__
 
 #include "types.h"
 
-#ifndef __ANDROID_BOOT_PROTOCOL_H__
-#define __ANDROID_BOOT_PROTOCOL_H__
-
-typedef struct EfiAndroidBootProtocol {
+typedef struct GblEfiFastbootUsbProtocol {
   uint64_t revision;
-  EfiStatus (*fastboot_usb_interface_start)(struct EfiAndroidBootProtocol* self,
+  EfiStatus (*fastboot_usb_interface_start)(struct GblEfiFastbootUsbProtocol* self,
                                             size_t* max_packet_size);
-  EfiStatus (*fastboot_usb_interface_stop)(struct EfiAndroidBootProtocol* self);
-  EfiStatus (*fastboot_usb_receive)(struct EfiAndroidBootProtocol* self,
+  EfiStatus (*fastboot_usb_interface_stop)(struct GblEfiFastbootUsbProtocol* self);
+  EfiStatus (*fastboot_usb_receive)(struct GblEfiFastbootUsbProtocol* self,
                                     size_t* buffer_size, void* buffer);
-  EfiStatus (*fastboot_usb_send)(struct EfiAndroidBootProtocol* self,
+  EfiStatus (*fastboot_usb_send)(struct GblEfiFastbootUsbProtocol* self,
                                  size_t* buffer_size, const void* buffer);
   EfiEvent wait_for_send_completion;
-} EfiAndroidBootProtocol;
+} GblEfiFastbootUsbProtocol;
 
-#endif  //__ANDROID_BOOT_PROTOCOL_H__
+#endif  //__GBL_EFI_FASTBOOT_USB_H__

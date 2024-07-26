@@ -20,8 +20,9 @@ use efi::EfiError;
 use fastboot::TransportError;
 use fdt::FdtError;
 use gbl_storage::StorageError;
-use libgbl::composite_enum;
+use libgbl::{composite_enum, GblOpsError};
 use misc::BcbError;
+use safemath::Error as SafeMathError;
 use smoltcp::socket::tcp::{ListenError, RecvError, SendError};
 use zbi::ZbiError;
 
@@ -52,9 +53,11 @@ composite_enum! {
         EfiAppError(EfiAppError),
         EfiError(EfiError),
         FdtError(FdtError),
+        GblOpsError(GblOpsError),
         ImageError(ImageError),
         ListenError(ListenError),
         RecvError(RecvError),
+        SafeMathError(SafeMathError),
         SendError(SendError),
         SlotVerifyError(SlotVerifyError<'static>),
         StorageError(StorageError),

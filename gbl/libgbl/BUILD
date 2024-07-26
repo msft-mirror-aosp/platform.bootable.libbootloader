@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 rust_library(
@@ -22,6 +23,7 @@ rust_library(
     ),
     aliases = {"@itertools_noalloc": "itertools_noalloc"},
     edition = "2021",
+    rustc_flags = ANDROID_RUST_LINTS,
     visibility = ["//visibility:public"],
     deps = [
         "@avb",
@@ -61,9 +63,11 @@ rust_test(
         "@gbl//libgbl/testdata:zircon_a.vbmeta",
         "@gbl//libgbl/testdata:zircon_a.vbmeta.cert",
     ],
+    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@avb//:avb_crypto_ops_sha_impl_staticlib",
         "@avb//:avb_test",
+        "@gbl//libasync:cyclic_executor",
         "@gbl//libavb:sysdeps",
         "@gbl//libstorage:libstorage_testlib",
         "@itertools",
@@ -82,6 +86,7 @@ rust_test(
         "@gbl//libgbl/testdata:zircon_r.bin",
         "@gbl//libgbl/testdata:zircon_gpt.bin",
     ],
+    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         ":libgbl",
         "@avb//:avb_crypto_ops_sha_impl_staticlib",

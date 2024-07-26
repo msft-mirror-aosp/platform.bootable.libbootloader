@@ -21,24 +21,40 @@ use safemath::SafeNum;
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 
 const GPT_GUID_LEN: usize = 16;
+/// The maximum number of UTF-16 characters in a GPT partition name, including termination.
 pub const GPT_NAME_LEN_U16: usize = 36;
 
+/// The top-level GPT header.
 #[repr(C, packed)]
 #[derive(Debug, Default, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
 pub struct GptHeader {
+    /// Magic bytes; must be [GPT_MAGIC].
     pub magic: u64,
+    /// Header version.
     pub revision: u32,
+    /// Header size in bytes.
     pub size: u32,
+    /// CRC of the first `size` bytes, calculated with this field zeroed.
     pub crc32: u32,
+    /// Reserved; must be set to 0.
     pub reserved0: u32,
+    /// The on-disk block location of this header.
     pub current: u64,
+    /// The on-disk block location of the other header.
     pub backup: u64,
+    /// First usable block for partition contents.
     pub first: u64,
+    /// Last usable block for partition contents (inclusive).
     pub last: u64,
+    /// Disk GUID.
     pub guid: [u8; GPT_GUID_LEN],
+    /// Starting block for the partition entries array.
     pub entries: u64,
+    /// Number of partition entries.
     pub entries_count: u32,
+    /// The size of each partition entry in bytes.
     pub entries_size: u32,
+    /// CRC of the partition entries array.
     pub entries_crc: u32,
 }
 
@@ -59,11 +75,17 @@ impl GptHeader {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
 pub struct GptEntry {
+    /// Partition type GUID.
     pub part_type: [u8; GPT_GUID_LEN],
+    /// Unique partition GUID.
     pub guid: [u8; GPT_GUID_LEN],
+    /// First block.
     pub first: u64,
+    /// Last block (inclusive).
     pub last: u64,
+    /// Partition flags.
     pub flags: u64,
+    /// Partition name in UTF-16.
     pub name: [u16; GPT_NAME_LEN_U16],
 }
 
@@ -117,6 +139,7 @@ const GPT_MAX_NUM_ENTRIES: u64 = 128;
 const GPT_HEADER_SIZE: u64 = size_of::<GptHeader>() as u64; // 92 bytes.
 const GPT_HEADER_SIZE_PADDED: u64 =
     (GPT_HEADER_SIZE + GPT_ENTRY_ALIGNMENT - 1) / GPT_ENTRY_ALIGNMENT * GPT_ENTRY_ALIGNMENT;
+/// GPT header magic bytes ("EFI PART" in ASCII).
 pub const GPT_MAGIC: u64 = 0x5452415020494645;
 
 enum HeaderType {
@@ -276,6 +299,17 @@ impl<'a> GptCache<'a> {
         })
     }
 
+    /// Creates a new `GptCache` instance that borrows the internal data of this instance.
+    pub fn as_mut_instance(&mut self) -> GptCache<'_> {
+        GptCache {
+            info: &mut self.info,
+            primary_header: &mut self.primary_header,
+            primary_entries: &mut self.primary_entries,
+            secondary_header: &mut self.secondary_header,
+            secondary_entries: &mut self.secondary_entries,
+        }
+    }
+
     /// Returns an iterator to GPT partition entries.
     pub fn partition_iter(&self) -> PartitionIterator {
         PartitionIterator { gpt_cache: self, idx: 0 }
@@ -299,10 +333,21 @@ impl<'a> GptCache<'a> {
     /// Return the list of GPT entries.
     ///
     /// If the object does not contain a valid GPT, the method returns Error.
-    pub(crate) fn entries(&self) -> Result<&[GptEntry]> {
+    fn entries(&self) -> Result<&[GptEntry]> {
         self.check_valid()?;
         Ok(&Ref::<_, [GptEntry]>::new_slice(&self.primary_entries[..]).unwrap().into_slice()
             [..self.info.num_valid_entries()?.try_into()?])
+    }
+
+    /// Returns the total number of partitions.
+    pub fn num_partitions(&self) -> Result<usize> {
+        Ok(self.entries()?.len())
+    }
+
+    /// Gets the `idx`th partition.
+    pub fn get_partition(&self, idx: usize) -> Result<Partition> {
+        let entry = *self.entries()?.get(idx).ok_or(StorageError::OutOfRange)?;
+        Ok(Partition::new(entry, self.info.block_size))
     }
 
     /// Returns the `Partition` for a partition.

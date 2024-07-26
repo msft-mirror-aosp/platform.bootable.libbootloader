@@ -27,6 +27,7 @@
 #![cfg_attr(not(any(test, android_dylib)), no_std)]
 // TODO: b/312610985 - return warning for unused partitions
 #![allow(unused_variables, dead_code)]
+#![allow(async_fn_in_trait)]
 // TODO: b/312608163 - Adding ZBI library usage to check dependencies
 extern crate avb;
 extern crate core;
@@ -36,8 +37,6 @@ extern crate zbi;
 
 use avb::{HashtreeErrorMode, SlotVerifyData, SlotVerifyError, SlotVerifyFlags};
 use core::ffi::CStr;
-use gbl_storage::AsMultiBlockDevices;
-use spin::Mutex;
 
 pub mod boot_mode;
 pub mod boot_reason;
@@ -50,7 +49,7 @@ mod overlap;
 /// querying and modifying slotted boot behavior.
 pub mod slots;
 
-use slots::{BootTarget, BootToken, Cursor, Manager, OneShot, SuffixBytes, UnbootableReason};
+use slots::{BootTarget, BootToken, Cursor, OneShot, SuffixBytes, UnbootableReason};
 
 pub use avb::Descriptor;
 pub use boot_mode::BootMode;
@@ -60,7 +59,7 @@ pub use ops::{
     AndroidBootImages, BootImages, DefaultGblOps, FuchsiaBootImages, GblOps, GblOpsError,
 };
 
-use ops::GblUtils;
+use gbl_async::block_on;
 use overlap::is_overlap;
 
 // TODO: b/312607649 - Replace placeholders with actual structures: https://r.android.com/2721974, etc
@@ -164,14 +163,13 @@ pub fn get_images<'a: 'b, 'b: 'c, 'c, 'd>(
     (boot_image, init_boot_image, vendor_boot_image, partitions_ram_map)
 }
 
-static BOOT_TOKEN: Mutex<Option<BootToken>> = Mutex::new(Some(BootToken(())));
-
 /// GBL object that provides implementation of helpers for boot process.
 pub struct Gbl<'a, G>
 where
     G: GblOps,
 {
     ops: &'a mut G,
+    boot_token: Option<BootToken>,
 }
 
 impl<'a, G> Gbl<'a, G>
@@ -183,7 +181,7 @@ where
     /// # Arguments
     /// * `ops` - the [GblOps] callbacks to use
     pub fn new(ops: &'a mut G) -> Self {
-        Self { ops }
+        Self { ops, boot_token: Some(BootToken(())) }
     }
 
     /// Verify + Load Image Into memory
@@ -230,14 +228,14 @@ where
     ///
     /// * `Ok(Cursor)` - Cursor object that manages a Manager
     /// * `Err(Error)` - on failure
-    pub fn load_slot_interface<'b, B: gbl_storage::AsBlockDevice, M: Manager>(
-        &mut self,
-        block_device: &'b mut B,
-    ) -> Result<Cursor<'b, B, M>> {
-        let boot_token = BOOT_TOKEN.lock().take().ok_or(Error::OperationProhibited)?;
+    pub fn load_slot_interface<B: gbl_storage::AsBlockDevice>(
+        &'a mut self,
+        block_device: &'a mut B,
+    ) -> Result<Cursor<'a, B>> {
+        let boot_token = self.boot_token.take().ok_or(Error::OperationProhibited)?;
         self.ops
-            .load_slot_interface::<B, M>(block_device, boot_token)
-            .map_err(|_| Error::OperationProhibited.into())
+            .load_slot_interface::<B>(block_device, boot_token)
+            .map_err(move |_| Error::OperationProhibited.into())
     }
 
     /// Info Load
@@ -388,7 +386,7 @@ where
         partitions_to_verify: &[&CStr],
         partitions_ram_map: &'d mut [PartitionRamMap<'b, 'c>],
         slot_verify_flags: SlotVerifyFlags,
-        slot_cursor: Cursor<B, impl Manager>,
+        slot_cursor: Cursor<B>,
         kernel_load_buffer: &mut [u8],
         ramdisk_load_buffer: &mut [u8],
         fdt: &mut [u8],
@@ -439,7 +437,7 @@ where
         partitions_to_verify: &[&CStr],
         partitions_ram_map: &'d mut [PartitionRamMap<'b, 'c>],
         slot_verify_flags: SlotVerifyFlags,
-        mut slot_cursor: Cursor<B, impl Manager>,
+        mut slot_cursor: Cursor<B>,
     ) -> Result<(KernelImage<'e>, BootToken)> {
         let mut oneshot_status = slot_cursor.ctx.get_oneshot_status();
         slot_cursor.ctx.clear_oneshot_status();
@@ -453,7 +451,7 @@ where
         }
 
         let boot_target = match oneshot_status {
-            None | Some(OneShot::Bootloader) => slot_cursor.ctx.get_boot_target(),
+            None | Some(OneShot::Bootloader) => slot_cursor.ctx.get_boot_target()?,
             Some(OneShot::Continue(recovery)) => BootTarget::Recovery(recovery),
         };
 
@@ -520,18 +518,16 @@ where
 
     /// Loads and boots a Zircon kernel according to ABR + AVB.
     pub fn zircon_load_and_boot(&mut self, load_buffer: &mut [u8]) -> Result<()> {
-        let (mut block_devices, load_buffer) = GblUtils::new(self.ops, load_buffer)?;
-        block_devices.sync_gpt_all(&mut |_, _, _| {});
         // TODO(b/334962583): Implement zircon ABR + AVB.
         // The following are place holder for test of invocation in the integration test only.
-        let ptn_size = block_devices
-            .find_partition("zircon_a")?
-            .size()
-            .map_err(|e: gbl_storage::StorageError| IntegrationError::StorageError(e))?
+        let ptn_size = self
+            .ops
+            .partition_size("zircon_a")?
+            .ok_or(Error::MissingImage)?
             .try_into()
             .or(Err(Error::ArithmeticOverflow))?;
         let (kernel, remains) = load_buffer.split_at_mut(ptn_size);
-        block_devices.read_gpt_partition("zircon_a", 0, kernel)?;
+        block_on(self.ops.read_from_partition("zircon_a", 0, kernel))?;
         self.ops.boot(BootImages::Fuchsia(FuchsiaBootImages {
             zbi_kernel: kernel,
             zbi_items: &mut [],

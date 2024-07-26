@@ -26,6 +26,7 @@ pub type Result<T> = core::result::Result<T, IntegrationError>;
 #[derive(Debug, PartialEq, Eq)]
 /// Errors originating from GBL native logic.
 pub enum Error {
+    /// Unexpected overflow in size/length calculation.
     ArithmeticOverflow,
     /// Fail to hand off to kernel.
     BootFailed,
@@ -107,6 +108,7 @@ macro_rules! composite_enum {
             $(,)*
         }
     ) => {
+        #[allow(missing_docs)]
         // Copy over enum declaration as it is.
         $(#[$outer])*
         $vis enum $name {
@@ -145,6 +147,7 @@ composite_enum! {
         AvbSlotVerifyError(SlotVerifyError<'static>),
         GblNativeError(Error),
         GblOpsError(GblOpsError),
+        GblSlotsError(crate::slots::Error),
         FromBytesUntilNulError(FromBytesUntilNulError),
         FromBytesWithNulError(FromBytesWithNulError),
         StorageError(StorageError),

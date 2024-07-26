@@ -15,10 +15,10 @@
  *
  */
 
-#include "types.h"
-
 #ifndef __BLOCK_IO_PROTOCOL_H__
 #define __BLOCK_IO_PROTOCOL_H__
+
+#include "types.h"
 
 typedef struct EfiBlockIoMedia EfiBlockIoMedia;
 typedef struct EfiBlockIoProtocol EfiBlockIoProtocol;
