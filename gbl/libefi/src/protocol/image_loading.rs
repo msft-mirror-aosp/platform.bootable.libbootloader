@@ -687,6 +687,9 @@ mod test {
         });
     }
 
+    // Mutex to make sure tests that use `static RETURNED_BUFFERS` do not run in parallel to avoid
+    // unexpected results since this is global static that would be shared between tests.
+    static GET_BUFFER_MUTEX: Mutex<()> = Mutex::new(());
     #[test]
     fn test_proto_get_buffer_error() {
         unsafe extern "C" fn get_buffer(
@@ -778,6 +781,7 @@ mod test {
                 &mut image_loading,
             );
 
+            let _guard = GET_BUFFER_MUTEX.lock();
             let buffer = protocol.get_buffer(&gbl_image_info).unwrap();
             assert!(buffer.as_ref().is_empty());
         });
@@ -816,6 +820,7 @@ mod test {
                 &mut image_loading,
             );
 
+            let _guard = GET_BUFFER_MUTEX.lock();
             let res = protocol.get_buffer(&gbl_image_info);
             assert_eq!(res, Err(EfiError::from(EFI_STATUS_BUFFER_TOO_SMALL)));
         });
@@ -852,6 +857,7 @@ mod test {
                 &mut image_loading,
             );
 
+            let _guard = GET_BUFFER_MUTEX.lock();
             let buf = protocol.get_buffer(&gbl_image_info).unwrap();
             assert_ne!(buf.as_ref().as_ptr(), null_mut());
             assert_eq!(buf.as_ref().len(), 100);
@@ -901,6 +907,7 @@ mod test {
                 &mut image_loading,
             );
 
+            let _guard = GET_BUFFER_MUTEX.lock();
             let res = protocol.get_buffer(&gbl_image_info);
             assert!(res.is_ok());
         });
@@ -937,6 +944,7 @@ mod test {
                 &mut image_loading,
             );
 
+            let _guard = GET_BUFFER_MUTEX.lock();
             let _buf = protocol.get_buffer(&gbl_image_info).unwrap();
             assert_eq!(
                 protocol.get_buffer(&gbl_image_info),
@@ -976,6 +984,7 @@ mod test {
                 &mut image_loading,
             );
 
+            let _guard = GET_BUFFER_MUTEX.lock();
             protocol.get_buffer(&gbl_image_info).unwrap();
             protocol.get_buffer(&gbl_image_info).unwrap();
         });
@@ -1014,6 +1023,7 @@ mod test {
                 &mut image_loading,
             );
 
+            let _guard = GET_BUFFER_MUTEX.lock();
             let mut keep_alive: Vec<ImageBuffer> = vec![];
             for _ in 1..=MAX_ARRAY_SIZE + 1 {
                 keep_alive.push(protocol.get_buffer(&gbl_image_info).unwrap());
