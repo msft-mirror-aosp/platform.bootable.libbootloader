@@ -451,7 +451,7 @@ where
         }
 
         let boot_target = match oneshot_status {
-            None | Some(OneShot::Bootloader) => slot_cursor.ctx.get_boot_target(),
+            None | Some(OneShot::Bootloader) => slot_cursor.ctx.get_boot_target()?,
             Some(OneShot::Continue(recovery)) => BootTarget::Recovery(recovery),
         };
 

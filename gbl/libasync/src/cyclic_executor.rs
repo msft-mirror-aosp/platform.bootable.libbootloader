@@ -32,8 +32,10 @@ impl<'a> CyclicExecutor<'a> {
     pub fn spawn_task(&mut self, task: impl Future<Output = ()> + 'a) {
         let mut task = Box::pin(task);
         // Schedule the task once.
-        poll(&mut task.as_mut());
-        self.tasks.push(task);
+        match poll(&mut task.as_mut()) {
+            Some(_) => {}
+            _ => self.tasks.push(task),
+        }
     }
 
     /// Polls all `Future`s once.
@@ -104,5 +106,12 @@ mod test {
         executor.run();
         assert_eq!(*val1.try_lock().unwrap(), 3);
         assert_eq!(*val2.try_lock().unwrap(), 4);
+    }
+
+    #[test]
+    fn test_complete_on_spawn_not_added() {
+        let mut executor: CyclicExecutor = Default::default();
+        executor.spawn_task(async {});
+        assert_eq!(executor.num_tasks(), 0);
     }
 }

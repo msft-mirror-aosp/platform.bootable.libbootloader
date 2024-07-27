@@ -339,18 +339,13 @@ pub trait Manager: private::SlotGet {
 
     /// Returns the current active slot,
     /// or Recovery if the system will try to boot to recovery.
-    ///
-    /// TODO(b/350572566): change to return Result after conducting integration tests
-    fn get_boot_target(&self) -> BootTarget;
+    fn get_boot_target(&self) -> Result<BootTarget, Error>;
 
     /// Returns the slot last set active.
     /// Note that this is different from get_boot_target in that
     /// the slot last set active cannot be Recovery.
-    ///
-    /// TODO(b/350572566): change to return Result after conducting integration tests
-    fn get_slot_last_set_active(&self) -> Slot {
-        // We can safely assume that we have at least one slot.
-        self.slots_iter().max_by_key(|slot| (slot.priority, slot.suffix.rank())).unwrap()
+    fn get_slot_last_set_active(&self) -> Result<Slot, Error> {
+        self.slots_iter().max_by_key(|slot| (slot.priority, slot.suffix.rank())).ok_or(Error::Other)
     }
 
     /// Updates internal metadata (usually the retry count)
@@ -384,10 +379,8 @@ pub trait Manager: private::SlotGet {
     ) -> Result<(), Error>;
 
     /// Default for initial tries
-    ///
-    /// TODO(b/350572566): change to return Result after conducting integration tests
-    fn get_max_retries(&self) -> Tries {
-        7u8.into()
+    fn get_max_retries(&self) -> Result<Tries, Error> {
+        Ok(7u8.into())
     }
 
     /// Optional oneshot boot support
