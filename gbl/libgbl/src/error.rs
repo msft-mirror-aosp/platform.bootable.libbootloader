@@ -147,6 +147,7 @@ composite_enum! {
         AvbSlotVerifyError(SlotVerifyError<'static>),
         GblNativeError(Error),
         GblOpsError(GblOpsError),
+        GblSlotsError(crate::slots::Error),
         FromBytesUntilNulError(FromBytesUntilNulError),
         FromBytesWithNulError(FromBytesWithNulError),
         StorageError(StorageError),
