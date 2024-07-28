@@ -32,6 +32,7 @@ rust_binary(
         "src/fuchsia_boot.rs",
         "src/main.rs",
         "src/net.rs",
+        "src/ops.rs",
         "src/riscv64.rs",
         "src/utils.rs",
     ],

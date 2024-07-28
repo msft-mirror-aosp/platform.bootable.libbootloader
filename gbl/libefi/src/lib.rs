@@ -79,6 +79,8 @@ use protocol::simple_text_output::SimpleTextOutputProtocol;
 use protocol::{Protocol, ProtocolInfo};
 
 mod error {
+    use crate::ab_slots;
+
     use super::defs::EFI_STATUS_SUCCESS;
     use super::EfiStatus;
 
@@ -117,6 +119,13 @@ mod error {
                     efi_status & !(1 << (core::mem::size_of::<EfiStatus>() * 8 - 1)),
                 ),
             })
+        }
+    }
+
+    impl From<EfiError> for ab_slots::Error {
+        fn from(_err: EfiError) -> ab_slots::Error {
+            // Lazy default
+            ab_slots::Error::Other
         }
     }
 }
@@ -583,6 +592,8 @@ impl<'a, 'n> Event<'a, 'n> {
     }
 
     /// Creates an  unowned `Event`. The `Event` is not closed when going out of scope.
+    // TODO allow unused?
+    #[allow(dead_code)]
     fn new_unowned(efi_event: EfiEvent) -> Self {
         Self { efi_entry: None, efi_event: efi_event, _cb: None }
     }
@@ -1033,7 +1044,7 @@ mod test {
     /// A test wrapper that sets up a system table, image handle and runs a test function like it
     /// is an EFI application.
     /// TODO(300168989): Investigate using procedural macro to generate test that auto calls this.
-    pub fn run_test(func: fn(EfiHandle, *mut EfiSystemTable) -> ()) {
+    pub fn run_test(func: impl FnOnce(EfiHandle, *mut EfiSystemTable) -> ()) {
         // Reset all traces
         EFI_CALL_TRACES.with(|trace| {
             *trace.borrow_mut() = Default::default();
@@ -1059,6 +1070,31 @@ mod test {
         // Reset all traces
         EFI_CALL_TRACES.with(|trace| {
             *trace.borrow_mut() = Default::default();
+        });
+    }
+
+    /// Constructs a mock protocol `P` and run the given callback on it.
+    ///
+    /// This is similar to `run_test()`, but also provides the construction of a single mock
+    /// protocol to reduce boilerplate for tests to check the interface between a C EFI protocol
+    /// struct and our Rust wrappers.
+    ///
+    /// # Arguments
+    /// * `c_interface`: the raw C struct interface implementing the desired protocol.
+    /// * `f`: the callback function to run, given the resulting protocol as an argument.
+    pub fn run_test_with_mock_protocol<P: ProtocolInfo>(
+        mut c_interface: P::InterfaceType,
+        f: impl FnOnce(&Protocol<P>),
+    ) {
+        run_test(|image_handle, systab_ptr| {
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+            // SAFETY:
+            // * `c_interface` is a valid C interface for proto `P`
+            // * `c_interface` outlives the created `protocol`
+            let protocol = unsafe {
+                Protocol::new(DeviceHandle::new(null_mut()), &mut c_interface, &efi_entry)
+            };
+            f(&protocol);
         });
     }
 
