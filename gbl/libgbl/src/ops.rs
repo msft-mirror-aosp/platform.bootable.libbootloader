@@ -74,9 +74,7 @@ pub trait GblOps {
 
     /// This method can be used to implement platform specific mechanism for deciding whether boot
     /// should abort and enter Fastboot mode.
-    fn should_stop_in_fastboot(&mut self) -> Result<bool, GblOpsError> {
-        Err(GblOpsError(Some("not defined yet")))
-    }
+    fn should_stop_in_fastboot(&mut self) -> Result<bool, GblOpsError>;
 
     /// Platform specific kernel boot implementation.
     ///

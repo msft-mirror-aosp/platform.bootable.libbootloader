@@ -26,14 +26,14 @@ extern crate alloc;
 use core::fmt::Write;
 
 use efi::defs::EfiSystemTable;
-use efi::protocol::android_boot::AndroidBootProtocol;
 use efi::{efi_print, efi_println, initialize, panic};
+use libgbl::GblOps;
 
 #[macro_use]
 mod utils;
 use core::panic::PanicInfo;
 use error::Result;
-use utils::{loaded_image_path, wait_key_stroke};
+use utils::loaded_image_path;
 
 #[cfg(target_arch = "riscv64")]
 mod riscv64;
@@ -45,6 +45,7 @@ mod error;
 mod fastboot;
 mod fuchsia_boot;
 mod net;
+mod ops;
 
 #[panic_handler]
 fn handle_panic(p_info: &PanicInfo) -> ! {
@@ -55,23 +56,22 @@ fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -
     // SAFETY: Called only once here upon EFI app entry.
     let entry = unsafe { initialize(image_handle, systab_ptr)? };
 
+    let mut ops = ops::Ops { efi_entry: &entry };
+
     efi_println!(entry, "****Rust EFI Application****");
     if let Ok(v) = loaded_image_path(&entry) {
         efi_println!(entry, "Image path: {}", v);
     }
 
-    efi_println!(entry, "Press Backspace to enter fastboot.");
-    match wait_key_stroke(&entry, '\x08', 2000) {
+    match ops.should_stop_in_fastboot() {
         Ok(true) => {
-            efi_println!(entry, "Backspace pressed.");
-            let android_boot_protocol = entry
-                .system_table()
-                .boot_services()
-                .find_first_and_open::<AndroidBootProtocol>()
-                .ok();
-            fastboot::fastboot(&entry, android_boot_protocol.as_ref())?;
+            fastboot::fastboot(&entry)?;
         }
-        _ => {}
+        Ok(false) => {}
+        Err(e) => {
+            efi_println!(entry, "Warning: error while checking fastboot trigger ({:?})", e);
+            efi_println!(entry, "Ignoring error and continuing with normal boot");
+        }
     }
 
     // For simplicity, we pick bootflow based on GPT layout.
