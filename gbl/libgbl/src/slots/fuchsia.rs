@@ -176,11 +176,12 @@ impl super::private::SlotGet for SlotBlock<'_, AbrData> {
 }
 
 impl Manager for SlotBlock<'_, AbrData> {
-    fn get_boot_target(&self) -> BootTarget {
-        self.slots_iter()
+    fn get_boot_target(&self) -> Result<BootTarget, Error> {
+        Ok(self
+            .slots_iter()
             .filter(Slot::is_bootable)
             .max_by_key(|slot| (slot.priority, slot.suffix.rank()))
-            .map_or(BootTarget::Recovery(RecoveryTarget::Dedicated), BootTarget::NormalBoot)
+            .map_or(BootTarget::Recovery(RecoveryTarget::Dedicated), BootTarget::NormalBoot))
     }
 
     fn slots_iter(&self) -> SlotIterator {
@@ -210,7 +211,7 @@ impl Manager for SlotBlock<'_, AbrData> {
         let target = if let Some(OneShot::Continue(r)) = self.get_oneshot_status() {
             BootTarget::Recovery(r)
         } else {
-            self.get_boot_target()
+            self.get_boot_target()?
         };
         let target_slot = match target {
             BootTarget::NormalBoot(slot) => slot,
@@ -311,12 +312,12 @@ mod test {
             Slot {
                 suffix: 'a'.into(),
                 priority: DEFAULT_PRIORITY.into(),
-                bootability: Bootability::Retriable(sb.get_max_retries()),
+                bootability: Bootability::Retriable(sb.get_max_retries().unwrap()),
             },
             Slot {
                 suffix: 'b'.into(),
                 priority: DEFAULT_PRIORITY.into(),
-                bootability: Bootability::Retriable(sb.get_max_retries()),
+                bootability: Bootability::Retriable(sb.get_max_retries().unwrap()),
             },
         ];
         let actual: Vec<Slot> = sb.slots_iter().collect();
@@ -390,7 +391,7 @@ mod test {
 
         assert_eq!(sb.mark_boot_attempt(), Ok(BootToken(())));
         assert_eq!(
-            sb.get_boot_target(),
+            sb.get_boot_target().unwrap(),
             BootTarget::NormalBoot(Slot {
                 suffix: 'b'.into(),
                 priority: DEFAULT_PRIORITY.into(),
@@ -424,7 +425,7 @@ mod test {
             bootability: Bootability::Successful,
         });
         assert_eq!(sb.mark_boot_attempt(), Ok(BootToken(())));
-        assert_eq!(sb.get_boot_target(), target);
+        assert_eq!(sb.get_boot_target().unwrap(), target);
     }
 
     #[test]
@@ -488,7 +489,7 @@ mod test {
                 Ok(())
             );
         }
-        assert_eq!(sb.get_boot_target(), BootTarget::Recovery(RecoveryTarget::Dedicated));
+        assert_eq!(sb.get_boot_target().unwrap(), BootTarget::Recovery(RecoveryTarget::Dedicated));
     }
 
     #[test]
@@ -496,10 +497,10 @@ mod test {
         let mut sb: SlotBlock<AbrData> = Default::default();
         let v: Vec<Slot> = sb.slots_iter().collect();
 
-        assert_eq!(sb.get_boot_target(), BootTarget::NormalBoot(v[0]));
+        assert_eq!(sb.get_boot_target().unwrap(), BootTarget::NormalBoot(v[0]));
         for slot in v.iter() {
             assert_eq!(sb.set_active_slot(slot.suffix), Ok(()));
-            assert_eq!(sb.get_boot_target(), BootTarget::NormalBoot(*slot));
+            assert_eq!(sb.get_boot_target().unwrap(), BootTarget::NormalBoot(*slot));
         }
     }
 
@@ -515,12 +516,12 @@ mod test {
         let mut sb: SlotBlock<AbrData> = Default::default();
         let v: Vec<Slot> = sb.slots_iter().collect();
         assert_eq!(sb.set_active_slot(v[0].suffix), Ok(()));
-        assert_eq!(sb.get_slot_last_set_active(), v[0]);
+        assert_eq!(sb.get_slot_last_set_active().unwrap(), v[0]);
         for slot in v.iter() {
             assert_eq!(sb.set_slot_unbootable(slot.suffix, NoMoreTries), Ok(()));
         }
 
-        assert_eq!(sb.get_slot_last_set_active(), sb.slots_iter().next().unwrap());
+        assert_eq!(sb.get_slot_last_set_active().unwrap(), sb.slots_iter().next().unwrap());
     }
 
     macro_rules! set_oneshot_tests {
@@ -532,12 +533,12 @@ mod test {
                             assert_eq!(sb.set_oneshot_status($value), Ok(()));
                             assert_eq!(sb.get_oneshot_status(), Some($value));
 
-                            assert_eq!(sb.get_boot_target(),
+                            assert_eq!(sb.get_boot_target().unwrap(),
                                        BootTarget::NormalBoot(
                                            Slot{
                                                suffix: 'a'.into(),
                                                priority: DEFAULT_PRIORITY.into(),
-                                               bootability: Bootability::Retriable(sb.get_max_retries()),
+                                               bootability: Bootability::Retriable(sb.get_max_retries().unwrap()),
                                            },
                                        ));
                         }
