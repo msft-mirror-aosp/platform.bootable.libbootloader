@@ -178,8 +178,10 @@ mod test {
     use crate::test::*;
     use crate::{DeviceHandle, EfiEntry};
     use core::ptr::null_mut;
-    use gbl::slots::{Bootability, Cursor, RecoveryTarget, UnbootableReason};
-    use gbl::{Gbl, GblOps, Result as GblResult};
+    use gbl::{
+        slots::{Bootability, Cursor, RecoveryTarget, UnbootableReason},
+        Gbl, GblOps, GblOpsError, Result as GblResult,
+    };
     use gbl_storage_testlib::TestBlockDevice;
     // TODO(b/350526796): use ptr.is_aligned() when Rust 1.79 is in Android
     use std::mem::align_of;
@@ -241,6 +243,10 @@ mod test {
     }
 
     impl<'b> GblOps for TestGblOps<'b> {
+        fn should_stop_in_fastboot(&mut self) -> Result<bool, GblOpsError> {
+            Ok(false)
+        }
+
         fn load_slot_interface<'a, B: gbl_storage::AsBlockDevice>(
             &'a mut self,
             block_dev: &'a mut B,
