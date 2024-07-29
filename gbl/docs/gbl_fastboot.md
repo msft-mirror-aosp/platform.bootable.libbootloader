@@ -7,7 +7,7 @@ This document describes Fastboot in the [GBL UEFI bootloader](../efi/BUILD).
 The GBL UEFI bootloader supports both Fastboot over TCP and USB. To enable
 Fastboot over TCP, the UEFI loader needs to implement the
 `EFI_SIMPLE_NETWORK_PROTOCOL` protocol. To enable Fastboot over USB, the
-[EFI_ANDROID_BOOT_PROTOCOL](./EFI_ANDROID_BOOT_PROTOCOL.md) protocol is needed.
+[GBL_EFI_FASTBOOT_USB_PROTOCOL](./GBL_EFI_FASTBOOT_USB_PROTOCOL.md) protocol is needed.
 GBL automatically establishes the corresponding transport channel if the needed
 protocol is available.
 
@@ -57,3 +57,35 @@ introduced for specifying a partition:
   of the raw data on the block device with ID `block_id`. `offset` defaults to
   0 if not given. `size` defaults to the rest of the storage after `offset` if
   not given.
+
+## Non-blocking `fastboot flash`.
+
+If the UEFI firmware supports `EFI_BLOCK_IO2_PROTOCOL` for the block devices,
+GBL Fastboot provides an option to make `fastboot flash` non-blocking.
+Specifically, after the image is downloaded, GBL Fastboot will launch a
+separate task in the background for writing the image to the device, while
+itself will continue to listen for the next Fastboot command from the host,
+including a new `fastboot flash` command. This provides some paralellism
+between downloading and flashing when the host is flashing multiple images.
+Example:
+
+```
+fastboot oem gbl-enable-async-block-io
+fastboot flash boot_a <image>
+fastboot flash boot_b <image>
+fastboot flash vendor_boot_a <image>
+...
+fastboot oem gbl-sync-blocks
+fastboot oem gbl-disable-async-block-io
+```
+
+If a block device is busy processing a previous flash when a new image is
+downloaded and ready to be flashed, it will be blocked until the previous flash
+is completed. Different block devices are independent to each other.
+
+Because IO is now non-blocking, the return status of a `fastboot flash` does
+necessarily represents the status of the IO. If a block device encounters
+errors while processing a non-blocking IO, all subsequent flash requests will
+be rejected and the host should reboot the device.
+`fastboot oem gbl-sync-blocks` can be used to wait until all currently pending
+flash are completed. The command returns error if any block encounters errors.

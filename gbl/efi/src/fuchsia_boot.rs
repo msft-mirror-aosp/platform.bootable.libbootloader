@@ -12,13 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::error::{EfiAppError, Result};
-use crate::utils::{aligned_subslice, find_gpt_devices, get_efi_fdt, to_usize, usize_add};
+use crate::{
+    efi_blocks::find_block_devices,
+    error::{EfiAppError, Result},
+    utils::{aligned_subslice, get_efi_fdt, to_usize, usize_add},
+};
 use core::fmt::Write;
 use core::mem::size_of;
 use efi::{efi_print, efi_println, EfiEntry};
 use fdt::Fdt;
-use gbl_storage::AsMultiBlockDevices;
 use zbi::{ZbiContainer, ZbiFlags, ZbiHeader, ZbiType, ZBI_ALIGNMENT_USIZE};
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 
@@ -93,7 +95,7 @@ fn relocate_to_tail(kernel: &mut [u8]) -> Result<(&mut [u8], &mut [u8], usize)> 
 fn load_fuchsia_simple<'a>(efi_entry: &EfiEntry, load: &'a mut [u8]) -> Result<&'a mut [u8]> {
     let load = aligned_subslice(load, ZBI_ALIGNMENT_USIZE)?;
 
-    let mut gpt_devices = find_gpt_devices(&efi_entry)?;
+    let mut gpt_devices = find_block_devices(&efi_entry)?;
 
     // Gets FDT from EFI configuration table.
     let (_, fdt_bytes) = get_efi_fdt(&efi_entry).ok_or_else(|| EfiAppError::NoFdt).unwrap();
@@ -114,7 +116,9 @@ fn load_fuchsia_simple<'a>(efi_entry: &EfiEntry, load: &'a mut [u8]) -> Result<&
     let load = aligned_subslice(load, ZIRCON_KERNEL_ALIGN)?;
 
     // Reads ZBI header to compute image length.
-    gpt_devices.read_gpt_partition("zircon_a", 0, &mut load[..size_of::<ZbiHeader>()]).unwrap();
+    gpt_devices
+        .read_gpt_partition_sync("zircon_a", 0, &mut load[..size_of::<ZbiHeader>()])
+        .unwrap();
     let image_length = Ref::<_, ZbiHeader>::new_from_prefix(&mut load[..])
         .ok_or_else(|| EfiAppError::NoZbiImage)?
         .0
@@ -123,7 +127,7 @@ fn load_fuchsia_simple<'a>(efi_entry: &EfiEntry, load: &'a mut [u8]) -> Result<&
 
     // Reads the entire image.
     gpt_devices
-        .read_gpt_partition(
+        .read_gpt_partition_sync(
             "zircon_a",
             0,
             &mut load[..usize_add(size_of::<ZbiHeader>(), image_length)?],
@@ -148,7 +152,7 @@ fn load_fuchsia_simple<'a>(efi_entry: &EfiEntry, load: &'a mut [u8]) -> Result<&
 
 /// Check if the disk GPT layout is a Fuchsia device layout.
 pub fn is_fuchsia_gpt(efi_entry: &EfiEntry) -> Result<()> {
-    let mut gpt_devices = find_gpt_devices(&efi_entry)?;
+    let mut gpt_devices = find_block_devices(&efi_entry)?;
     let partitions: [&[&str]; 8] = [
         &["zircon_a"],
         &["zircon_b"],

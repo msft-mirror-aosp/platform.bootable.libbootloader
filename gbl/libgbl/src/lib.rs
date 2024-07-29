@@ -27,6 +27,7 @@
 #![cfg_attr(not(any(test, android_dylib)), no_std)]
 // TODO: b/312610985 - return warning for unused partitions
 #![allow(unused_variables, dead_code)]
+#![allow(async_fn_in_trait)]
 // TODO: b/312608163 - Adding ZBI library usage to check dependencies
 extern crate avb;
 extern crate core;
@@ -36,7 +37,6 @@ extern crate zbi;
 
 use avb::{HashtreeErrorMode, SlotVerifyData, SlotVerifyError, SlotVerifyFlags};
 use core::ffi::CStr;
-use gbl_storage::AsMultiBlockDevices;
 
 pub mod boot_mode;
 pub mod boot_reason;
@@ -59,7 +59,7 @@ pub use ops::{
     AndroidBootImages, BootImages, DefaultGblOps, FuchsiaBootImages, GblOps, GblOpsError,
 };
 
-use ops::GblUtils;
+use gbl_async::block_on;
 use overlap::is_overlap;
 
 // TODO: b/312607649 - Replace placeholders with actual structures: https://r.android.com/2721974, etc
@@ -451,7 +451,7 @@ where
         }
 
         let boot_target = match oneshot_status {
-            None | Some(OneShot::Bootloader) => slot_cursor.ctx.get_boot_target(),
+            None | Some(OneShot::Bootloader) => slot_cursor.ctx.get_boot_target()?,
             Some(OneShot::Continue(recovery)) => BootTarget::Recovery(recovery),
         };
 
@@ -518,18 +518,16 @@ where
 
     /// Loads and boots a Zircon kernel according to ABR + AVB.
     pub fn zircon_load_and_boot(&mut self, load_buffer: &mut [u8]) -> Result<()> {
-        let (mut block_devices, load_buffer) = GblUtils::new(self.ops, load_buffer)?;
-        block_devices.sync_gpt_all(&mut |_, _, _| {});
         // TODO(b/334962583): Implement zircon ABR + AVB.
         // The following are place holder for test of invocation in the integration test only.
-        let ptn_size = block_devices
-            .find_partition("zircon_a")?
-            .size()
-            .map_err(|e: gbl_storage::StorageError| IntegrationError::StorageError(e))?
+        let ptn_size = self
+            .ops
+            .partition_size("zircon_a")?
+            .ok_or(Error::MissingImage)?
             .try_into()
             .or(Err(Error::ArithmeticOverflow))?;
         let (kernel, remains) = load_buffer.split_at_mut(ptn_size);
-        block_devices.read_gpt_partition("zircon_a", 0, kernel)?;
+        block_on(self.ops.read_from_partition("zircon_a", 0, kernel))?;
         self.ops.boot(BootImages::Fuchsia(FuchsiaBootImages {
             zbi_kernel: kernel,
             zbi_items: &mut [],

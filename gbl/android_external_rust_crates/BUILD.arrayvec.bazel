@@ -1,4 +1,4 @@
-# Copyright (C) 2023 The Android Open Source Project
+# Copyright (C) 2024 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,23 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
-
-package(
-    default_visibility = ["//visibility:public"],
-)
+load("@rules_rust//rust:defs.bzl", "rust_library")
 
 rust_library(
-    name = "libbootconfig",
-    srcs = ["src/lib.rs"],
-    crate_name = "bootconfig",
-    edition = "2021",
-    rustc_flags = ANDROID_RUST_LINTS,
-)
-
-rust_test(
-    name = "libbootconfig_test",
-    crate = ":libbootconfig",
-    rustc_flags = ANDROID_RUST_LINTS,
+    name = "arrayvec",
+    srcs = glob(["**/*.rs"]),
+    edition = "2018",
+    visibility = ["//visibility:public"],
 )
