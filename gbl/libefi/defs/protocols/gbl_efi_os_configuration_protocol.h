@@ -28,6 +28,8 @@ typedef struct GblEfiOsConfigurationProtocol {
   EfiStatus (*fixup_kernel_commandline)(
       struct GblEfiOsConfigurationProtocol* self, char8_t* data,
       size_t* buffer_size);
+  EfiStatus (*fixup_bootconfig)(struct GblEfiOsConfigurationProtocol* self,
+                                char8_t* data, size_t* buffer_size);
   // TODO(b/353272981): remaining fields.
 } GblEfiOsConfigurationProtocol;
 
