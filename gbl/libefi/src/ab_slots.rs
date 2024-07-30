@@ -180,12 +180,16 @@ mod test {
     use core::ptr::null_mut;
     use gbl::{
         slots::{Bootability, Cursor, RecoveryTarget, UnbootableReason},
-        Gbl, GblOps, GblOpsError, Result as GblResult,
+        BootImages, Gbl, GblOps, GblOpsError, Result as GblResult,
     };
     use gbl_storage_testlib::TestBlockDevice;
     // TODO(b/350526796): use ptr.is_aligned() when Rust 1.79 is in Android
-    use std::mem::align_of;
-    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::{
+        fmt::Write,
+        mem::align_of,
+        sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    };
+    use zbi::ZbiContainer;
 
     // The thread-local atomics are an ugly, ugly hack to pass state between
     // the protocol method functions and the rest of the test body.
@@ -243,8 +247,49 @@ mod test {
     }
 
     impl<'b> GblOps for TestGblOps<'b> {
+        fn console_out(&mut self) -> Option<&mut dyn Write> {
+            unimplemented!();
+        }
+
         fn should_stop_in_fastboot(&mut self) -> Result<bool, GblOpsError> {
-            Ok(false)
+            unimplemented!();
+        }
+
+        fn preboot(&mut self, _: BootImages) -> Result<(), GblOpsError> {
+            unimplemented!();
+        }
+
+        async fn read_from_partition(
+            &mut self,
+            _: &str,
+            _: u64,
+            _: &mut [u8],
+        ) -> Result<(), GblOpsError> {
+            unimplemented!();
+        }
+
+        async fn write_to_partition(
+            &mut self,
+            _: &str,
+            _: u64,
+            _: &mut [u8],
+        ) -> Result<(), GblOpsError> {
+            unimplemented!();
+        }
+
+        fn partition_size(&mut self, _: &str) -> Result<Option<u64>, GblOpsError> {
+            unimplemented!();
+        }
+
+        fn zircon_add_device_zbi_items(
+            &mut self,
+            _: &mut ZbiContainer<&mut [u8]>,
+        ) -> Result<(), GblOpsError> {
+            unimplemented!();
+        }
+
+        fn do_fastboot<B: gbl_storage::AsBlockDevice>(&self, _: &mut Cursor<B>) -> GblResult<()> {
+            unimplemented!();
         }
 
         fn load_slot_interface<'a, B: gbl_storage::AsBlockDevice>(
