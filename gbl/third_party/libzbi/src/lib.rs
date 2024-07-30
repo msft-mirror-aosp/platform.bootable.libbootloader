@@ -303,6 +303,11 @@ impl<B: ByteSlice> ZbiContainer<B> {
         self.payload_length
     }
 
+    /// Returns the total size including the ZBI container header, payload length after padding.
+    pub fn container_size(&self) -> usize {
+        self.get_payload_length_usize() + size_of::<ZbiHeader>()
+    }
+
     /// Immutable iterator over ZBI elements. First element is first ZBI element after
     /// container header. Container header is not available via iterator.
     pub fn iter(&self) -> ZbiContainerIterator<impl ByteSlice + Default + Debug + PartialEq + '_> {
@@ -316,23 +321,54 @@ impl<B: ByteSlice> ZbiContainer<B> {
     ///
     /// # Returns
     ///
-    /// * `Ok(())` - if bootable
+    /// * `Ok(item)` - if bootable, where `item` is the ZBI kernel item.
     /// * Err([`ZbiError::IncompleteKernel`]) - if first element in container has type not bootable
     ///                                         on target platform.
     /// * Err([`ZbiError::Truncated`]) - if container is empty
-    pub fn is_bootable(&self) -> ZbiResult<()> {
+    pub fn is_bootable(
+        &self,
+    ) -> ZbiResult<ZbiItem<impl ByteSlice + Default + Debug + PartialEq + '_>> {
         let hdr = &self.header;
         if hdr.length == 0 {
             return Err(ZbiError::Truncated);
         }
 
         match self.iter().next() {
-            Some(ZbiItem { header, payload: _ }) if header.type_ == ZBI_ARCH_KERNEL_TYPE as u32 => {
-                Ok(())
-            }
+            Some(v) if v.header.type_ == ZBI_ARCH_KERNEL_TYPE as u32 => Ok(v),
             Some(_) => Err(ZbiError::IncompleteKernel),
             None => Err(ZbiError::Truncated),
         }
+    }
+
+    /// Returns the ZBI kernel `entry` and `reserved_memory_size` field value if the container is a
+    /// bootable ZBI kernel.
+    ///
+    /// # Returns
+    ///
+    /// * Returns `Ok((entry, reserved_memory_size))` on success.
+    /// * Returns `Err` if container is not a bootable ZBI kernel or is truncated.
+    pub fn get_kernel_entry_and_reserved_memory_size(&self) -> ZbiResult<(u64, u64)> {
+        let kernel = self.is_bootable()?;
+        let vals = Ref::<_, [u64]>::new_slice_from_prefix(kernel.payload, 2)
+            .ok_or(ZbiError::IncompleteKernel)?
+            .0
+            .into_slice();
+        Ok((vals[0], vals[1]))
+    }
+
+    /// Computes the required buffer size needed for relocating this ZBI kernel.
+    ///
+    /// # Returns
+    ///
+    /// * Returns `Ok(size)` on success.
+    /// * Returns `Err` if container is not a valid bootable ZBI kernel.
+    pub fn get_buffer_size_for_kernel_relocation(&self) -> ZbiResult<usize> {
+        let kernel = self.is_bootable()?;
+        let (_, reserve_memory_size) = self.get_kernel_entry_and_reserved_memory_size()?;
+        let kernel_size = 2 * size_of::<ZbiHeader>() + kernel.payload.as_bytes().len();
+        let reserve_memory_size =
+            usize::try_from(reserve_memory_size).map_err(|_| ZbiError::LengthOverflow)?;
+        kernel_size.checked_add(reserve_memory_size).ok_or(ZbiError::LengthOverflow)
     }
 
     /// Creates `ZbiContainer` from provided buffer.
@@ -1128,7 +1164,7 @@ impl ZbiHeader {
 /// ```
 pub type ZbiKernel = zbi_kernel_t;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 /// Error values that can be returned by function in this library
 pub enum ZbiError {
     /// Generic error
@@ -2056,6 +2092,10 @@ mod tests {
                     })
                     .sum::<usize>()
         );
+        assert_eq!(
+            container.container_size(),
+            container.get_payload_length_usize() + size_of::<ZbiHeader>()
+        );
 
         // Check if container elements match provided items
         let mut it = expected_items.iter();
@@ -2444,6 +2484,41 @@ mod tests {
             .unwrap();
 
         assert_eq!(container.is_bootable(), Err(ZbiError::IncompleteKernel));
+    }
+
+    #[test]
+    fn zbi_test_get_kernel_entry_and_reserved_memory_size() {
+        let mut buffer = ZbiAligned::default();
+        let mut container = ZbiContainer::new(&mut buffer.0[..]).unwrap();
+        let bytes = [1u64.to_le_bytes(), 2u64.to_le_bytes()].concat();
+        container
+            .create_entry_with_payload(ZBI_ARCH_KERNEL_TYPE, 0, ZbiFlags::default(), &bytes)
+            .unwrap();
+        assert_eq!(container.get_kernel_entry_and_reserved_memory_size().unwrap(), (1, 2));
+    }
+
+    #[test]
+    fn zbi_test_get_kernel_entry_and_reserved_memory_size_truncated() {
+        let mut buffer = ZbiAligned::default();
+        let mut container = ZbiContainer::new(&mut buffer.0[..]).unwrap();
+        container
+            .create_entry_with_payload(ZBI_ARCH_KERNEL_TYPE, 0, ZbiFlags::default(), &[])
+            .unwrap();
+        assert!(container.get_kernel_entry_and_reserved_memory_size().is_err());
+    }
+
+    #[test]
+    fn zbi_get_buffer_size_for_kernel_relocation() {
+        let mut buffer = ZbiAligned::default();
+        let mut container = ZbiContainer::new(&mut buffer.0[..]).unwrap();
+        let bytes = [0u64.to_le_bytes(), 1024u64.to_le_bytes()].concat();
+        container
+            .create_entry_with_payload(ZBI_ARCH_KERNEL_TYPE, 0, ZbiFlags::default(), &bytes)
+            .unwrap();
+        assert_eq!(
+            container.get_buffer_size_for_kernel_relocation().unwrap(),
+            container.container_size() + 1024
+        );
     }
 
     #[test]
