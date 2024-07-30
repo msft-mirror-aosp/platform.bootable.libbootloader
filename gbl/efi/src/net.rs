@@ -14,7 +14,7 @@
 
 use crate::{
     error::{EfiAppError, Result},
-    utils::{get_device_path, loop_with_timeout, ms_to_100ns},
+    utils::{get_device_path, loop_with_timeout},
 };
 use alloc::{boxed::Box, vec::Vec};
 use core::{
@@ -28,8 +28,10 @@ use efi::{
     },
     efi_print, efi_println,
     protocol::{simple_network::SimpleNetworkProtocol, Protocol},
+    utils::{ms_to_100ns, Timeout},
     DeviceHandle, EfiEntry, EventNotify, EventType, Tpl,
 };
+use gbl_async::{yield_now, YieldCounter};
 use smoltcp::{
     iface::{Config, Interface, SocketSet},
     phy,
@@ -46,7 +48,7 @@ const ETHERNET_FRAME_SIZE: usize = 1536;
 // Update period in milliseconds for `NETWORK_TIMESTAMP`.
 const NETWORK_TIMESTAMP_UPDATE_PERIOD: u64 = 50;
 // Size of the socket tx/rx application data buffer.
-const SOCKET_TX_RX_BUFFER: usize = 64 * 1024;
+const SOCKET_TX_RX_BUFFER: usize = 256 * 1024;
 
 /// Performs a shutdown and restart of the simple network protocol.
 fn reset_simple_network<'a>(snp: &Protocol<'a, SimpleNetworkProtocol>) -> Result<()> {
@@ -61,7 +63,7 @@ fn reset_simple_network<'a>(snp: &Protocol<'a, SimpleNetworkProtocol>) -> Result
         }
         _ => {}
     };
-    snp.initialize(0, 0).unwrap();
+    snp.initialize(0, 0)?;
     Ok(snp.reset(true)?)
 }
 
@@ -317,6 +319,7 @@ pub struct EfiTcpSocket<'a, 'b> {
     interface: &'b mut Interface,
     sockets: &'b mut SocketSet<'b>,
     efi_entry: &'a EfiEntry,
+    io_yield_counter: YieldCounter,
 }
 
 impl<'a, 'b> EfiTcpSocket<'a, 'b> {
@@ -350,53 +353,78 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
         return !self.get_socket().is_open() || self.get_socket().state() == tcp::State::CloseWait;
     }
 
-    /// Receives exactly `out.len()` number of bytes to `out`.
-    pub fn receive_exact(&mut self, out: &mut [u8], timeout: u64) -> Result<()> {
-        let mut recv_size = 0;
-        loop_with_timeout(self.efi_entry, timeout, || -> core::result::Result<Result<()>, bool> {
-            self.poll();
-            if self.is_closed() {
-                return Ok(Err(EfiAppError::PeerClosed.into()));
-            } else if self.get_socket().can_recv() {
-                let this_recv = match self.get_socket().recv_slice(&mut out[recv_size..]) {
-                    Err(e) => return Ok(Err(e.into())),
-                    Ok(v) => v,
-                };
-                recv_size += this_recv;
-                if recv_size == out.len() {
-                    return Ok(Ok(()));
-                }
+    /// Sets the maximum number of bytes to read or write before a force await.
+    pub fn set_io_yield_threshold(&mut self, threshold: u64) {
+        self.io_yield_counter = YieldCounter::new(threshold)
+    }
 
-                return Err(this_recv > 0);
+    /// Receives exactly `out.len()` number of bytes to `out`.
+    pub async fn receive_exact(&mut self, out: &mut [u8], timeout: u64) -> Result<()> {
+        let timer = Timeout::new(self.efi_entry, timeout)?;
+        let mut curr = &mut out[..];
+        while !curr.is_empty() {
+            self.poll();
+            let mut has_progress = false;
+
+            if self.is_closed() {
+                return Err(EfiAppError::PeerClosed.into());
+            } else if timer.check()? {
+                return Err(EfiAppError::Timeout.into());
+            } else if self.get_socket().can_recv() {
+                let recv_size = self.get_socket().recv_slice(curr)?;
+                curr = curr.get_mut(recv_size..).ok_or(EfiAppError::ArithmeticOverflow)?;
+                has_progress = recv_size > 0;
+                // Forces a yield to the executor if the data received/sent reaches a certain
+                // threshold. This is to prevent the async code from holding up the CPU for too long
+                // in case IO speed is high and the executor uses cooperative scheduling.
+                self.io_yield_counter.increment(recv_size.try_into().unwrap()).await;
             }
-            Err(false)
-        })?
-        .ok_or(EfiAppError::Timeout)?
+
+            match has_progress {
+                true => timer.reset(timeout)?,
+                _ => yield_now().await,
+            }
+        }
+        Ok(())
     }
 
     /// Sends exactly `data.len()` number of bytes from `data`.
-    pub fn send_exact(&mut self, data: &[u8], timeout: u64) -> Result<()> {
-        let mut sent_size = 0;
-        let mut last_send_queue = 0usize;
-        loop_with_timeout(self.efi_entry, timeout, || -> core::result::Result<Result<()>, bool> {
+    pub async fn send_exact(&mut self, data: &[u8], timeout: u64) -> Result<()> {
+        let timer = Timeout::new(self.efi_entry, timeout)?;
+        let mut curr = &data[..];
+        let mut last_send_queue = self.get_socket().send_queue();
+        loop {
             self.poll();
-            if sent_size == data.len() && self.get_socket().send_queue() == 0 {
-                return Ok(Ok(()));
+            if curr.is_empty() && self.get_socket().send_queue() == 0 {
+                return Ok(());
             } else if self.is_closed() {
-                return Ok(Err(EfiAppError::PeerClosed.into()));
+                return Err(EfiAppError::PeerClosed.into());
+            } else if timer.check()? {
+                return Err(EfiAppError::Timeout.into());
             }
-            // As long as some data is sent, reset the timeout.
-            let reset = self.get_socket().send_queue() != last_send_queue;
-            if self.get_socket().can_send() && sent_size < data.len() {
-                sent_size += match self.get_socket().send_slice(&data[sent_size..]) {
-                    Err(e) => return Ok(Err(e.into())),
-                    Ok(v) => v,
-                };
+
+            let mut has_progress = false;
+            // Checks if any data in the queue is sent.
+            if self.get_socket().send_queue() != last_send_queue {
+                last_send_queue = self.get_socket().send_queue();
+                has_progress = true;
             }
-            last_send_queue = self.get_socket().send_queue();
-            Err(reset)
-        })?
-        .ok_or(EfiAppError::Timeout)?
+            // Checks if there are more data to be queued.
+            if self.get_socket().can_send() && !curr.is_empty() {
+                let sent = self.get_socket().send_slice(curr)?;
+                curr = curr.get(sent..).ok_or(EfiAppError::ArithmeticOverflow)?;
+                // Forces a yield to the executor if the data received/sent reaches a certain
+                // threshold. This is to prevent the async code from holding up the CPU for too long
+                // in case IO speed is high and the executor uses cooperative scheduling.
+                self.io_yield_counter.increment(sent.try_into().unwrap()).await;
+                has_progress |= sent > 0;
+            }
+
+            match has_progress {
+                true => timer.reset(timeout)?,
+                _ => yield_now().await,
+            }
+        }
     }
 
     /// Gets the smoltcp `Interface` for this socket.
@@ -466,6 +494,7 @@ where
         interface: &mut interface,
         sockets: &mut sockets,
         efi_entry: efi_entry,
+        io_yield_counter: YieldCounter::new(u64::MAX),
     };
 
     Ok(f(&mut socket))

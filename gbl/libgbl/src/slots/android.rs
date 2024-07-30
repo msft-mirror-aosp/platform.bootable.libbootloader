@@ -284,15 +284,16 @@ impl Manager for SlotBlock<'_, BootloaderControl> {
         SlotIterator::new(self)
     }
 
-    fn get_boot_target(&self) -> BootTarget {
-        self.slots_iter()
+    fn get_boot_target(&self) -> Result<BootTarget, Error> {
+        Ok(self
+            .slots_iter()
             .filter(Slot::is_bootable)
             .max_by_key(|slot| (slot.priority, slot.suffix.rank()))
             .map_or(
                 // TODO(b/326253270): how is the recovery slot actually determined?
-                BootTarget::Recovery(RecoveryTarget::Slotted(self.get_slot_last_set_active())),
+                BootTarget::Recovery(RecoveryTarget::Slotted(self.get_slot_last_set_active()?)),
                 BootTarget::NormalBoot,
-            )
+            ))
     }
 
     fn set_slot_unbootable(
@@ -317,7 +318,7 @@ impl Manager for SlotBlock<'_, BootloaderControl> {
     }
 
     fn mark_boot_attempt(&mut self) -> Result<BootToken, Error> {
-        let target_slot = match self.get_boot_target() {
+        let target_slot = match self.get_boot_target()? {
             BootTarget::NormalBoot(slot) => slot,
             BootTarget::Recovery(RecoveryTarget::Dedicated) => Err(Error::OperationProhibited)?,
             BootTarget::Recovery(RecoveryTarget::Slotted(slot)) => {
@@ -377,7 +378,7 @@ impl Manager for SlotBlock<'_, BootloaderControl> {
 
     fn clear_oneshot_status(&mut self) {}
 
-    fn write_back<B: gbl_storage::AsBlockDevice>(&mut self, block_dev: &mut B) {
+    fn write_back(&mut self, block_dev: &mut dyn gbl_storage::AsBlockDevice) {
         self.sync_to_disk(block_dev)
     }
 }
@@ -394,13 +395,13 @@ mod test {
             .map(|c| Slot {
                 suffix: c.into(),
                 priority: DEFAULT_PRIORITY.into(),
-                bootability: Bootability::Retriable(sb.get_max_retries()),
+                bootability: Bootability::Retriable(sb.get_max_retries().unwrap()),
             })
             .collect();
         let actual: Vec<Slot> = sb.slots_iter().collect();
         assert_eq!(actual, expected);
         assert_eq!(sb.get_oneshot_status(), None);
-        assert_eq!(sb.get_boot_target(), BootTarget::NormalBoot(expected[0]));
+        assert_eq!(sb.get_boot_target().unwrap(), BootTarget::NormalBoot(expected[0]));
         // Include the explicit null bytes for safety.
         assert_eq!(sb.get_data().slot_suffix.as_slice(), "_a\0\0".as_bytes());
     }
@@ -414,7 +415,7 @@ mod test {
             .map(|c| Slot {
                 suffix: c.into(),
                 priority: DEFAULT_PRIORITY.into(),
-                bootability: Bootability::Retriable(sb.get_max_retries()),
+                bootability: Bootability::Retriable(sb.get_max_retries().unwrap()),
             })
             .collect();
         let actual: Vec<Slot> = sb.slots_iter().collect();
@@ -487,7 +488,10 @@ mod test {
         sb.get_mut_data().slot_metadata.iter_mut().for_each(|bits| bits.set_tries(0));
         let a_slot = sb.slots_iter().next().unwrap();
 
-        assert_eq!(sb.get_boot_target(), BootTarget::Recovery(RecoveryTarget::Slotted(a_slot)));
+        assert_eq!(
+            sb.get_boot_target().unwrap(),
+            BootTarget::Recovery(RecoveryTarget::Slotted(a_slot))
+        );
     }
 
     #[test]
@@ -498,7 +502,10 @@ mod test {
         sb.get_mut_data().slot_metadata.iter_mut().for_each(|bits| bits.set_tries(0));
         let b_slot = sb.slots_iter().find(|s| s.suffix == b_suffix).unwrap();
 
-        assert_eq!(sb.get_boot_target(), BootTarget::Recovery(RecoveryTarget::Slotted(b_slot)));
+        assert_eq!(
+            sb.get_boot_target().unwrap(),
+            BootTarget::Recovery(RecoveryTarget::Slotted(b_slot))
+        );
     }
 
     #[test]
@@ -506,12 +513,12 @@ mod test {
         let mut sb: SlotBlock<BootloaderControl> = Default::default();
         let v: Vec<Slot> = sb.slots_iter().collect();
         assert_eq!(sb.set_active_slot(v[1].suffix), Ok(()));
-        assert_eq!(sb.get_slot_last_set_active(), v[1]);
+        assert_eq!(sb.get_slot_last_set_active().unwrap(), v[1]);
         for slot in v.iter() {
             assert_eq!(sb.set_slot_unbootable(slot.suffix, UnbootableReason::NoMoreTries), Ok(()));
         }
 
-        assert_eq!(sb.get_slot_last_set_active(), sb.slots_iter().nth(1).unwrap());
+        assert_eq!(sb.get_slot_last_set_active().unwrap(), sb.slots_iter().nth(1).unwrap());
         assert_eq!(sb.get_data().slot_suffix.as_slice(), "_b\0\0".as_bytes());
     }
 
@@ -573,8 +580,8 @@ mod test {
     #[test]
     fn test_mark_slot_tried_slotted_recovery() {
         let mut sb: SlotBlock<BootloaderControl> = Default::default();
-        sb.set_slot_unbootable('a'.into(), UnbootableReason::UserRequested);
-        sb.set_slot_unbootable('b'.into(), UnbootableReason::UserRequested);
+        assert!(sb.set_slot_unbootable('a'.into(), UnbootableReason::UserRequested).is_ok());
+        assert!(sb.set_slot_unbootable('b'.into(), UnbootableReason::UserRequested).is_ok());
         assert_eq!(sb.mark_boot_attempt(), Ok(BootToken(())));
     }
 
@@ -584,7 +591,7 @@ mod test {
         let oneshots = [
             OneShot::Bootloader,
             OneShot::Continue(RecoveryTarget::Dedicated),
-            OneShot::Continue(RecoveryTarget::Slotted(sb.get_slot_last_set_active())),
+            OneShot::Continue(RecoveryTarget::Slotted(sb.get_slot_last_set_active().unwrap())),
         ];
 
         for oneshot in oneshots {

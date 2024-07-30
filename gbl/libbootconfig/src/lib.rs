@@ -21,9 +21,11 @@
 /// Library error type.
 #[derive(Debug)]
 pub enum BootConfigError {
+    /// Overflow while processing bootconfig.
     ArithmeticOverflow,
+    /// Provided buffer was not large enough.
     BufferTooSmall,
-    InvalidConfigString,
+    /// Bootconfig read callback failed.
     GenericReaderError(i64),
 }
 
