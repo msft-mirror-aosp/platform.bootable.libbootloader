@@ -299,6 +299,17 @@ impl<'a> GptCache<'a> {
         })
     }
 
+    /// Creates a new `GptCache` instance that borrows the internal data of this instance.
+    pub fn as_mut_instance(&mut self) -> GptCache<'_> {
+        GptCache {
+            info: &mut self.info,
+            primary_header: &mut self.primary_header,
+            primary_entries: &mut self.primary_entries,
+            secondary_header: &mut self.secondary_header,
+            secondary_entries: &mut self.secondary_entries,
+        }
+    }
+
     /// Returns an iterator to GPT partition entries.
     pub fn partition_iter(&self) -> PartitionIterator {
         PartitionIterator { gpt_cache: self, idx: 0 }
@@ -322,10 +333,21 @@ impl<'a> GptCache<'a> {
     /// Return the list of GPT entries.
     ///
     /// If the object does not contain a valid GPT, the method returns Error.
-    pub(crate) fn entries(&self) -> Result<&[GptEntry]> {
+    fn entries(&self) -> Result<&[GptEntry]> {
         self.check_valid()?;
         Ok(&Ref::<_, [GptEntry]>::new_slice(&self.primary_entries[..]).unwrap().into_slice()
             [..self.info.num_valid_entries()?.try_into()?])
+    }
+
+    /// Returns the total number of partitions.
+    pub fn num_partitions(&self) -> Result<usize> {
+        Ok(self.entries()?.len())
+    }
+
+    /// Gets the `idx`th partition.
+    pub fn get_partition(&self, idx: usize) -> Result<Partition> {
+        let entry = *self.entries()?.get(idx).ok_or(StorageError::OutOfRange)?;
+        Ok(Partition::new(entry, self.info.block_size))
     }
 
     /// Returns the `Partition` for a partition.
