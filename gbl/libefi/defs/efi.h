@@ -23,10 +23,11 @@
 #include <stdint.h>
 
 #include "boot_service.h"
-#include "protocols/ab_slot_protocol.h"
+#include "gbl_efi_common.h"
 #include "protocols/block_io2_protocol.h"
 #include "protocols/block_io_protocol.h"
 #include "protocols/device_path_protocol.h"
+#include "protocols/gbl_efi_ab_slot_protocol.h"
 #include "protocols/gbl_efi_fastboot_usb.h"
 #include "protocols/gbl_efi_os_configuration_protocol.h"
 #include "protocols/image_loading_protocol.h"
