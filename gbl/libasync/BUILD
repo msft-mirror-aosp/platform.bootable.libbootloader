@@ -32,3 +32,19 @@ rust_test(
     crate = ":libasync",
     rustc_flags = ANDROID_RUST_LINTS,
 )
+
+rust_library(
+    name = "cyclic_executor",
+    srcs = ["src/cyclic_executor.rs"],
+    crate_name = "gbl_cyclic_executor",
+    crate_root = "src/cyclic_executor.rs",
+    edition = "2021",
+    rustc_flags = ANDROID_RUST_LINTS,
+    deps = [":libasync"],
+)
+
+rust_test(
+    name = "cyclic_executor_test",
+    crate = ":cyclic_executor",
+    rustc_flags = ANDROID_RUST_LINTS,
+)
