@@ -57,7 +57,6 @@ typedef struct EfiGblSlotInfo {
 } EfiGblSlotInfo;
 
 typedef struct EfiGblSlotMetadataBlock {
-  uint32_t boot_reason;
   // Value of 1 if persistent metadata tracks slot unbootable reasons.
   uint8_t unbootable_metadata;
   uint8_t max_retries;
