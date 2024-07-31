@@ -248,6 +248,15 @@ cc_library(
         build_file = "@gbl//smoltcp:BUILD.smoltcp.bazel",
     )
 
+    native.new_local_repository(
+        name = "arrayvec",
+        path = "external/rust/crates/arrayvec",
+        build_file_content = rust_crate_build_file(
+            "arrayvec",
+            rustc_flags = ["-A", "dead_code"],
+        ),
+    )
+
     # Following are third party rust crates dependencies.
 
     THIRD_PARTY_CRATES = [
