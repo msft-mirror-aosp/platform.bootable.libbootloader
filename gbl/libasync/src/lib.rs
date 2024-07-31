@@ -112,9 +112,51 @@ impl YieldCounter {
     }
 }
 
+/// Repetitively polls two futures until both of them finish.
+pub async fn join<L, LO, R, RO>(fut_lhs: L, fut_rhs: R) -> (LO, RO)
+where
+    L: Future<Output = LO>,
+    R: Future<Output = RO>,
+{
+    let fut_lhs = &mut pin!(fut_lhs);
+    let fut_rhs = &mut pin!(fut_rhs);
+    let mut out_lhs = poll(fut_lhs);
+    let mut out_rhs = poll(fut_rhs);
+    while out_lhs.is_none() || out_rhs.is_none() {
+        yield_now().await;
+        if out_lhs.is_none() {
+            out_lhs = poll(fut_lhs);
+        }
+
+        if out_rhs.is_none() {
+            out_rhs = poll(fut_rhs);
+        }
+    }
+    (out_lhs.unwrap(), out_rhs.unwrap())
+}
+
+/// Waits until either of the given two futures completes.
+pub async fn select<L, LO, R, RO>(fut_lhs: L, fut_rhs: R) -> (Option<LO>, Option<RO>)
+where
+    L: Future<Output = LO>,
+    R: Future<Output = RO>,
+{
+    let fut_lhs = &mut pin!(fut_lhs);
+    let fut_rhs = &mut pin!(fut_rhs);
+    let mut out_lhs = poll(fut_lhs);
+    let mut out_rhs = poll(fut_rhs);
+    while out_lhs.is_none() && out_rhs.is_none() {
+        yield_now().await;
+        out_lhs = poll(fut_lhs);
+        out_rhs = poll(fut_rhs);
+    }
+    (out_lhs, out_rhs)
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::sync::Mutex;
 
     #[test]
     fn test() {
@@ -127,5 +169,77 @@ mod test {
         assert!(poll(&mut fut).is_none());
         assert!(poll(&mut fut).is_none());
         assert!(poll(&mut fut).is_some());
+    }
+
+    #[test]
+    fn test_join() {
+        let val1 = Mutex::new(0);
+        let val2 = Mutex::new(1);
+
+        let mut join_fut = pin!(join(
+            async {
+                *val1.try_lock().unwrap() += 1;
+                yield_now().await;
+                *val1.try_lock().unwrap() += 1;
+                yield_now().await;
+            },
+            async {
+                *val2.try_lock().unwrap() += 1;
+                yield_now().await;
+                *val2.try_lock().unwrap() += 1;
+                yield_now().await;
+                *val2.try_lock().unwrap() += 1;
+                yield_now().await;
+            }
+        ));
+
+        assert!(poll(&mut join_fut).is_none());
+        assert_eq!(*val1.try_lock().unwrap(), 1);
+        assert_eq!(*val2.try_lock().unwrap(), 2);
+
+        assert!(poll(&mut join_fut).is_none());
+        assert_eq!(*val1.try_lock().unwrap(), 2);
+        assert_eq!(*val2.try_lock().unwrap(), 3);
+
+        assert!(poll(&mut join_fut).is_none());
+        assert_eq!(*val1.try_lock().unwrap(), 2);
+        assert_eq!(*val2.try_lock().unwrap(), 4);
+
+        assert!(poll(&mut join_fut).is_some());
+    }
+
+    #[test]
+    fn test_select() {
+        let val1 = Mutex::new(0);
+        let val2 = Mutex::new(1);
+
+        let mut select_fut = pin!(select(
+            async {
+                *val1.try_lock().unwrap() += 1;
+                yield_now().await;
+                *val1.try_lock().unwrap() += 1;
+                yield_now().await;
+            },
+            async {
+                *val2.try_lock().unwrap() += 1;
+                yield_now().await;
+                *val2.try_lock().unwrap() += 1;
+                yield_now().await;
+                *val2.try_lock().unwrap() += 1;
+                yield_now().await;
+            }
+        ));
+
+        assert!(poll(&mut select_fut).is_none());
+        assert_eq!(*val1.try_lock().unwrap(), 1);
+        assert_eq!(*val2.try_lock().unwrap(), 2);
+
+        assert!(poll(&mut select_fut).is_none());
+        assert_eq!(*val1.try_lock().unwrap(), 2);
+        assert_eq!(*val2.try_lock().unwrap(), 3);
+
+        let (lhs, rhs) = poll(&mut select_fut).unwrap();
+        assert!(lhs.is_some());
+        assert!(rhs.is_none());
     }
 }

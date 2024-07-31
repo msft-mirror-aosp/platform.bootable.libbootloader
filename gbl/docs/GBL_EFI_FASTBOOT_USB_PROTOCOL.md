@@ -1,9 +1,7 @@
-# EFI Android Boot Protocol
+# GBL EFI Fastboot USB Protocol
 
-This document describes the Android Boot protocol. The protocol defines
-interfaces that can be used by EFI applications to implement an Android
-bootloader in compliance with the Android Verified Boot(AVB) requirement and
-tooling interfaces such as the Fastboot over USB protocol.
+This document describes the GBL Fastboot USB protocol. The protocol defines
+interfaces that can be used by EFI applications to implement Fastboot over USB.
 
 |||
 | ----------- | ----------- |
@@ -11,7 +9,7 @@ tooling interfaces such as the Fastboot over USB protocol.
 | **Created** | 2024-3-21 |
 
 
-## EFI_ANDROID_BOOT_PROTOCOL
+## GBL_EFI_FASTBOOT_USB_PROTOCOL
 
 ### Summary
 
@@ -25,7 +23,7 @@ starting/stopping a Fastboot USB interface and sending/receiving USB packets.
 
 ```c
 // {6281a893-ac23-4ca7-b281-340ef8168955}
-#define EFI_ANDROID_BOOT_PROTOCOL_GUID               \
+#define GBL_EFI_FASTBOOT_USB_PROTOCOL_GUID           \
   {                                                  \
     0x6281a893, 0xac23, 0x4ca7, {                    \
       0xb2, 0x81, 0x34, 0x0e, 0xf8, 0x16, 0x89, 0x55 \
@@ -36,51 +34,51 @@ starting/stopping a Fastboot USB interface and sending/receiving USB packets.
 ### Revision Number
 
 ```c
-#define EFI_ANDROID_BOOT_PROTOCOL_REVISION 0x00000000
+#define GBL_EFI_FASTBOOT_USB_PROTOCOL_REVISION 0x00000000
 ```
 
 ### Protocol Interface Structure
 
 ```c
-typedef struct _EFI_ANDROID_BOOT_PROTOCOL {
-  UINT64                                          Revision;
-  EFI_ANDROID_BOOT_FASTBOOT_USB_INTERFACE_START   FastbootUsbInterfaceStart;
-  EFI_ANDROID_BOOT_FASTBOOT_USB_INTERFACE_STOP    FastbootUsbInterfaceStop;
-  EFI_ANDROID_BOOT_FASTBOOT_USB_RECEIVE           FastbootUsbReceive;
-  EFI_ANDROID_BOOT_FASTBOOT_USB_SEND              FastbootUsbSend;
-  EFI_EVENT                                       WaitForSendCompletion;
-} EFI_ANDROID_BOOT_PROTOCOL;
+typedef struct _GBL_EFI_FASTBOOT_USB_PROTOCOL {
+  UINT64                                              Revision;
+  GBL_EFI_FASTBOOT_USB_FASTBOOT_USB_INTERFACE_START   FastbootUsbInterfaceStart;
+  GBL_EFI_FASTBOOT_USB_FASTBOOT_USB_INTERFACE_STOP    FastbootUsbInterfaceStop;
+  GBL_EFI_FASTBOOT_USB_FASTBOOT_USB_RECEIVE           FastbootUsbReceive;
+  GBL_EFI_FASTBOOT_USB_FASTBOOT_USB_SEND              FastbootUsbSend;
+  EFI_EVENT                                           WaitForSendCompletion;
+} GBL_EFI_FASTBOOT_USB_PROTOCOL;
 ```
 
 ### Parameters
 
 **Revision**  
-The revision to which the EFI_ANDROID_BOOT_PROTOCOL adheres. All future revisions must be
-backwards compatible. If a future version is not backwards compatible, a
-different GUID must be used.
+The revision to which the GBL_EFI_FASTBOOT_USB_PROTOCOL adheres. All future
+revisions must be backwards compatible. If a future version is not backwards
+compatible, a different GUID must be used.
 
 **FastbootUsbInterfaceStart**  
 Starts a USB interface for Fastboot traffic. See
-[`EFI_ANDROID_BOOT_PROTOCOL.FastbootUsbInterfaceStart()`](#efi_android_boot_protocolfastbootusbinterfacestart).
+[`GBL_EFI_FASTBOOT_USB_PROTOCOL.FastbootUsbInterfaceStart()`](#gbl_efi_fastboot_usb_protocolfastbootusbinterfacestart).
 
 **FastbootUsbInterfaceStop**  
 Stops the USB interface started by `FastbootUsbInterfaceStart()`. See
-[`EFI_ANDROID_BOOT_PROTOCOL.FastbootUsbInterfaceStop()`](#efi_android_boot_protocolfastbootusbinterfacestop).
+[`GBL_EFI_FASTBOOT_USB_PROTOCOL.FastbootUsbInterfaceStop()`](#gbl_efi_fastboot_usb_protocolfastbootusbinterfacestop).
 
 **FastbootUsbReceive**  
 Polls and receives the next USB packet if available. See
-[`EFI_ANDROID_BOOT_PROTOCOL.FastbootUsbReceive()`](#efi_android_boot_protocolfastbootusbreceive).
+[`GBL_EFI_FASTBOOT_USB_PROTOCOL.FastbootUsbReceive()`](#gbl_efi_fastboot_usb_protocolfastbootusbreceive).
 
 **FastbootUsbSend**  
 Sends a USB packet. See
-[`EFI_ANDROID_BOOT_PROTOCOL.FastbootUsbSend()`](#efi_android_boot_protocolfastbootusbsend).
+[`GBL_EFI_FASTBOOT_USB_PROTOCOL.FastbootUsbSend()`](#gbl_efi_fastboot_usb_protocolfastbootusbsend).
 
 **WaitForSendCompletion**  
 Event used with `EFI_BOOT_SERVICES.WaitForEvent()` to wait for the previous
 packet sent by `FastbootUsbSend()` to complete.
 
 
-## EFI_ANDROID_BOOT_PROTOCOL.FastbootUsbInterfaceStart()
+## GBL_EFI_FASTBOOT_USB_PROTOCOL.FastbootUsbInterfaceStart()
 
 ### Summary
 
@@ -91,16 +89,17 @@ Starts a USB interface for Fastboot.
 ```c
 typedef
 EFI_STATUS
-(EFIAPI * EFI_ANDROID_BOOT_FASTBOOT_USB_INTERFACE_START)(
-  IN EFI_ANDROID_BOOT_PROTOCOL  *This,
-  OUT UINTN                     *MaxPacketSize,
+(EFIAPI * GBL_EFI_FASTBOOT_USB_FASTBOOT_USB_INTERFACE_START)(
+  IN GBL_EFI_FASTBOOT_USB_PROTOCOL  *This,
+  OUT UINTN                         *MaxPacketSize,
   );
 ```
 
 ### Parameters
 
 *This*  
-A pointer to the [`EFI_ANDROID_BOOT_PROTOCOL`](#efi_android_boot_protocol) instance.
+A pointer to the [`GBL_EFI_FASTBOOT_USB_PROTOCOL`](#gbl_efi_fastboot_usb_protocol)
+instance.
 
 *MaxPacketSize*  
 On exit, set to the maximum packet size in bytes allowed by the USB interface.
@@ -146,7 +145,7 @@ this protocol and Android Fastboot tool may support this usecase.
 | EFI_UNSUPPORTED | USB is not supported by the platform |
 | EFI_DEVICE_ERROR | The physical device reported an error. |
 
-## EFI_ANDROID_BOOT_PROTOCOL.FastbootUsbInterfaceStop()
+## GBL_EFI_FASTBOOT_USB_PROTOCOL.FastbootUsbInterfaceStop()
 
 ### Summary
 
@@ -157,15 +156,15 @@ Stops the USB interface started by `FastbootUsbInterfaceStart()`.
 ```c
 typedef
 EFI_STATUS
-(EFIAPI * EFI_ANDROID_BOOT_FASTBOOT_USB_INTERFACE_STOP)(
-  IN EFI_ANDROID_BOOT_PROTOCOL  *This
+(EFIAPI * GBL_EFI_FASTBOOT_USB_FASTBOOT_USB_INTERFACE_STOP)(
+  IN GBL_EFI_FASTBOOT_USB_PROTOCOL  *This
   );
 ```
 
 ### Parameters
 
 *This*  
-A pointer to the [`EFI_ANDROID_BOOT_PROTOCOL`](#efi_android_boot_protocol)
+A pointer to the [`GBL_EFI_FASTBOOT_USB_PROTOCOL`](#gbl_efi_fastboot_usb_protocol)
 instance.
 
 ### Description
@@ -184,7 +183,7 @@ device from the host.
 | EFI_NOT_STARTED | The USB interface is not started.|
 | EFI_DEVICE_ERROR | The physical device reported an error.|
 
-## EFI_ANDROID_BOOT_PROTOCOL.FastbootUsbReceive()
+## GBL_EFI_FASTBOOT_USB_PROTOCOL.FastbootUsbReceive()
 
 ### Summary
 
@@ -196,17 +195,17 @@ Receives a USB packet from the interface started by
 ```c
 typedef
 EFI_STATUS
-(EFIAPI * EFI_ANDROID_BOOT_FASTBOOT_USB_RECEIVE)(
-  IN EFI_ANDROID_BOOT_PROTOCOL  *This,
-  IN OUT UINTN                  *BufferSize,
-  OUT VOID                      *Buffer,
+(EFIAPI * GBL_EFI_FASTBOOT_USB_FASTBOOT_USB_RECEIVE)(
+  IN GBL_EFI_FASTBOOT_USB_PROTOCOL  *This,
+  IN OUT UINTN                      *BufferSize,
+  OUT VOID                          *Buffer,
   );
 ```
 
 ### Parameters
 
 *This*  
-A pointer to the [`EFI_ANDROID_BOOT_PROTOCOL`](#efi_android_boot_protocol)
+A pointer to the [`GBL_EFI_FASTBOOT_USB_PROTOCOL`](#gbl_efi_fastboot_usb_protocol)
 instance.
 
 *BufferSize*  
@@ -232,7 +231,7 @@ packet from the Fastboot USB interface into the provided buffer.
 | EFI_BUFFER_TOO_SMALL | Buffer is too small for the next packet. `BufferSize` should be updated to the required size in this case. |
 | EFI_DEVICE_ERROR | The physical device reported an error.|
 
-## EFI_ANDROID_BOOT_PROTOCOL.FastbootUsbSend()
+## GBL_EFI_FASTBOOT_USB_PROTOCOL.FastbootUsbSend()
 
 ### Summary
 
@@ -244,17 +243,17 @@ Sends a USB packet from the USB interface started by
 ```c
 typedef
 EFI_STATUS
-(EFIAPI * EFI_ANDROID_BOOT_FASTBOOT_USB_SEND)(
-  IN EFI_ANDROID_BOOT_PROTOCOL  *This,
-  IN OUT UINTN                  *BufferSize,
-  IN CONST VOID                 *Buffer,
+(EFIAPI * GBL_EFI_FASTBOOT_USB_FASTBOOT_USB_SEND)(
+  IN GBL_EFI_FASTBOOT_USB_PROTOCOL  *This,
+  IN OUT UINTN                      *BufferSize,
+  IN CONST VOID                     *Buffer,
   );
 ```
 
 ### Parameters
 
 *This*  
-A pointer to the [`EFI_ANDROID_BOOT_PROTOCOL`](#efi_android_boot_protocol)
+A pointer to the [`GBL_EFI_FASTBOOT_USB_PROTOCOL`](#gbl_efi_fastboot_usb_protocol)
 instance.
 
 *BufferSize*  
