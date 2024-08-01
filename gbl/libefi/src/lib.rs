@@ -327,7 +327,7 @@ impl<'a> BootServices<'a> {
                 &mut out_handle as *mut _,
                 self.efi_entry.image_handle().0,
                 null_mut(),
-                EFI_OPEN_PROTOCOL_ATTRIBUTE_BY_HANDLE_PROTOCOL
+                EFI_OPEN_PROTOCOL_ATTRIBUTE_EXCLUSIVE
             )?;
         }
         // SAFETY: `EFI_SYSTEM_TABLE.OpenProtocol` returns a valid pointer to `T::InterfaceType`
@@ -853,7 +853,7 @@ mod test {
         _: EfiHandle,
         attr: u32,
     ) -> EfiStatus {
-        assert_eq!(attr, EFI_OPEN_PROTOCOL_ATTRIBUTE_BY_HANDLE_PROTOCOL);
+        assert_eq!(attr, EFI_OPEN_PROTOCOL_ATTRIBUTE_EXCLUSIVE);
         EFI_CALL_TRACES.with(|traces| {
             let trace = &mut traces.borrow_mut().open_protocol_trace;
             trace.inputs.push_back((
