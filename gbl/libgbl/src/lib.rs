@@ -42,6 +42,7 @@ pub mod boot_mode;
 pub mod boot_reason;
 pub mod error;
 pub mod fastboot;
+pub mod fuchsia_boot;
 pub mod ops;
 mod overlap;
 
@@ -59,7 +60,6 @@ pub use ops::{
     AndroidBootImages, BootImages, DefaultGblOps, FuchsiaBootImages, GblOps, GblOpsError,
 };
 
-use gbl_async::block_on;
 use overlap::is_overlap;
 
 // TODO: b/312607649 - Replace placeholders with actual structures: https://r.android.com/2721974, etc
@@ -515,25 +515,6 @@ where
 
         Ok((kernel_image, token))
     }
-
-    /// Loads and boots a Zircon kernel according to ABR + AVB.
-    pub fn zircon_load_and_boot(&mut self, load_buffer: &mut [u8]) -> Result<()> {
-        // TODO(b/334962583): Implement zircon ABR + AVB.
-        // The following are place holder for test of invocation in the integration test only.
-        let ptn_size = self
-            .ops
-            .partition_size("zircon_a")?
-            .ok_or(Error::MissingImage)?
-            .try_into()
-            .or(Err(Error::ArithmeticOverflow))?;
-        let (kernel, remains) = load_buffer.split_at_mut(ptn_size);
-        block_on(self.ops.read_from_partition("zircon_a", 0, kernel))?;
-        self.ops.boot(BootImages::Fuchsia(FuchsiaBootImages {
-            zbi_kernel: kernel,
-            zbi_items: &mut [],
-        }))?;
-        Err(Error::BootFailed.into())
-    }
 }
 
 #[cfg(test)]
@@ -548,7 +529,7 @@ mod tests {
 
     const TEST_ZIRCON_PARTITION_NAME: &str = "zircon_a";
     const TEST_ZIRCON_PARTITION_NAME_CSTR: &CStr = c"zircon_a";
-    const TEST_ZIRCON_IMAGE_PATH: &str = "zircon_a.bin";
+    const TEST_ZIRCON_IMAGE_PATH: &str = "zircon_a.zbi";
     const TEST_ZIRCON_VBMETA_PATH: &str = "zircon_a.vbmeta";
     const TEST_ZIRCON_VBMETA_CERT_PATH: &str = "zircon_a.vbmeta.cert";
     const TEST_PUBLIC_KEY_PATH: &str = "testkey_rsa4096_pub.bin";

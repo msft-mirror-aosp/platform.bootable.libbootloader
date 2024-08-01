@@ -140,6 +140,12 @@ cc_library(
     )
 
     native.new_local_repository(
+        name = "libdttable_c",
+        path = "external/libufdt/utils/src",
+        build_file = "@gbl//libdttable:BUILD.libdttable_c.bazel",
+    )
+
+    native.new_local_repository(
         name = "arm_trusted_firmware",
         path = "external/arm-trusted-firmware",
         build_file = "@gbl//libboot/aarch64_cache_helper:BUILD.arm_trusted_firmware.bazel",
