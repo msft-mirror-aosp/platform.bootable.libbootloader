@@ -226,13 +226,17 @@ async fn fastboot_tcp(
     socket.set_io_yield_threshold(1024 * 1024); // 1MB
     let mut listen_start_timestamp = EfiTcpSocket::timestamp(0);
     loop {
+        // Acquires the lock before proceeding to handle network. This reduces interference to the
+        // Fastboot USB task which maybe in the middle of a download. `lock()` internally yields
+        // control to the executor and check later if the mutex can't be acquired.
+        let mut gbl_fb = lock(gbl_fb).await;
         socket.poll();
         let mut reset_socket = false;
         if socket.check_active() {
             let remote = socket.get_socket().remote_endpoint().unwrap();
             efi_println!(efi_entry, "TCP connection from {}", remote);
             let mut transport = EfiFastbootTcpTransport::new(socket);
-            let _ = run_tcp_session(&mut transport, *lock(gbl_fb).await).await;
+            let _ = run_tcp_session(&mut transport, *gbl_fb).await;
             match transport.last_err {
                 Ok(()) | Err(GblEfiError::EfiAppError(EfiAppError::PeerClosed)) => {}
                 Err(e) => efi_println!(efi_entry, "Fastboot TCP error {:?}", e),
