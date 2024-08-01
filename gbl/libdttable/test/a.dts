@@ -1,0 +1,8 @@
+/dts-v1/;
+/plugin/;
+
+// re-generate and push test artifacts using ./gen_test_dttable.sh after change in this file
+&deviceA {
+  value = <0x2>;
+  status = "okay";
+};

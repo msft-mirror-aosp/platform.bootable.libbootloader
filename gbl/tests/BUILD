@@ -21,6 +21,7 @@ test_suite(
         "@gbl//libasync:libasync_test",
         "@gbl//libbootconfig:libbootconfig_test",
         "@gbl//libbootimg:libbootimg_test",
+        "@gbl//libdttable:libdttable_test",
         "@gbl//libefi:libefi_test",
         "@gbl//libfastboot:libfastboot_test",
         "@gbl//libfdt:libfdt_test",
