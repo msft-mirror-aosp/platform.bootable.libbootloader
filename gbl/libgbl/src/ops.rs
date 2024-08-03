@@ -25,7 +25,12 @@ use core::{
     result::Result,
 };
 use gbl_async::block_on;
-use zbi::ZbiContainer;
+
+// Re-exports of types from other dependencies that appear in the APIs of this library.
+pub use avb::{
+    CertPermanentAttributes, IoError as AvbIoError, IoResult as AvbIoResult, SHA256_DIGEST_SIZE,
+};
+pub use zbi::ZbiContainer;
 
 use super::slots;
 
@@ -63,6 +68,44 @@ impl From<&'static str> for GblOpsError {
     fn from(val: &'static str) -> Self {
         Self(Some(val))
     }
+}
+
+/// `GblAvbOps` contains libavb backend interfaces needed by GBL.
+///
+/// The trait is a selective subset of the interfaces in `avb::Ops` and `avb::CertOps`. The rest of
+/// the APIs are either not relevant to or are implemented and managed by GBL APIs.
+pub trait GblAvbOps {
+    /// Returns if device is in an unlocked state.
+    ///
+    /// The interface has the same requirement as `avb::Ops::read_is_device_unlocked`.
+    fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool>;
+
+    /// Reads the AVB rollback index at the given location
+    ///
+    /// The interface has the same requirement as `avb::Ops::read_rollback_index`.
+    fn avb_read_rollback_index(&mut self, _rollback_index_location: usize) -> AvbIoResult<u64>;
+
+    /// Writes the AVB rollback index at the given location.
+    ///
+    /// The interface has the same requirement as `avb::Ops::write_rollback_index`.
+    fn avb_write_rollback_index(
+        &mut self,
+        _rollback_index_location: usize,
+        _index: u64,
+    ) -> AvbIoResult<()>;
+
+    /// Reads AVB certificate extension permanent attributes.
+    ///
+    /// The interface has the same requirement as `avb::CertOps::read_permanent_attributes`.
+    fn avb_cert_read_permanent_attributes(
+        &mut self,
+        attributes: &mut CertPermanentAttributes,
+    ) -> AvbIoResult<()>;
+
+    /// Reads AVB certificate extension permanent attributes hash.
+    ///
+    /// The interface has the same requirement as `avb::CertOps::read_permanent_attributes_hash`.
+    fn avb_cert_read_permanent_attributes_hash(&mut self) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]>;
 }
 
 // https://stackoverflow.com/questions/41081240/idiomatic-callbacks-in-rust
@@ -157,6 +200,19 @@ pub trait GblOps {
         block_device: &'a mut B,
         boot_token: slots::BootToken,
     ) -> GblResult<slots::Cursor<'a, B>>;
+
+    /// Returns an implementation of `GblAvbOps`
+    ///
+    /// Users that don't need verified boot can return `avb_ops_none()`.
+    fn avb_ops(&mut self) -> Option<impl GblAvbOps>;
+}
+
+/// Returns a `None` instance of `Option<impl GblAvbOps>`.
+///
+/// This can be used as the implementation of `GblOps::avb_ops()` if users don't need verified
+/// boot.
+pub fn avb_ops_none() -> Option<impl GblAvbOps> {
+    None::<GblAvbOpsNull>
 }
 
 /// Default [GblOps] implementation that returns errors and does nothing.
@@ -217,6 +273,44 @@ impl GblOps for DefaultGblOps {
         block_device: &'a mut B,
         boot_token: slots::BootToken,
     ) -> GblResult<slots::Cursor<'a, B>> {
+        unimplemented!();
+    }
+
+    fn avb_ops(&mut self) -> Option<impl GblAvbOps> {
+        avb_ops_none()
+    }
+}
+
+/// `GblAvbOpsNull` provides placeholder implementation for `GblAvbOps`. All methods are
+/// `unimplemented!()`. The type is for plugging in `None::<GblAvbOpsNull>` which the compiler
+/// requires for return by `avb_ops_none()`, .
+struct GblAvbOpsNull {}
+
+impl GblAvbOps for GblAvbOpsNull {
+    fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
+        unimplemented!();
+    }
+
+    fn avb_read_rollback_index(&mut self, _rollback_index_location: usize) -> AvbIoResult<u64> {
+        unimplemented!();
+    }
+
+    fn avb_write_rollback_index(
+        &mut self,
+        _rollback_index_location: usize,
+        _index: u64,
+    ) -> AvbIoResult<()> {
+        unimplemented!();
+    }
+
+    fn avb_cert_read_permanent_attributes(
+        &mut self,
+        attributes: &mut CertPermanentAttributes,
+    ) -> AvbIoResult<()> {
+        unimplemented!();
+    }
+
+    fn avb_cert_read_permanent_attributes_hash(&mut self) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
         unimplemented!();
     }
 }
