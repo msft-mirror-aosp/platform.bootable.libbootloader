@@ -30,7 +30,9 @@ rust_library(
         "@bitflags",
         "@crc32fast",
         "@cstr",
+        "@gbl//libabr",
         "@gbl//libasync",
+        "@gbl//libboot",
         "@gbl//libfastboot",
         "@gbl//libsafemath",
         "@gbl//libstorage",
@@ -59,9 +61,12 @@ rust_test(
         "@gbl//libgbl/testdata:sparse_test_raw.bin",
         "@gbl//libgbl/testdata:testkey_rsa4096_pub.bin",
         "@gbl//libgbl/testdata:writeback_test_disk.bin",
-        "@gbl//libgbl/testdata:zircon_a.bin",
         "@gbl//libgbl/testdata:zircon_a.vbmeta",
         "@gbl//libgbl/testdata:zircon_a.vbmeta.cert",
+        "@gbl//libgbl/testdata:zircon_a.zbi",
+        "@gbl//libgbl/testdata:zircon_b.zbi",
+        "@gbl//libgbl/testdata:zircon_r.zbi",
+        "@gbl//libgbl/testdata:zircon_slotless.zbi",
     ],
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
@@ -74,24 +79,5 @@ rust_test(
         "@itertools_noalloc",
         "@static_assertions",
         "@uuid",
-    ],
-)
-
-rust_test(
-    name = "integration_test",
-    srcs = ["tests/integration_tests.rs"],
-    compile_data = [
-        "@gbl//libgbl/testdata:zircon_a.bin",
-        "@gbl//libgbl/testdata:zircon_b.bin",
-        "@gbl//libgbl/testdata:zircon_r.bin",
-        "@gbl//libgbl/testdata:zircon_gpt.bin",
-    ],
-    rustc_flags = ANDROID_RUST_LINTS,
-    deps = [
-        ":libgbl",
-        "@avb//:avb_crypto_ops_sha_impl_staticlib",
-        "@gbl//libavb:sysdeps",
-        "@gbl//libstorage",
-        "@gbl//libstorage:libstorage_testlib",
     ],
 )
