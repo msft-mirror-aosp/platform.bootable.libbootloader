@@ -163,6 +163,13 @@ impl EfiEntry {
     }
 }
 
+/// The vendor GUID for UEFI variables defined by GBL.
+pub const GBL_EFI_VENDOR_GUID: EfiGuid =
+    EfiGuid::new(0x5a6d92f3, 0xa2d0, 0x4083, [0x91, 0xa1, 0xa5, 0x0f, 0x6c, 0x3d, 0x98, 0x30]);
+
+/// The name of the UEFI variable that GBL defines to determine the target OS.
+pub const GBL_EFI_OS_BOOT_TARGET_VARNAME: &str = "gbl_os_boot_target";
+
 /// Creates an `EfiEntry` and initialize EFI global allocator.
 ///
 /// # Safety
@@ -320,7 +327,7 @@ impl<'a> BootServices<'a> {
                 &mut out_handle as *mut _,
                 self.efi_entry.image_handle().0,
                 null_mut(),
-                EFI_OPEN_PROTOCOL_ATTRIBUTE_BY_HANDLE_PROTOCOL
+                EFI_OPEN_PROTOCOL_ATTRIBUTE_EXCLUSIVE
             )?;
         }
         // SAFETY: `EFI_SYSTEM_TABLE.OpenProtocol` returns a valid pointer to `T::InterfaceType`
@@ -846,7 +853,7 @@ mod test {
         _: EfiHandle,
         attr: u32,
     ) -> EfiStatus {
-        assert_eq!(attr, EFI_OPEN_PROTOCOL_ATTRIBUTE_BY_HANDLE_PROTOCOL);
+        assert_eq!(attr, EFI_OPEN_PROTOCOL_ATTRIBUTE_EXCLUSIVE);
         EFI_CALL_TRACES.with(|traces| {
             let trace = &mut traces.borrow_mut().open_protocol_trace;
             trace.inputs.push_back((
