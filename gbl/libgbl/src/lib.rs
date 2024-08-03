@@ -57,7 +57,7 @@ pub use boot_mode::BootMode;
 pub use boot_reason::KnownBootReason;
 pub use error::{Error, IntegrationError, Result};
 pub use ops::{
-    AndroidBootImages, BootImages, DefaultGblOps, FuchsiaBootImages, GblOps, GblOpsError,
+    AndroidBootImages, BootImages, DefaultGblOps, FuchsiaBootImages, GblAvbOps, GblOps, GblOpsError,
 };
 
 use overlap::is_overlap;

@@ -151,6 +151,7 @@ composite_enum! {
     pub enum IntegrationError {
         /// Failed to get descriptor from AvbMeta
         AvbDescriptorError(DescriptorError),
+        AvbIoError(avb::IoError),
         /// Avb slot verification failed.
         /// SlotVerifyError is used without verify data.
         AvbSlotVerifyError(SlotVerifyError<'static>),
