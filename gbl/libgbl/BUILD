@@ -27,6 +27,7 @@ rust_library(
     visibility = ["//visibility:public"],
     deps = [
         "@avb",
+        "@avb//:avb_bindgen",
         "@bitflags",
         "@crc32fast",
         "@cstr",
@@ -40,6 +41,7 @@ rust_library(
         "@itertools_noalloc",
         "@spin",
         "@static_assertions",
+        "@uuid",
         "@zerocopy",
     ],
 )
@@ -47,7 +49,9 @@ rust_library(
 rust_test(
     name = "libgbl_test",
     aliases = {"@itertools_noalloc": "itertools_noalloc"},
-    compile_data = ["@gbl//libstorage/test:test_data"],
+    compile_data = [
+        "@gbl//libstorage/test:test_data",
+    ],
     crate = ":libgbl",
     crate_features = ["uuid"],
     data = [
@@ -60,6 +64,10 @@ rust_test(
         "@gbl//libgbl/testdata:sparse_test_blk1024.bin",
         "@gbl//libgbl/testdata:sparse_test_raw.bin",
         "@gbl//libgbl/testdata:testkey_rsa4096_pub.bin",
+        "@gbl//libgbl/testdata:vbmeta_a.bin",
+        "@gbl//libgbl/testdata:vbmeta_b.bin",
+        "@gbl//libgbl/testdata:vbmeta_r.bin",
+        "@gbl//libgbl/testdata:vbmeta_slotless.bin",
         "@gbl//libgbl/testdata:writeback_test_disk.bin",
         "@gbl//libgbl/testdata:zircon_a.vbmeta",
         "@gbl//libgbl/testdata:zircon_a.vbmeta.cert",
