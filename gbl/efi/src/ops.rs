@@ -19,8 +19,9 @@ use crate::{error::GblEfiError, utils::wait_key_stroke};
 use core::fmt::Write;
 use efi::{efi_print, efi_println, EfiEntry};
 use libgbl::{
+    ops::avb_ops_none,
     slots::{BootToken, Cursor},
-    BootImages, GblOps, GblOpsError, Result as GblResult,
+    BootImages, GblAvbOps, GblOps, GblOpsError, Result as GblResult,
 };
 use zbi::ZbiContainer;
 
@@ -95,5 +96,9 @@ impl GblOps for Ops<'_> {
         _: BootToken,
     ) -> GblResult<Cursor<'a, B>> {
         unimplemented!();
+    }
+
+    fn avb_ops(&mut self) -> Option<impl GblAvbOps> {
+        avb_ops_none()
     }
 }
