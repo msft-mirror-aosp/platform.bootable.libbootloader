@@ -111,5 +111,6 @@ rust_test(
     deps = [
         "@gbl//libavb:sysdeps",
         "@gbl//libstorage:libstorage_testlib",
+        "@gbl//third_party/libzbi",
     ],
 )
