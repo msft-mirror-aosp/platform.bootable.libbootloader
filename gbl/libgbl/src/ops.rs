@@ -17,13 +17,15 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-use crate::error::{Error, Result as GblResult};
+use crate::error::Result as GblResult;
 #[cfg(feature = "alloc")]
 use alloc::ffi::CString;
 use core::{
     fmt::{Debug, Write},
     result::Result,
 };
+use gbl_async::block_on;
+use zbi::ZbiContainer;
 
 use super::slots;
 
@@ -54,8 +56,14 @@ pub enum BootImages<'a> {
 }
 
 /// `GblOpsError` is the error type returned by required methods in `GblOps`.
-#[derive(Default, Debug, PartialEq, Eq)]
+#[derive(Default, Debug, PartialEq, Eq, Copy, Clone)]
 pub struct GblOpsError(pub Option<&'static str>);
+
+impl From<&'static str> for GblOpsError {
+    fn from(val: &'static str) -> Self {
+        Self(Some(val))
+    }
+}
 
 // https://stackoverflow.com/questions/41081240/idiomatic-callbacks-in-rust
 // should we use traits for this? or optional/box FnMut?
@@ -67,21 +75,15 @@ missing:
 */
 /// Trait that defines callbacks that can be provided to Gbl.
 pub trait GblOps {
-    /// Prints a ASCII character to the platform console.
-    fn console_put_char(&mut self, ch: u8) -> Result<(), GblOpsError> {
-        Err(GblOpsError(Some("not defined yet")))
-    }
+    /// Gets a console for logging messages.
+    fn console_out(&mut self) -> Option<&mut dyn Write>;
 
     /// This method can be used to implement platform specific mechanism for deciding whether boot
     /// should abort and enter Fastboot mode.
     fn should_stop_in_fastboot(&mut self) -> Result<bool, GblOpsError>;
 
-    /// Platform specific kernel boot implementation.
-    ///
-    /// Implementation is not expected to return on success.
-    fn boot(&mut self, boot_images: BootImages) -> Result<(), GblOpsError> {
-        Err(GblOpsError(Some("not defined yet")))
-    }
+    /// Platform specific processing of boot images before booting.
+    fn preboot(&mut self, boot_images: BootImages) -> Result<(), GblOpsError>;
 
     /// Reads data from a partition.
     async fn read_from_partition(
@@ -89,8 +91,16 @@ pub trait GblOps {
         part: &str,
         off: u64,
         out: &mut [u8],
+    ) -> Result<(), GblOpsError>;
+
+    /// Reads data from a partition synchronously.
+    fn read_from_partition_sync(
+        &mut self,
+        part: &str,
+        off: u64,
+        out: &mut [u8],
     ) -> Result<(), GblOpsError> {
-        Err(GblOpsError(Some("not defined yet")))
+        block_on(self.read_from_partition(part, off, out))
     }
 
     /// Writes data to a partition.
@@ -99,14 +109,26 @@ pub trait GblOps {
         part: &str,
         off: u64,
         data: &mut [u8],
+    ) -> Result<(), GblOpsError>;
+
+    /// Writes data to a partition synchronously.
+    fn write_to_partition_sync(
+        &mut self,
+        part: &str,
+        off: u64,
+        data: &mut [u8],
     ) -> Result<(), GblOpsError> {
-        Err(GblOpsError(Some("not defined yet")))
+        block_on(self.write_to_partition(part, off, data))
     }
 
     /// Returns the size of a partiiton. Returns Ok(None) if partition doesn't exist.
-    fn partition_size(&mut self, part: &str) -> Result<Option<usize>, GblOpsError> {
-        Err(GblOpsError(Some("not defined yet")))
-    }
+    fn partition_size(&mut self, part: &str) -> Result<Option<u64>, GblOpsError>;
+
+    /// Adds device specific ZBI items to the given `container`
+    fn zircon_add_device_zbi_items(
+        &mut self,
+        container: &mut ZbiContainer<&mut [u8]>,
+    ) -> Result<(), GblOpsError>;
 
     // TODO(b/334962570): figure out how to plumb ops-provided hash implementations into
     // libavb. The tricky part is that libavb hashing APIs are global with no way to directly
@@ -121,15 +143,12 @@ pub trait GblOps {
     fn do_fastboot<B: gbl_storage::AsBlockDevice>(
         &self,
         cursor: &mut slots::Cursor<B>,
-    ) -> GblResult<()> {
-        Err(Error::NotImplemented.into())
-    }
+    ) -> GblResult<()>;
 
     /// TODO: b/312607649 - placeholder interface for Gbl specific callbacks that uses alloc.
     #[cfg(feature = "alloc")]
     fn gbl_alloc_extra_action(&mut self, s: &str) -> GblResult<()> {
-        let _c_string = CString::new(s);
-        Err(Error::NotImplemented.into())
+        unimplemented!();
     }
 
     /// Load and initialize a slot manager and return a cursor over the manager on success.
@@ -137,38 +156,7 @@ pub trait GblOps {
         &'a mut self,
         block_device: &'a mut B,
         boot_token: slots::BootToken,
-    ) -> GblResult<slots::Cursor<'a, B>> {
-        Err(Error::OperationProhibited.into())
-    }
-}
-
-/// `GblUtils` takes a reference to `GblOps` and implements various traits.
-pub(crate) struct GblUtils<'a, T: GblOps> {
-    ops: &'a mut T,
-}
-
-impl<'a, T: GblOps> GblUtils<'a, T> {
-    /// Create a new instance.
-    ///
-    /// # Args
-    ///
-    /// * `ops`: A reference to a `GblOps`,
-    ///
-    /// # Returns
-    ///
-    /// Returns a new instance and the trailing unused part of the input scratch buffer.
-    pub fn new(ops: &'a mut T) -> GblResult<Self> {
-        Ok(Self { ops })
-    }
-}
-
-impl<T: GblOps> Write for GblUtils<'_, T> {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        for ch in s.as_bytes() {
-            self.ops.console_put_char(*ch).map_err(|_| core::fmt::Error {})?;
-        }
-        Ok(())
-    }
+    ) -> GblResult<slots::Cursor<'a, B>>;
 }
 
 /// Default [GblOps] implementation that returns errors and does nothing.
@@ -176,15 +164,59 @@ impl<T: GblOps> Write for GblUtils<'_, T> {
 pub struct DefaultGblOps {}
 
 impl GblOps for DefaultGblOps {
-    fn console_put_char(&mut self, ch: u8) -> Result<(), GblOpsError> {
-        Err(GblOpsError(Some("unimplemented")))
+    fn console_out(&mut self) -> Option<&mut dyn Write> {
+        unimplemented!();
     }
 
     fn should_stop_in_fastboot(&mut self) -> Result<bool, GblOpsError> {
-        Err(GblOpsError(Some("unimplemented")))
+        unimplemented!();
     }
 
-    fn boot(&mut self, boot_images: BootImages) -> Result<(), GblOpsError> {
-        Err(GblOpsError(Some("unimplemented")))
+    fn preboot(&mut self, boot_images: BootImages) -> Result<(), GblOpsError> {
+        unimplemented!();
+    }
+
+    async fn read_from_partition(
+        &mut self,
+        part: &str,
+        off: u64,
+        out: &mut [u8],
+    ) -> Result<(), GblOpsError> {
+        unimplemented!();
+    }
+
+    async fn write_to_partition(
+        &mut self,
+        part: &str,
+        off: u64,
+        data: &mut [u8],
+    ) -> Result<(), GblOpsError> {
+        unimplemented!();
+    }
+
+    fn partition_size(&mut self, part: &str) -> Result<Option<u64>, GblOpsError> {
+        unimplemented!();
+    }
+
+    fn zircon_add_device_zbi_items(
+        &mut self,
+        container: &mut ZbiContainer<&mut [u8]>,
+    ) -> Result<(), GblOpsError> {
+        unimplemented!();
+    }
+
+    fn do_fastboot<B: gbl_storage::AsBlockDevice>(
+        &self,
+        cursor: &mut slots::Cursor<B>,
+    ) -> GblResult<()> {
+        unimplemented!();
+    }
+
+    fn load_slot_interface<'a, B: gbl_storage::AsBlockDevice>(
+        &'a mut self,
+        block_device: &'a mut B,
+        boot_token: slots::BootToken,
+    ) -> GblResult<slots::Cursor<'a, B>> {
+        unimplemented!();
     }
 }

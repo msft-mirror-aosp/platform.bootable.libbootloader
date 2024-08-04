@@ -195,7 +195,7 @@ pub fn fuchsia_boot_demo(efi_entry: EfiEntry) -> Result<()> {
     let mut load_buffer = vec![0u8; 128 * 1024 * 1024]; // 128MB
     let zbi_kernel = load_fuchsia_simple(&efi_entry, &mut load_buffer[..])?;
     #[allow(unused_variables)]
-    let (original, relocated, kernel_entry) = relocate_to_tail(&mut zbi_kernel[..])?;
+    let (original, relocated, _) = relocate_to_tail(&mut zbi_kernel[..])?;
 
     #[cfg(target_arch = "aarch64")]
     {
@@ -206,7 +206,7 @@ pub fn fuchsia_boot_demo(efi_entry: EfiEntry) -> Result<()> {
         let (_, remains) = zbi_get_unused_buffer(relocated)?;
         let _ = efi::exit_boot_services(efi_entry, remains).unwrap();
         // SAFETY: For demo, we assume images are provided valid.
-        unsafe { boot::aarch64::jump_zircon_el2_or_lower(relocated, kernel_entry, original) };
+        unsafe { boot::aarch64::jump_zircon_el2_or_lower(relocated, original) };
     }
 
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
