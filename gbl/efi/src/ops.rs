@@ -18,7 +18,12 @@ use crate::{error::GblEfiError, utils::wait_key_stroke};
 
 use core::fmt::Write;
 use efi::{efi_print, efi_println, EfiEntry};
-use libgbl::{GblOps, GblOpsError};
+use libgbl::{
+    ops::avb_ops_none,
+    slots::{BootToken, Cursor},
+    BootImages, GblAvbOps, GblOps, GblOpsError, Result as GblResult,
+};
+use zbi::ZbiContainer;
 
 pub struct Ops<'a> {
     pub efi_entry: &'a EfiEntry,
@@ -33,6 +38,10 @@ impl From<GblEfiError> for GblOpsError {
 }
 
 impl GblOps for Ops<'_> {
+    fn console_out(&mut self) -> Option<&mut dyn Write> {
+        unimplemented!();
+    }
+
     fn should_stop_in_fastboot(&mut self) -> Result<bool, GblOpsError> {
         // TODO(b/349829690): also query GblSlotProtocol.get_boot_reason() for board-specific
         // fastboot triggers.
@@ -42,5 +51,54 @@ impl GblOps for Ops<'_> {
             efi_println!(self.efi_entry, "Backspace pressed, entering fastboot");
         }
         Ok(found?)
+    }
+
+    fn preboot(&mut self, _: BootImages) -> Result<(), GblOpsError> {
+        unimplemented!();
+    }
+
+    async fn read_from_partition(
+        &mut self,
+        _: &str,
+        _: u64,
+        _: &mut [u8],
+    ) -> Result<(), GblOpsError> {
+        unimplemented!();
+    }
+
+    async fn write_to_partition(
+        &mut self,
+        _: &str,
+        _: u64,
+        _: &mut [u8],
+    ) -> Result<(), GblOpsError> {
+        unimplemented!();
+    }
+
+    fn partition_size(&mut self, _: &str) -> Result<Option<u64>, GblOpsError> {
+        unimplemented!();
+    }
+
+    fn zircon_add_device_zbi_items(
+        &mut self,
+        _: &mut ZbiContainer<&mut [u8]>,
+    ) -> Result<(), GblOpsError> {
+        unimplemented!();
+    }
+
+    fn do_fastboot<B: gbl_storage::AsBlockDevice>(&self, _: &mut Cursor<B>) -> GblResult<()> {
+        unimplemented!();
+    }
+
+    fn load_slot_interface<'a, B: gbl_storage::AsBlockDevice>(
+        &'a mut self,
+        _: &'a mut B,
+        _: BootToken,
+    ) -> GblResult<Cursor<'a, B>> {
+        unimplemented!();
+    }
+
+    fn avb_ops(&mut self) -> Option<impl GblAvbOps> {
+        avb_ops_none()
     }
 }
