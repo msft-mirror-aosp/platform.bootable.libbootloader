@@ -45,6 +45,12 @@ pub enum Error {
     AvbOpsBusy,
     /// Buffers overlap and can cause undefined behavior and data corruption.
     BufferOverlap,
+    /// Input parameter is invalid.
+    InvalidInput,
+    /// Buffer is too small.
+    BufferTooSmall,
+    /// Buffer does not meet alignment requirement.
+    InvalidAlignment,
 }
 
 impl Display for Error {
@@ -59,6 +65,9 @@ impl Display for Error {
             Error::Internal => write!(f, "Internal error"),
             Error::AvbOpsBusy => write!(f, "AvbOps were already borrowed"),
             Error::BufferOverlap => write!(f, "Buffers overlap"),
+            Error::InvalidInput => write!(f, "Invalid Input"),
+            Error::BufferTooSmall => write!(f, "Buffer is too small"),
+            Error::InvalidAlignment => write!(f, "Buffer does not meet alignment requirement"),
         }
     }
 }
@@ -142,6 +151,7 @@ composite_enum! {
     pub enum IntegrationError {
         /// Failed to get descriptor from AvbMeta
         AvbDescriptorError(DescriptorError),
+        AvbIoError(avb::IoError),
         /// Avb slot verification failed.
         /// SlotVerifyError is used without verify data.
         AvbSlotVerifyError(SlotVerifyError<'static>),
@@ -150,8 +160,10 @@ composite_enum! {
         GblSlotsError(crate::slots::Error),
         FromBytesUntilNulError(FromBytesUntilNulError),
         FromBytesWithNulError(FromBytesWithNulError),
-        StorageError(StorageError),
         SafeMathError(safemath::Error),
+        StorageError(StorageError),
+        TryFromIntError(core::num::TryFromIntError),
+        ZbiError(zbi::ZbiError),
     }
 }
 
