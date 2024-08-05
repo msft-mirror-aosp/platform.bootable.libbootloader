@@ -182,8 +182,9 @@ mod test {
     use crate::{DeviceHandle, EfiEntry};
     use core::ptr::null_mut;
     use gbl::{
+        ops::avb_ops_none,
         slots::{Bootability, Cursor, RecoveryTarget, UnbootableReason},
-        BootImages, Gbl, GblOps, GblOpsError, Result as GblResult,
+        BootImages, Gbl, GblAvbOps, GblOps, GblOpsError, Result as GblResult,
     };
     use gbl_storage_testlib::TestBlockDevice;
     // TODO(b/350526796): use ptr.is_aligned() when Rust 1.79 is in Android
@@ -302,6 +303,10 @@ mod test {
         ) -> GblResult<Cursor<'a, B>> {
             self.manager.boot_token = Some(boot_token);
             Ok(Cursor { ctx: &mut self.manager, block_dev })
+        }
+
+        fn avb_ops(&mut self) -> Option<impl GblAvbOps> {
+            avb_ops_none()
         }
     }
 

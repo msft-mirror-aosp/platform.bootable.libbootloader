@@ -20,6 +20,8 @@ use safemath::SafeNum;
 use zbi::{ZbiContainer, ZbiFlags, ZbiHeader, ZbiType};
 use zerocopy::AsBytes;
 
+mod vboot;
+
 /// Kernel load address alignment. Value taken from
 /// https://fuchsia.googlesource.com/fuchsia/+/4f204d8a0243e84a86af4c527a8edcc1ace1615f/zircon/kernel/target/arm64/boot-shim/BUILD.gn#38
 pub const ZIRCON_KERNEL_ALIGN: usize = 64 * 1024;
@@ -158,7 +160,10 @@ pub fn zircon_load_verify<'a>(
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{slots, BootImages, GblOpsError};
+    use crate::{
+        ops::{AvbIoResult, CertPermanentAttributes, GblAvbOps, SHA256_DIGEST_SIZE},
+        slots, BootImages, GblOpsError,
+    };
     use std::{
         collections::{BTreeSet, HashMap},
         fmt::Write,
@@ -174,6 +179,10 @@ mod test {
     pub(crate) const ZIRCON_B_ZBI_FILE: &str = "zircon_b.zbi";
     pub(crate) const ZIRCON_R_ZBI_FILE: &str = "zircon_r.zbi";
     pub(crate) const ZIRCON_SLOTLESS_ZBI_FILE: &str = "zircon_slotless.zbi";
+    pub(crate) const VBMETA_A_FILE: &str = "vbmeta_a.bin";
+    pub(crate) const VBMETA_B_FILE: &str = "vbmeta_b.bin";
+    pub(crate) const VBMETA_R_FILE: &str = "vbmeta_r.bin";
+    pub(crate) const VBMETA_SLOTLESS_FILE: &str = "vbmeta_slotless.bin";
 
     /// Reads a data file under libgbl/testdata/
     pub(crate) fn read_test_data(file: &str) -> Vec<u8> {
@@ -183,6 +192,8 @@ mod test {
     /// `TestZirconBootGblOps` implements `GblOps` for test.
     pub(crate) struct TestZirconBootGblOps {
         pub(crate) partitions: HashMap<&'static str, Vec<u8>>,
+        pub(crate) avb_unlocked: bool,
+        pub(crate) rollback_index: HashMap<usize, u64>,
     }
 
     impl Default for TestZirconBootGblOps {
@@ -192,8 +203,12 @@ mod test {
                 ("zircon_b", read_test_data(ZIRCON_B_ZBI_FILE)),
                 ("zircon_r", read_test_data(ZIRCON_R_ZBI_FILE)),
                 ("zircon", read_test_data(ZIRCON_SLOTLESS_ZBI_FILE)),
+                ("vbmeta_a", read_test_data(VBMETA_A_FILE)),
+                ("vbmeta_b", read_test_data(VBMETA_B_FILE)),
+                ("vbmeta_r", read_test_data(VBMETA_R_FILE)),
+                ("vbmeta", read_test_data(VBMETA_SLOTLESS_FILE)),
             ]);
-            Self { partitions }
+            Self { partitions, avb_unlocked: false, rollback_index: Default::default() }
         }
     }
 
@@ -266,6 +281,45 @@ mod test {
             boot_token: slots::BootToken,
         ) -> GblResult<slots::Cursor<'a, B>> {
             unimplemented!();
+        }
+
+        fn avb_ops(&mut self) -> Option<impl GblAvbOps> {
+            Some(self)
+        }
+    }
+
+    // `avb::test_op:TestOps` provides a more comprehensive a set of mocks. Consider using it when
+    // we add more mocks.
+    impl GblAvbOps for &mut TestZirconBootGblOps {
+        fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
+            Ok(self.avb_unlocked)
+        }
+
+        fn avb_read_rollback_index(&mut self, rollback_index_location: usize) -> AvbIoResult<u64> {
+            Ok(*self.rollback_index.get(&rollback_index_location).unwrap_or(&0))
+        }
+
+        fn avb_write_rollback_index(
+            &mut self,
+            rollback_index_location: usize,
+            index: u64,
+        ) -> AvbIoResult<()> {
+            self.rollback_index.insert(rollback_index_location, index);
+            Ok(())
+        }
+
+        fn avb_cert_read_permanent_attributes(
+            &mut self,
+            attributes: &mut CertPermanentAttributes,
+        ) -> AvbIoResult<()> {
+            let perm_attr = read_test_data("cert_permanent_attributes.bin");
+            Ok(attributes.as_bytes_mut().clone_from_slice(&perm_attr))
+        }
+
+        fn avb_cert_read_permanent_attributes_hash(
+            &mut self,
+        ) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
+            Ok(read_test_data("cert_permanent_attributes.hash").try_into().unwrap())
         }
     }
 
