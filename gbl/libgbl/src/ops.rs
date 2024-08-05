@@ -281,6 +281,19 @@ impl GblOps for DefaultGblOps {
     }
 }
 
+/// Prints with `GblOps::console_out()`.
+#[macro_export]
+macro_rules! gbl_print {
+    ( $ops:expr, $( $x:expr ),* $(,)? ) => {
+        {
+            match $ops.console_out() {
+                Some(v) => write!(v, $($x,)*).unwrap(),
+                _ => {}
+            }
+        }
+    };
+}
+
 /// `GblAvbOpsNull` provides placeholder implementation for `GblAvbOps`. All methods are
 /// `unimplemented!()`. The type is for plugging in `None::<GblAvbOpsNull>` which the compiler
 /// requires for return by `avb_ops_none()`, .
