@@ -87,6 +87,10 @@ def gen_zircon_test_images(zbi_tool):
         )
         return
 
+    PSK = AVB_TEST_DATA_DIR / "testkey_cert_psk.pem"
+    ATX_METADATA = AVB_TEST_DATA_DIR / "cert_metadata.bin"
+    TEST_ROLLBACK_INDEX_LOCATION = 1
+    TEST_ROLLBACK_INDEX = 2
     with tempfile.TemporaryDirectory() as temp_dir:
         for suffix in ["a", "b", "r", "slotless"]:
             temp_dir = pathlib.Path(temp_dir)
@@ -98,7 +102,7 @@ def gen_zircon_test_images(zbi_tool):
             kernel_bytes = int(2048).to_bytes(8, "little") + int(1024).to_bytes(
                 8, "little"
             )
-            kernel_bytes += random.randbytes(8 * SZ_KB - 16)
+            kernel_bytes += random.randbytes(1 * SZ_KB - 16)
             out_kernel_bin_file.write_bytes(kernel_bytes)
             out_zbi_file = SCRIPT_DIR / f"zircon_{suffix}.zbi"
             # Put image in a zbi container.
@@ -109,6 +113,46 @@ def gen_zircon_test_images(zbi_tool):
                     out_zbi_file,
                     "--type=KERNEL_X64",
                     out_kernel_bin_file,
+                ]
+            )
+
+            # Generate vbmeta descriptor.
+            vbmeta_desc = f"{temp_dir}/zircon_{suffix}.vbmeta.desc"
+            subprocess.run(
+                [
+                    AVB_TOOL,
+                    "add_hash_footer",
+                    "--image",
+                    out_zbi_file,
+                    "--partition_name",
+                    "zircon",
+                    "--do_not_append_vbmeta_image",
+                    "--output_vbmeta_image",
+                    vbmeta_desc,
+                    "--partition_size",
+                    "209715200",
+                ]
+            )
+            # Generate vbmeta image
+            vbmeta_img = SCRIPT_DIR / f"vbmeta_{suffix}.bin"
+            subprocess.run(
+                [
+                    AVB_TOOL,
+                    "make_vbmeta_image",
+                    "--output",
+                    vbmeta_img,
+                    "--key",
+                    PSK,
+                    "--algorithm",
+                    "SHA512_RSA4096",
+                    "--public_key_metadata",
+                    ATX_METADATA,
+                    "--include_descriptors_from_image",
+                    vbmeta_desc,
+                    "--rollback_index",
+                    f"{TEST_ROLLBACK_INDEX}",
+                    "--rollback_index_location",
+                    f"{TEST_ROLLBACK_INDEX_LOCATION}",
                 ]
             )
 
