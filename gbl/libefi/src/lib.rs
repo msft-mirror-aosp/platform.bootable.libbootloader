@@ -327,7 +327,7 @@ impl<'a> BootServices<'a> {
                 &mut out_handle as *mut _,
                 self.efi_entry.image_handle().0,
                 null_mut(),
-                EFI_OPEN_PROTOCOL_ATTRIBUTE_EXCLUSIVE
+                EFI_OPEN_PROTOCOL_ATTRIBUTE_BY_HANDLE_PROTOCOL
             )?;
         }
         // SAFETY: `EFI_SYSTEM_TABLE.OpenProtocol` returns a valid pointer to `T::InterfaceType`
@@ -337,6 +337,7 @@ impl<'a> BootServices<'a> {
     }
 
     /// Wrapper of `EFI_BOOT_SERVICES.CloseProtocol()`.
+    #[allow(dead_code)]
     fn close_protocol<T: ProtocolInfo>(&self, handle: DeviceHandle) -> EfiResult<()> {
         // SAFETY: EFI_BOOT_SERVICES method call.
         unsafe {
@@ -853,7 +854,7 @@ mod test {
         _: EfiHandle,
         attr: u32,
     ) -> EfiStatus {
-        assert_eq!(attr, EFI_OPEN_PROTOCOL_ATTRIBUTE_EXCLUSIVE);
+        assert_eq!(attr, EFI_OPEN_PROTOCOL_ATTRIBUTE_BY_HANDLE_PROTOCOL);
         EFI_CALL_TRACES.with(|traces| {
             let trace = &mut traces.borrow_mut().open_protocol_trace;
             trace.inputs.push_back((
@@ -1153,16 +1154,8 @@ mod test {
             }
 
             // Close protocol is called as `protocol` goes out of scope.
-            EFI_CALL_TRACES.with(|trace| {
-                assert_eq!(
-                    trace.borrow_mut().close_protocol_trace.inputs,
-                    [(
-                        DeviceHandle(as_efi_handle(&mut device_handle)),
-                        BlockIoProtocol::GUID,
-                        image_handle
-                    ),]
-                )
-            });
+            EFI_CALL_TRACES
+                .with(|trace| assert_eq!(trace.borrow_mut().close_protocol_trace.inputs, []));
         })
     }
 
