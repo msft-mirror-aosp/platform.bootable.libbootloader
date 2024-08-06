@@ -133,6 +133,30 @@ def gen_zircon_test_images(zbi_tool):
                     "209715200",
                 ]
             )
+            # Generate two cmdline ZBI items to add as property descriptors to
+            # vbmeta image for test.
+            vbmeta_prop_args = []
+            for i in range(2):
+                prop_zbi_payload = f"{temp_dir}/prop_zbi_payload_{i}.bin"
+                subprocess.run(
+                    [
+                        zbi_tool,
+                        "--output",
+                        prop_zbi_payload,
+                        "--type=CMDLINE",
+                        f"--entry=vb_prop_{i}=val",
+                    ]
+                )
+                vbmeta_prop_args += [
+                    "--prop_from_file",
+                    f"zbi_vb_prop_{i}:{prop_zbi_payload}",
+                ]
+                # Also adds a property where the key name does not starts with
+                # "zbi". The item should not be processed.
+                vbmeta_prop_args += [
+                    "--prop_from_file",
+                    f"vb_prop_{i}:{prop_zbi_payload}",
+                ]
             # Generate vbmeta image
             vbmeta_img = SCRIPT_DIR / f"vbmeta_{suffix}.bin"
             subprocess.run(
@@ -154,6 +178,7 @@ def gen_zircon_test_images(zbi_tool):
                     "--rollback_index_location",
                     f"{TEST_ROLLBACK_INDEX_LOCATION}",
                 ]
+                + vbmeta_prop_args
             )
 
 
