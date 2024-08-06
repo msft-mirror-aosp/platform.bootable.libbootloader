@@ -21,6 +21,7 @@ use zbi::{ZbiContainer, ZbiFlags, ZbiHeader, ZbiType};
 use zerocopy::AsBytes;
 
 mod vboot;
+use vboot::zircon_verify_kernel;
 
 /// Kernel load address alignment. Value taken from
 /// https://fuchsia.googlesource.com/fuchsia/+/4f204d8a0243e84a86af4c527a8edcc1ace1615f/zircon/kernel/target/arm64/boot-shim/BUILD.gn#38
@@ -116,6 +117,7 @@ fn slot_cmd_line(slot: SlotIndex) -> &'static str {
 pub fn zircon_load_verify<'a>(
     ops: &mut impl GblOps,
     slot: Option<SlotIndex>,
+    slot_booted_successfully: bool,
     load: &'a mut [u8],
 ) -> GblResult<(&'a mut [u8], &'a mut [u8])> {
     let load = aligned_subslice(load, ZIRCON_KERNEL_ALIGN)?;
@@ -130,7 +132,8 @@ pub fn zircon_load_verify<'a>(
     let kernel = load.get_mut(..image_length.try_into()?).ok_or(GblError::BufferTooSmall)?;
     ops.read_from_partition_sync(zircon_part, 0, kernel)?;
 
-    // TODO(b/334962583): Perform AVB verification.
+    // Performs AVB verification.
+    zircon_verify_kernel(ops, slot, slot_booted_successfully, &mut load[..])?;
 
     // Append additional ZBI items.
     let mut zbi_kernel = ZbiContainer::parse(&mut load[..])?;
@@ -164,6 +167,7 @@ mod test {
         ops::{AvbIoResult, CertPermanentAttributes, GblAvbOps, SHA256_DIGEST_SIZE},
         slots, BootImages, GblOpsError,
     };
+    use avb_bindgen::{AVB_CERT_PIK_VERSION_LOCATION, AVB_CERT_PSK_VERSION_LOCATION};
     use std::{
         collections::{BTreeSet, HashMap},
         fmt::Write,
@@ -171,9 +175,18 @@ mod test {
         path::Path,
     };
 
+    // The cert test keys were both generated with rollback version 42.
+    const TEST_CERT_PIK_VERSION: u64 = 42;
+    const TEST_CERT_PSK_VERSION: u64 = 42;
+
     // The `reserve_memory_size` value in the test ZBI kernel.
     // See `gen_zircon_test_images()` in libgbl/testdata/gen_test_data.py.
     const TEST_KERNEL_RESERVED_MEMORY_SIZE: usize = 1024;
+
+    // The rollback index value and location in the generated test vbmetadata.
+    // See `gen_zircon_test_images()` in libgbl/testdata/gen_test_data.py.
+    const TEST_ROLLBACK_INDEX_LOCATION: usize = 1;
+    const TEST_ROLLBACK_INDEX_VALUE: u64 = 2;
 
     pub(crate) const ZIRCON_A_ZBI_FILE: &str = "zircon_a.zbi";
     pub(crate) const ZIRCON_B_ZBI_FILE: &str = "zircon_b.zbi";
@@ -214,7 +227,7 @@ mod test {
 
     impl GblOps for TestZirconBootGblOps {
         fn console_out(&mut self) -> Option<&mut dyn Write> {
-            unimplemented!();
+            None
         }
 
         fn should_stop_in_fastboot(&mut self) -> Result<bool, GblOpsError> {
@@ -370,7 +383,7 @@ mod test {
 
     /// Helper for testing `zircon_load_verify`.
     fn test_load_verify(
-        ops: &mut impl GblOps,
+        ops: &mut TestZirconBootGblOps,
         slot: Option<SlotIndex>,
         expected_zbi_items: &[u8],
         expected_kernel: &[u8],
@@ -380,7 +393,9 @@ mod test {
         // | ---------- 64K -----------|~~~~~| ----------------------------|
         let sz = 2 * ZIRCON_KERNEL_ALIGN + expected_kernel.len() + TEST_KERNEL_RESERVED_MEMORY_SIZE;
         let mut load = AlignedBuffer::new(sz, ZIRCON_KERNEL_ALIGN);
-        let (zbi_items, relocated) = zircon_load_verify(ops, slot, load.get()).unwrap();
+        let original_rb = ops.rollback_index.clone();
+        // Loads and verifies with unsuccessful slot flag first.
+        let (zbi_items, relocated) = zircon_load_verify(ops, slot, false, load.get()).unwrap();
         // Verifies loaded ZBI kernel/items
         assert_eq!(normalize_zbi(expected_zbi_items), normalize_zbi(zbi_items));
         // Verifies relocated kernel
@@ -388,6 +403,22 @@ mod test {
         // Relocated kernel is at the latest aligned address
         let off = (relocated.as_ptr() as usize) - (load.get().as_ptr() as usize);
         assert_eq!(off, 2 * ZIRCON_KERNEL_ALIGN);
+
+        // Verifies that the slot successful flag is passed correctly.
+        // Unsuccessful slot, rollback not updated.
+        assert_eq!(ops.rollback_index, original_rb);
+        // Loads and verifies with successful slot flag.
+        zircon_load_verify(ops, slot, true, load.get()).unwrap();
+        // Successful slot, rollback updated.
+        assert_eq!(
+            ops.rollback_index,
+            [
+                (TEST_ROLLBACK_INDEX_LOCATION, TEST_ROLLBACK_INDEX_VALUE),
+                (usize::try_from(AVB_CERT_PSK_VERSION_LOCATION).unwrap(), TEST_CERT_PIK_VERSION),
+                (usize::try_from(AVB_CERT_PIK_VERSION_LOCATION).unwrap(), TEST_CERT_PIK_VERSION)
+            ]
+            .into()
+        );
     }
 
     #[test]
@@ -399,12 +430,14 @@ mod test {
         let mut expected_zbi_items = AlignedBuffer::new(zbi.len() + 1024, 8);
         expected_zbi_items.get()[..zbi.len()].clone_from_slice(zbi);
         append_cmd_line(expected_zbi_items.get(), b"test_zbi_item");
+        append_cmd_line(expected_zbi_items.get(), b"vb_prop_0=val\0");
+        append_cmd_line(expected_zbi_items.get(), b"vb_prop_1=val\0");
         test_load_verify(&mut ops, None, expected_zbi_items.get(), expected_kernel.get());
     }
 
     /// Helper for testing `zircon_load_verify` using A/B/R.
     fn test_load_verify_slotted_helper(
-        ops: &mut impl GblOps,
+        ops: &mut TestZirconBootGblOps,
         slot: SlotIndex,
         zbi: &[u8],
         slot_item: &str,
@@ -414,6 +447,8 @@ mod test {
         let mut expected_zbi_items = AlignedBuffer::new(zbi.len() + 1024, 8);
         expected_zbi_items.get()[..zbi.len()].clone_from_slice(zbi);
         append_cmd_line(expected_zbi_items.get(), b"test_zbi_item");
+        append_cmd_line(expected_zbi_items.get(), b"vb_prop_0=val\0");
+        append_cmd_line(expected_zbi_items.get(), b"vb_prop_1=val\0");
         append_cmd_line(expected_zbi_items.get(), slot_item.as_bytes());
         test_load_verify(ops, Some(slot), expected_zbi_items.get(), expected_kernel.get());
     }
@@ -445,6 +480,6 @@ mod test {
         let zbi = &read_test_data(ZIRCON_A_ZBI_FILE);
         let sz = ZIRCON_KERNEL_ALIGN + zbi.len() + TEST_KERNEL_RESERVED_MEMORY_SIZE - 1;
         let mut load = AlignedBuffer::new(sz, ZIRCON_KERNEL_ALIGN);
-        assert!(zircon_load_verify(&mut ops, Some(SlotIndex::A), load.get()).is_err());
+        assert!(zircon_load_verify(&mut ops, Some(SlotIndex::A), true, load.get()).is_err());
     }
 }
