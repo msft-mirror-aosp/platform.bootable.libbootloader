@@ -337,6 +337,7 @@ impl<'a> BootServices<'a> {
     }
 
     /// Wrapper of `EFI_BOOT_SERVICES.CloseProtocol()`.
+    #[allow(dead_code)]
     fn close_protocol<T: ProtocolInfo>(&self, handle: DeviceHandle) -> EfiResult<()> {
         // SAFETY: EFI_BOOT_SERVICES method call.
         unsafe {
@@ -1153,16 +1154,8 @@ mod test {
             }
 
             // Close protocol is called as `protocol` goes out of scope.
-            EFI_CALL_TRACES.with(|trace| {
-                assert_eq!(
-                    trace.borrow_mut().close_protocol_trace.inputs,
-                    [(
-                        DeviceHandle(as_efi_handle(&mut device_handle)),
-                        BlockIoProtocol::GUID,
-                        image_handle
-                    ),]
-                )
-            });
+            EFI_CALL_TRACES
+                .with(|trace| assert_eq!(trace.borrow_mut().close_protocol_trace.inputs, []));
         })
     }
 
