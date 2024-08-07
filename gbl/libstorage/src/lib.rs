@@ -23,7 +23,7 @@
 //!
 //! ```rust
 //! use gbl_storage::{
-//!     AsBlockDevice, BlockIoSync, BlockDevice, required_scratch_size, BlockInfo, BlockIoError,
+//!     AsBlockDevice, BlockIoSync, BlockDevice, required_scratch_size, BlockInfo,
 //! };
 //!
 //! /// Mocks a block device using a buffer.
@@ -31,7 +31,10 @@
 //!     storage: std::vec::Vec<u8>,
 //! }
 //!
+//! use liberror::Error;
+//!
 //! impl BlockIoSync for RamBlockIo {
+//!
 //!     fn info(&mut self) -> BlockInfo {
 //!         BlockInfo {
 //!             block_size: 512,
@@ -40,14 +43,14 @@
 //!         }
 //!     }
 //!
-//!     fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> Result<(), BlockIoError> {
+//!     fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> Result<(), Error> {
 //!         let start = blk_offset * self.info().block_size;
 //!         let end = start + out.len() as u64;
 //!         out.clone_from_slice(&self.storage[start as usize..end as usize]);
 //!         Ok(())
 //!     }
 //!
-//!     fn write_blocks(&mut self, blk_offset: u64, data: &mut [u8]) -> Result<(), BlockIoError> {
+//!     fn write_blocks(&mut self, blk_offset: u64, data: &mut [u8]) -> Result<(), Error> {
 //!         let start = blk_offset * self.info().block_size;
 //!         let end = start + data.len() as u64;
 //!         self.storage[start as usize..end as usize].clone_from_slice(&data);
@@ -114,18 +117,16 @@ use safemath::SafeNum;
 mod algorithm;
 pub use algorithm::{read_async, write_async, AsyncAsSync, SyncAsAsync};
 
+use liberror::Error;
+
 /// The type of Result used in this library.
-pub type Result<T> = core::result::Result<T, StorageError>;
+pub type Result<T> = core::result::Result<T, Error>;
 
 /// Error code for this library.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum StorageError {
-    /// Numeric overflow; the contained value reports when the overflow occurred.
-    ArithmeticOverflow(safemath::Error),
     /// Failed to locate the block device.
     BlockDeviceNotFound,
-    /// I/O error occurred while accessing the block device.
-    BlockIoError(BlockIoError),
     /// [AsBlockDevice::with] failed to execute the requested callback.
     BlockIoNotProvided,
     /// Failed to find a block device matching the requested criteria.
@@ -146,30 +147,6 @@ pub enum StorageError {
     PartitionNotUnique,
     /// The provided scratch buffer is too small.
     ScratchTooSmall,
-}
-
-impl From<safemath::Error> for StorageError {
-    fn from(err: safemath::Error) -> Self {
-        Self::ArithmeticOverflow(err)
-    }
-}
-
-impl From<core::num::TryFromIntError> for StorageError {
-    fn from(_: core::num::TryFromIntError) -> Self {
-        Self::OutOfRange
-    }
-}
-
-impl From<BlockIoError> for StorageError {
-    fn from(val: BlockIoError) -> Self {
-        Self::BlockIoError(val)
-    }
-}
-
-impl core::fmt::Display for StorageError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{:?}", self)
-    }
 }
 
 /// `BlockInfo` contains information for a block device.
@@ -221,7 +198,7 @@ pub trait BlockIoAsync {
         &mut self,
         blk_offset: u64,
         out: &mut [u8],
-    ) -> core::result::Result<(), BlockIoError>;
+    ) -> core::result::Result<(), Error>;
 
     /// Write blocks of data to the block device
     ///
@@ -239,7 +216,7 @@ pub trait BlockIoAsync {
         &mut self,
         blk_offset: u64,
         data: &mut [u8],
-    ) -> core::result::Result<(), BlockIoError>;
+    ) -> core::result::Result<(), Error>;
 }
 
 impl<T: BlockIoAsync> BlockIoAsync for &mut T {
@@ -251,7 +228,7 @@ impl<T: BlockIoAsync> BlockIoAsync for &mut T {
         &mut self,
         blk_offset: u64,
         out: &mut [u8],
-    ) -> core::result::Result<(), BlockIoError> {
+    ) -> core::result::Result<(), Error> {
         (*self).read_blocks(blk_offset, out).await
     }
 
@@ -259,7 +236,7 @@ impl<T: BlockIoAsync> BlockIoAsync for &mut T {
         &mut self,
         blk_offset: u64,
         data: &mut [u8],
-    ) -> core::result::Result<(), BlockIoError> {
+    ) -> core::result::Result<(), Error> {
         (*self).write_blocks(blk_offset, data).await
     }
 }
@@ -281,11 +258,7 @@ pub trait BlockIoSync {
     /// # Returns
     ///
     /// Returns true if exactly out.len() number of bytes are read. Otherwise false.
-    fn read_blocks(
-        &mut self,
-        blk_offset: u64,
-        out: &mut [u8],
-    ) -> core::result::Result<(), BlockIoError>;
+    fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> core::result::Result<(), Error>;
 
     /// Write blocks of data to the block device
     ///
@@ -299,11 +272,8 @@ pub trait BlockIoSync {
     /// # Returns
     ///
     /// Returns true if exactly data.len() number of bytes are written. Otherwise false.
-    fn write_blocks(
-        &mut self,
-        blk_offset: u64,
-        data: &mut [u8],
-    ) -> core::result::Result<(), BlockIoError>;
+    fn write_blocks(&mut self, blk_offset: u64, data: &mut [u8])
+        -> core::result::Result<(), Error>;
 }
 
 impl BlockIoSync for &mut dyn BlockIoSync {
@@ -311,11 +281,7 @@ impl BlockIoSync for &mut dyn BlockIoSync {
         (*self).info()
     }
 
-    fn read_blocks(
-        &mut self,
-        blk_offset: u64,
-        out: &mut [u8],
-    ) -> core::result::Result<(), BlockIoError> {
+    fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> core::result::Result<(), Error> {
         (*self).read_blocks(blk_offset, out)
     }
 
@@ -323,7 +289,7 @@ impl BlockIoSync for &mut dyn BlockIoSync {
         &mut self,
         blk_offset: u64,
         data: &mut [u8],
-    ) -> core::result::Result<(), BlockIoError> {
+    ) -> core::result::Result<(), Error> {
         (*self).write_blocks(blk_offset, data)
     }
 }
@@ -333,11 +299,7 @@ impl<T: BlockIoAsync> BlockIoSync for T {
         (*self).info()
     }
 
-    fn read_blocks(
-        &mut self,
-        blk_offset: u64,
-        out: &mut [u8],
-    ) -> core::result::Result<(), BlockIoError> {
+    fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> core::result::Result<(), Error> {
         block_on((*self).read_blocks(blk_offset, out))
     }
 
@@ -345,7 +307,7 @@ impl<T: BlockIoAsync> BlockIoSync for T {
         &mut self,
         blk_offset: u64,
         data: &mut [u8],
-    ) -> core::result::Result<(), BlockIoError> {
+    ) -> core::result::Result<(), Error> {
         block_on((*self).write_blocks(blk_offset, data))
     }
 }
@@ -520,7 +482,7 @@ impl<'a, 'b> BlockDevice<'a, 'b> {
     /// * `io`: the [BlockIoSync] implementation to use.
     /// * `scratch`: scratch buffer to use; if this is smaller than the size indicated by
     ///              [required_scratch_size], operations on the returned device may return
-    ///              [StorageError::ScratchTooSmall].
+    ///              [Error::BufferTooSmall].
     /// * `max_gpt_entries`: the maximum GPT entries to support.
     pub fn new(io: &'a mut dyn BlockIoSync, scratch: &'b mut [u8], max_gpt_entries: u64) -> Self {
         Self { io, scratch, max_gpt_entries }
@@ -556,7 +518,7 @@ pub fn required_scratch_size(info: BlockInfo, max_gpt_entries: u64) -> Result<us
         0 => 0,
         v => GptCache::required_buffer_size(v)?,
     };
-    (alignment_size + gpt_buffer_size).try_into().map_err(|e: safemath::Error| e.into())
+    (alignment_size + gpt_buffer_size).try_into().map_err(Into::into)
 }
 
 /// Partitions a raw buffer into scratch buffer and GPT cache buffer.
@@ -565,8 +527,9 @@ fn partition_scratch(
     max_gpt_entries: u64,
     buffer: &mut [u8],
 ) -> Result<(&mut [u8], &mut [u8])> {
-    if buffer.len() < required_scratch_size(info, max_gpt_entries)? {
-        return Err(StorageError::ScratchTooSmall);
+    let scratch_size = required_scratch_size(info, max_gpt_entries)?;
+    if buffer.len() < scratch_size {
+        return Err(Error::BufferTooSmall(Some(scratch_size)));
     }
     Ok(buffer.split_at_mut(alignment_scratch_size(info)?))
 }
@@ -577,7 +540,7 @@ fn with_partitioned_scratch<F, R>(dev: &mut (impl AsBlockDevice + ?Sized), mut f
 where
     F: FnMut(&mut dyn BlockIoSync, &mut [u8], &mut [u8], u64) -> R,
 {
-    let mut res: Result<R> = Err(StorageError::BlockIoNotProvided);
+    let mut res: Result<R> = Err(Error::InvalidInput);
     dev.with(&mut |io, scratch, max_entries| {
         res = (|| {
             let (alignment, gpt) = partition_scratch(io.info(), max_entries, scratch)?;
@@ -608,9 +571,10 @@ fn check_range(info: BlockInfo, offset: u64, buffer: &[u8]) -> Result<SafeNum> {
     debug_assert!(is_buffer_aligned(buffer, info.alignment)?);
     let blk_offset = offset / block_size;
     let blk_count = SafeNum::from(buffer.len()) / block_size;
-    match u64::try_from(blk_offset + blk_count)? <= info.num_blocks {
+    let end: u64 = (blk_offset + blk_count).try_into()?;
+    match end <= info.num_blocks {
         true => Ok(blk_offset),
-        false => Err(StorageError::OutOfRange),
+        false => Err(Error::BadIndex(end as usize)),
     }
 }
 
@@ -620,9 +584,7 @@ pub fn alignment_scratch_size(info: BlockInfo) -> Result<usize> {
         1 => 0,
         v => v,
     };
-    ((SafeNum::from(info.alignment) - 1) * 2 + block_alignment)
-        .try_into()
-        .map_err(|e: safemath::Error| e.into())
+    ((SafeNum::from(info.alignment) - 1) * 2 + block_alignment).try_into().map_err(Into::into)
 }
 
 /// Gets a subslice of the given slice with aligned address according to `alignment`
@@ -648,8 +610,9 @@ impl<'a, T: BlockIoAsync> AsyncBlockDevice<'a, T> {
     ///   `Self::required_scratch_size()`. If the block device has no alignment requirement,
     ///   i.e. both alignment and block size are 1, the total required scratch size is 0.
     pub fn new(mut io: T, scratch: &'a mut [u8]) -> Result<Self> {
-        match scratch.len() < Self::required_scratch_size(&mut io)? {
-            true => Err(StorageError::ScratchTooSmall),
+        let scratch_size = Self::required_scratch_size(&mut io)?;
+        match scratch.len() < scratch_size {
+            true => Err(Error::BufferTooSmall(Some(scratch_size))),
             _ => Ok(Self { io, scratch }),
         }
     }
@@ -883,10 +846,10 @@ pub fn check_part_unique<'a, B: BlockIoAsync>(
     part: &str,
 ) -> Result<(usize, Partition, AsyncGptDevice<'a, B>)> {
     let mut idx = 0usize;
-    let mut res = Err(StorageError::NotExist);
+    let mut res = Err(Error::NotFound);
     for dev in devs.iter() {
         res = match dev.gpt_cache().find_partition(part).map(|v| (idx, v, dev)) {
-            Ok(_) if res.is_ok() => return Err(StorageError::PartitionNotUnique),
+            Ok(_) if res.is_ok() => return Err(Error::NotUnique),
             v => v.or(res),
         };
         idx += 1;

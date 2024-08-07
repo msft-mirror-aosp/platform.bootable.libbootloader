@@ -123,6 +123,7 @@ rust_library(
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         ":bootimg_private",
+        "@gbl//liberror",
         "@zerocopy",
     ],
 )
