@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::error::{EfiAppError, Result};
+use crate::error::Result;
 use core::ffi::CStr;
 use efi::{
     defs::EfiGuid,
@@ -25,33 +25,20 @@ use efi::{
     DeviceHandle, EfiEntry,
 };
 use fdt::FdtHeader;
+use liberror::Error;
+use safemath::SafeNum;
 
 pub const EFI_DTB_TABLE_GUID: EfiGuid =
     EfiGuid::new(0xb1b621d5, 0xf19c, 0x41a5, [0x83, 0x0b, 0xd9, 0x15, 0x2c, 0x69, 0xaa, 0xe0]);
 
-/// Checks and converts an integer into usize
-pub fn to_usize<T: TryInto<usize>>(val: T) -> Result<usize> {
-    Ok(val.try_into().map_err(|_| EfiAppError::ArithmeticOverflow)?)
-}
-
-/// Rounds up a usize convertible number.
-pub fn usize_roundup<L: TryInto<usize>, R: TryInto<usize>>(lhs: L, rhs: R) -> Result<usize> {
-    // (lhs + rhs - 1) / rhs * rhs
-    let lhs = to_usize(lhs)?;
-    let rhs = to_usize(rhs)?;
-    let compute = || lhs.checked_add(rhs.checked_sub(1)?)?.checked_div(rhs)?.checked_mul(rhs);
-    Ok(compute().ok_or_else(|| EfiAppError::ArithmeticOverflow)?)
-}
-
-/// Adds two usize convertible numbers and checks overflow.
-pub fn usize_add<L: TryInto<usize>, R: TryInto<usize>>(lhs: L, rhs: R) -> Result<usize> {
-    Ok(to_usize(lhs)?.checked_add(to_usize(rhs)?).ok_or_else(|| EfiAppError::ArithmeticOverflow)?)
-}
-
 /// Gets a subslice of the given slice with aligned address according to `alignment`
-pub fn aligned_subslice(bytes: &mut [u8], alignment: usize) -> Result<&mut [u8]> {
+pub fn aligned_subslice(
+    bytes: &mut [u8],
+    alignment: usize,
+) -> core::result::Result<&mut [u8], Error> {
     let addr = bytes.as_ptr() as usize;
-    Ok(&mut bytes[usize_roundup(addr, alignment)? - addr..])
+    let aligned_start = SafeNum::from(addr).round_up(alignment) - addr;
+    Ok(&mut bytes[aligned_start.try_into()?..])
 }
 
 /// Helper function to get the `DevicePathText` from a `DeviceHandle`.
@@ -113,11 +100,8 @@ pub fn efi_to_e820_mem_type(efi_mem_type: u32) -> u32 {
 }
 
 /// A helper to convert a bytes slice containing a null-terminated string to `str`
-pub fn cstr_bytes_to_str(data: &[u8]) -> Result<&str> {
-    Ok(CStr::from_bytes_until_nul(data)
-        .map_err(|_| EfiAppError::InvalidString)?
-        .to_str()
-        .map_err(|_| EfiAppError::InvalidString)?)
+pub fn cstr_bytes_to_str(data: &[u8]) -> core::result::Result<&str, Error> {
+    Ok(CStr::from_bytes_until_nul(data)?.to_str()?)
 }
 
 /// Repetitively runs a closure until it signals completion or timeout.

@@ -34,6 +34,9 @@
 
 #![cfg_attr(not(any(test, android_dylib)), no_std)]
 
+use core::ffi::{FromBytesUntilNulError, FromBytesWithNulError};
+use core::str::Utf8Error;
+
 /// Common, universal error type
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -61,6 +64,8 @@ pub enum Error {
     Disconnected,
     /// The provided buffer or data structure is invalidly aligned.
     InvalidAlignment,
+    /// A connected agent failed a multi-stage handshake.
+    InvalidHandshake,
     /// At least one parameter fails preconditions.
     InvalidInput,
     /// Memory map error with error code.
@@ -71,7 +76,7 @@ pub enum Error {
     NoFdt,
     /// The block device does not have a valid GUID Partition Table.
     NoGpt,
-    /// The requested device was not found.
+    /// The requested element (e.g. device, partition, or value) was not found.
     NotFound,
     /// The default implementation for a trait method has not been overridden.
     NotImplemented,
@@ -105,11 +110,39 @@ impl From<safemath::Error> for Error {
     }
 }
 
+impl From<core::num::TryFromIntError> for Error {
+    #[track_caller]
+    fn from(err: core::num::TryFromIntError) -> Self {
+        Self::ArithmeticOverflow(err.into())
+    }
+}
+
+impl From<FromBytesUntilNulError> for Error {
+    fn from(_: FromBytesUntilNulError) -> Self {
+        Self::InvalidInput
+    }
+}
+
+impl From<FromBytesWithNulError> for Error {
+    fn from(_: FromBytesWithNulError) -> Self {
+        Self::InvalidInput
+    }
+}
+
+impl From<Utf8Error> for Error {
+    fn from(_: Utf8Error) -> Self {
+        Self::InvalidInput
+    }
+}
+
 impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{:#?}", self)
     }
 }
+
+/// Helper type alias.
+pub type Result<T> = core::result::Result<T, Error>;
 
 #[cfg(test)]
 mod test {

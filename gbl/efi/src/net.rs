@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::{
-    error::{EfiAppError, Result},
+    error::Result,
     utils::{get_device_path, loop_with_timeout},
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -32,6 +32,7 @@ use efi::{
     DeviceHandle, EfiEntry, EventNotify, EventType, Tpl,
 };
 use gbl_async::{yield_now, YieldCounter};
+use liberror::Error;
 use smoltcp::{
     iface::{Config, Interface, SocketSet},
     phy,
@@ -289,7 +290,7 @@ fn find_net_device(efi_entry: &EfiEntry) -> Result<DeviceHandle> {
         // Finds the minimum path lexicographically.
         .min_by(|lhs, rhs| Ord::cmp(lhs.1.text().unwrap(), rhs.1.text().unwrap()))
         .map(|(h, _)| h)
-        .ok_or(EfiAppError::NotFound.into())
+        .ok_or(Error::NotFound.into())
 }
 
 /// Derives a link local ethernet mac address and IPv6 address from `EfiMacAddress`.
@@ -367,12 +368,12 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
             let mut has_progress = false;
 
             if self.is_closed() {
-                return Err(EfiAppError::PeerClosed.into());
+                return Err(Error::Disconnected.into());
             } else if timer.check()? {
-                return Err(EfiAppError::Timeout.into());
+                return Err(Error::Timeout.into());
             } else if self.get_socket().can_recv() {
                 let recv_size = self.get_socket().recv_slice(curr)?;
-                curr = curr.get_mut(recv_size..).ok_or(EfiAppError::ArithmeticOverflow)?;
+                curr = curr.get_mut(recv_size..).ok_or(Error::BadIndex(recv_size))?;
                 has_progress = recv_size > 0;
                 // Forces a yield to the executor if the data received/sent reaches a certain
                 // threshold. This is to prevent the async code from holding up the CPU for too long
@@ -398,9 +399,9 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
             if curr.is_empty() && self.get_socket().send_queue() == 0 {
                 return Ok(());
             } else if self.is_closed() {
-                return Err(EfiAppError::PeerClosed.into());
+                return Err(Error::Disconnected.into());
             } else if timer.check()? {
-                return Err(EfiAppError::Timeout.into());
+                return Err(Error::Timeout.into());
             }
 
             let mut has_progress = false;
@@ -412,7 +413,7 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
             // Checks if there are more data to be queued.
             if self.get_socket().can_send() && !curr.is_empty() {
                 let sent = self.get_socket().send_slice(curr)?;
-                curr = curr.get(sent..).ok_or(EfiAppError::ArithmeticOverflow)?;
+                curr = curr.get(sent..).ok_or(Error::BadIndex(sent))?;
                 // Forces a yield to the executor if the data received/sent reaches a certain
                 // threshold. This is to prevent the async code from holding up the CPU for too long
                 // in case IO speed is high and the executor uses cooperative scheduling.
