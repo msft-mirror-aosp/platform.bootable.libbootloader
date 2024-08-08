@@ -14,9 +14,10 @@
 
 //! This file provides APIs for loading, verifying and booting Fuchsia/Zircon.
 
-use crate::{gbl_print, Error as GblError, GblOps, Result as GblResult};
-use abr::{get_boot_slot, Ops as AbrOps, SlotIndex};
+use crate::{gbl_print, GblOps, Result as GblResult};
+pub use abr::{get_boot_slot, Ops as AbrOps, SlotIndex};
 use core::fmt::Write;
+use liberror::Error;
 use safemath::SafeNum;
 use zbi::{ZbiContainer, ZbiFlags, ZbiHeader, ZbiType};
 use zerocopy::AsBytes;
@@ -52,16 +53,16 @@ impl<'a, T: GblOps> AbrOps for GblAbrOps<'a, T> {
 }
 
 /// A helper for getting the smallest offset in a slice with aligned address.
-fn aligned_offset(buffer: &[u8], alignment: usize) -> GblResult<usize> {
+fn aligned_offset(buffer: &[u8], alignment: usize) -> Result<usize, Error> {
     let addr = SafeNum::from(buffer.as_ptr() as usize);
-    Ok((addr.round_up(alignment) - addr).try_into()?)
+    (addr.round_up(alignment) - addr).try_into().map_err(From::from)
 }
 
 /// A helper for getting a subslice with an aligned address.
-fn aligned_subslice(buffer: &mut [u8], alignment: usize) -> GblResult<&mut [u8]> {
-    let addr = SafeNum::from(buffer.as_ptr() as usize);
+fn aligned_subslice(buffer: &mut [u8], alignment: usize) -> Result<&mut [u8], Error> {
     let aligned_offset = aligned_offset(buffer, alignment)?;
-    Ok(buffer.get_mut(aligned_offset..).ok_or(GblError::BufferTooSmall)?)
+    let len = buffer.len();
+    Ok(buffer.get_mut(aligned_offset..).ok_or(Error::BufferTooSmall(Some(aligned_offset)))?)
 }
 
 /// A helper for splitting the trailing unused portion of a ZBI container buffer.
@@ -77,7 +78,7 @@ fn zbi_split_unused_buffer(zbi: &mut [u8]) -> GblResult<(&mut [u8], &mut [u8])> 
 /// * `dest` will be a ZBI container containing only the kernel item.
 pub fn relocate_kernel(kernel: &[u8], dest: &mut [u8]) -> GblResult<()> {
     if (dest.as_ptr() as usize % ZIRCON_KERNEL_ALIGN) != 0 {
-        return Err(GblError::InvalidAlignment.into());
+        return Err(Error::InvalidAlignment.into());
     }
 
     let kernel = ZbiContainer::parse(&kernel[..])?;
@@ -93,8 +94,11 @@ pub fn relocate_kernel(kernel: &[u8], dest: &mut [u8]) -> GblResult<()> {
         kernel_item.payload.as_bytes(),
     )?;
     let (_, reserved_memory_size) = relocated.get_kernel_entry_and_reserved_memory_size()?;
-    match reserved_memory_size > u64::try_from(zbi_split_unused_buffer(dest)?.1.len())? {
-        true => Err(GblError::BufferTooSmall.into()),
+    let buf_len = u64::try_from(zbi_split_unused_buffer(dest)?.1.len())
+        .map_err(safemath::Error::from)
+        .map_err(Error::from)?;
+    match reserved_memory_size > buf_len {
+        true => Err(Error::BufferTooSmall(None).into()),
         _ => Ok(()),
     }
 }
@@ -106,8 +110,11 @@ pub fn relocate_to_tail(kernel: &mut [u8]) -> GblResult<(&mut [u8], &mut [u8])> 
     let reloc_size = ZbiContainer::parse(&kernel[..])?.get_buffer_size_for_kernel_relocation()?;
     let (original, relocated) = zbi_split_unused_buffer(kernel)?;
     let relocated = aligned_subslice(relocated, ZIRCON_KERNEL_ALIGN)?;
-    let off = (SafeNum::from(relocated.len()) - reloc_size).round_down(ZIRCON_KERNEL_ALIGN);
-    let relocated = &mut relocated[off.try_into()?..];
+    let off = (SafeNum::from(relocated.len()) - reloc_size)
+        .round_down(ZIRCON_KERNEL_ALIGN)
+        .try_into()
+        .map_err(Error::from)?;
+    let relocated = &mut relocated[off..];
     relocate_kernel(original, relocated)?;
     let reloc_addr = relocated.as_ptr() as usize;
     Ok(kernel.split_at_mut(reloc_addr.checked_sub(kernel.as_ptr() as usize).unwrap()))
@@ -156,10 +163,12 @@ pub fn zircon_load_verify<'a>(
     // Reads ZBI header to computes the total size of kernel.
     let mut zbi_header: ZbiHeader = Default::default();
     ops.read_from_partition_sync(zircon_part, 0, zbi_header.as_bytes_mut())?;
-    let image_length = SafeNum::from(zbi_header.as_bytes_mut().len()) + zbi_header.length;
+    let image_length = (SafeNum::from(zbi_header.as_bytes_mut().len()) + zbi_header.length)
+        .try_into()
+        .map_err(Error::from)?;
 
     // Reads the entire kernel
-    let kernel = load.get_mut(..image_length.try_into()?).ok_or(GblError::BufferTooSmall)?;
+    let kernel = load.get_mut(..image_length).ok_or(Error::BufferTooSmall(Some(image_length)))?;
     ops.read_from_partition_sync(zircon_part, 0, kernel)?;
 
     // Performs AVB verification.
@@ -217,7 +226,7 @@ mod test {
     use super::*;
     use crate::{
         ops::{AvbIoResult, CertPermanentAttributes, GblAvbOps, SHA256_DIGEST_SIZE},
-        slots, BootImages, GblOpsError,
+        slots, BootImages,
     };
     use abr::{mark_slot_active, mark_slot_unbootable, ABR_MAX_TRIES_REMAINING};
     use avb_bindgen::{AVB_CERT_PIK_VERSION_LOCATION, AVB_CERT_PSK_VERSION_LOCATION};
@@ -286,11 +295,11 @@ mod test {
             None
         }
 
-        fn should_stop_in_fastboot(&mut self) -> Result<bool, GblOpsError> {
+        fn should_stop_in_fastboot(&mut self) -> Result<bool, Error> {
             unimplemented!();
         }
 
-        fn preboot(&mut self, boot_images: BootImages) -> Result<(), GblOpsError> {
+        fn preboot(&mut self, boot_images: BootImages) -> Result<(), Error> {
             unimplemented!();
         }
 
@@ -299,10 +308,10 @@ mod test {
             part: &str,
             off: u64,
             out: &mut [u8],
-        ) -> Result<(), GblOpsError> {
+        ) -> Result<(), Error> {
             match self.partitions.get_mut(part) {
                 Some(v) => Ok(out.clone_from_slice(&v[off.try_into().unwrap()..][..out.len()])),
-                _ => Err(GblOpsError(Some("Test: No such partition"))),
+                _ => Err(Error::Other(Some("Test: No such partition"))),
             }
         }
 
@@ -311,21 +320,21 @@ mod test {
             part: &str,
             off: u64,
             data: &mut [u8],
-        ) -> Result<(), GblOpsError> {
+        ) -> Result<(), Error> {
             match self.partitions.get_mut(part) {
                 Some(v) => Ok(v[off.try_into().unwrap()..][..data.len()].clone_from_slice(data)),
-                _ => Err(GblOpsError(Some("Test: No such partition"))),
+                _ => Err(Error::Other(Some("Test: No such partition"))),
             }
         }
 
-        fn partition_size(&mut self, part: &str) -> Result<Option<u64>, GblOpsError> {
+        fn partition_size(&mut self, part: &str) -> Result<Option<u64>, Error> {
             Ok(self.partitions.get_mut(part).map(|v| v.len().try_into().unwrap()))
         }
 
         fn zircon_add_device_zbi_items(
             &mut self,
             container: &mut ZbiContainer<&mut [u8]>,
-        ) -> Result<(), GblOpsError> {
+        ) -> Result<(), Error> {
             container
                 .create_entry_with_payload(
                     ZbiType::CmdLine,

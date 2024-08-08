@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use crate::{
-    error::Error as GblError,
     fuchsia_boot::{zbi_split_unused_buffer, zircon_part_name, SlotIndex},
     gbl_print, GblAvbOps, GblOps, IntegrationError, Result as GblResult,
 };
@@ -26,6 +25,7 @@ use core::{
     cmp::{max, min},
     ffi::CStr,
 };
+use liberror::Error;
 use safemath::SafeNum;
 use uuid::Uuid;
 use zbi::{merge_within, ZbiContainer};
@@ -48,7 +48,7 @@ impl<'a, T: GblOps> GblZirconBootAvbOps<'a, T> {
         Ok(self
             .gbl_ops
             .partition_size(partition)
-            .map_err(|_| AvbIoError::Io)?
+            .or(Err(AvbIoError::Io))?
             .ok_or(AvbIoError::NoSuchPartition)?)
     }
 
@@ -60,7 +60,7 @@ impl<'a, T: GblOps> GblZirconBootAvbOps<'a, T> {
 
 /// A helper function for converting `CStr` to `str`
 fn cstr_to_str<E>(s: &CStr, err: E) -> Result<&str, E> {
-    Ok(s.to_str().map_err(|_| err)?)
+    Ok(s.to_str().or(Err(err))?)
 }
 
 impl<'a, T: GblOps> AvbOps<'a> for GblZirconBootAvbOps<'a, T> {
@@ -223,7 +223,7 @@ pub(crate) fn zircon_verify_kernel<G: GblOps>(
             Some(v) => v,
             _ => {
                 gbl_print!(gbl_ops, "Verified boot backend is missing.\r\n");
-                return Err(GblError::NotImplemented.into());
+                return Err(Error::NotImplemented.into());
             }
         };
     let mode = HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_EIO; // Don't care for fuchsia

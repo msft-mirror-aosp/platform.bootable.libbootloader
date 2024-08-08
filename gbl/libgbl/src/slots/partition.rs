@@ -15,6 +15,8 @@
 use super::BootToken;
 use zerocopy::{AsBytes, ByteSlice, FromBytes, FromZeroes, Ref};
 
+use liberror::Error;
+
 /// Tracks whether slot metadata differs from on-disk representation.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum CacheStatus {
@@ -46,7 +48,7 @@ pub trait MetadataBytes: Copy + AsBytes + FromBytes + FromZeroes + Default {
     /// e.g. checksums, magic numbers, and version numbers.
     ///
     /// Returns Err if the buffer does not represent a valid structure.
-    fn validate<B: ByteSlice>(buffer: B) -> Result<Ref<B, Self>, MetadataParseError>;
+    fn validate<B: ByteSlice>(buffer: B) -> Result<Ref<B, Self>, Error>;
 
     /// Called right before writing metadata back to disk.
     /// Implementors should restore invariants,
