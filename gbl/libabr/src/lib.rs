@@ -31,7 +31,8 @@ pub const ONE_SHOT_RECOVERY: u8 = 1 << 0;
 pub const ONE_SHOT_BOOTLOADER: u8 = 1 << 1;
 
 const ABR_MAX_PRIORITY: u8 = 15;
-const ABR_MAX_TRIES_REMAINING: u8 = 7;
+/// Maximum number of retries.
+pub const ABR_MAX_TRIES_REMAINING: u8 = 7;
 
 /// Error type for this library.
 #[derive(Debug)]
