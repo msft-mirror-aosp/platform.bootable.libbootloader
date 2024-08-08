@@ -85,6 +85,11 @@ local_path_override(
 )
 
 local_path_override(
+    module_name = "rules_pkg",
+    path = "external/bazelbuild-rules_pkg",
+)
+
+local_path_override(
     module_name = "rules_python",
     path = "external/bazelbuild-rules_python",
 )
