@@ -57,6 +57,7 @@ rust_binary(
         "@gbl//libbootimg",
         "@gbl//libdttable",
         "@gbl//libefi",
+        "@gbl//liberror",
         "@gbl//libfastboot",
         "@gbl//libfdt",
         "@gbl//libgbl",
