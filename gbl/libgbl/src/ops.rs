@@ -30,6 +30,7 @@ use gbl_async::block_on;
 pub use avb::{
     CertPermanentAttributes, IoError as AvbIoError, IoResult as AvbIoResult, SHA256_DIGEST_SIZE,
 };
+use liberror::Error;
 pub use zbi::ZbiContainer;
 
 use super::slots;
@@ -123,10 +124,10 @@ pub trait GblOps {
 
     /// This method can be used to implement platform specific mechanism for deciding whether boot
     /// should abort and enter Fastboot mode.
-    fn should_stop_in_fastboot(&mut self) -> Result<bool, GblOpsError>;
+    fn should_stop_in_fastboot(&mut self) -> Result<bool, Error>;
 
     /// Platform specific processing of boot images before booting.
-    fn preboot(&mut self, boot_images: BootImages) -> Result<(), GblOpsError>;
+    fn preboot(&mut self, boot_images: BootImages) -> Result<(), Error>;
 
     /// Reads data from a partition.
     async fn read_from_partition(
@@ -134,7 +135,7 @@ pub trait GblOps {
         part: &str,
         off: u64,
         out: &mut [u8],
-    ) -> Result<(), GblOpsError>;
+    ) -> Result<(), Error>;
 
     /// Reads data from a partition synchronously.
     fn read_from_partition_sync(
@@ -142,7 +143,7 @@ pub trait GblOps {
         part: &str,
         off: u64,
         out: &mut [u8],
-    ) -> Result<(), GblOpsError> {
+    ) -> Result<(), Error> {
         block_on(self.read_from_partition(part, off, out))
     }
 
@@ -152,7 +153,7 @@ pub trait GblOps {
         part: &str,
         off: u64,
         data: &mut [u8],
-    ) -> Result<(), GblOpsError>;
+    ) -> Result<(), Error>;
 
     /// Writes data to a partition synchronously.
     fn write_to_partition_sync(
@@ -160,18 +161,18 @@ pub trait GblOps {
         part: &str,
         off: u64,
         data: &mut [u8],
-    ) -> Result<(), GblOpsError> {
+    ) -> Result<(), Error> {
         block_on(self.write_to_partition(part, off, data))
     }
 
     /// Returns the size of a partiiton. Returns Ok(None) if partition doesn't exist.
-    fn partition_size(&mut self, part: &str) -> Result<Option<u64>, GblOpsError>;
+    fn partition_size(&mut self, part: &str) -> Result<Option<u64>, Error>;
 
     /// Adds device specific ZBI items to the given `container`
     fn zircon_add_device_zbi_items(
         &mut self,
         container: &mut ZbiContainer<&mut [u8]>,
-    ) -> Result<(), GblOpsError>;
+    ) -> Result<(), Error>;
 
     // TODO(b/334962570): figure out how to plumb ops-provided hash implementations into
     // libavb. The tricky part is that libavb hashing APIs are global with no way to directly
@@ -224,11 +225,11 @@ impl GblOps for DefaultGblOps {
         unimplemented!();
     }
 
-    fn should_stop_in_fastboot(&mut self) -> Result<bool, GblOpsError> {
+    fn should_stop_in_fastboot(&mut self) -> Result<bool, Error> {
         unimplemented!();
     }
 
-    fn preboot(&mut self, boot_images: BootImages) -> Result<(), GblOpsError> {
+    fn preboot(&mut self, boot_images: BootImages) -> Result<(), Error> {
         unimplemented!();
     }
 
@@ -237,7 +238,7 @@ impl GblOps for DefaultGblOps {
         part: &str,
         off: u64,
         out: &mut [u8],
-    ) -> Result<(), GblOpsError> {
+    ) -> Result<(), Error> {
         unimplemented!();
     }
 
@@ -246,18 +247,18 @@ impl GblOps for DefaultGblOps {
         part: &str,
         off: u64,
         data: &mut [u8],
-    ) -> Result<(), GblOpsError> {
+    ) -> Result<(), Error> {
         unimplemented!();
     }
 
-    fn partition_size(&mut self, part: &str) -> Result<Option<u64>, GblOpsError> {
+    fn partition_size(&mut self, part: &str) -> Result<Option<u64>, Error> {
         unimplemented!();
     }
 
     fn zircon_add_device_zbi_items(
         &mut self,
         container: &mut ZbiContainer<&mut [u8]>,
-    ) -> Result<(), GblOpsError> {
+    ) -> Result<(), Error> {
         unimplemented!();
     }
 

@@ -44,6 +44,7 @@ pub enum Error {
     /// Data verification has encountered an invalid checksum.
     BadChecksum,
     /// An operation attempted to access data outside of the valid range.
+    /// Includes the problematic index.
     BadIndex(usize),
     /// Data verification has encountered an invalid magic number.
     BadMagic,
@@ -58,12 +59,12 @@ pub enum Error {
     BufferTooSmall(Option<usize>),
     /// The connected peripheral or network peer has disconnected.
     Disconnected,
-    /// x86 memory map error with error code.
-    E820MemoryMapCallbackError(i64),
     /// The provided buffer or data structure is invalidly aligned.
     InvalidAlignment,
     /// At least one parameter fails preconditions.
     InvalidInput,
+    /// Memory map error with error code.
+    MemoryMapCallbackError(i64),
     /// An image required for system boot is missing.
     MissingImage,
     /// A valid Flattened Device Tree was not found.
