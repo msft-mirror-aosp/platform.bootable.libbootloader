@@ -32,7 +32,7 @@ pub enum BootError {
 }
 
 /// Library result type,
-pub type Result<T> = core::result::Result<T, BootError>;
+pub type Result<T> = core::result::Result<T, liberror::Error>;
 
 #[cfg(target_arch = "aarch64")]
 pub mod aarch64;

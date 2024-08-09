@@ -18,6 +18,8 @@
 
 use core::{cmp::min, ffi::c_uint, fmt::Write, mem::size_of};
 
+use liberror::Error;
+
 const ABR_MAGIC: &[u8; 4] = b"\0AB0";
 const ABR_MAJOR_VERSION: u8 = 2;
 const ABR_MINOR_VERSION: u8 = 2;
@@ -31,28 +33,8 @@ pub const ONE_SHOT_RECOVERY: u8 = 1 << 0;
 pub const ONE_SHOT_BOOTLOADER: u8 = 1 << 1;
 
 const ABR_MAX_PRIORITY: u8 = 15;
-const ABR_MAX_TRIES_REMAINING: u8 = 7;
-
-/// Error type for this library.
-#[derive(Debug)]
-pub enum Error {
-    /// Failed to find the magic bytes indicating A/B/R metadata.
-    BadMagic,
-    /// Metadata version is not supported by this library.
-    UnsupportedVersion,
-    /// Metadata checksum didn't match contents.
-    BadChecksum,
-    /// Data is in an invalid state e.g. trying to mark R as active.
-    InvalidData,
-    /// Error occurred in the [Ops] callbacks; optional error message can be provided.
-    OpsError(Option<&'static str>),
-}
-
-impl From<Option<&'static str>> for Error {
-    fn from(val: Option<&'static str>) -> Self {
-        Error::OpsError(val)
-    }
-}
+/// Maximum number of retries.
+pub const ABR_MAX_TRIES_REMAINING: u8 = 7;
 
 /// `Ops` provides the backend interfaces needed by A/B/R APIs.
 pub trait Ops {
@@ -135,7 +117,7 @@ impl TryFrom<c_uint> for SlotIndex {
             v if v == (SlotIndex::A).into() => Ok(SlotIndex::A),
             v if v == (SlotIndex::B).into() => Ok(SlotIndex::B),
             v if v == (SlotIndex::R).into() => Ok(SlotIndex::R),
-            _ => Err(Error::InvalidData),
+            _ => Err(Error::InvalidInput),
         }
     }
 }
@@ -419,7 +401,7 @@ fn load_metadata(abr_ops: &mut dyn Ops) -> AbrResult<(AbrData, AbrData)> {
             abr_data_orig = v;
             v
         }
-        Err(Error::OpsError(e)) => {
+        Err(Error::Other(e)) => {
             avb_print!(abr_ops, "read_abr_metadata error: {:?}\n", e);
             return Err(e.into());
         }
@@ -532,7 +514,7 @@ pub fn get_boot_slot(abr_ops: &mut dyn Ops, update_metadata: bool) -> (SlotIndex
 pub fn mark_slot_active(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> AbrResult<()> {
     if slot_index == SlotIndex::R {
         avb_print!(abr_ops, "Invalid argument: Cannot mark slot R as active.\n");
-        return Err(Error::InvalidData);
+        return Err(Error::InvalidInput);
     }
     let (mut abr_data, abr_data_orig) = load_metadata(abr_ops)?;
     // Make requested slot top priority, unsuccessful, and with max tries.
@@ -570,7 +552,7 @@ pub fn get_slot_last_marked_active(abr_ops: &mut dyn Ops) -> AbrResult<SlotIndex
 pub fn mark_slot_unbootable(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> AbrResult<()> {
     if slot_index == SlotIndex::R {
         avb_print!(abr_ops, "Invalid argument: Cannot mark slot R as unbootable.\n");
-        return Err(Error::InvalidData);
+        return Err(Error::InvalidInput);
     }
     let (mut abr_data, abr_data_orig) = load_metadata(abr_ops)?;
     abr_data.slot_data_mut(slot_index).set_slot_unbootable();
@@ -584,13 +566,13 @@ pub fn mark_slot_unbootable(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> Abr
 pub fn mark_slot_successful(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> AbrResult<()> {
     if slot_index == SlotIndex::R {
         avb_print!(abr_ops, "Invalid argument: Cannot mark slot R as successful.\n");
-        return Err(Error::InvalidData);
+        return Err(Error::InvalidInput);
     }
     let (mut abr_data, abr_data_orig) = load_metadata(abr_ops)?;
 
     if !abr_data.slot_data(slot_index).is_slot_bootable() {
         avb_print!(abr_ops, "Invalid argument: Cannot mark unbootable slot as successful.\n");
-        return Err(Error::InvalidData);
+        return Err(Error::InvalidInput);
     }
 
     abr_data.slot_data_mut(slot_index).tries_remaining = 0;
