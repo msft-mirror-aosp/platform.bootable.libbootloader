@@ -55,7 +55,8 @@ use slots::{BootTarget, BootToken, Cursor, OneShot, SuffixBytes, UnbootableReaso
 pub use avb::Descriptor;
 pub use boot_mode::BootMode;
 pub use boot_reason::KnownBootReason;
-pub use error::{Error, IntegrationError, Result};
+pub use error::{IntegrationError, Result};
+use liberror::Error;
 pub use ops::{
     AndroidBootImages, BootImages, DefaultGblOps, FuchsiaBootImages, GblAvbOps, GblOps, GblOpsError,
 };
@@ -233,9 +234,7 @@ where
         block_device: &'a mut B,
     ) -> Result<Cursor<'a, B>> {
         let boot_token = self.boot_token.take().ok_or(Error::OperationProhibited)?;
-        self.ops
-            .load_slot_interface::<B>(block_device, boot_token)
-            .map_err(move |_| Error::OperationProhibited.into())
+        self.ops.load_slot_interface::<B>(block_device, boot_token)
     }
 
     /// Info Load
@@ -445,7 +444,7 @@ where
         if oneshot_status == Some(OneShot::Bootloader) {
             match self.ops.do_fastboot(&mut slot_cursor) {
                 Ok(_) => oneshot_status = slot_cursor.ctx.get_oneshot_status(),
-                Err(IntegrationError::GblNativeError(Error::NotImplemented)) => (),
+                Err(IntegrationError::UnificationError(Error::NotImplemented)) => (),
                 Err(e) => return Err(e),
             }
         }
@@ -495,7 +494,7 @@ where
             &ramdisk.0,
             kernel_load_buffer,
         ]) {
-            return Err(IntegrationError::GblNativeError(Error::BufferOverlap));
+            return Err(IntegrationError::UnificationError(Error::BufferOverlap));
         }
 
         let info_struct = self.unpack_boot_image(&boot_image, Some(boot_target))?;

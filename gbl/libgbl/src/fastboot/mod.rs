@@ -366,8 +366,7 @@ mod test {
     use gbl_async::{block_on, poll};
     use gbl_cyclic_executor::CyclicExecutor;
     use gbl_storage_testlib::{
-        AsyncGptDevice, BackingStore, BlockIoError, TestBlockDeviceBuilder, TestBlockIo,
-        TestMultiBlockDevices,
+        AsyncGptDevice, BackingStore, TestBlockDeviceBuilder, TestBlockIo, TestMultiBlockDevices,
     };
     use std::{string::String, sync::Mutex};
     use Vec;
@@ -879,7 +878,7 @@ mod test {
         let mut devs = devs.as_gpt_devs();
         sync_gpt_all(&mut devs[..]);
         // Injects an error.
-        devs[0].blk().io().errors = [BlockIoError::Others(None)].into();
+        devs[0].blk().io().errors = [liberror::Error::Other(None)].into();
 
         let mut dl_buffers = vec![vec![0u8; 128 * 1024]; 2];
         let (mut blks, mut dl_buffers) = create_shared_resource(devs, &mut dl_buffers);
