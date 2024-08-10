@@ -94,7 +94,14 @@ impl<T: ProtocolInfo> Drop for Protocol<'_, T> {
         // handle as a static permanent reference and don't close it. An example is
         // `EFI_SYSTEM_TABLE.ConOut`.
         if self.device.0 != null_mut() {
-            self.efi_entry.system_table().boot_services().close_protocol::<T>(self.device).unwrap();
+            // Currently we open all protocols using flags BY_HANDLE_PROTOCOL. The flag allows a
+            // protocol to be opened for multiple copies, which is needed if a UEFI protocol
+            // implementation also require access for other protocols. But if any one of them is
+            // closed, all other opened copies will be affected. Therefore for now we don't close
+            // the protocol on drop. In the future when we start using other flags such as
+            // EXCLUSIVE, we should perform protocol close based on the open flags.
+
+            // self.efi_entry.system_table().boot_services().close_protocol::<T>(self.device).unwrap();
         }
     }
 }

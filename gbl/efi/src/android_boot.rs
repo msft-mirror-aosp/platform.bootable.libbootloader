@@ -16,10 +16,11 @@ use core::ffi::CStr;
 use core::fmt::Write;
 use core::str::from_utf8;
 
-use bootconfig::{BootConfigBuilder, BootConfigError};
+use bootconfig::BootConfigBuilder;
 use bootimg::{BootImage, VendorImageHeader};
 use efi::{efi_print, efi_println, exit_boot_services, EfiEntry};
 use fdt::Fdt;
+use liberror::Error;
 use misc::{AndroidBootMode, BootloaderMessage};
 
 use crate::{
@@ -239,13 +240,11 @@ pub fn load_android_simple<'a>(
                 usize_add(bootconfig_offset, usize_roundup(image_size, hdr._base.page_size)?)?;
         }
         bootconfig_builder.add_with(|out| {
-            gpt_devices
-                .read_gpt_partition_sync(
-                    "vendor_boot_a",
-                    bootconfig_offset.try_into().unwrap(),
-                    &mut out[..hdr.bootconfig_size as usize],
-                )
-                .map_err(|_| BootConfigError::GenericReaderError(-1))?;
+            gpt_devices.read_gpt_partition_sync(
+                "vendor_boot_a",
+                bootconfig_offset.try_into().unwrap(),
+                &mut out[..hdr.bootconfig_size as usize],
+            )?;
             Ok(hdr.bootconfig_size as usize)
         })?;
     }
@@ -258,12 +257,10 @@ pub fn load_android_simple<'a>(
                 // of unnecessary disk access. In real implementation, we might want to either read
                 // page by page or find way to know the actual length first.
                 let max_size = core::cmp::min(sz.try_into().unwrap(), out.len());
-                gpt_devices
-                    .read_gpt_partition_sync("bootconfig", 0, &mut out[..max_size])
-                    .map_err(|_| BootConfigError::GenericReaderError(-1))?;
+                gpt_devices.read_gpt_partition_sync("bootconfig", 0, &mut out[..max_size])?;
                 // Compute the actual config string size. The config is a null-terminated string.
                 Ok(CStr::from_bytes_until_nul(&out[..])
-                    .map_err(|_| BootConfigError::GenericReaderError(-1))?
+                    .or(Err(Error::InvalidInput))?
                     .to_bytes()
                     .len())
             })?;
@@ -398,7 +395,7 @@ pub fn android_boot_demo(entry: EfiEntry) -> Result<()> {
                 |e820_entries| {
                     // Convert EFI memory type to e820 memory type.
                     if efi_mmap.len() > e820_entries.len() {
-                        return Err(boot::BootError::E820MemoryMapCallbackError(-1));
+                        return Err(Error::MemoryMapCallbackError(-1));
                     }
                     for (idx, mem) in efi_mmap.into_iter().enumerate() {
                         e820_entries[idx] = boot::x86::e820entry {

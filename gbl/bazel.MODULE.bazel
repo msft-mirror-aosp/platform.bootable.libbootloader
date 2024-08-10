@@ -48,6 +48,9 @@ bazel_dep(
 bazel_dep(
     name = "rules_cc",
 )
+bazel_dep(
+    name = "rules_pkg",
+)
 
 local_path_override(
     module_name = "apple_support",
@@ -82,6 +85,11 @@ local_path_override(
 local_path_override(
     module_name = "rules_license",
     path = "external/bazelbuild-rules_license",
+)
+
+local_path_override(
+    module_name = "rules_pkg",
+    path = "external/bazelbuild-rules_pkg",
 )
 
 local_path_override(
