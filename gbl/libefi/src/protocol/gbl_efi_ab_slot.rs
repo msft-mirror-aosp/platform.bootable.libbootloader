@@ -49,7 +49,7 @@ fn from_efi_unbootable_reason(reason: GblEfiUnbootableReason) -> UnbootableReaso
 }
 
 impl TryFrom<GblEfiSlotInfo> for libgbl::slots::Slot {
-    type Error = libgbl::slots::Error;
+    type Error = liberror::Error;
     fn try_from(info: GblEfiSlotInfo) -> Result<Self, Self::Error> {
         Ok(Slot {
             suffix: info.suffix.try_into()?,

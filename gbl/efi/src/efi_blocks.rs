@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::error::Result;
 use alloc::vec::Vec;
 use core::{cmp::max, fmt::Write};
 use efi::{
@@ -24,8 +23,9 @@ use efi::{
 use gbl_async::block_on;
 use gbl_storage::{
     check_part_unique, read_unique_gpt_partition, AsAsyncGptDeviceIter, AsyncBlockDevice,
-    AsyncGptDevice, BlockInfo, BlockIoAsync, BlockIoError, GptCache, Partition,
+    AsyncGptDevice, BlockInfo, BlockIoAsync, GptCache, Partition,
 };
+use liberror::Error;
 use safemath::SafeNum;
 
 /// `EfiBlockDeviceIo` wraps a EFI `BlockIoProtocol` or `BlockIo2Protocol` and implements the
@@ -59,28 +59,20 @@ impl BlockIoAsync for EfiBlockDeviceIo<'_> {
         (*self).info()
     }
 
-    async fn read_blocks(
-        &mut self,
-        blk_offset: u64,
-        out: &mut [u8],
-    ) -> core::result::Result<(), BlockIoError> {
+    async fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> Result<(), Error> {
         match self {
             EfiBlockDeviceIo::Sync(v) => v.read_blocks(blk_offset, out),
             EfiBlockDeviceIo::Async(v) => v.read_blocks_ex(blk_offset, out).await,
         }
-        .map_err(|_| BlockIoError::Others(Some("EFI block read error")))
+        .or(Err(Error::BlockIoError))
     }
 
-    async fn write_blocks(
-        &mut self,
-        blk_offset: u64,
-        data: &mut [u8],
-    ) -> core::result::Result<(), BlockIoError> {
+    async fn write_blocks(&mut self, blk_offset: u64, data: &mut [u8]) -> Result<(), Error> {
         match self {
             EfiBlockDeviceIo::Sync(v) => v.write_blocks(blk_offset, data),
             EfiBlockDeviceIo::Async(v) => v.write_blocks_ex(blk_offset, data).await,
         }
-        .map_err(|_| BlockIoError::Others(Some("EFI block write error")))
+        .or(Err(Error::BlockIoError))
     }
 }
 
@@ -101,7 +93,7 @@ impl<'a> EfiBlockDevice<'a> {
     /// Creates a new instance.
     ///
     /// The API allocates scratch and GPT buffer from heap.
-    pub fn new(mut io: EfiBlockDeviceIo<'a>) -> Result<Self> {
+    pub fn new(mut io: EfiBlockDeviceIo<'a>) -> Result<Self, Error> {
         let scratch_size = SafeNum::from(EfiAsyncBlockDevice::required_scratch_size(&mut io)?);
         let gpt_buffer_size = SafeNum::from(GptCache::required_buffer_size(MAX_GPT_ENTRIES)?);
         let buffer = vec![0u8; (scratch_size + gpt_buffer_size).try_into()?];
@@ -117,7 +109,7 @@ impl<'a> EfiBlockDevice<'a> {
     }
 
     /// Syncs GPT.
-    pub fn sync_gpt(&mut self) -> Result<()> {
+    pub fn sync_gpt(&mut self) -> Result<(), Error> {
         let (mut blk, gpt) = self.as_blk_and_gpt_buffer();
         let mut gpt = GptCache::from_uninit(MAX_GPT_ENTRIES, gpt).unwrap();
         Ok(block_on(blk.sync_gpt(&mut gpt))?)
@@ -144,23 +136,33 @@ impl<'a> AsAsyncGptDeviceIter for EfiMultiBlockDevices<'a> {
 
 impl<'a> EfiMultiBlockDevices<'a> {
     /// Checks uniqueness of and reads from a GPT partition
-    pub async fn read_gpt_partition(&mut self, part: &str, off: u64, out: &mut [u8]) -> Result<()> {
-        Ok(read_unique_gpt_partition(self, part, off, out).await?)
+    pub async fn read_gpt_partition(
+        &mut self,
+        part: &str,
+        off: u64,
+        out: &mut [u8],
+    ) -> Result<(), Error> {
+        read_unique_gpt_partition(self, part, off, out).await
     }
 
     /// Checks uniqueness of and reads from a GPT partition synchronously.
-    pub fn read_gpt_partition_sync(&mut self, part: &str, off: u64, out: &mut [u8]) -> Result<()> {
+    pub fn read_gpt_partition_sync(
+        &mut self,
+        part: &str,
+        off: u64,
+        out: &mut [u8],
+    ) -> Result<(), Error> {
         block_on(self.read_gpt_partition(part, off, out))
     }
 
     /// Finds a partition.
-    pub fn find_partition(&mut self, part: &str) -> Result<Partition> {
+    pub fn find_partition(&mut self, part: &str) -> Result<Partition, Error> {
         Ok(check_part_unique(self, part)?.1)
     }
 }
 
 /// Finds and returns all EFI devices supporting either EFI_BLOCK_IO or EFI_BLOCK_IO2 protocol.
-pub fn find_block_devices(efi_entry: &EfiEntry) -> Result<EfiMultiBlockDevices> {
+pub fn find_block_devices(efi_entry: &EfiEntry) -> Result<EfiMultiBlockDevices, Error> {
     let bs = efi_entry.system_table().boot_services();
     let block_dev_handles = bs.locate_handle_buffer_by_protocol::<BlockIoProtocol>()?;
     let mut block_devices = Vec::<EfiBlockDevice>::new();

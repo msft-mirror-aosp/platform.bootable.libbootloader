@@ -47,6 +47,7 @@
 use crate::*;
 
 use core::arch::asm;
+use core::mem::size_of;
 use core::slice::from_raw_parts_mut;
 
 pub use x86_bootparam_defs::{boot_params, e820entry, setup_header};
@@ -79,11 +80,13 @@ pub const E820_ADDRESS_TYPE_PMEM: u32 = 7;
 #[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
 pub struct BootParams(boot_params);
 
+use liberror::Error;
+
 impl BootParams {
     /// Cast a bytes into a reference of BootParams header
     pub fn from_bytes_ref(buffer: &[u8]) -> Result<&BootParams> {
         Ok(Ref::<_, BootParams>::new_from_prefix(buffer)
-            .ok_or_else(|| BootError::InvalidInput)?
+            .ok_or(Error::BufferTooSmall(Some(size_of::<BootParams>())))?
             .0
             .into_ref())
     }
@@ -91,7 +94,7 @@ impl BootParams {
     /// Cast a bytes into a mutable reference of BootParams header.
     pub fn from_bytes_mut(buffer: &mut [u8]) -> Result<&mut BootParams> {
         Ok(Ref::<_, BootParams>::new_from_prefix(buffer)
-            .ok_or_else(|| BootError::InvalidInput)?
+            .ok_or(Error::BufferTooSmall(Some(size_of::<BootParams>())))?
             .0
             .into_mut())
     }
@@ -112,14 +115,14 @@ impl BootParams {
         if !(self.setup_header_ref().boot_flag == 0xAA55
             && self.setup_header_ref().header.to_le_bytes() == *b"HdrS")
         {
-            return Err(BootError::InvalidZImage);
+            return Err(Error::BadMagic);
         }
 
         // Check if it is bzimage and version is supported.
         if !(self.0.hdr.version >= 0x0206
             && ((self.setup_header_ref().loadflags & LOAD_FLAG_LOADED_HIGH) != 0))
         {
-            return Err(BootError::UnsupportedZImage);
+            return Err(Error::UnsupportedVersion);
         }
 
         Ok(())
@@ -160,7 +163,7 @@ impl BootParams {
 /// * `mmap_cb`: A caller provided callback for setting the e820 memory map. The callback takes in
 ///     a mutable reference of e820 map entries (&mut [e820entry]). On success, it should return
 ///     the number of used entries. On error, it can return a
-///     `BootError::E820MemoryMapCallbackError(<code>)` to propagate a custom error code.
+///     `Error::MemoryMapCallbackError(<code>)` to propagate a custom error code.
 ///
 /// * `low_mem_addr`: The lowest memory touched by the bootloader section. This is where boot param
 ///      starts.
@@ -223,9 +226,9 @@ where
 
     // Sets ramdisk address.
     bootparam_fixup.setup_header_mut().ramdisk_image =
-        (ramdisk.as_ptr() as usize).try_into().map_err(|_| BootError::IntegerOverflow)?;
+        (ramdisk.as_ptr() as usize).try_into().map_err(safemath::Error::from)?;
     bootparam_fixup.setup_header_mut().ramdisk_size =
-        ramdisk.len().try_into().map_err(|_| BootError::IntegerOverflow)?;
+        ramdisk.len().try_into().map_err(safemath::Error::from)?;
 
     // Sets to loader type "special loader". (Anything other than 0, otherwise linux kernel ignores
     // ramdisk.)

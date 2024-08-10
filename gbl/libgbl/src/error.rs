@@ -14,11 +14,9 @@
 
 //! Error types used in libgbl.
 
-use crate::GblOpsError;
 use avb::{DescriptorError, SlotVerifyError};
 use core::ffi::{FromBytesUntilNulError, FromBytesWithNulError};
 use core::fmt::{Debug, Display, Formatter};
-use gbl_storage::StorageError;
 
 /// Helper type GBL functions will return.
 pub type Result<T> = core::result::Result<T, IntegrationError>;
@@ -155,14 +153,9 @@ composite_enum! {
         /// Avb slot verification failed.
         /// SlotVerifyError is used without verify data.
         AvbSlotVerifyError(SlotVerifyError<'static>),
-        GblNativeError(Error),
-        GblOpsError(GblOpsError),
-        GblSlotsError(crate::slots::Error),
         FromBytesUntilNulError(FromBytesUntilNulError),
         FromBytesWithNulError(FromBytesWithNulError),
-        SafeMathError(safemath::Error),
-        StorageError(StorageError),
-        TryFromIntError(core::num::TryFromIntError),
+        UnificationError(liberror::Error),
         ZbiError(zbi::ZbiError),
     }
 }

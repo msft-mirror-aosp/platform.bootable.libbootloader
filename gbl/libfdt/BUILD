@@ -80,6 +80,8 @@ rust_library(
         ":libfdt_c_def",
         ":libfdt_c_static",
         "@gbl//libc",
+        "@gbl//liberror",
+        "@gbl//libsafemath",
         "@zerocopy",
     ],
 )
