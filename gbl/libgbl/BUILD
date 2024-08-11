@@ -34,6 +34,7 @@ rust_library(
         "@gbl//libabr",
         "@gbl//libasync",
         "@gbl//libboot",
+        "@gbl//liberror",
         "@gbl//libfastboot",
         "@gbl//libsafemath",
         "@gbl//libstorage",

@@ -97,6 +97,7 @@ rust_library(
     deps = [
         "@arrayvec",
         "@gbl//libasync",
+        "@gbl//liberror",
         "@gbl//libgbl",
         "@gbl//libstorage",
         "@spin",
