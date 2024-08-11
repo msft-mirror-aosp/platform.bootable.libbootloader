@@ -14,10 +14,11 @@
 
 use crate::{
     aligned_subslice, check_range, is_aligned, is_buffer_aligned, BlockInfo, BlockIoAsync,
-    BlockIoError, BlockIoSync, Result,
+    BlockIoSync, Result,
 };
 use core::cmp::min;
 use gbl_async::block_on;
+use liberror::Error;
 use safemath::SafeNum;
 
 /// Reads from a range at block boundary to an aligned buffer.
@@ -354,11 +355,7 @@ impl<T: BlockIoAsync> BlockIoSync for AsyncAsSync<T> {
         self.0.info()
     }
 
-    fn read_blocks(
-        &mut self,
-        blk_offset: u64,
-        out: &mut [u8],
-    ) -> core::result::Result<(), BlockIoError> {
+    fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> core::result::Result<(), Error> {
         block_on(self.0.read_blocks(blk_offset, out))
     }
 
@@ -366,7 +363,7 @@ impl<T: BlockIoAsync> BlockIoSync for AsyncAsSync<T> {
         &mut self,
         blk_offset: u64,
         data: &mut [u8],
-    ) -> core::result::Result<(), BlockIoError> {
+    ) -> core::result::Result<(), Error> {
         block_on(self.0.write_blocks(blk_offset, data))
     }
 }
@@ -400,7 +397,7 @@ impl<T: BlockIoSync> BlockIoAsync for SyncAsAsync<T> {
         &mut self,
         blk_offset: u64,
         out: &mut [u8],
-    ) -> core::result::Result<(), BlockIoError> {
+    ) -> core::result::Result<(), Error> {
         self.0.read_blocks(blk_offset, out)
     }
 
@@ -408,7 +405,7 @@ impl<T: BlockIoSync> BlockIoAsync for SyncAsAsync<T> {
         &mut self,
         blk_offset: u64,
         data: &mut [u8],
-    ) -> core::result::Result<(), BlockIoError> {
+    ) -> core::result::Result<(), Error> {
         self.0.write_blocks(blk_offset, data)
     }
 }

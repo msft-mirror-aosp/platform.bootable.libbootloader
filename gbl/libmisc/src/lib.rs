@@ -26,6 +26,8 @@ use core::ffi::CStr;
 
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 
+use liberror::Error;
+
 /// Libmisc BCB error type
 #[derive(Debug)]
 pub enum BcbError {
@@ -33,8 +35,8 @@ pub enum BcbError {
     InvalidInput(&'static str),
 }
 
-/// Libmisc BCB result type
-pub type Result<T> = core::result::Result<T, BcbError>;
+/// Custom result type
+pub type Result<T> = core::result::Result<T, Error>;
 
 /// Android boot modes type
 /// Usually obtained from BCB block of misc partition
@@ -79,7 +81,7 @@ impl BootloaderMessage {
     /// Extract BootloaderMessage reference from bytes
     pub fn from_bytes_ref(buffer: &[u8]) -> Result<&BootloaderMessage> {
         Ok(Ref::<_, BootloaderMessage>::new_from_prefix(buffer)
-            .ok_or(BcbError::InvalidInput("Cannot read BCB message from buffer"))?
+            .ok_or(Error::BufferTooSmall(Some(core::mem::size_of::<BootloaderMessage>())))?
             .0
             .into_ref())
     }
@@ -87,15 +89,15 @@ impl BootloaderMessage {
     /// Extract AndroidBootMode from BCB command field
     pub fn boot_mode(&self) -> Result<AndroidBootMode> {
         let command = CStr::from_bytes_until_nul(&self.command)
-            .map_err(|_| BcbError::InvalidInput("Cannot read BCB command"))?
+            .map_err(|_| Error::Other(Some("Cannot read BCB command")))?
             .to_str()
-            .map_err(|_| BcbError::InvalidInput("Cannot convert BCB command to string"))?;
+            .map_err(|_| Error::InvalidInput)?;
 
         match command {
             "" => Ok(AndroidBootMode::Normal),
             "boot-recovery" | "boot-fastboot" => Ok(AndroidBootMode::Recovery),
             "bootonce-bootloader" => Ok(AndroidBootMode::BootloaderBootOnce),
-            _ => Err(BcbError::InvalidInput("Wrong BCB command")),
+            _ => Err(Error::Other(Some("Wrong BCB command"))),
         }
     }
 }

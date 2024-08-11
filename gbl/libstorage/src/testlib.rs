@@ -17,6 +17,7 @@
 use crc32fast::Hasher;
 use gbl_async::yield_now;
 pub use gbl_storage::*;
+use liberror::Error;
 use safemath::SafeNum;
 use std::collections::{BTreeMap, VecDeque};
 use zerocopy::AsBytes;
@@ -34,7 +35,7 @@ pub struct TestBlockIo {
     /// The number of successful read calls.
     pub num_reads: usize,
     /// Injected errors.
-    pub errors: VecDeque<BlockIoError>,
+    pub errors: VecDeque<Error>,
 }
 
 impl TestBlockIo {
@@ -70,7 +71,7 @@ impl BlockIoAsync for TestBlockIo {
         &mut self,
         blk_offset: u64,
         out: &mut [u8],
-    ) -> core::result::Result<(), BlockIoError> {
+    ) -> core::result::Result<(), Error> {
         assert!(self.check_alignment(out));
         let offset = (SafeNum::from(blk_offset) * self.block_size).try_into().unwrap();
         yield_now().await; // yield once to simulate IO pending.
@@ -84,7 +85,7 @@ impl BlockIoAsync for TestBlockIo {
         &mut self,
         blk_offset: u64,
         data: &mut [u8],
-    ) -> core::result::Result<(), BlockIoError> {
+    ) -> core::result::Result<(), Error> {
         assert!(self.check_alignment(data));
         let offset = (SafeNum::from(blk_offset) * self.block_size).try_into().unwrap();
         yield_now().await; // yield once to simulate IO pending.
