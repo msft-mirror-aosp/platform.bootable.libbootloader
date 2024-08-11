@@ -19,13 +19,14 @@
 use abr::{
     get_and_clear_one_shot_flag, get_boot_slot, get_slot_info, get_slot_last_marked_active,
     mark_slot_active, mark_slot_successful, mark_slot_unbootable, set_one_shot_bootloader,
-    set_one_shot_recovery, AbrData, AbrResult, AbrSlotData, Error, Ops, SlotIndex,
+    set_one_shot_recovery, AbrData, AbrResult, AbrSlotData, Ops, SlotIndex,
     SlotInfo as AbrSlotInfo, SlotState, ABR_DATA_SIZE,
 };
 use core::{
     ffi::{c_char, c_uint, c_void},
     fmt::Write,
 };
+use liberror::Error;
 
 pub mod utils;
 
@@ -223,11 +224,11 @@ impl Ops for AbrOpsSafe<'_> {
 fn unpack_result<T: Into<O>, O>(res: AbrResult<T>, val: &mut O) -> c_uint {
     match res {
         Err(e) => match e {
-            Error::BadMagic | Error::BadChecksum | Error::InvalidData => {
+            Error::BadMagic | Error::BadChecksum | Error::InvalidInput => {
                 ABR_RESULT_ERR_INVALID_DATA
             }
             Error::UnsupportedVersion => ABR_RESULT_ERR_UNSUPPORTED_VERSION,
-            Error::OpsError(_) => ABR_RESULT_ERR_IO,
+            _ => ABR_RESULT_ERR_IO,
         },
         Ok(v) => {
             *val = v.into();
