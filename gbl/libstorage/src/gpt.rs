@@ -332,8 +332,7 @@ impl<'a> GptCache<'a> {
     /// Checks if a read/write range into a GPT partition overflows and returns the range's absolute
     /// offset in number of bytes.
     pub fn check_range(&self, part_name: &str, offset: u64, size: usize) -> Result<u64> {
-        self.find_partition(part_name)?
-            .check_range(offset, u64::try_from(size).map_err(Into::<safemath::Error>::into)?)
+        self.find_partition(part_name)?.check_range(offset, u64::try_from(size)?)
     }
 
     /// Return the list of GPT entries.
@@ -342,8 +341,7 @@ impl<'a> GptCache<'a> {
     fn entries(&self) -> Result<&[GptEntry]> {
         self.check_valid()?;
         Ok(&Ref::<_, [GptEntry]>::new_slice(&self.primary_entries[..]).unwrap().into_slice()
-            [..usize::try_from(self.info.num_valid_entries()?)
-                .map_err(Into::<safemath::Error>::into)?])
+            [..usize::try_from(self.info.num_valid_entries()?)?])
     }
 
     /// Returns the total number of partitions.
