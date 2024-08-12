@@ -162,6 +162,13 @@ impl From<Error> for &'static Location<'static> {
     }
 }
 
+impl From<core::num::TryFromIntError> for Error {
+    #[track_caller]
+    fn from(_err: core::num::TryFromIntError) -> Self {
+        Self(Location::caller())
+    }
+}
+
 /// Wraps a raw [Primitive] type for safe-by-default math. See module docs for info and usage.
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct SafeNum(Result<Primitive, Error>);
@@ -304,13 +311,6 @@ arithmetic_impl!(Sub, sub, SubAssign, sub_assign, checked_sub);
 arithmetic_impl!(Mul, mul, MulAssign, mul_assign, checked_mul);
 arithmetic_impl!(Div, div, DivAssign, div_assign, checked_div);
 arithmetic_impl!(Rem, rem, RemAssign, rem_assign, checked_rem);
-
-impl From<core::num::TryFromIntError> for Error {
-    #[track_caller]
-    fn from(_err: core::num::TryFromIntError) -> Self {
-        Self(Location::caller())
-    }
-}
 
 #[cfg(test)]
 mod test {
