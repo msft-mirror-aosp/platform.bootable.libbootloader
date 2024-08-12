@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::defs::{EFI_MEMORY_TYPE_LOADER_DATA, EFI_STATUS_ALREADY_STARTED};
-use crate::{EfiEntry, EfiResult};
+use crate::EfiEntry;
+use efi_types::EFI_MEMORY_TYPE_LOADER_DATA;
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
+use liberror::{Error, Result};
 
 /// Implement a global allocator using `EFI_BOOT_SERVICES.AllocatePool()/FreePool()`
 pub enum EfiAllocator {
@@ -45,7 +46,7 @@ pub(crate) fn internal_efi_entry() -> Option<&'static EfiEntry> {
 /// This function modifies global variable `EFI_GLOBAL_ALLOCATOR`. It should only be called when
 /// there is no event/notification function that can be triggered or modify it. Otherwise there
 /// is a risk of race condition.
-pub(crate) unsafe fn init_efi_global_alloc(efi_entry: EfiEntry) -> EfiResult<()> {
+pub(crate) unsafe fn init_efi_global_alloc(efi_entry: EfiEntry) -> Result<()> {
     // SAFETY: See SAFETY of `internal_efi_entry()`
     unsafe {
         match EFI_GLOBAL_ALLOCATOR {
@@ -53,7 +54,7 @@ pub(crate) unsafe fn init_efi_global_alloc(efi_entry: EfiEntry) -> EfiResult<()>
                 EFI_GLOBAL_ALLOCATOR = EfiAllocator::Initialized(efi_entry);
                 Ok(())
             }
-            _ => Err(EFI_STATUS_ALREADY_STARTED.into()),
+            _ => Err(Error::AlreadyStarted),
         }
     }
 }
