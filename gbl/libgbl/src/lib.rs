@@ -57,9 +57,7 @@ pub use boot_mode::BootMode;
 pub use boot_reason::KnownBootReason;
 pub use error::{IntegrationError, Result};
 use liberror::Error;
-pub use ops::{
-    AndroidBootImages, BootImages, DefaultGblOps, FuchsiaBootImages, GblAvbOps, GblOps, GblOpsError,
-};
+pub use ops::{AndroidBootImages, BootImages, DefaultGblOps, FuchsiaBootImages, GblAvbOps, GblOps};
 
 use overlap::is_overlap;
 
@@ -208,7 +206,7 @@ where
         let bytes: SuffixBytes =
             if let Some(tgt) = boot_target { tgt.suffix().into() } else { Default::default() };
 
-        let avb_suffix = CStr::from_bytes_until_nul(&bytes)?;
+        let avb_suffix = CStr::from_bytes_until_nul(&bytes).map_err(Error::from)?;
 
         Ok(avb::slot_verify(
             avb_ops,

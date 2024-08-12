@@ -14,7 +14,7 @@
 
 use crate::{
     fuchsia_boot::{zbi_split_unused_buffer, zircon_part_name, SlotIndex},
-    gbl_print, GblAvbOps, GblOps, IntegrationError, Result as GblResult,
+    gbl_print, GblAvbOps, GblOps, Result as GblResult,
 };
 use avb::{
     cert_validate_vbmeta_public_key, slot_verify, CertOps, CertPermanentAttributes, Descriptor,
@@ -255,7 +255,7 @@ pub(crate) fn zircon_verify_kernel<G: GblOps>(
             }
             Err(e) => {
                 gbl_print!(avb_ops.gbl_ops, "Verification failed {:?}.\r\n", e);
-                return Err(Into::<IntegrationError>::into(e.without_verify_data()));
+                return Err(e.without_verify_data().into());
             }
         };
 

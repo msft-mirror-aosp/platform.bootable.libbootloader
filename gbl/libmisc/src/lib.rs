@@ -26,17 +26,7 @@ use core::ffi::CStr;
 
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 
-use liberror::Error;
-
-/// Libmisc BCB error type
-#[derive(Debug)]
-pub enum BcbError {
-    /// Failed to parse the BCB data; string contains an error message.
-    InvalidInput(&'static str),
-}
-
-/// Custom result type
-pub type Result<T> = core::result::Result<T, Error>;
+use liberror::{Error, Result};
 
 /// Android boot modes type
 /// Usually obtained from BCB block of misc partition
