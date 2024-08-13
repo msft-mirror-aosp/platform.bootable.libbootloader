@@ -13,55 +13,23 @@
 // limitations under the License.
 
 use avb::{IoError, SlotVerifyError};
-use boot::BootError;
-use bootconfig::BootConfigError;
-use bootimg::ImageError;
 use efi::EfiError;
-use fastboot::TransportError;
-use fdt::FdtError;
-use gbl_storage::StorageError;
-use libgbl::{composite_enum, GblOpsError};
-use misc::BcbError;
-use safemath::Error as SafeMathError;
+use liberror::Error;
+use libgbl::composite_enum;
 use smoltcp::socket::tcp::{ListenError, RecvError, SendError};
 use zbi::ZbiError;
-
-/// Error types for EFI application.
-#[derive(Debug)]
-pub enum EfiAppError {
-    ArithmeticOverflow,
-    BufferAlignment,
-    BufferTooSmall,
-    InvalidInput,
-    InvalidString,
-    NoFdt,
-    NotFound,
-    NoZbiImage,
-    PeerClosed,
-    Timeout,
-    Unsupported,
-}
 
 composite_enum! {
     /// A top level error type that consolidates errors from different libraries.
     #[derive(Debug)]
     pub enum GblEfiError {
         AvbIoError(IoError),
-        BcbError(BcbError),
-        BootConfigError(BootConfigError),
-        BootError(BootError),
-        EfiAppError(EfiAppError),
         EfiError(EfiError),
-        FdtError(FdtError),
-        GblOpsError(GblOpsError),
-        ImageError(ImageError),
         ListenError(ListenError),
         RecvError(RecvError),
-        SafeMathError(SafeMathError),
         SendError(SendError),
         SlotVerifyError(SlotVerifyError<'static>),
-        StorageError(StorageError),
-        TransportError(TransportError),
+        UnifiedError(Error),
         ZbiError(ZbiError),
     }
 }

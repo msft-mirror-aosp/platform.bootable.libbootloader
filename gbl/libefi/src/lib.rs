@@ -79,8 +79,6 @@ use protocol::simple_text_output::SimpleTextOutputProtocol;
 use protocol::{Protocol, ProtocolInfo};
 
 mod error {
-    use crate::ab_slots;
-
     use super::defs::EFI_STATUS_SUCCESS;
     use super::EfiStatus;
 
@@ -122,10 +120,10 @@ mod error {
         }
     }
 
-    impl From<EfiError> for ab_slots::Error {
-        fn from(_err: EfiError) -> ab_slots::Error {
+    impl From<EfiError> for liberror::Error {
+        fn from(_err: EfiError) -> liberror::Error {
             // Lazy default
-            ab_slots::Error::Other
+            liberror::Error::Other(None)
         }
     }
 }
