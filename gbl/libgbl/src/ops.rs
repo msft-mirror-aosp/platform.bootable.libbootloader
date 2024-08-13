@@ -61,16 +61,6 @@ pub enum BootImages<'a> {
     Fuchsia(FuchsiaBootImages<'a>),
 }
 
-/// `GblOpsError` is the error type returned by required methods in `GblOps`.
-#[derive(Default, Debug, PartialEq, Eq, Copy, Clone)]
-pub struct GblOpsError(pub Option<&'static str>);
-
-impl From<&'static str> for GblOpsError {
-    fn from(val: &'static str) -> Self {
-        Self(Some(val))
-    }
-}
-
 /// `GblAvbOps` contains libavb backend interfaces needed by GBL.
 ///
 /// The trait is a selective subset of the interfaces in `avb::Ops` and `avb::CertOps`. The rest of
