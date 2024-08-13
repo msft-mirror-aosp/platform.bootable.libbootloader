@@ -17,28 +17,11 @@
 
 #![cfg_attr(not(test), no_std)]
 
-use zerocopy::{AsBytes, FromBytes, FromZeroes, LayoutVerified};
-
+use core::mem::size_of;
 use libdttable_bindgen::{dt_table_entry, dt_table_header, DT_TABLE_MAGIC};
-use safemath::{Error as SafeMathError, SafeNum};
-
-/// Libdttable error type
-#[derive(Debug)]
-pub enum DtTableError {
-    /// Invalid dt table layout provided
-    InvalidInput,
-    /// Arithmetic error while calculating offsets or lengths.
-    ArithmeticError,
-}
-
-impl From<SafeMathError> for DtTableError {
-    fn from(_: SafeMathError) -> Self {
-        DtTableError::ArithmeticError
-    }
-}
-
-/// Libdttable result type
-pub type Result<T> = core::result::Result<T, DtTableError>;
+use liberror::{Error, Result};
+use safemath::SafeNum;
+use zerocopy::{AsBytes, FromBytes, FromZeroes, LayoutVerified};
 
 /// Rust wrapper for the dt table header
 #[repr(transparent)]
@@ -114,12 +97,12 @@ pub struct DtTableImage<'a> {
 impl<'a> DtTableImage<'a> {
     /// Verify and parse passed buffer following multidt table structure
     pub fn from_bytes(buffer: &'a [u8]) -> Result<DtTableImage<'a>> {
-        let (header_layout, _) =
-            LayoutVerified::new_from_prefix(buffer).ok_or(DtTableError::InvalidInput)?;
+        let (header_layout, _) = LayoutVerified::new_from_prefix(buffer)
+            .ok_or(Error::BufferTooSmall(Some(size_of::<DtTableHeader>())))?;
 
         let header: &DtTableHeader = &header_layout;
         if header.magic() != DT_TABLE_MAGIC {
-            return Err(DtTableError::InvalidInput);
+            return Err(Error::BadMagic);
         }
 
         let entries_offset: SafeNum = header.dt_entries_offset().into();
@@ -129,10 +112,11 @@ impl<'a> DtTableImage<'a> {
         let entries_start = entries_offset.try_into()?;
         let entries_end = (entries_offset + entry_size * entries_count).try_into()?;
 
-        let entries_buffer =
-            buffer.get(entries_start..entries_end).ok_or(DtTableError::InvalidInput)?;
+        let entries_buffer = buffer
+            .get(entries_start..entries_end)
+            .ok_or(Error::BufferTooSmall(Some(entries_end)))?;
         let entries_layout =
-            LayoutVerified::new_slice(entries_buffer).ok_or(DtTableError::InvalidInput)?;
+            LayoutVerified::new_slice(entries_buffer).ok_or(Error::InvalidInput)?;
 
         Ok(DtTableImage { buffer: buffer, header: header_layout, entries: entries_layout })
     }
@@ -144,7 +128,7 @@ impl<'a> DtTableImage<'a> {
 
     /// Get nth dtb buffer with multidt table structure metadata
     pub fn nth_entry(&self, n: usize) -> Result<DtTableEntry<'a>> {
-        let entry = self.entries.get(n).ok_or(DtTableError::InvalidInput)?;
+        let entry = self.entries.get(n).ok_or(Error::BadIndex(n))?;
 
         let dtb_offset: SafeNum = entry.dt_offset().into();
         let dtb_size: SafeNum = entry.dt_size().into();
@@ -152,7 +136,8 @@ impl<'a> DtTableImage<'a> {
         let dtb_start: usize = dtb_offset.try_into()?;
         let dtb_end: usize = (dtb_offset + dtb_size).try_into()?;
 
-        let dtb_buffer = self.buffer.get(dtb_start..dtb_end).ok_or(DtTableError::InvalidInput)?;
+        let dtb_buffer =
+            self.buffer.get(dtb_start..dtb_end).ok_or(Error::BufferTooSmall(Some(dtb_end)))?;
 
         Ok(DtTableEntry { id: entry.id(), rev: entry.rev(), dtb: dtb_buffer })
     }

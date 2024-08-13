@@ -27,23 +27,9 @@ use libfdt_c_def::{
     fdt_strerror, fdt_subnode_offset_namelen,
 };
 
-use liberror::Error;
+use liberror::{Error, Result};
 
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
-
-/// libfdt error type.
-#[derive(Debug)]
-pub enum FdtError {
-    /// The underlying libfdt C API returned an error with the given message.
-    CLibError(&'static str),
-    /// The provided buffer doesn't look like a valid FDT.
-    InvalidInput,
-    /// Overflow while calculating offsets or lengths.
-    IntegerOverflow,
-}
-
-/// libfdt result type,
-pub type Result<T> = core::result::Result<T, Error>;
 
 /// Convert libfdt_c error code to Result
 fn map_result(code: core::ffi::c_int) -> Result<core::ffi::c_int> {
@@ -77,7 +63,7 @@ fn fdt_add_subnode(
             fdt.as_mut_ptr() as *mut _,
             parent,
             name.as_ptr() as *const _,
-            name.len().try_into().map_err(safemath::Error::from)?,
+            name.len().try_into()?,
         )
     })
 }
@@ -94,7 +80,7 @@ fn fdt_subnode_offset(
             fdt.as_ptr() as *const _,
             parent,
             name.as_ptr() as *const _,
-            name.len().try_into().map_err(safemath::Error::from)?,
+            name.len().try_into()?,
         )
     })
 }

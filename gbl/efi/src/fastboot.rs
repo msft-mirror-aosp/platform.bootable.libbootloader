@@ -19,22 +19,21 @@
 
 use crate::{
     efi_blocks::{find_block_devices, EfiBlockDeviceIo},
-    error::{EfiAppError, GblEfiError, Result as GblResult},
+    error::{GblEfiError, Result as GblResult},
     net::{with_efi_network, EfiTcpSocket},
 };
 use alloc::vec::Vec;
-use core::{cmp::min, fmt::Write, future::Future, mem::take, result::Result};
+use core::{cmp::min, fmt::Write, future::Future, mem::take};
 use efi::{
     defs::EFI_STATUS_NOT_STARTED,
     efi_print, efi_println,
     protocol::{gbl_efi_fastboot_usb::GblFastbootUsbProtocol, Protocol},
     EfiEntry,
 };
-use fastboot::{
-    process_next_command, run_tcp_session, CommandError, TcpStream, Transport, TransportError,
-};
+use fastboot::{process_next_command, run_tcp_session, CommandResult, TcpStream, Transport};
 use gbl_async::{yield_now, YieldCounter};
 use gbl_cyclic_executor::CyclicExecutor;
+use liberror::{Error, Result};
 use libgbl::fastboot::{GblFastboot, GblFbResource, TasksExecutor};
 use spin::{Mutex, MutexGuard};
 
@@ -54,16 +53,16 @@ impl<'a, 'b, 'c> EfiFastbootTcpTransport<'a, 'b, 'c> {
 
 impl TcpStream for EfiFastbootTcpTransport<'_, '_, '_> {
     /// Reads to `out` for exactly `out.len()` number bytes from the TCP connection.
-    async fn read_exact(&mut self, out: &mut [u8]) -> Result<(), TransportError> {
+    async fn read_exact(&mut self, out: &mut [u8]) -> Result<()> {
         self.last_err = self.socket.receive_exact(out, DEFAULT_TIMEOUT_MS).await;
-        self.last_err.as_ref().map_err(|_| TransportError::Others("TCP read error"))?;
+        self.last_err.as_ref().or(Err(Error::Other(Some("Tcp read error"))))?;
         Ok(())
     }
 
     /// Sends exactly `data.len()` number bytes from `data` to the TCP connection.
-    async fn write_exact(&mut self, data: &[u8]) -> Result<(), TransportError> {
+    async fn write_exact(&mut self, data: &[u8]) -> Result<()> {
         self.last_err = self.socket.send_exact(data, DEFAULT_TIMEOUT_MS).await;
-        self.last_err.as_ref().map_err(|_| TransportError::Others("TCP write error"))?;
+        self.last_err.as_ref().or(Err(Error::Other(Some("Tcp write error"))))?;
         Ok(())
     }
 }
@@ -98,7 +97,7 @@ impl<'a> UsbTransport<'a> {
     }
 
     /// Reads the next packet from the EFI USB protocol into the given buffer.
-    async fn receive_next_from_efi(&mut self, out: &mut [u8]) -> Result<usize, TransportError> {
+    async fn receive_next_from_efi(&mut self, out: &mut [u8]) -> Result<usize> {
         match self.protocol.receive_packet(out).await {
             Ok(sz) => {
                 // Forces a yield to the executor if the data received/sent reaches a certain
@@ -109,13 +108,13 @@ impl<'a> UsbTransport<'a> {
             }
             Err(e) => {
                 self.last_err = Err(e.into());
-                return Err(TransportError::Others("USB receive error"));
+                return Err(Error::Other(Some("USB receive error")));
             }
         }
     }
 
     /// Waits until a packet is cached into an internal buffer.
-    async fn cache_next_packet(&mut self) -> Result<(), TransportError> {
+    async fn cache_next_packet(&mut self) -> Result<()> {
         match &mut self.prefetched {
             (pkt, len) if *len == 0 => {
                 let mut packet = take(pkt);
@@ -129,11 +128,11 @@ impl<'a> UsbTransport<'a> {
 }
 
 impl Transport for UsbTransport<'_> {
-    async fn receive_packet(&mut self, out: &mut [u8]) -> Result<usize, TransportError> {
+    async fn receive_packet(&mut self, out: &mut [u8]) -> Result<usize> {
         match &mut self.prefetched {
             (pkt, len) if *len > 0 => {
-                let out = out.get_mut(..*len).ok_or(TransportError::Others("Buffer too small"))?;
-                let src = pkt.get(..*len).ok_or(TransportError::Others("Invalid USB read size"))?;
+                let out = out.get_mut(..*len).ok_or(Error::Other(Some("Buffer too small")))?;
+                let src = pkt.get(..*len).ok_or(Error::Other(Some("Invalid USB read size")))?;
                 out.clone_from_slice(src);
                 return Ok(take(len));
             }
@@ -141,7 +140,7 @@ impl Transport for UsbTransport<'_> {
         }
     }
 
-    async fn send_packet(&mut self, packet: &[u8]) -> Result<(), TransportError> {
+    async fn send_packet(&mut self, packet: &[u8]) -> Result<()> {
         self.last_err = async {
             let mut curr = &packet[..];
             while !curr.is_empty() {
@@ -156,7 +155,7 @@ impl Transport for UsbTransport<'_> {
             Ok(())
         }
         .await;
-        Ok(*self.last_err.as_ref().map_err(|_| TransportError::Others("USB send error"))?)
+        Ok(*self.last_err.as_ref().map_err(|_| Error::Other(Some("USB send error")))?)
     }
 }
 
@@ -177,7 +176,7 @@ fn init_usb(efi_entry: &EfiEntry) -> GblResult<UsbTransport> {
 struct EfiFbTaskExecutor<'a>(Mutex<CyclicExecutor<'a>>);
 
 impl<'a> TasksExecutor<'a> for EfiFbTaskExecutor<'a> {
-    fn spawn_task(&self, task: impl Future<Output = ()> + 'a) -> Result<(), CommandError> {
+    fn spawn_task(&self, task: impl Future<Output = ()> + 'a) -> CommandResult<()> {
         Ok(self.0.lock().spawn_task(task))
     }
 }
@@ -238,7 +237,7 @@ async fn fastboot_tcp(
             let mut transport = EfiFastbootTcpTransport::new(socket);
             let _ = run_tcp_session(&mut transport, *gbl_fb).await;
             match transport.last_err {
-                Ok(()) | Err(GblEfiError::EfiAppError(EfiAppError::PeerClosed)) => {}
+                Ok(()) | Err(GblEfiError::UnifiedError(Error::Disconnected)) => {}
                 Err(e) => efi_println!(efi_entry, "Fastboot TCP error {:?}", e),
             }
             reset_socket = true;
