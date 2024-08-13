@@ -26,19 +26,6 @@ pub enum CacheStatus {
     Dirty,
 }
 
-/// Custom error type
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum MetadataParseError {
-    /// The magic number field was corrupted
-    BadMagic,
-    /// The version of the structure is unsupported
-    BadVersion,
-    /// The struct checksum check failed
-    BadChecksum,
-    /// The deserialization buffer is too small
-    BufferTooSmall,
-}
-
 /// Trait that describes the operations all slot metadata implementations must support
 /// to be used as the backing store in a SlotBlock.
 pub trait MetadataBytes: Copy + AsBytes + FromBytes + FromZeroes + Default {

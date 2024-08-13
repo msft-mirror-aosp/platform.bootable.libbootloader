@@ -18,21 +18,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
-/// Library error type.
-#[derive(Debug)]
-pub enum BootConfigError {
-    /// Overflow while processing bootconfig.
-    ArithmeticOverflow,
-    /// Provided buffer was not large enough.
-    BufferTooSmall,
-    /// Bootconfig read callback failed.
-    GenericReaderError(i64),
-}
-
-use liberror::Error;
-
-/// The type of Result used in this library.
-pub type Result<T> = core::result::Result<T, Error>;
+use liberror::{Error, Result};
 
 /// A class for constructing bootconfig section.
 pub struct BootConfigBuilder<'a> {
@@ -79,8 +65,8 @@ impl<'a> BootConfigBuilder<'a> {
     /// Append a new config via a reader callback.
     ///
     /// A `&mut [u8]` that covers the remaining space is passed to the callback for reading the
-    /// config bytes. It should return the total size read if operation is successful or a custom
-    /// error code via `Error::GenericReaderError(<code>)`. Attempting to return a size
+    /// config bytes. It should return the total size read if operation is successful or
+    /// `Error::BufferTooSmall(Some(<minimum_buffer_size>))`. Attempting to return a size
     /// greater than the input will cause it to panic. Empty read is allowed. It's up to the caller
     /// to make sure the read content will eventually form a valid boot config. The API is for
     /// situations where configs are read from sources such as disk and separate buffer allocation

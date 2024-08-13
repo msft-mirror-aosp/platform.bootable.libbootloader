@@ -44,11 +44,10 @@
 //! See https://www.kernel.org/doc/html/v5.11/x86/boot.html#the-linux-x86-boot-protocol for more
 //! detail.
 
-use crate::*;
-
 use core::arch::asm;
 use core::mem::size_of;
 use core::slice::from_raw_parts_mut;
+use liberror::{Error, Result};
 
 pub use x86_bootparam_defs::{boot_params, e820entry, setup_header};
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
@@ -79,8 +78,6 @@ pub const E820_ADDRESS_TYPE_PMEM: u32 = 7;
 #[repr(transparent)]
 #[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
 pub struct BootParams(boot_params);
-
-use liberror::Error;
 
 impl BootParams {
     /// Cast a bytes into a reference of BootParams header
@@ -225,10 +222,8 @@ where
     bootparam_fixup.setup_header_mut().cmdline_size = cmdline.len().try_into().unwrap();
 
     // Sets ramdisk address.
-    bootparam_fixup.setup_header_mut().ramdisk_image =
-        (ramdisk.as_ptr() as usize).try_into().map_err(safemath::Error::from)?;
-    bootparam_fixup.setup_header_mut().ramdisk_size =
-        ramdisk.len().try_into().map_err(safemath::Error::from)?;
+    bootparam_fixup.setup_header_mut().ramdisk_image = (ramdisk.as_ptr() as usize).try_into()?;
+    bootparam_fixup.setup_header_mut().ramdisk_size = ramdisk.len().try_into()?;
 
     // Sets to loader type "special loader". (Anything other than 0, otherwise linux kernel ignores
     // ramdisk.)
