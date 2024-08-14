@@ -36,6 +36,7 @@ use_repo(kernel_toolchain_ext, "kleaf_host_tools")
 register_toolchains(
     "@kleaf_clang_toolchain//:all",
     "//build/kernel:hermetic_tools_toolchain",
+    "//prebuilts/build-tools:py_toolchain_musl",
     "//prebuilts/build-tools:py_toolchain",
 )
 
