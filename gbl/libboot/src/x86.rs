@@ -210,9 +210,12 @@ where
             .clone_from_slice(&kernel[boot_sector_size..]);
     }
 
-    // Copy over boot params to boot sector to prepare for fix-up.
+    // Zeroizes the entire boot sector.
     boot_param_buffer.fill(0);
-    boot_param_buffer[..boot_sector_size].clone_from_slice(&kernel[..boot_sector_size]);
+    let bootparam_fixup = BootParams::from_bytes_mut(boot_param_buffer)?;
+    // Only copies over the header. Leaves the rest zeroes.
+    *bootparam_fixup.setup_header_mut() =
+        *BootParams::from_bytes_ref(&kernel[..])?.setup_header_ref();
 
     let bootparam_fixup = BootParams::from_bytes_mut(boot_param_buffer)?;
 
