@@ -14,9 +14,10 @@
 
 //! Rust wrapper for `GBL_EFI_OS_CONFIGURATION_PROTOCOL`.
 
-use crate::defs::{EfiGuid, GblEfiOsConfigurationProtocol, EFI_STATUS_NOT_FOUND};
+use crate::efi_call;
 use crate::protocol::{Protocol, ProtocolInfo};
-use crate::{efi_call, map_efi_err, EfiResult};
+use efi_types::{EfiGuid, GblEfiOsConfigurationProtocol};
+use liberror::Result;
 
 /// `GBL_EFI_OS_CONFIGURATION_PROTOCOL` implementation.
 pub struct GblOsConfigurationProtocol;
@@ -31,7 +32,7 @@ impl ProtocolInfo for GblOsConfigurationProtocol {
 // Protocol interface wrappers.
 impl Protocol<'_, GblOsConfigurationProtocol> {
     /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.FixupKernelCommandline()`
-    pub fn fixup_kernel_commandline(&self, data: &mut [u8]) -> EfiResult<usize> {
+    pub fn fixup_kernel_commandline(&self, data: &mut [u8]) -> Result<usize> {
         let mut buffer_size = data.len();
         // SAFETY:
         // * `self.interface()?` guarantees self.interface is non-null and points to a valid object
@@ -39,6 +40,7 @@ impl Protocol<'_, GblOsConfigurationProtocol> {
         // * all arguments are only borrowed for the call and will not be retained.
         unsafe {
             efi_call!(
+                @bufsize buffer_size,
                 self.interface()?.fixup_kernel_commandline,
                 self.interface,
                 data.as_mut_ptr(),
@@ -46,14 +48,11 @@ impl Protocol<'_, GblOsConfigurationProtocol> {
             )?;
         }
 
-        // TODO(b/354021403): figure out how to report EFI_BUFFER_TOO_SMALL buffer size. For now
-        // we just drop the updated `buffer_size`.
-
         Ok(buffer_size)
     }
 
     /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.FixupBootconfig()`
-    pub fn fixup_bootconfig(&self, data: &mut [u8]) -> EfiResult<usize> {
+    pub fn fixup_bootconfig(&self, data: &mut [u8]) -> Result<usize> {
         let mut buffer_size = data.len();
         // SAFETY:
         // * `self.interface()?` guarantees self.interface is non-null and points to a valid object
@@ -61,6 +60,7 @@ impl Protocol<'_, GblOsConfigurationProtocol> {
         // * all arguments are only borrowed for the call and will not be retained.
         unsafe {
             efi_call!(
+                @bufsize buffer_size,
                 self.interface()?.fixup_bootconfig,
                 self.interface,
                 data.as_mut_ptr(),
@@ -79,10 +79,9 @@ impl Protocol<'_, GblOsConfigurationProtocol> {
 mod test {
     use super::*;
 
-    use crate::{
-        test::run_test_with_mock_protocol, EfiStatus, EFI_STATUS_INVALID_PARAMETER,
-        EFI_STATUS_SUCCESS,
-    };
+    use crate::test::run_test_with_mock_protocol;
+    use efi_types::{EfiStatus, EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_SUCCESS};
+    use liberror::Error;
     use std::{
         ffi::{CStr, CString},
         slice,
@@ -169,7 +168,7 @@ mod test {
         run_test_with_mock_protocol(c_interface, |os_config_protocol| {
             assert_eq!(
                 os_config_protocol.fixup_kernel_commandline(&mut []),
-                Err(EFI_STATUS_INVALID_PARAMETER.into()),
+                Err(Error::InvalidInput),
             );
         });
     }
@@ -251,10 +250,7 @@ mod test {
             GblEfiOsConfigurationProtocol { fixup_bootconfig: Some(c_error), ..Default::default() };
 
         run_test_with_mock_protocol(c_interface, |os_config_protocol| {
-            assert_eq!(
-                os_config_protocol.fixup_bootconfig(&mut []),
-                Err(EFI_STATUS_INVALID_PARAMETER.into()),
-            );
+            assert_eq!(os_config_protocol.fixup_bootconfig(&mut []), Err(Error::InvalidInput),);
         });
     }
 }
