@@ -12,9 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! GBL build wrapper for the Android boot image library:
+//! https://cs.android.com/android/platform/superproject/main/+/main:system/tools/mkbootimg/rust/.
+
 #![cfg_attr(not(test), no_std)]
 
 #[rustfmt::skip]
 mod bootimg;
 pub use bootimg::*;
 pub use bootimg_private as defs;
+
+use liberror::Error;
+
+impl From<ImageError> for Error {
+    fn from(err: ImageError) -> Error {
+        match err {
+            ImageError::BufferTooSmall => Error::BufferTooSmall(None),
+            ImageError::BadMagic => Error::BadMagic,
+            ImageError::UnexpectedVersion => Error::UnsupportedVersion,
+            _ => Error::Other(None),
+        }
+    }
+}

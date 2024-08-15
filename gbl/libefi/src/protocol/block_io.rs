@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::defs::{
-    EfiBlockIoMedia, EfiBlockIoProtocol, EfiGuid, EFI_STATUS_INVALID_PARAMETER,
-    EFI_STATUS_NOT_FOUND,
-};
+//! Rust wrapper for `EFI_BLOCK_IO_PROTOCOL`.
+
+use crate::efi_call;
 use crate::protocol::{Protocol, ProtocolInfo};
-use crate::{efi_call, map_efi_err, EfiResult};
+use efi_types::{EfiBlockIoMedia, EfiBlockIoProtocol, EfiGuid};
+use liberror::{Error, Result};
 
 /// EFI_BLOCK_IO_PROTOCOL
 pub struct BlockIoProtocol;
@@ -32,7 +32,7 @@ impl ProtocolInfo for BlockIoProtocol {
 // Protocol interface wrappers.
 impl Protocol<'_, BlockIoProtocol> {
     /// Wrapper of `EFI_BLOCK_IO_PROTOCOL.read_blocks()`
-    pub fn read_blocks(&self, lba: u64, buffer: &mut [u8]) -> EfiResult<()> {
+    pub fn read_blocks(&self, lba: u64, buffer: &mut [u8]) -> Result<()> {
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
         // established by `Protocol::new()`.
@@ -51,7 +51,7 @@ impl Protocol<'_, BlockIoProtocol> {
     }
 
     /// Wrapper of `EFI_BLOCK_IO_PROTOCOL.write_blocks()`
-    pub fn write_blocks(&self, lba: u64, buffer: &mut [u8]) -> EfiResult<()> {
+    pub fn write_blocks(&self, lba: u64, buffer: &mut [u8]) -> Result<()> {
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
         // established by `Protocol::new()`.
@@ -70,7 +70,7 @@ impl Protocol<'_, BlockIoProtocol> {
     }
 
     /// Wrapper of `EFI_BLOCK_IO_PROTOCOL.flush_blocks()`
-    pub fn flush_blocks(&self) -> EfiResult<()> {
+    pub fn flush_blocks(&self) -> Result<()> {
         // SAFETY:
         // `self.interface()?` guarantees `self.interface` is non-null and points to a valid object
         // established by `Protocol::new()`.
@@ -79,7 +79,7 @@ impl Protocol<'_, BlockIoProtocol> {
     }
 
     /// Wrapper of `EFI_BLOCK_IO_PROTOCOL.reset()`
-    pub fn reset(&self, extended_verification: bool) -> EfiResult<()> {
+    pub fn reset(&self, extended_verification: bool) -> Result<()> {
         // SAFETY:
         // `self.interface()?` guarantees `self.interface` is non-null and points to a valid object
         // established by `Protocol::new()`.
@@ -88,9 +88,9 @@ impl Protocol<'_, BlockIoProtocol> {
     }
 
     /// Get a copy to the EFI_BLOCK_IO_PROTOCOL.Media structure.
-    pub fn media(&self) -> EfiResult<EfiBlockIoMedia> {
+    pub fn media(&self) -> Result<EfiBlockIoMedia> {
         let ptr = self.interface()?.media;
         // SFETY: Pointers to EFI data structure.
-        Ok(*unsafe { ptr.as_ref() }.ok_or_else(|| EFI_STATUS_INVALID_PARAMETER)?)
+        Ok(*unsafe { ptr.as_ref() }.ok_or(Error::InvalidInput)?)
     }
 }

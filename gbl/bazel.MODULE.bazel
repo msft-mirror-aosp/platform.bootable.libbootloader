@@ -36,6 +36,7 @@ use_repo(kernel_toolchain_ext, "kleaf_host_tools")
 register_toolchains(
     "@kleaf_clang_toolchain//:all",
     "//build/kernel:hermetic_tools_toolchain",
+    "//prebuilts/build-tools:py_toolchain_musl",
     "//prebuilts/build-tools:py_toolchain",
 )
 
@@ -48,10 +49,18 @@ bazel_dep(
 bazel_dep(
     name = "rules_cc",
 )
+bazel_dep(
+    name = "rules_pkg",
+)
 
 local_path_override(
     module_name = "apple_support",
     path = "external/bazelbuild-apple_support",
+)
+
+local_path_override(
+    module_name = "bazel_features",
+    path = "external/bazel-contrib-bazel_features",
 )
 
 local_path_override(
@@ -77,6 +86,11 @@ local_path_override(
 local_path_override(
     module_name = "rules_license",
     path = "external/bazelbuild-rules_license",
+)
+
+local_path_override(
+    module_name = "rules_pkg",
+    path = "external/bazelbuild-rules_pkg",
 )
 
 local_path_override(

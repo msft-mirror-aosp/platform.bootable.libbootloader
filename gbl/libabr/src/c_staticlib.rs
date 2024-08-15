@@ -19,12 +19,14 @@
 use abr::{
     get_and_clear_one_shot_flag, get_boot_slot, get_slot_info, get_slot_last_marked_active,
     mark_slot_active, mark_slot_successful, mark_slot_unbootable, set_one_shot_bootloader,
-    set_one_shot_recovery, AbrResult, Error, Ops, SlotIndex, SlotInfo as AbrSlotInfo, SlotState,
+    set_one_shot_recovery, AbrData, AbrSlotData, Ops, SlotIndex, SlotInfo as AbrSlotInfo,
+    SlotState, ABR_DATA_SIZE,
 };
 use core::{
     ffi::{c_char, c_uint, c_void},
     fmt::Write,
 };
+use liberror::{Error, Result};
 
 pub mod utils;
 
@@ -84,6 +86,10 @@ fn panic(panic: &core::panic::PanicInfo<'_>) -> ! {
 ///     void* context;
 ///     bool (*read_abr_metadata)(void* context, size_t size, uint8_t* buffer);
 ///     bool (*write_abr_metadata)(void* context, const uint8_t* buffer, size_t size);
+///     bool (*read_abr_metadata_custom)(void* context, AbrSlotData* a_slot_data,
+///                                      AbrSlotData* b_slot_data, uint8_t* one_shot_flags);
+///     bool (*write_abr_metadata_custom)(void* context, const AbrSlotData* a_slot_data,
+///                                       const AbrSlotData* b_slot_data, uint8_t one_shot_flags);
 /// } AbrOps;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -93,6 +99,22 @@ pub struct AbrOps {
         Option<unsafe extern "C" fn(context: *mut c_void, size: usize, buffer: *mut u8) -> bool>,
     pub write_abr_metadata:
         Option<unsafe extern "C" fn(context: *mut c_void, buffer: *const u8, size: usize) -> bool>,
+    pub read_abr_metadata_custom: Option<
+        unsafe extern "C" fn(
+            context: *mut c_void,
+            a_slot_data: *mut AbrSlotData,
+            b_slot_data: *mut AbrSlotData,
+            one_shot_flags: *mut u8,
+        ) -> bool,
+    >,
+    pub write_abr_metadata_custom: Option<
+        unsafe extern "C" fn(
+            context: *mut c_void,
+            a_slot_data: *const AbrSlotData,
+            b_slot_data: *const AbrSlotData,
+            one_shot_flags: u8,
+        ) -> bool,
+    >,
 }
 
 /// `AbrOpsSafe` wraps a reference to `AbrOps` and is created by an unsafe constructor that
@@ -108,7 +130,8 @@ impl<'a> AbrOpsSafe<'a> {
     /// # Safety
     ///
     /// * Caller must make sure that `ops.context` is either not used, or points to a valid and
-    ///   correct type of value needed by `ops.read_abr_metadata` and `ops.write_abr_metadata`.
+    ///   correct type of value needed by `ops.read_abr_metadata`, `ops.write_abr_metadata`,
+    ///   `ops.read_abr_metadata_custom` and `ops.write_abr_metadata_custom`.
     unsafe fn new(ops: &'a AbrOps) -> Self {
         Self { ops, log: AbrPrintSysdeps {} }
     }
@@ -117,31 +140,80 @@ impl<'a> AbrOpsSafe<'a> {
 type AbrSlotIndex = c_uint;
 
 impl Ops for AbrOpsSafe<'_> {
-    fn read_abr_metadata(&mut self, out: &mut [u8]) -> Result<(), Option<&'static str>> {
-        let read_abr_metadata =
-            self.ops.read_abr_metadata.ok_or(Some("Missing read_abr_metadata() method"))?;
-        // SAFETY:
-        // * By safety requirement of `AbrOpsSafe::new()`, `self.ops.context` is either unused, or
-        //   a valid pointer to a correct type of object used by `self.ops.read_abr_metadata`.
-        // * `out` is a valid buffer
-        // * `out` is for reading data only and will not be retained by the function.
-        match unsafe { read_abr_metadata(self.ops.context, out.len(), out.as_mut_ptr() as _) } {
-            false => Err(Some("read_abr_metadata() failed")),
-            _ => Ok(()),
+    fn read_abr_metadata(&mut self, out: &mut [u8]) -> Result<()> {
+        if let Some(f) = self.ops.read_abr_metadata.as_ref() {
+            // SAFETY:
+            // * By safety requirement of `AbrOpsSafe::new()`, `self.ops.context` is either unused,
+            //   or a valid pointer to a correct type of object used by
+            //   `self.ops.write_abr_metadata`.
+            // * `out` is a valid buffer
+            // * `out` is for reading data only and will not be retained by the function.
+            match unsafe { f(self.ops.context, out.len(), out.as_mut_ptr() as _) } {
+                false => Err(Error::Other(Some("read_abr_metadata() failed"))),
+                _ => Ok(()),
+            }
+        } else if let Some(f) = self.ops.read_abr_metadata_custom.as_ref() {
+            let mut data: AbrData = Default::default();
+            // SAFETY:
+            // * By safety requirement of `AbrOpsSafe::new()`, `self.ops.context` is either unused,
+            //   or a valid pointer to a correct type of object used by
+            //   `self.ops.read_abr_metadata_custom`.
+            // * Pointers to `slot_a`, `slot_b` and `one_shot_flags` are a valid memory locations.
+            // * `slot_a`, `slot_b` and `one_shot_flags` are for output and will not be retained by
+            //   the function.
+            match unsafe {
+                f(
+                    self.ops.context,
+                    &mut data.slot_data[SlotIndex::A as usize],
+                    &mut data.slot_data[SlotIndex::B as usize],
+                    &mut data.one_shot_flags,
+                )
+            } {
+                false => Err(Error::Other(Some("read_abr_metadata_custom() failed"))),
+                _ => Ok(out[..ABR_DATA_SIZE].clone_from_slice(&data.serialize())),
+            }
+        } else {
+            Err(Error::NotImplemented)
         }
     }
 
-    fn write_abr_metadata(&mut self, data: &mut [u8]) -> Result<(), Option<&'static str>> {
-        let write_abr_metadata =
-            self.ops.write_abr_metadata.ok_or(Some("Missing write_abr_metadata() method"))?;
-        // SAFETY:
-        // * By safety requirement of `AbrOpsSafe::new()`, `self.ops.context` is either unused, or
-        //   a valid pointer to a correct type of object used by `self.ops.write_abr_metadata`.
-        // * `data` is a valid buffer.
-        // * `data` is for input only and will not be retained by the function.
-        match unsafe { write_abr_metadata(self.ops.context, data.as_ptr() as _, data.len()) } {
-            false => Err(Some("write_abr_metadata() failed")),
-            _ => Ok(()),
+    fn write_abr_metadata(&mut self, data: &mut [u8]) -> Result<()> {
+        if let Some(f) = self.ops.write_abr_metadata.as_ref() {
+            // SAFETY:
+            // * By safety requirement of `AbrOpsSafe::new()`, `self.ops.context` is either unused,
+            //   or a valid pointer to a correct type of object used by
+            //   `self.ops.write_abr_metadata`.
+            // * `data` is a valid buffer.
+            // * `data` is for input only and will not be retained by the function.
+            match unsafe { f(self.ops.context, data.as_ptr() as _, data.len()) } {
+                false => Err(Error::Other(Some("write_abr_metadata() failed"))),
+                _ => Ok(()),
+            }
+        } else if let Some(f) = self.ops.write_abr_metadata_custom.as_ref() {
+            let mut abr_data = [0u8; ABR_DATA_SIZE];
+            abr_data.clone_from_slice(
+                data.get(..ABR_DATA_SIZE).ok_or(Error::BufferTooSmall(Some(ABR_DATA_SIZE)))?,
+            );
+            let abr_data = AbrData::deserialize(&mut abr_data).unwrap();
+            // SAFETY:
+            // * By safety requirement of `AbrOpsSafe::new()`, `self.ops.context` is either unused,
+            //   or a valid pointer to a correct type of object used by
+            //   `self.ops.write_abr_metadata_custom`.
+            // * Pointers to `slot_a` and `slot_b` are a valid memory locations.
+            // * `slot_a` and `slot_b` are for input and will not be retained by the function.
+            match unsafe {
+                f(
+                    self.ops.context,
+                    &abr_data.slot_data[SlotIndex::A as usize],
+                    &abr_data.slot_data[SlotIndex::B as usize],
+                    abr_data.one_shot_flags,
+                )
+            } {
+                false => Err(Error::Other(Some("read_abr_metadata_custom() failed"))),
+                _ => Ok(()),
+            }
+        } else {
+            Err(Error::NotImplemented)
         }
     }
 
@@ -151,14 +223,14 @@ impl Ops for AbrOpsSafe<'_> {
 }
 
 /// A helper that extracts the return value and maps the result to an integer A/B/R result code.
-fn unpack_result<T: Into<O>, O>(res: AbrResult<T>, val: &mut O) -> c_uint {
+fn unpack_result<T: Into<O>, O>(res: Result<T>, val: &mut O) -> c_uint {
     match res {
         Err(e) => match e {
-            Error::BadMagic | Error::BadChecksum | Error::InvalidData => {
+            Error::BadMagic | Error::BadChecksum | Error::InvalidInput => {
                 ABR_RESULT_ERR_INVALID_DATA
             }
             Error::UnsupportedVersion => ABR_RESULT_ERR_UNSUPPORTED_VERSION,
-            Error::OpsError(_) => ABR_RESULT_ERR_IO,
+            _ => ABR_RESULT_ERR_IO,
         },
         Ok(v) => {
             *val = v.into();
@@ -172,8 +244,8 @@ fn unpack_result<T: Into<O>, O>(res: AbrResult<T>, val: &mut O) -> c_uint {
 /// # Safety
 ///
 /// * Caller must make sure to pass a valid pointer for `abr_ops`.
-/// * Caller must make sure that `ops.context` is either not used, or points to a valid and correct
-///   type of value needed by `ops.read_abr_metadata` and `ops.write_abr_metadata`.
+/// * Caller must make sure that `abr_ops.context` is either not used, or points to a valid and
+///   correct type of value needed by `abr_ops.read_abr_metadata` and `abr_ops.write_abr_metadata`.
 /// * Caller must make sure to pass either a NULL or valid pointer for `is_slot_marked_successful`.
 #[no_mangle]
 #[allow(non_snake_case)]
@@ -182,9 +254,14 @@ pub unsafe extern "C" fn AbrGetBootSlot(
     update_metadata: bool,
     is_slot_marked_successful: *mut bool,
 ) -> AbrSlotIndex {
-    let mut abr_ops = AbrOpsSafe::new(abr_ops.as_ref().unwrap());
+    // SAFETY: function safety requires `abr_ops` to be a valid pointer.
+    let abr_ops = unsafe { abr_ops.as_ref() }.unwrap();
+    // SAFETY: function safety requires `abr_ops.context` to be valid for `AbrOpsSafe::new`.
+    let mut abr_ops = unsafe { AbrOpsSafe::new(abr_ops) };
+
     let (slot_index, successful) = get_boot_slot(&mut abr_ops, update_metadata);
-    match is_slot_marked_successful.as_mut() {
+    // SAFETY: function safety requires `out_slot` to be a valid pointer or `NULL`.
+    match unsafe { is_slot_marked_successful.as_mut() } {
         Some(v) => *v = successful,
         _ => {}
     };
@@ -215,8 +292,8 @@ pub extern "C" fn AbrGetSlotSuffix(slot_index: AbrSlotIndex) -> *const c_char {
 /// # Safety
 ///
 /// * Caller must make sure to pass a valid pointer for `abr_ops`.
-/// * Caller must make sure that `ops.context` is either not used, or points to a valid and correct
-///   type of value needed by `ops.read_abr_metadata` and `ops.write_abr_metadata`.
+/// * Caller must make sure that `abr_ops.context` is either not used, or points to a valid and
+///   correct type of value needed by `abr_ops.read_abr_metadata` and `abr_ops.write_abr_metadata`.
 #[no_mangle]
 #[allow(non_snake_case)]
 pub unsafe extern "C" fn AbrMarkSlotActive(
@@ -227,10 +304,13 @@ pub unsafe extern "C" fn AbrMarkSlotActive(
         Ok(v) => v,
         Err(_) => return ABR_RESULT_ERR_INVALID_DATA,
     };
-    unpack_result(
-        mark_slot_active(&mut AbrOpsSafe::new(abr_ops.as_ref().unwrap()), slot_index),
-        &mut (),
-    )
+
+    // SAFETY: function safety requires `abr_ops` to be a valid pointer.
+    let abr_ops = unsafe { abr_ops.as_ref() }.unwrap();
+    // SAFETY: function safety requires `abr_ops.context` to be valid for `AbrOpsSafe::new`.
+    let mut abr_ops = unsafe { AbrOpsSafe::new(abr_ops) };
+
+    unpack_result(mark_slot_active(&mut abr_ops, slot_index), &mut ())
 }
 
 /// C interface wrapper of `abr::get_slot_last_marked_active()`
@@ -238,18 +318,22 @@ pub unsafe extern "C" fn AbrMarkSlotActive(
 /// # Safety
 ///
 /// * Caller must make sure to pass a valid pointer for `abr_ops` and `out_slot`.
-/// * Caller must make sure that `ops.context` is either not used, or points to a valid and correct
-///   type of value needed by `ops.read_abr_metadata` and `ops.write_abr_metadata`.
+/// * Caller must make sure that `abr_ops.context` is either not used, or points to a valid and
+///   correct type of value needed by `abr_ops.read_abr_metadata` and `abr_ops.write_abr_metadata`.
 #[no_mangle]
 #[allow(non_snake_case)]
 pub unsafe extern "C" fn AbrGetSlotLastMarkedActive(
     abr_ops: *const AbrOps,
     out_slot: *mut AbrSlotIndex,
 ) -> c_uint {
-    unpack_result(
-        get_slot_last_marked_active(&mut AbrOpsSafe::new(abr_ops.as_ref().unwrap())),
-        out_slot.as_mut().unwrap(),
-    )
+    // SAFETY: function safety requires `abr_ops` to be a valid pointer.
+    let abr_ops = unsafe { abr_ops.as_ref() }.unwrap();
+    // SAFETY: function safety requires `abr_ops.context` to be valid for `AbrOpsSafe::new`.
+    let mut abr_ops = unsafe { AbrOpsSafe::new(abr_ops) };
+    // SAFETY: function safety requires `out_slot` to be a valid pointer.
+    let out_slot = unsafe { out_slot.as_mut() }.unwrap();
+
+    unpack_result(get_slot_last_marked_active(&mut abr_ops), out_slot)
 }
 
 /// C interface wrapper of `abr::mark_slot_unbootable()`
@@ -257,8 +341,8 @@ pub unsafe extern "C" fn AbrGetSlotLastMarkedActive(
 /// # Safety
 ///
 /// * Caller must make sure to pass a valid pointer for `abr_ops`.
-/// * Caller must make sure that `ops.context` is either not used, or points to a valid and correct
-///   type of value needed by `ops.read_abr_metadata` and `ops.write_abr_metadata`.
+/// * Caller must make sure that `abr_ops.context` is either not used, or points to a valid and
+///   correct type of value needed by `abr_ops.read_abr_metadata` and `abr_ops.write_abr_metadata`.
 #[no_mangle]
 #[allow(non_snake_case)]
 pub unsafe extern "C" fn AbrMarkSlotUnbootable(
@@ -269,10 +353,13 @@ pub unsafe extern "C" fn AbrMarkSlotUnbootable(
         Ok(v) => v,
         Err(_) => return ABR_RESULT_ERR_INVALID_DATA,
     };
-    unpack_result(
-        mark_slot_unbootable(&mut AbrOpsSafe::new(abr_ops.as_ref().unwrap()), slot_index),
-        &mut (),
-    )
+
+    // SAFETY: function safety requires `abr_ops` to be a valid pointer.
+    let abr_ops = unsafe { abr_ops.as_ref() }.unwrap();
+    // SAFETY: function safety requires `abr_ops.context` to be valid for `AbrOpsSafe::new`.
+    let mut abr_ops = unsafe { AbrOpsSafe::new(abr_ops) };
+
+    unpack_result(mark_slot_unbootable(&mut abr_ops, slot_index), &mut ())
 }
 
 /// C interface wrapper of `abr::mark_slot_successful()`
@@ -280,8 +367,8 @@ pub unsafe extern "C" fn AbrMarkSlotUnbootable(
 /// # Safety
 ///
 /// * Caller must make sure to pass a valid pointer for `abr_ops`.
-/// * Caller must make sure that `ops.context` is either not used, or points to a valid and correct
-///   type of value needed by `ops.read_abr_metadata` and `ops.write_abr_metadata`.
+/// * Caller must make sure that `abr_ops.context` is either not used, or points to a valid and
+///   correct type of value needed by `abr_ops.read_abr_metadata` and `abr_ops.write_abr_metadata`.
 #[no_mangle]
 #[allow(non_snake_case)]
 pub unsafe extern "C" fn AbrMarkSlotSuccessful(
@@ -292,10 +379,13 @@ pub unsafe extern "C" fn AbrMarkSlotSuccessful(
         Ok(v) => v,
         Err(_) => return ABR_RESULT_ERR_INVALID_DATA,
     };
-    unpack_result(
-        mark_slot_successful(&mut AbrOpsSafe::new(abr_ops.as_ref().unwrap()), slot_index),
-        &mut (),
-    )
+
+    // SAFETY: function safety requires `abr_ops` to be a valid pointer.
+    let abr_ops = unsafe { abr_ops.as_ref() }.unwrap();
+    // SAFETY: function safety requires `abr_ops.context` to be valid for `AbrOpsSafe::new`.
+    let mut abr_ops = unsafe { AbrOpsSafe::new(abr_ops) };
+
+    unpack_result(mark_slot_successful(&mut abr_ops, slot_index), &mut ())
 }
 
 /// `SlotInfo` contains the current state of a A/B/R slot.
@@ -336,8 +426,8 @@ impl From<AbrSlotInfo> for SlotInfo {
 /// # Safety
 ///
 /// * Caller must make sure to pass a valid pointer for `abr_ops` and 'info'.
-/// * Caller must make sure that `ops.context` is either not used, or points to a valid and correct
-///   type of value needed by `ops.read_abr_metadata` and `ops.write_abr_metadata`.
+/// * Caller must make sure that `abr_ops.context` is either not used, or points to a valid and
+///   correct type of value needed by `abr_ops.read_abr_metadata` and `abr_ops.write_abr_metadata`.
 #[no_mangle]
 #[allow(non_snake_case)]
 pub unsafe extern "C" fn AbrGetSlotInfo(
@@ -349,11 +439,15 @@ pub unsafe extern "C" fn AbrGetSlotInfo(
         Ok(v) => v,
         Err(_) => return ABR_RESULT_ERR_INVALID_DATA,
     };
-    unpack_result(
-        get_slot_info(&mut AbrOpsSafe::new(abr_ops.as_ref().unwrap()), slot_index)
-            .map(|v| SlotInfo::from(v)),
-        info.as_mut().unwrap(),
-    )
+
+    // SAFETY: function safety requires `abr_ops` to be a valid pointer.
+    let abr_ops = unsafe { abr_ops.as_ref() }.unwrap();
+    // SAFETY: function safety requires `abr_ops.context` to be valid for `AbrOpsSafe::new`.
+    let mut abr_ops = unsafe { AbrOpsSafe::new(abr_ops) };
+    // SAFETY: function safety requires `info` to be a valid pointer.
+    let info = unsafe { info.as_mut() }.unwrap();
+
+    unpack_result(get_slot_info(&mut abr_ops, slot_index).map(|v| SlotInfo::from(v)), info)
 }
 
 /// C interface wrapper of `abr::set_one_shot_recovery()`
@@ -361,15 +455,17 @@ pub unsafe extern "C" fn AbrGetSlotInfo(
 /// # Safety
 ///
 /// * Caller must make sure to pass a valid pointer for `abr_ops`.
-/// * Caller must make sure that `ops.context` is either not used, or points to a valid and correct
-///   type of value needed by `ops.read_abr_metadata` and `ops.write_abr_metadata`.
+/// * Caller must make sure that `abr_ops.context` is either not used, or points to a valid and
+///   correct type of value needed by `abr_ops.read_abr_metadata` and `abr_ops.write_abr_metadata`.
 #[no_mangle]
 #[allow(non_snake_case)]
 pub unsafe extern "C" fn AbrSetOneShotRecovery(abr_ops: *const AbrOps, enable: bool) -> c_uint {
-    unpack_result(
-        set_one_shot_recovery(&mut AbrOpsSafe::new(abr_ops.as_ref().unwrap()), enable),
-        &mut (),
-    )
+    // SAFETY: function safety requires `abr_ops` to be a valid pointer.
+    let abr_ops = unsafe { abr_ops.as_ref() }.unwrap();
+    // SAFETY: function safety requires `abr_ops.context` to be valid for `AbrOpsSafe::new`.
+    let mut abr_ops = unsafe { AbrOpsSafe::new(abr_ops) };
+
+    unpack_result(set_one_shot_recovery(&mut abr_ops, enable), &mut ())
 }
 
 /// C interface wrapper of `abr::set_one_shot_bootloader()`
@@ -377,15 +473,17 @@ pub unsafe extern "C" fn AbrSetOneShotRecovery(abr_ops: *const AbrOps, enable: b
 /// # Safety
 ///
 /// * Caller must make sure to pass a valid pointer for `abr_ops`.
-/// * Caller must make sure that `ops.context` is either not used, or points to a valid and correct
-///   type of value needed by `ops.read_abr_metadata` and `ops.write_abr_metadata`.
+/// * Caller must make sure that `abr_ops.context` is either not used, or points to a valid and
+///   correct type of value needed by `abr_ops.read_abr_metadata` and `abr_ops.write_abr_metadata`.
 #[no_mangle]
 #[allow(non_snake_case)]
 pub unsafe extern "C" fn AbrSetOneShotBootloader(abr_ops: *const AbrOps, enable: bool) -> c_uint {
-    unpack_result(
-        set_one_shot_bootloader(&mut AbrOpsSafe::new(abr_ops.as_ref().unwrap()), enable),
-        &mut (),
-    )
+    // SAFETY: function safety requires `abr_ops` to be a valid pointer.
+    let abr_ops = unsafe { abr_ops.as_ref() }.unwrap();
+    // SAFETY: function safety requires `abr_ops.context` to be valid for `AbrOpsSafe::new`.
+    let mut abr_ops = unsafe { AbrOpsSafe::new(abr_ops) };
+
+    unpack_result(set_one_shot_bootloader(&mut abr_ops, enable), &mut ())
 }
 
 /// Gets and clears the one shot flag.
@@ -393,18 +491,22 @@ pub unsafe extern "C" fn AbrSetOneShotBootloader(abr_ops: *const AbrOps, enable:
 /// # Safety
 ///
 /// * Caller must make sure to pass a valid pointer for `abr_ops` and `flags`.
-/// * Caller must make sure that `ops.context` is either not used, or points to a valid and correct
-///   type of value needed by `ops.read_abr_metadata` and `ops.write_abr_metadata`.
+/// * Caller must make sure that `abr_ops.context` is either not used, or points to a valid and
+///   correct type of value needed by `abr_ops.read_abr_metadata` and `abr_ops.write_abr_metadata`.
 #[no_mangle]
 #[allow(non_snake_case)]
 pub unsafe extern "C" fn AbrGetAndClearOneShotFlags(
     abr_ops: *const AbrOps,
     flags: *mut c_uint,
 ) -> c_uint {
-    unpack_result(
-        get_and_clear_one_shot_flag(&mut AbrOpsSafe::new(abr_ops.as_ref().unwrap())),
-        flags.as_mut().unwrap(),
-    )
+    // SAFETY: function safety requires `abr_ops` to be a valid pointer.
+    let abr_ops = unsafe { abr_ops.as_ref() }.unwrap();
+    // SAFETY: function safety requires `abr_ops.context` to be valid for `AbrOpsSafe::new`.
+    let mut abr_ops = unsafe { AbrOpsSafe::new(abr_ops) };
+    // SAFETY: function safety requires `flags` to be a valid pointer.
+    let flags = unsafe { flags.as_mut() }.unwrap();
+
+    unpack_result(get_and_clear_one_shot_flag(&mut abr_ops), flags)
 }
 
 // Needed because of no-std environment in static lib build.

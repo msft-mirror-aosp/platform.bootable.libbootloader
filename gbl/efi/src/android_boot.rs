@@ -16,17 +16,19 @@ use core::ffi::CStr;
 use core::fmt::Write;
 use core::str::from_utf8;
 
-use bootconfig::{BootConfigBuilder, BootConfigError};
+use bootconfig::BootConfigBuilder;
 use bootimg::{BootImage, VendorImageHeader};
 use efi::{efi_print, efi_println, exit_boot_services, EfiEntry};
 use fdt::Fdt;
-use gbl_storage::AsMultiBlockDevices;
+use liberror::Error;
 use misc::{AndroidBootMode, BootloaderMessage};
+use safemath::SafeNum;
+use zerocopy::{AsBytes, ByteSlice};
 
-use crate::error::{EfiAppError, GblEfiError, Result};
-use crate::utils::{
-    aligned_subslice, cstr_bytes_to_str, find_gpt_devices, get_efi_fdt, usize_add, usize_roundup,
-    EfiMultiBlockDevices,
+use crate::{
+    efi_blocks::{find_block_devices, EfiMultiBlockDevices},
+    error::{GblEfiError, Result},
+    utils::{aligned_subslice, cstr_bytes_to_str, get_efi_fdt},
 };
 
 use crate::avb::GblEfiAvbOps;
@@ -71,13 +73,37 @@ fn avb_verify_slot<'a, 'b, 'c>(
 
     // Append avb generated bootconfig.
     for cmdline_arg in res.cmdline().to_str().unwrap().split(' ') {
-        write!(bootconfig_builder, "{}\n", cmdline_arg).map_err(|_| EfiAppError::BufferTooSmall)?;
+        write!(bootconfig_builder, "{}\n", cmdline_arg).or(Err(Error::BufferTooSmall(None)))?;
     }
 
     // Append "androidboot.verifiedbootstate="
     write!(bootconfig_builder, "androidboot.verifiedbootstate={}\n", avb_state)
-        .map_err(|_| EfiAppError::BufferTooSmall)?;
+        .or(Err(Error::BufferTooSmall(None)))?;
     Ok(())
+}
+
+/// Helper function to parse common fields from vendor image headers.
+fn vendor_header_elements<B: ByteSlice + PartialEq>(
+    hdr: &VendorImageHeader<B>,
+) -> Result<(usize, usize, &[u8])> {
+    Ok(match hdr {
+        VendorImageHeader::V3(ref hdr) => (
+            hdr.vendor_ramdisk_size as usize,
+            SafeNum::from(hdr.bytes().len())
+                .round_up(hdr.page_size)
+                .try_into()
+                .map_err(Error::from)?,
+            &hdr.cmdline.as_bytes(),
+        ),
+        VendorImageHeader::V4(ref hdr) => (
+            hdr._base.vendor_ramdisk_size as usize,
+            SafeNum::from(hdr.bytes().len())
+                .round_up(hdr._base.page_size)
+                .try_into()
+                .map_err(Error::from)?,
+            &hdr._base.cmdline.as_bytes(),
+        ),
+    })
 }
 
 /// Loads Android images from disk and fixes up bootconfig, commandline, and FDT.
@@ -97,20 +123,20 @@ pub fn load_android_simple<'a>(
     efi_entry: &EfiEntry,
     load: &'a mut [u8],
 ) -> Result<(&'a mut [u8], &'a mut [u8], &'a mut [u8], &'a mut [u8])> {
-    let mut gpt_devices = find_gpt_devices(efi_entry)?;
+    let mut gpt_devices = find_block_devices(efi_entry)?;
 
     const PAGE_SIZE: usize = 4096; // V3/V4 image has fixed page size 4096;
 
     let (bcb_buffer, load) = load.split_at_mut(BootloaderMessage::SIZE_BYTES);
-    gpt_devices.read_gpt_partition("misc", 0, bcb_buffer)?;
+    gpt_devices.read_gpt_partition_sync("misc", 0, bcb_buffer)?;
     let bcb = BootloaderMessage::from_bytes_ref(bcb_buffer)?;
     let boot_mode = bcb.boot_mode()?;
     efi_println!(efi_entry, "boot mode from BCB: {}", boot_mode);
 
     // Parse boot header.
     let (boot_header_buffer, load) = load.split_at_mut(PAGE_SIZE);
-    gpt_devices.read_gpt_partition("boot_a", 0, boot_header_buffer)?;
-    let boot_header = BootImage::parse(boot_header_buffer)?;
+    gpt_devices.read_gpt_partition_sync("boot_a", 0, boot_header_buffer)?;
+    let boot_header = BootImage::parse(boot_header_buffer).map_err(Error::from)?;
     let (kernel_size, cmdline, kernel_hdr_size) = match boot_header {
         BootImage::V3(ref hdr) => (hdr.kernel_size as usize, &hdr.cmdline[..], PAGE_SIZE),
         BootImage::V4(ref hdr) => {
@@ -118,7 +144,7 @@ pub fn load_android_simple<'a>(
         }
         _ => {
             efi_println!(efi_entry, "V0/V1/V2 images are not supported");
-            return Err(GblEfiError::EfiAppError(EfiAppError::Unsupported));
+            return Err(Error::UnsupportedVersion.into());
         }
     };
     efi_println!(efi_entry, "boot image size: {}", kernel_size);
@@ -126,35 +152,33 @@ pub fn load_android_simple<'a>(
 
     // Parse vendor boot header.
     let (vendor_boot_header_buffer, load) = load.split_at_mut(PAGE_SIZE);
-    gpt_devices.read_gpt_partition("vendor_boot_a", 0, vendor_boot_header_buffer)?;
-    let vendor_boot_header = VendorImageHeader::parse(vendor_boot_header_buffer)?;
-    let (vendor_ramdisk_size, vendor_hdr_size, vendor_cmdline) = match vendor_boot_header {
-        VendorImageHeader::V3(ref hdr) => (
-            hdr.vendor_ramdisk_size as usize,
-            usize_roundup(hdr.bytes().len(), hdr.page_size)?,
-            &hdr.cmdline[..],
-        ),
-        VendorImageHeader::V4(ref hdr) => (
-            hdr._base.vendor_ramdisk_size as usize,
-            usize_roundup(hdr.bytes().len(), hdr._base.page_size)?,
-            &hdr._base.cmdline[..],
-        ),
-    };
+    gpt_devices.read_gpt_partition_sync("vendor_boot_a", 0, vendor_boot_header_buffer)?;
+    let vendor_boot_header =
+        VendorImageHeader::parse(vendor_boot_header_buffer).map_err(Error::from)?;
+    let (vendor_ramdisk_size, vendor_hdr_size, vendor_cmdline) =
+        vendor_header_elements(&vendor_boot_header)?;
     efi_println!(efi_entry, "vendor ramdisk size: {}", vendor_ramdisk_size);
     efi_println!(efi_entry, "vendor cmdline: \"{}\"", from_utf8(vendor_cmdline).unwrap());
 
     // Parse init_boot header
     let init_boot_header_buffer = &mut load[..PAGE_SIZE];
-    gpt_devices.read_gpt_partition("init_boot_a", 0, init_boot_header_buffer)?;
-    let init_boot_header = BootImage::parse(init_boot_header_buffer)?;
-    let (generic_ramdisk_size, init_boot_hdr_size) = match init_boot_header {
-        BootImage::V3(ref hdr) => (hdr.ramdisk_size as usize, PAGE_SIZE),
-        BootImage::V4(ref hdr) => (hdr._base.ramdisk_size as usize, PAGE_SIZE),
-        _ => {
-            efi_println!(efi_entry, "V0/V1/V2 images are not supported");
-            return Err(GblEfiError::EfiAppError(EfiAppError::Unsupported));
-        }
-    };
+    let (generic_ramdisk_size, init_boot_hdr_size) =
+        match gpt_devices.find_partition("init_boot_a").map(|v| v.size()) {
+            Ok(Ok(_sz)) => {
+                gpt_devices.read_gpt_partition_sync("init_boot_a", 0, init_boot_header_buffer)?;
+                let init_boot_header =
+                    BootImage::parse(init_boot_header_buffer).map_err(Error::from)?;
+                match init_boot_header {
+                    BootImage::V3(ref hdr) => (hdr.ramdisk_size as usize, PAGE_SIZE),
+                    BootImage::V4(ref hdr) => (hdr._base.ramdisk_size as usize, PAGE_SIZE),
+                    _ => {
+                        efi_println!(efi_entry, "V0/V1/V2 images are not supported");
+                        return Err(Error::UnsupportedVersion.into());
+                    }
+                }
+            }
+            _ => (0, 0),
+        };
     efi_println!(efi_entry, "init_boot image size: {}", generic_ramdisk_size);
 
     // Load and prepare various images.
@@ -166,34 +190,37 @@ pub fn load_android_simple<'a>(
     // memory overlapping with ramdisk. We place kernel after ramdisk. We first load it to the tail
     // of the buffer and move it forward as much as possible after ramdisk and fdt are loaded,
     // fixed-up and finalized.
-    let kernel_load_offset = {
-        let off = load.len().checked_sub(kernel_size).ok_or_else(|| EfiAppError::BufferTooSmall)?;
-        off.checked_sub(load[off..].as_ptr() as usize % KERNEL_ALIGNMENT)
-            .ok_or_else(|| EfiAppError::BufferTooSmall)?
+    let kernel_load_offset: usize = {
+        let off = SafeNum::from(load.len()) - kernel_size;
+        let off_idx: usize = off.try_into().map_err(Error::from)?;
+        let aligned_off = off - (&load[off_idx] as *const _ as usize % KERNEL_ALIGNMENT);
+        aligned_off.try_into().map_err(Error::from)?
     };
     let (load, kernel_tail_buffer) = load.split_at_mut(kernel_load_offset);
-    gpt_devices.read_gpt_partition(
+    gpt_devices.read_gpt_partition_sync(
         "boot_a",
         kernel_hdr_size.try_into().unwrap(),
         &mut kernel_tail_buffer[..kernel_size],
     )?;
 
     // Load vendor ramdisk
-    let mut ramdisk_load_curr = 0;
-    gpt_devices.read_gpt_partition(
+    let mut ramdisk_load_curr = SafeNum::ZERO;
+    gpt_devices.read_gpt_partition_sync(
         "vendor_boot_a",
-        vendor_hdr_size.try_into().unwrap(),
-        &mut load[ramdisk_load_curr..][..vendor_ramdisk_size],
+        u64::try_from(vendor_hdr_size).map_err(Error::from)?,
+        &mut load[ramdisk_load_curr.try_into().map_err(Error::from)?..][..vendor_ramdisk_size],
     )?;
-    ramdisk_load_curr = usize_add(ramdisk_load_curr, vendor_ramdisk_size)?;
+    ramdisk_load_curr += vendor_ramdisk_size;
 
     // Load generic ramdisk
-    gpt_devices.read_gpt_partition(
-        "init_boot_a",
-        init_boot_hdr_size.try_into().unwrap(),
-        &mut load[ramdisk_load_curr..][..generic_ramdisk_size],
-    )?;
-    ramdisk_load_curr = usize_add(ramdisk_load_curr, generic_ramdisk_size)?;
+    if generic_ramdisk_size > 0 {
+        gpt_devices.read_gpt_partition_sync(
+            "init_boot_a",
+            init_boot_hdr_size.try_into().unwrap(),
+            &mut load[ramdisk_load_curr.try_into().map_err(Error::from)?..][..generic_ramdisk_size],
+        )?;
+        ramdisk_load_curr += generic_ramdisk_size;
+    }
 
     // Prepare partition data for avb verification
     let (vendor_boot_load_buffer, remains) = load.split_at_mut(vendor_ramdisk_size);
@@ -224,39 +251,34 @@ pub fn load_android_simple<'a>(
 
     // V4 image has vendor bootconfig.
     if let VendorImageHeader::V4(ref hdr) = vendor_boot_header {
-        let mut bootconfig_offset: usize = vendor_hdr_size;
+        let mut bootconfig_offset = SafeNum::from(vendor_hdr_size);
         for image_size in
             [hdr._base.vendor_ramdisk_size, hdr._base.dtb_size, hdr.vendor_ramdisk_table_size]
         {
-            bootconfig_offset =
-                usize_add(bootconfig_offset, usize_roundup(image_size, hdr._base.page_size)?)?;
+            bootconfig_offset += SafeNum::from(image_size).round_up(hdr._base.page_size);
         }
         bootconfig_builder.add_with(|out| {
-            gpt_devices
-                .read_gpt_partition(
-                    "vendor_boot_a",
-                    bootconfig_offset.try_into().unwrap(),
-                    &mut out[..hdr.bootconfig_size as usize],
-                )
-                .map_err(|_| BootConfigError::GenericReaderError(-1))?;
+            gpt_devices.read_gpt_partition_sync(
+                "vendor_boot_a",
+                bootconfig_offset.try_into()?,
+                &mut out[..hdr.bootconfig_size as usize],
+            )?;
             Ok(hdr.bootconfig_size as usize)
         })?;
     }
     // Check if there is a device specific bootconfig partition.
-    match gpt_devices.find_partition("bootconfig").and_then(|v| v.size()) {
-        Ok(sz) => {
+    match gpt_devices.find_partition("bootconfig").map(|v| v.size()) {
+        Ok(Ok(sz)) => {
             bootconfig_builder.add_with(|out| {
                 // For proof-of-concept only, we just load as much as possible and figure out the
                 // actual bootconfig string length after. This however, can introduce large amount
                 // of unnecessary disk access. In real implementation, we might want to either read
                 // page by page or find way to know the actual length first.
                 let max_size = core::cmp::min(sz.try_into().unwrap(), out.len());
-                gpt_devices
-                    .read_gpt_partition("bootconfig", 0, &mut out[..max_size])
-                    .map_err(|_| BootConfigError::GenericReaderError(-1))?;
+                gpt_devices.read_gpt_partition_sync("bootconfig", 0, &mut out[..max_size])?;
                 // Compute the actual config string size. The config is a null-terminated string.
                 Ok(CStr::from_bytes_until_nul(&out[..])
-                    .map_err(|_| BootConfigError::GenericReaderError(-1))?
+                    .or(Err(Error::InvalidInput))?
                     .to_bytes()
                     .len())
             })?;
@@ -264,33 +286,29 @@ pub fn load_android_simple<'a>(
         _ => {}
     }
     efi_println!(efi_entry, "final bootconfig: \"{}\"", bootconfig_builder);
-    ramdisk_load_curr = usize_add(ramdisk_load_curr, bootconfig_builder.config_bytes().len())?;
+
+    ramdisk_load_curr += bootconfig_builder.config_bytes().len();
 
     // Prepare FDT.
 
     // For cuttlefish, FDT comes from EFI vendor configuration table installed by u-boot. In real
     // product, it may come from vendor boot image.
-    let (_, fdt_bytes) = get_efi_fdt(&efi_entry).ok_or_else(|| EfiAppError::NoFdt)?;
+    let (_, fdt_bytes) = get_efi_fdt(&efi_entry).ok_or(Error::NoFdt)?;
     let fdt_origin = Fdt::new(fdt_bytes)?;
 
     // Use the remaining load buffer for updating FDT.
-    let (ramdisk_load_buffer, load) = load.split_at_mut(ramdisk_load_curr);
+    let (ramdisk_load_buffer, load) =
+        load.split_at_mut(ramdisk_load_curr.try_into().map_err(Error::from)?);
     let load = aligned_subslice(load, FDT_ALIGNMENT)?;
     let mut fdt = Fdt::new_from_init(&mut load[..], fdt_bytes)?;
 
     // Add ramdisk range to FDT
-    let ramdisk_addr: u64 = (ramdisk_load_buffer.as_ptr() as usize).try_into().unwrap();
-    let ramdisk_end: u64 = ramdisk_addr + u64::try_from(ramdisk_load_buffer.len()).unwrap();
-    fdt.set_property(
-        "chosen",
-        CStr::from_bytes_with_nul(b"linux,initrd-start\0").unwrap(),
-        &ramdisk_addr.to_be_bytes(),
-    )?;
-    fdt.set_property(
-        "chosen",
-        CStr::from_bytes_with_nul(b"linux,initrd-end\0").unwrap(),
-        &ramdisk_end.to_be_bytes(),
-    )?;
+    let ramdisk_addr: u64 =
+        (ramdisk_load_buffer.as_ptr() as usize).try_into().map_err(Error::from)?;
+    let ramdisk_end: u64 =
+        ramdisk_addr + u64::try_from(ramdisk_load_buffer.len()).map_err(Error::from)?;
+    fdt.set_property("chosen", c"linux,initrd-start", &ramdisk_addr.to_be_bytes())?;
+    fdt.set_property("chosen", c"linux,initrd-end", &ramdisk_end.to_be_bytes())?;
     efi_println!(&efi_entry, "linux,initrd-start: {:#x}", ramdisk_addr);
     efi_println!(&efi_entry, "linux,initrd-end: {:#x}", ramdisk_end);
 
@@ -391,7 +409,7 @@ pub fn android_boot_demo(entry: EfiEntry) -> Result<()> {
                 |e820_entries| {
                     // Convert EFI memory type to e820 memory type.
                     if efi_mmap.len() > e820_entries.len() {
-                        return Err(boot::BootError::E820MemoryMapCallbackError(-1));
+                        return Err(Error::MemoryMapCallbackError(-1));
                     }
                     for (idx, mem) in efi_mmap.into_iter().enumerate() {
                         e820_entries[idx] = boot::x86::e820entry {

@@ -21,17 +21,26 @@ load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
 load("@gbl//toolchain:gbl_workspace_util.bzl", "android_rust_prebuilts", "gbl_llvm_prebuilts")
 load("@kernel_toolchain_info//:dict.bzl", "CLANG_VERSION")
 
-def rust_crate_build_file(name, crate_name = "", deps = [], features = [], rustc_flags = []):
+def rust_crate_build_file(
+        name,
+        rule = "rust_library",
+        crate_name = "",
+        deps = [],
+        proc_macro_deps = [],
+        features = [],
+        rustc_flags = []):
     """Generate BUILD file content for a rust crate
 
     This helper is suitable for crates that have straightforward build rules. Specifically, the
-    crate contains a single `rust_library` targets that includes all source files under the repo.
+    crate contains a single Rust target that includes all source files under the repo.
     There is not any need of preprocessing, patching or source generation.
 
     Args:
         name (String): name of the rust_library target.
+        rule (String): Bazel Rust rule to build, defaults to `rust_library`.
         crate_name (String): name of the rust_library crate, same as name by default.
         deps (List of strings): The `deps` field.
+        proc_macro_deps (List of strings): The `proc_macro_deps` field.
         features (List of strings): The `features` field.
         rustc_flags (List of strings): The `rustc_flags` field.
 
@@ -40,12 +49,13 @@ def rust_crate_build_file(name, crate_name = "", deps = [], features = [], rustc
     """
     crate_name = name if len(crate_name) == 0 else crate_name
     deps = "[{}]".format(",".join(["\"{}\"".format(ele) for ele in deps]))
+    proc_macro_deps = "[{}]".format(",".join(["\"{}\"".format(ele) for ele in proc_macro_deps]))
     features = "[{}]".format(",".join(["\"{}\"".format(ele) for ele in features]))
     rustc_flags = "[{}]".format(",".join(["\"{}\"".format(ele) for ele in rustc_flags]))
     return """
-load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@rules_rust//rust:defs.bzl", \"{rule}\")
 
-rust_library(
+{rule}(
     name = \"{}\",
     crate_name = \"{}\",
     srcs = glob(["**/*.rs"]),
@@ -54,8 +64,9 @@ rust_library(
     rustc_flags ={},
     visibility = ["//visibility:public"],
     deps = {},
+    proc_macro_deps = {}
 )
-""".format(name, crate_name, features, rustc_flags, deps)
+""".format(name, crate_name, features, rustc_flags, deps, proc_macro_deps, rule = rule)
 
 def define_gbl_workspace(name = None):
     """Set up worksapce dependencies for GBL
@@ -137,6 +148,12 @@ cc_library(
         name = "libfdt_c",
         path = "external/dtc/libfdt",
         build_file = "@gbl//libfdt:BUILD.libfdt_c.bazel",
+    )
+
+    native.new_local_repository(
+        name = "libdttable_c",
+        path = "external/libufdt/utils/src",
+        build_file = "@gbl//libdttable:BUILD.libdttable_c.bazel",
     )
 
     native.new_local_repository(
@@ -248,7 +265,101 @@ cc_library(
         build_file = "@gbl//smoltcp:BUILD.smoltcp.bazel",
     )
 
-    # Following are third party rust crates dependencies.
+    native.new_local_repository(
+        name = "arrayvec",
+        path = "external/rust/crates/arrayvec",
+        build_file_content = rust_crate_build_file(
+            "arrayvec",
+            rustc_flags = ["-A", "dead_code"],
+        ),
+    )
+
+    native.new_local_repository(
+        name = "downcast",
+        path = "external/rust/crates/downcast",
+        build_file_content = rust_crate_build_file(
+            "downcast",
+            features = ["default", "std"],
+        ),
+    )
+
+    native.new_local_repository(
+        name = "fragile",
+        path = "external/rust/crates/fragile",
+        build_file_content = rust_crate_build_file("fragile"),
+    )
+
+    native.new_local_repository(
+        name = "lazy_static",
+        path = "external/rust/crates/lazy_static",
+        build_file_content = rust_crate_build_file("lazy_static"),
+    )
+
+    native.new_local_repository(
+        name = "mockall",
+        path = "external/rust/crates/mockall",
+        build_file_content = rust_crate_build_file(
+            "mockall",
+            deps = [
+                "@cfg-if",
+                "@downcast",
+                "@fragile",
+                "@lazy_static",
+                "@predicates",
+                "@predicates_tree",
+            ],
+            proc_macro_deps = ["@mockall_derive"],
+        ),
+    )
+
+    native.new_local_repository(
+        name = "mockall_derive",
+        path = "external/rust/crates/mockall_derive",
+        build_file_content = rust_crate_build_file(
+            "mockall_derive",
+            rule = "rust_proc_macro",
+            deps = ["@cfg-if", "@proc-macro2", "@quote", "@syn"],
+        ),
+    )
+
+    native.new_local_repository(
+        name = "predicates",
+        path = "external/rust/crates/predicates",
+        build_file_content = rust_crate_build_file(
+            "predicates",
+            deps = ["@itertools", "@predicates_core", "@termcolor"],
+        ),
+    )
+
+    native.new_local_repository(
+        name = "predicates_core",
+        path = "external/rust/crates/predicates-core",
+        build_file_content = rust_crate_build_file("predicates_core"),
+    )
+
+    native.new_local_repository(
+        name = "predicates_tree",
+        path = "external/rust/crates/predicates-tree",
+        build_file_content = rust_crate_build_file(
+            "predicates_tree",
+            deps = ["@predicates_core", "@termtree"],
+        ),
+    )
+
+    native.new_local_repository(
+        name = "termcolor",
+        path = "external/rust/crates/termcolor",
+        build_file_content = rust_crate_build_file("termcolor"),
+    )
+
+    native.new_local_repository(
+        name = "termtree",
+        path = "external/rust/crates/termtree",
+        build_file_content = rust_crate_build_file("termtree"),
+    )
+
+    # Following are third party rust crates dependencies which already contain a
+    # BUILD file that we can use as-is without any modification.
 
     THIRD_PARTY_CRATES = [
         "bitflags",
