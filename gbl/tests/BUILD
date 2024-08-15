@@ -24,6 +24,7 @@ test_suite(
         "@gbl//libc:libc_test",
         "@gbl//libdttable:libdttable_test",
         "@gbl//libefi:libefi_test",
+        "@gbl//libefi_types:libefi_types_test",
         "@gbl//liberror:liberror_test",
         "@gbl//libfastboot:libfastboot_test",
         "@gbl//libfdt:libfdt_test",

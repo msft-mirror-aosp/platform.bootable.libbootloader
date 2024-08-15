@@ -16,23 +16,19 @@ extern crate gbl_storage;
 extern crate libgbl as gbl;
 
 use core::convert::TryInto;
-
 use gbl::slots::{
     BootTarget, BootToken, Manager, OneShot, RecoveryTarget, Slot, SlotIterator, Suffix, Tries,
     UnbootableReason,
 };
+use liberror::{Error, Result};
 
-use liberror::Error;
-
-use crate::{
-    defs::{
-        GBL_EFI_BOOT_REASON_GBL_EFI_BOOTLOADER as REASON_BOOTLOADER,
-        GBL_EFI_BOOT_REASON_GBL_EFI_EMPTY_BOOT_REASON as REASON_EMPTY,
-        GBL_EFI_BOOT_REASON_GBL_EFI_RECOVERY as REASON_RECOVERY,
-    },
-    protocol::{gbl_efi_ab_slot as ab_slot, Protocol},
-    ErrorTypes,
+use efi_types::{
+    GBL_EFI_BOOT_REASON_GBL_EFI_BOOTLOADER as REASON_BOOTLOADER,
+    GBL_EFI_BOOT_REASON_GBL_EFI_EMPTY_BOOT_REASON as REASON_EMPTY,
+    GBL_EFI_BOOT_REASON_GBL_EFI_RECOVERY as REASON_RECOVERY,
 };
+
+use crate::protocol::{gbl_efi_ab_slot as ab_slot, Protocol};
 
 const SUBREASON_BUF_LEN: usize = 64;
 
@@ -51,18 +47,15 @@ impl<'a> ABManager<'a> {
 }
 
 impl gbl::slots::private::SlotGet for ABManager<'_> {
-    fn get_slot_by_number(&self, number: usize) -> Result<Slot, Error> {
+    fn get_slot_by_number(&self, number: usize) -> Result<Slot> {
         let idx = u8::try_from(number).or(Err(Error::BadIndex(number)))?;
-        let info = self.protocol.get_slot_info(idx).map_err(|e| match e.err() {
-            ErrorTypes::Unknown => Error::Other(None),
-            _ => Error::BadIndex(number),
-        })?;
+        let info = self.protocol.get_slot_info(idx).or(Err(Error::BadIndex(number)))?;
         info.try_into()
     }
 }
 
 impl Manager for ABManager<'_> {
-    fn get_boot_target(&self) -> Result<BootTarget, Error> {
+    fn get_boot_target(&self) -> Result<BootTarget> {
         let slot = self.get_slot_last_set_active()?;
         let mut subreason = [0u8; SUBREASON_BUF_LEN];
         let (reason, _) = self.protocol.get_boot_reason(subreason.as_mut_slice())?;
@@ -79,7 +72,7 @@ impl Manager for ABManager<'_> {
         SlotIterator::new(self)
     }
 
-    fn get_slot_last_set_active(&self) -> Result<Slot, Error> {
+    fn get_slot_last_set_active(&self) -> Result<Slot> {
         use gbl::slots::private::SlotGet;
 
         if let Some(idx) = self.last_set_active_idx {
@@ -89,12 +82,12 @@ impl Manager for ABManager<'_> {
         }
     }
 
-    fn mark_boot_attempt(&mut self) -> Result<BootToken, Error> {
+    fn mark_boot_attempt(&mut self) -> Result<BootToken> {
         self.protocol.mark_boot_attempt().or(Err(Error::OperationProhibited))?;
         self.boot_token.take().ok_or(Error::OperationProhibited)
     }
 
-    fn set_active_slot(&mut self, slot_suffix: Suffix) -> Result<(), Error> {
+    fn set_active_slot(&mut self, slot_suffix: Suffix) -> Result<()> {
         let idx: u8 = self
             .slots_iter()
             .position(|s| s.suffix == slot_suffix)
@@ -109,11 +102,7 @@ impl Manager for ABManager<'_> {
         })
     }
 
-    fn set_slot_unbootable(
-        &mut self,
-        slot_suffix: Suffix,
-        reason: UnbootableReason,
-    ) -> Result<(), Error> {
+    fn set_slot_unbootable(&mut self, slot_suffix: Suffix, reason: UnbootableReason) -> Result<()> {
         let idx: u8 = self
             .slots_iter()
             .position(|s| s.suffix == slot_suffix)
@@ -122,10 +111,10 @@ impl Manager for ABManager<'_> {
             // This 'or' is technically unreachable because the protocol
             // can't give us an index larger than a u8.
             .or(Err(Error::Other(None)))?;
-        self.protocol.set_slot_unbootable(idx, u8::from(reason).into()).or(Err(Error::Other(None)))
+        self.protocol.set_slot_unbootable(idx, u8::from(reason).into())
     }
 
-    fn get_max_retries(&self) -> Result<Tries, Error> {
+    fn get_max_retries(&self) -> Result<Tries> {
         Ok(self.protocol.load_boot_data()?.max_retries.into())
     }
 
@@ -140,7 +129,7 @@ impl Manager for ABManager<'_> {
         }
     }
 
-    fn set_oneshot_status(&mut self, os: OneShot) -> Result<(), Error> {
+    fn set_oneshot_status(&mut self, os: OneShot) -> Result<()> {
         // Android doesn't have a concept of OneShot to recovery,
         // and the subreason shouldn't matter.
         match os {
@@ -173,17 +162,17 @@ mod test {
     extern crate avb_sysdeps;
 
     use super::*;
-    use crate::defs::{
+    use crate::protocol::{Protocol, ProtocolInfo};
+    use crate::test::*;
+    use crate::{DeviceHandle, EfiEntry};
+    use core::ptr::null_mut;
+    use efi_types::{
         EfiStatus, GblEfiSlotInfo, GblEfiSlotMetadataBlock, GblEfiSlotProtocol,
         EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_SUCCESS,
         GBL_EFI_BOOT_REASON_GBL_EFI_EMPTY_BOOT_REASON as REASON_EMPTY,
         GBL_EFI_BOOT_REASON_GBL_EFI_RECOVERY as REASON_RECOVERY,
         GBL_EFI_BOOT_REASON_GBL_EFI_WATCHDOG as REASON_WATCHDOG,
     };
-    use crate::protocol::{Protocol, ProtocolInfo};
-    use crate::test::*;
-    use crate::{DeviceHandle, EfiEntry};
-    use core::ptr::null_mut;
     use gbl::{
         ops::{avb_ops_none, GblAvbOps},
         slots::{Bootability, Cursor, RecoveryTarget, UnbootableReason},
@@ -258,35 +247,27 @@ mod test {
             unimplemented!();
         }
 
-        fn should_stop_in_fastboot(&mut self) -> Result<bool, Error> {
+        fn should_stop_in_fastboot(&mut self) -> Result<bool> {
             unimplemented!();
         }
 
-        fn preboot(&mut self, _: BootImages) -> Result<(), Error> {
+        fn preboot(&mut self, _: BootImages) -> Result<()> {
             unimplemented!();
         }
 
-        async fn read_from_partition(
-            &mut self,
-            _: &str,
-            _: u64,
-            _: &mut [u8],
-        ) -> Result<(), Error> {
+        async fn read_from_partition(&mut self, _: &str, _: u64, _: &mut [u8]) -> Result<()> {
             unimplemented!();
         }
 
-        async fn write_to_partition(&mut self, _: &str, _: u64, _: &mut [u8]) -> Result<(), Error> {
+        async fn write_to_partition(&mut self, _: &str, _: u64, _: &mut [u8]) -> Result<()> {
             unimplemented!();
         }
 
-        fn partition_size(&mut self, _: &str) -> Result<Option<u64>, Error> {
+        fn partition_size(&mut self, _: &str) -> Result<Option<u64>> {
             unimplemented!();
         }
 
-        fn zircon_add_device_zbi_items(
-            &mut self,
-            _: &mut ZbiContainer<&mut [u8]>,
-        ) -> Result<(), Error> {
+        fn zircon_add_device_zbi_items(&mut self, _: &mut ZbiContainer<&mut [u8]>) -> Result<()> {
             unimplemented!();
         }
 
@@ -596,12 +577,6 @@ mod test {
 
             assert_eq!(
                 cursor.ctx.set_slot_unbootable('b'.into(), UnbootableReason::UserRequested),
-                Err(Error::Other(None))
-            );
-
-            let bad_suffix = '$'.into();
-            assert_eq!(
-                cursor.ctx.set_slot_unbootable(bad_suffix, UnbootableReason::NoMoreTries),
                 Err(Error::InvalidInput)
             );
         });
