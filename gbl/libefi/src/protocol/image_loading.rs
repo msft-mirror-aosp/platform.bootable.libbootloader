@@ -14,18 +14,16 @@
 
 //! Rust wrapper for `EFI_IMAGE_LOADING_PROTOCOL`.
 
-use crate::defs::{
-    EfiGuid, EfiImageLoadingProtocol, GblImageBuffer, GblImageInfo, GblPartitionName,
-    PARTITION_NAME_LEN_U16,
-};
+use crate::efi_call;
 use crate::protocol::{Protocol, ProtocolInfo};
-use crate::{
-    efi_call, map_efi_err, EfiError, EfiResult, EFI_STATUS_ALREADY_STARTED,
-    EFI_STATUS_BUFFER_TOO_SMALL, EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_NOT_FOUND,
-};
 use arrayvec::ArrayVec;
 use core::mem::size_of;
 use core::ptr::null_mut;
+use efi_types::{
+    EfiGuid, EfiImageLoadingProtocol, GblImageBuffer, GblImageInfo, GblPartitionName,
+    PARTITION_NAME_LEN_U16,
+};
+use liberror::{Error, Result};
 use spin::Mutex;
 
 /// GBL_IMAGE_LOADING_PROTOCOL
@@ -40,37 +38,6 @@ impl ProtocolInfo for GblImageLoadingProtocol {
 
 /// Max length of partition name in UTF8 in bytes.
 pub const PARTITION_NAME_LEN_U8: usize = size_of::<char>() * PARTITION_NAME_LEN_U16;
-
-impl GblPartitionName {
-    /// Decodes the UCS2 GblPartitionName using buffer, and returns &str of UTF8 representation.
-    ///
-    /// Buffer must be big enough to contain UTF8 representation of the UCS2 partition name.
-    ///
-    /// Maximum partition name as UCS2 is PARTITION_NAME_LEN_U16.
-    /// And [PARTITION_NAME_LEN_U8] bytes is maximum buffer size needed for UTF8 representation.
-    ///
-    /// # Result
-    /// Ok(&str) - On success return UTF8 representation of the partition name
-    /// Err(EfiError::EFI_STATUS_BUFFER_TOO_SMALL) if provided buffer is too small
-    /// Err(err) - if error occurred during decoding
-    pub fn get_str<'a>(&self, buffer_utf8: &'a mut [u8]) -> EfiResult<&'a str> {
-        let mut index = 0;
-        for c in char::decode_utf16(self.StrUtf16.iter().copied())
-            .map(|c_res| c_res.unwrap_or(char::REPLACEMENT_CHARACTER))
-            .take_while(|c| *c != '\0')
-        {
-            if c.len_utf8() <= buffer_utf8[index..].len() {
-                index += c.encode_utf8(&mut buffer_utf8[index..]).len();
-            } else {
-                return Err(EfiError::from(EFI_STATUS_BUFFER_TOO_SMALL));
-            }
-        }
-        // SAFETY:
-        // _unchecked should be OK here since we wrote each utf8 byte ourselves,
-        // but it's just an optimization, checked version would be fine also.
-        unsafe { Ok(core::str::from_utf8_unchecked(&buffer_utf8[..index])) }
-    }
-}
 
 const MAX_ARRAY_SIZE: usize = 100;
 static RETURNED_BUFFERS: Mutex<ArrayVec<usize, MAX_ARRAY_SIZE>> = Mutex::new(ArrayVec::new_const());
@@ -93,15 +60,15 @@ impl ImageBuffer<'_> {
     // Err(EFI_STATUS_ALREADY_STARTED) - Requested buffer was already returned and is still in use.
     // Err(err) - on error
     // Ok(_) - on success
-    unsafe fn new(gbl_buffer: GblImageBuffer) -> EfiResult<ImageBuffer<'static>> {
+    unsafe fn new(gbl_buffer: GblImageBuffer) -> Result<ImageBuffer<'static>> {
         if gbl_buffer.Memory.is_null() {
-            return Err(EfiError::from(EFI_STATUS_INVALID_PARAMETER));
+            return Err(Error::InvalidInput);
         }
 
         let addr = gbl_buffer.Memory as usize;
         let mut returned_buffers = RETURNED_BUFFERS.lock();
         if returned_buffers.contains(&addr) {
-            return Err(EfiError::from(EFI_STATUS_ALREADY_STARTED));
+            return Err(Error::AlreadyStarted);
         }
         returned_buffers.push(addr);
 
@@ -147,11 +114,11 @@ impl Protocol<'_, GblImageLoadingProtocol> {
     /// # Return
     /// Ok(Some(ImageBuffer)) if buffer was successfully provided,
     /// Ok(None) if buffer was not provided
-    /// Err(EfiError::EFI_STATUS_BUFFER_TOO_SMALL) if provided buffer is too small
-    /// Err(EfiError::EFI_STATUS_INVALID_PARAMETER) if received buffer is NULL
-    /// Err(EfiError::EFI_STATUS_ALREADY_STARTED) buffer was already returned and is still in use.
+    /// Err(Error::EFI_STATUS_BUFFER_TOO_SMALL) if provided buffer is too small
+    /// Err(Error::EFI_STATUS_INVALID_PARAMETER) if received buffer is NULL
+    /// Err(Error::EFI_STATUS_ALREADY_STARTED) buffer was already returned and is still in use.
     /// Err(err) if `err` occurred
-    pub fn get_buffer(&self, gbl_image_info: &GblImageInfo) -> EfiResult<ImageBuffer> {
+    pub fn get_buffer(&self, gbl_image_info: &GblImageInfo) -> Result<ImageBuffer> {
         let mut gbl_buffer: GblImageBuffer = Default::default();
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
@@ -161,6 +128,7 @@ impl Protocol<'_, GblImageLoadingProtocol> {
         // `gbl_buffer` returned by this call must not overlap, and will be checked by `ImageBuffer`
         unsafe {
             efi_call!(
+                @bufsize gbl_image_info.SizeBytes,
                 self.interface()?.get_buffer,
                 self.interface,
                 gbl_image_info,
@@ -169,7 +137,7 @@ impl Protocol<'_, GblImageLoadingProtocol> {
         }
 
         if gbl_buffer.SizeBytes < gbl_image_info.SizeBytes {
-            return Err(EfiError::from(EFI_STATUS_BUFFER_TOO_SMALL));
+            return Err(Error::BufferTooSmall(Some(gbl_image_info.SizeBytes)));
         }
 
         // SAFETY:
@@ -192,7 +160,7 @@ impl Protocol<'_, GblImageLoadingProtocol> {
     /// Err(err) - if error occurred.
     /// Ok(len) - will return maximum number of `GblPartitionName`s that will copied in
     /// [get_verify_partitions]. Indicating expected GblPartitionName slice size.
-    pub fn get_verify_partitions_count(&self) -> EfiResult<usize> {
+    pub fn get_verify_partitions_count(&self) -> Result<usize> {
         let mut partition_count = 0usize;
 
         // SAFETY:
@@ -203,6 +171,7 @@ impl Protocol<'_, GblImageLoadingProtocol> {
         // `partition_names` must be valid array of length `partition_count` after the call.
         unsafe {
             efi_call!(
+                @bufsize partition_count,
                 self.interface()?.get_verify_partitions,
                 self.interface,
                 &mut partition_count,
@@ -220,10 +189,7 @@ impl Protocol<'_, GblImageLoadingProtocol> {
     /// # Result
     /// Err(err) - if error occurred.
     /// Ok(len) - will return number of `GblPartitionName`s copied to `partition_names` slice.
-    pub fn get_verify_partitions(
-        &self,
-        partition_names: &mut [GblPartitionName],
-    ) -> EfiResult<usize> {
+    pub fn get_verify_partitions(&self, partition_names: &mut [GblPartitionName]) -> Result<usize> {
         let partition_count_in: usize = partition_names.len();
         let mut partition_count: usize = partition_count_in;
 
@@ -235,6 +201,7 @@ impl Protocol<'_, GblImageLoadingProtocol> {
         // `partition_names` must be valid array of length `partition_count` after the call.
         unsafe {
             efi_call!(
+                @bufsize partition_count,
                 self.interface()?.get_verify_partitions,
                 self.interface,
                 &mut partition_count,
@@ -249,11 +216,11 @@ impl Protocol<'_, GblImageLoadingProtocol> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{
-        protocol::image_loading, test::run_test, DeviceHandle, EfiEntry, EfiStatus,
-        EFI_STATUS_BAD_BUFFER_SIZE, EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_SUCCESS,
-    };
+    use crate::{protocol::image_loading, test::run_test, DeviceHandle, EfiEntry};
     use core::{ffi::c_void, iter::zip, ptr::null_mut};
+    use efi_types::{
+        EfiStatus, EFI_STATUS_BAD_BUFFER_SIZE, EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_SUCCESS,
+    };
 
     const UCS2_STR: [u16; 8] = [0x2603, 0x0073, 0x006e, 0x006f, 0x0077, 0x006d, 0x0061, 0x006e];
     const UTF8_STR: &str = "☃snowman";
@@ -269,20 +236,6 @@ mod test {
 
     fn get_printable_string() -> String {
         String::from_utf8((0x21..0x7e).collect::<Vec<u8>>()).unwrap()
-    }
-
-    impl<const N: usize> From<[u16; N]> for GblPartitionName {
-        fn from(value: [u16; N]) -> Self {
-            value[..].into()
-        }
-    }
-
-    impl From<&[u16]> for GblPartitionName {
-        fn from(value: &[u16]) -> Self {
-            let mut res: GblPartitionName = Default::default();
-            res.StrUtf16[..value.len()].copy_from_slice(value);
-            res
-        }
     }
 
     #[test]
@@ -327,10 +280,7 @@ mod test {
     fn test_partition_name_get_str_small_buffer() {
         let mut buffer = [0u8; 8];
         let partition_name: GblPartitionName = UCS2_STR.into();
-        assert_eq!(
-            partition_name.get_str(&mut buffer),
-            Err(EfiError::from(EFI_STATUS_BUFFER_TOO_SMALL))
-        );
+        assert_eq!(partition_name.get_str(&mut buffer), Err(10usize));
     }
 
     fn generate_protocol<'a, P: ProtocolInfo>(
@@ -744,7 +694,7 @@ mod test {
             );
 
             let buffer_res = protocol.get_buffer(&gbl_image_info);
-            assert_eq!(buffer_res, Err(EfiError::from(EFI_STATUS_INVALID_PARAMETER)));
+            assert_eq!(buffer_res, Err(Error::InvalidInput));
         });
     }
 
@@ -822,7 +772,7 @@ mod test {
 
             let _guard = GET_BUFFER_MUTEX.lock();
             let res = protocol.get_buffer(&gbl_image_info);
-            assert_eq!(res, Err(EfiError::from(EFI_STATUS_BUFFER_TOO_SMALL)));
+            assert_eq!(res, Err(Error::BufferTooSmall(Some(10))));
         });
     }
 
@@ -946,10 +896,7 @@ mod test {
 
             let _guard = GET_BUFFER_MUTEX.lock();
             let _buf = protocol.get_buffer(&gbl_image_info).unwrap();
-            assert_eq!(
-                protocol.get_buffer(&gbl_image_info),
-                Err(EfiError::from(EFI_STATUS_ALREADY_STARTED))
-            );
+            assert_eq!(protocol.get_buffer(&gbl_image_info), Err(Error::AlreadyStarted));
         });
     }
 
