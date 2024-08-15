@@ -15,6 +15,8 @@
 use super::BootToken;
 use zerocopy::{AsBytes, ByteSlice, FromBytes, FromZeroes, Ref};
 
+use liberror::Error;
+
 /// Tracks whether slot metadata differs from on-disk representation.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum CacheStatus {
@@ -22,19 +24,6 @@ pub enum CacheStatus {
     Clean,
     /// Slot metadata has been modified
     Dirty,
-}
-
-/// Custom error type
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum MetadataParseError {
-    /// The magic number field was corrupted
-    BadMagic,
-    /// The version of the structure is unsupported
-    BadVersion,
-    /// The struct checksum check failed
-    BadChecksum,
-    /// The deserialization buffer is too small
-    BufferTooSmall,
 }
 
 /// Trait that describes the operations all slot metadata implementations must support
@@ -46,7 +35,7 @@ pub trait MetadataBytes: Copy + AsBytes + FromBytes + FromZeroes + Default {
     /// e.g. checksums, magic numbers, and version numbers.
     ///
     /// Returns Err if the buffer does not represent a valid structure.
-    fn validate<B: ByteSlice>(buffer: B) -> Result<Ref<B, Self>, MetadataParseError>;
+    fn validate<B: ByteSlice>(buffer: B) -> Result<Ref<B, Self>, Error>;
 
     /// Called right before writing metadata back to disk.
     /// Implementors should restore invariants,
@@ -130,14 +119,14 @@ impl<'a, MB: MetadataBytes> SlotBlock<'a, MB> {
     ///
     /// Does NOT write back to disk if no changes have been made and the cache is clean.
     /// Panics if the write attempt fails.
-    pub fn sync_to_disk<BlockDev: gbl_storage::AsBlockDevice>(&mut self, block_dev: &mut BlockDev) {
+    pub fn sync_to_disk(&mut self, block_dev: &mut dyn gbl_storage::AsBlockDevice) {
         if self.cache_status == CacheStatus::Clean {
             return;
         }
 
         self.data.prepare_for_sync();
 
-        match block_dev.write_gpt_partition_mut(
+        match block_dev.write_gpt_partition(
             self.partition,
             self.partition_offset,
             self.get_mut_data().as_bytes_mut(),

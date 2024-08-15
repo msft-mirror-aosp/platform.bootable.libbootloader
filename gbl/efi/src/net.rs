@@ -12,24 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{
-    error::{EfiAppError, Result},
-    utils::{get_device_path, loop_with_timeout, ms_to_100ns},
-};
+use crate::error::{listen_to_unified, recv_to_unified, send_to_unified};
+use crate::utils::{get_device_path, loop_with_timeout};
 use alloc::{boxed::Box, vec::Vec};
 use core::{
     fmt::Write,
     sync::atomic::{AtomicU64, Ordering},
 };
 use efi::{
-    defs::{
-        EfiEvent, EfiMacAddress, EFI_STATUS_ALREADY_STARTED, EFI_STATUS_NOT_STARTED,
-        EFI_TIMER_DELAY_TIMER_PERIODIC,
-    },
     efi_print, efi_println,
     protocol::{simple_network::SimpleNetworkProtocol, Protocol},
+    utils::{ms_to_100ns, Timeout},
     DeviceHandle, EfiEntry, EventNotify, EventType, Tpl,
 };
+use efi_types::{EfiEvent, EfiMacAddress, EFI_TIMER_DELAY_TIMER_PERIODIC};
+use gbl_async::{yield_now, YieldCounter};
+use liberror::{Error, Result};
 use smoltcp::{
     iface::{Config, Interface, SocketSet},
     phy,
@@ -46,22 +44,20 @@ const ETHERNET_FRAME_SIZE: usize = 1536;
 // Update period in milliseconds for `NETWORK_TIMESTAMP`.
 const NETWORK_TIMESTAMP_UPDATE_PERIOD: u64 = 50;
 // Size of the socket tx/rx application data buffer.
-const SOCKET_TX_RX_BUFFER: usize = 64 * 1024;
+const SOCKET_TX_RX_BUFFER: usize = 256 * 1024;
 
 /// Performs a shutdown and restart of the simple network protocol.
 fn reset_simple_network<'a>(snp: &Protocol<'a, SimpleNetworkProtocol>) -> Result<()> {
     match snp.shutdown() {
-        Err(e) if !e.is_efi_err(EFI_STATUS_NOT_STARTED) => return Err(e.into()),
+        Err(e) if e != Error::NotStarted => return Err(e),
         _ => {}
     };
 
     match snp.start() {
-        Err(e) if !e.is_efi_err(EFI_STATUS_ALREADY_STARTED) => {
-            return Err(e.into());
-        }
+        Err(e) if e != Error::AlreadyStarted => return Err(e),
         _ => {}
     };
-    snp.initialize(0, 0).unwrap();
+    snp.initialize(0, 0)?;
     Ok(snp.reset(true)?)
 }
 
@@ -98,7 +94,7 @@ impl<'a> EfiNetworkDevice<'a> {
 impl Drop for EfiNetworkDevice<'_> {
     fn drop(&mut self) {
         if let Err(e) = self.protocol.shutdown() {
-            if !e.is_efi_err(EFI_STATUS_NOT_STARTED) {
+            if e != Error::NotStarted {
                 // If shutdown fails, the protocol might still be operating on transmit buffers,
                 // which can cause undefined behavior. Thus we need to panic.
                 panic!("Failed to shutdown EFI network. {:?}", e);
@@ -287,7 +283,7 @@ fn find_net_device(efi_entry: &EfiEntry) -> Result<DeviceHandle> {
         // Finds the minimum path lexicographically.
         .min_by(|lhs, rhs| Ord::cmp(lhs.1.text().unwrap(), rhs.1.text().unwrap()))
         .map(|(h, _)| h)
-        .ok_or(EfiAppError::NotFound.into())
+        .ok_or(Error::NotFound.into())
 }
 
 /// Derives a link local ethernet mac address and IPv6 address from `EfiMacAddress`.
@@ -317,13 +313,14 @@ pub struct EfiTcpSocket<'a, 'b> {
     interface: &'b mut Interface,
     sockets: &'b mut SocketSet<'b>,
     efi_entry: &'a EfiEntry,
+    io_yield_counter: YieldCounter,
 }
 
 impl<'a, 'b> EfiTcpSocket<'a, 'b> {
     /// Resets the socket and starts listening for new TCP connection.
     pub fn listen(&mut self, port: u16) -> Result<()> {
         self.get_socket().abort();
-        self.get_socket().listen(port)?;
+        self.get_socket().listen(port).map_err(listen_to_unified)?;
         Ok(())
     }
 
@@ -350,53 +347,78 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
         return !self.get_socket().is_open() || self.get_socket().state() == tcp::State::CloseWait;
     }
 
-    /// Receives exactly `out.len()` number of bytes to `out`.
-    pub fn receive_exact(&mut self, out: &mut [u8], timeout: u64) -> Result<()> {
-        let mut recv_size = 0;
-        loop_with_timeout(self.efi_entry, timeout, || -> core::result::Result<Result<()>, bool> {
-            self.poll();
-            if self.is_closed() {
-                return Ok(Err(EfiAppError::PeerClosed.into()));
-            } else if self.get_socket().can_recv() {
-                let this_recv = match self.get_socket().recv_slice(&mut out[recv_size..]) {
-                    Err(e) => return Ok(Err(e.into())),
-                    Ok(v) => v,
-                };
-                recv_size += this_recv;
-                if recv_size == out.len() {
-                    return Ok(Ok(()));
-                }
+    /// Sets the maximum number of bytes to read or write before a force await.
+    pub fn set_io_yield_threshold(&mut self, threshold: u64) {
+        self.io_yield_counter = YieldCounter::new(threshold)
+    }
 
-                return Err(this_recv > 0);
+    /// Receives exactly `out.len()` number of bytes to `out`.
+    pub async fn receive_exact(&mut self, out: &mut [u8], timeout: u64) -> Result<()> {
+        let timer = Timeout::new(self.efi_entry, timeout)?;
+        let mut curr = &mut out[..];
+        while !curr.is_empty() {
+            self.poll();
+            let mut has_progress = false;
+
+            if self.is_closed() {
+                return Err(Error::Disconnected);
+            } else if timer.check()? {
+                return Err(Error::Timeout);
+            } else if self.get_socket().can_recv() {
+                let recv_size = self.get_socket().recv_slice(curr).map_err(recv_to_unified)?;
+                curr = curr.get_mut(recv_size..).ok_or(Error::BadIndex(recv_size))?;
+                has_progress = recv_size > 0;
+                // Forces a yield to the executor if the data received/sent reaches a certain
+                // threshold. This is to prevent the async code from holding up the CPU for too long
+                // in case IO speed is high and the executor uses cooperative scheduling.
+                self.io_yield_counter.increment(recv_size.try_into().unwrap()).await;
             }
-            Err(false)
-        })?
-        .ok_or(EfiAppError::Timeout)?
+
+            match has_progress {
+                true => timer.reset(timeout)?,
+                _ => yield_now().await,
+            }
+        }
+        Ok(())
     }
 
     /// Sends exactly `data.len()` number of bytes from `data`.
-    pub fn send_exact(&mut self, data: &[u8], timeout: u64) -> Result<()> {
-        let mut sent_size = 0;
-        let mut last_send_queue = 0usize;
-        loop_with_timeout(self.efi_entry, timeout, || -> core::result::Result<Result<()>, bool> {
+    pub async fn send_exact(&mut self, data: &[u8], timeout: u64) -> Result<()> {
+        let timer = Timeout::new(self.efi_entry, timeout)?;
+        let mut curr = &data[..];
+        let mut last_send_queue = self.get_socket().send_queue();
+        loop {
             self.poll();
-            if sent_size == data.len() && self.get_socket().send_queue() == 0 {
-                return Ok(Ok(()));
+            if curr.is_empty() && self.get_socket().send_queue() == 0 {
+                return Ok(());
             } else if self.is_closed() {
-                return Ok(Err(EfiAppError::PeerClosed.into()));
+                return Err(Error::Disconnected.into());
+            } else if timer.check()? {
+                return Err(Error::Timeout.into());
             }
-            // As long as some data is sent, reset the timeout.
-            let reset = self.get_socket().send_queue() != last_send_queue;
-            if self.get_socket().can_send() && sent_size < data.len() {
-                sent_size += match self.get_socket().send_slice(&data[sent_size..]) {
-                    Err(e) => return Ok(Err(e.into())),
-                    Ok(v) => v,
-                };
+
+            let mut has_progress = false;
+            // Checks if any data in the queue is sent.
+            if self.get_socket().send_queue() != last_send_queue {
+                last_send_queue = self.get_socket().send_queue();
+                has_progress = true;
             }
-            last_send_queue = self.get_socket().send_queue();
-            Err(reset)
-        })?
-        .ok_or(EfiAppError::Timeout)?
+            // Checks if there are more data to be queued.
+            if self.get_socket().can_send() && !curr.is_empty() {
+                let sent = self.get_socket().send_slice(curr).map_err(send_to_unified)?;
+                curr = curr.get(sent..).ok_or(Error::BadIndex(sent))?;
+                // Forces a yield to the executor if the data received/sent reaches a certain
+                // threshold. This is to prevent the async code from holding up the CPU for too long
+                // in case IO speed is high and the executor uses cooperative scheduling.
+                self.io_yield_counter.increment(sent.try_into().unwrap()).await;
+                has_progress |= sent > 0;
+            }
+
+            match has_progress {
+                true => timer.reset(timeout)?,
+                _ => yield_now().await,
+            }
+        }
     }
 
     /// Gets the smoltcp `Interface` for this socket.
@@ -466,6 +488,7 @@ where
         interface: &mut interface,
         sockets: &mut sockets,
         efi_entry: efi_entry,
+        io_yield_counter: YieldCounter::new(u64::MAX),
     };
 
     Ok(f(&mut socket))

@@ -11,17 +11,18 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-pub use gbl_storage::{
-    alignment_scratch_size, is_aligned, is_buffer_aligned, required_scratch_size, AsBlockDevice,
-    AsMultiBlockDevices, BlockIo, GptEntry, GptHeader, GPT_MAGIC, GPT_NAME_LEN_U16,
-};
+
+//! Utilities for writing tests with libstorage, e.g. creating fake block devices.
 
 use crc32fast::Hasher;
+use gbl_async::yield_now;
+pub use gbl_storage::*;
+use liberror::{Error, Result};
 use safemath::SafeNum;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use zerocopy::AsBytes;
 
-/// Helper `gbl_storage::BlockIo` struct for TestBlockDevice.
+/// Helper `gbl_storage::BlockIoSync` struct for TestBlockDevice.
 pub struct TestBlockIo {
     /// The storage block size in bytes.
     pub block_size: u64,
@@ -33,60 +34,63 @@ pub struct TestBlockIo {
     pub num_writes: usize,
     /// The number of successful read calls.
     pub num_reads: usize,
+    /// Injected errors.
+    pub errors: VecDeque<Error>,
 }
 
 impl TestBlockIo {
+    /// Creates a new [TestBlockIo].
     pub fn new(block_size: u64, alignment: u64, data: Vec<u8>) -> Self {
-        Self { block_size, alignment, storage: data, num_writes: 0, num_reads: 0 }
+        Self {
+            block_size,
+            alignment,
+            storage: data,
+            num_writes: 0,
+            num_reads: 0,
+            errors: Default::default(),
+        }
     }
 
     fn check_alignment(&mut self, buffer: &[u8]) -> bool {
-        matches!(is_buffer_aligned(buffer, self.alignment()), Ok(true))
-            && matches!(is_aligned(buffer.len().into(), self.block_size().into()), Ok(true))
+        matches!(is_buffer_aligned(buffer, self.alignment), Ok(true))
+            && matches!(is_aligned(buffer.len().into(), self.block_size.into()), Ok(true))
     }
 }
 
-impl BlockIo for TestBlockIo {
-    fn block_size(&mut self) -> u64 {
-        self.block_size
-    }
-
-    fn num_blocks(&mut self) -> u64 {
-        self.storage.len() as u64 / self.block_size()
-    }
-
-    fn alignment(&mut self) -> u64 {
-        self.alignment
-    }
-
-    fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> bool {
-        if !self.check_alignment(out) {
-            return false;
+impl BlockIoAsync for TestBlockIo {
+    /// Returns a `BlockInfo` for the block device.
+    fn info(&mut self) -> BlockInfo {
+        BlockInfo {
+            block_size: self.block_size,
+            num_blocks: u64::try_from(self.storage.len()).unwrap() / self.block_size,
+            alignment: self.alignment,
         }
-
-        let start = SafeNum::from(blk_offset) * self.block_size();
-        let end = start + out.len();
-        out.clone_from_slice(&self.storage[start.try_into().unwrap()..end.try_into().unwrap()]);
-        self.num_reads += 1;
-        true
     }
 
-    fn write_blocks(&mut self, blk_offset: u64, data: &[u8]) -> bool {
-        if !self.check_alignment(data) {
-            return false;
+    async fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> Result<()> {
+        assert!(self.check_alignment(out));
+        let offset = (SafeNum::from(blk_offset) * self.block_size).try_into().unwrap();
+        yield_now().await; // yield once to simulate IO pending.
+        match self.errors.pop_front() {
+            Some(e) => Err(e),
+            _ => Ok(out.clone_from_slice(&self.storage[offset..][..out.len()])),
         }
+    }
 
-        let start = SafeNum::from(blk_offset) * self.block_size();
-        let end = start + data.len();
-        self.storage[start.try_into().unwrap()..end.try_into().unwrap()].clone_from_slice(&data);
-        self.num_writes += 1;
-        true
+    async fn write_blocks(&mut self, blk_offset: u64, data: &mut [u8]) -> Result<()> {
+        assert!(self.check_alignment(data));
+        let offset = (SafeNum::from(blk_offset) * self.block_size).try_into().unwrap();
+        yield_now().await; // yield once to simulate IO pending.
+        match self.errors.pop_front() {
+            Some(e) => Err(e),
+            _ => Ok(self.storage[offset..][..data.len()].clone_from_slice(data)),
+        }
     }
 }
 
 /// Simple RAM based block device used by unit tests.
 pub struct TestBlockDevice {
-    /// The BlockIo helper struct.
+    /// The mock block device.
     pub io: TestBlockIo,
     /// In-memory backing store.
     pub scratch: Vec<u8>,
@@ -100,7 +104,7 @@ impl From<&[u8]> for TestBlockDevice {
 }
 
 impl AsBlockDevice for TestBlockDevice {
-    fn with(&mut self, f: &mut dyn FnMut(&mut dyn BlockIo, &mut [u8], u64)) {
+    fn with(&mut self, f: &mut dyn FnMut(&mut dyn BlockIoSync, &mut [u8], u64)) {
         f(&mut self.io, &mut self.scratch[..], self.max_gpt_entries)
     }
 }
@@ -111,12 +115,26 @@ impl Default for TestBlockDevice {
     }
 }
 
+impl TestBlockDevice {
+    /// Creates an instance of `AsyncGptDevice`
+    pub fn as_gpt_dev(&mut self) -> AsyncGptDevice<'_, &mut TestBlockIo> {
+        AsyncGptDevice::<&mut TestBlockIo>::new_from_monotonic_buffer(
+            &mut self.io,
+            &mut self.scratch[..],
+            self.max_gpt_entries,
+        )
+        .unwrap()
+    }
+}
+
 /// A description of the backing data store for a block device or partition.
 /// Can either describe explicit data the device or partition is initialized with
 /// OR a size in bytes if the device or partition can be initialized in a blank state.
 #[derive(Copy, Clone)]
 pub enum BackingStore<'a> {
+    /// Exact data to use for the storage.
     Data(&'a [u8]),
+    /// Data size to use, will be initialized as zeros.
     Size(usize),
 }
 
@@ -273,7 +291,9 @@ impl<'a> TestBlockDeviceBuilder<'a> {
         let mut io = TestBlockIo::new(self.block_size, self.alignment, storage);
         let scratch_size = match self.scratch_size {
             Some(s) => s,
-            None => required_scratch_size(&mut io, self.max_gpt_entries).unwrap(),
+            None => {
+                required_scratch_size(BlockIoSync::info(&mut io), self.max_gpt_entries).unwrap()
+            }
         };
         TestBlockDevice {
             io,
@@ -410,17 +430,10 @@ fn partitions_to_disk_data(
 /// Simple RAM based multi-block device used for unit tests.
 pub struct TestMultiBlockDevices(pub Vec<TestBlockDevice>);
 
-impl AsMultiBlockDevices for TestMultiBlockDevices {
-    fn for_each(
-        &mut self,
-        f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64),
-    ) -> core::result::Result<(), Option<&'static str>> {
-        let _ = self
-            .0
-            .iter_mut()
-            .enumerate()
-            .for_each(|(idx, ele)| f(ele, u64::try_from(idx).unwrap()));
-        Ok(())
+impl TestMultiBlockDevices {
+    /// Creates a vector of `AsyncGptDevice`;
+    pub fn as_gpt_devs(&mut self) -> Vec<AsyncGptDevice<&mut TestBlockIo>> {
+        self.0.iter_mut().map(|v| v.as_gpt_dev()).collect::<Vec<_>>()
     }
 }
 

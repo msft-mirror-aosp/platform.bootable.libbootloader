@@ -16,15 +16,16 @@ extern crate bitflags;
 extern crate crc32fast;
 extern crate zerocopy;
 
-use super::partition::{MetadataBytes, MetadataParseError, SlotBlock};
+use super::partition::{MetadataBytes, SlotBlock};
 use super::{
-    BootTarget, BootToken, Bootability, Error, Manager, OneShot, RecoveryTarget, Slot,
-    SlotIterator, Suffix, UnbootableReason,
+    BootTarget, BootToken, Bootability, Manager, OneShot, RecoveryTarget, Slot, SlotIterator,
+    Suffix, UnbootableReason,
 };
 use bitflags::bitflags;
 use core::iter::zip;
 use core::mem::size_of;
 use crc32fast::Hasher;
+use liberror::Error;
 use zerocopy::byteorder::big_endian::U32 as BigEndianU32;
 use zerocopy::{AsBytes, ByteSlice, FromBytes, FromZeroes, Ref};
 
@@ -118,18 +119,19 @@ impl AbrData {
 }
 
 impl MetadataBytes for AbrData {
-    fn validate<B: ByteSlice>(buffer: B) -> Result<Ref<B, AbrData>, MetadataParseError> {
-        let abr_data =
-            Ref::<B, AbrData>::new_from_prefix(buffer).ok_or(MetadataParseError::BufferTooSmall)?.0;
+    fn validate<B: ByteSlice>(buffer: B) -> Result<Ref<B, AbrData>, Error> {
+        let abr_data = Ref::<B, AbrData>::new_from_prefix(buffer)
+            .ok_or(Error::BufferTooSmall(Some(size_of::<AbrData>())))?
+            .0;
 
         if abr_data.magic != *ABR_MAGIC {
-            return Err(MetadataParseError::BadMagic);
+            return Err(Error::BadMagic);
         }
         if abr_data.version_major > ABR_VERSION_MAJOR {
-            return Err(MetadataParseError::BadVersion);
+            return Err(Error::UnsupportedVersion);
         }
         if abr_data.crc32.get() != abr_data.calculate_crc32() {
-            return Err(MetadataParseError::BadChecksum);
+            return Err(Error::BadChecksum);
         }
 
         Ok(abr_data)
@@ -163,7 +165,7 @@ impl super::private::SlotGet for SlotBlock<'_, AbrData> {
         let lower_ascii_suffixes = ('a'..='z').map(Suffix);
         let (suffix, &abr_slot) = zip(lower_ascii_suffixes, self.get_data().slot_data.iter())
             .nth(number)
-            .ok_or_else(|| Suffix::try_from(number).map_or(Error::Other, Error::NoSuchSlot))?;
+            .ok_or(Error::BadIndex(number))?;
 
         let bootability = match (abr_slot.successful, abr_slot.tries) {
             (s, _) if s != 0 => Bootability::Successful,
@@ -176,11 +178,12 @@ impl super::private::SlotGet for SlotBlock<'_, AbrData> {
 }
 
 impl Manager for SlotBlock<'_, AbrData> {
-    fn get_boot_target(&self) -> BootTarget {
-        self.slots_iter()
+    fn get_boot_target(&self) -> Result<BootTarget, Error> {
+        Ok(self
+            .slots_iter()
             .filter(Slot::is_bootable)
             .max_by_key(|slot| (slot.priority, slot.suffix.rank()))
-            .map_or(BootTarget::Recovery(RecoveryTarget::Dedicated), BootTarget::NormalBoot)
+            .map_or(BootTarget::Recovery(RecoveryTarget::Dedicated), BootTarget::NormalBoot))
     }
 
     fn slots_iter(&self) -> SlotIterator {
@@ -206,8 +209,13 @@ impl Manager for SlotBlock<'_, AbrData> {
         Ok(())
     }
 
-    fn mark_boot_attempt(&mut self, boot_target: BootTarget) -> Result<BootToken, Error> {
-        let target_slot = match boot_target {
+    fn mark_boot_attempt(&mut self) -> Result<BootToken, Error> {
+        let target = if let Some(OneShot::Continue(r)) = self.get_oneshot_status() {
+            BootTarget::Recovery(r)
+        } else {
+            self.get_boot_target()?
+        };
+        let target_slot = match target {
             BootTarget::NormalBoot(slot) => slot,
             BootTarget::Recovery(RecoveryTarget::Slotted(_)) => Err(Error::OperationProhibited)?,
             BootTarget::Recovery(RecoveryTarget::Dedicated) => {
@@ -262,10 +270,7 @@ impl Manager for SlotBlock<'_, AbrData> {
 
         let oneshot_flag = OneShotFlags::from(Some(oneshot));
         if oneshot_flag == OneShotFlags::NONE {
-            Err(match oneshot {
-                OneShot::Continue(RecoveryTarget::Slotted(_)) => Error::OperationProhibited,
-                _ => Error::Other,
-            })
+            Err(Error::OperationProhibited)
         } else {
             self.get_mut_data().oneshot_flag = oneshot_flag;
             Ok(())
@@ -278,7 +283,7 @@ impl Manager for SlotBlock<'_, AbrData> {
         }
     }
 
-    fn write_back<B: gbl_storage::AsBlockDevice>(&mut self, block_dev: &mut B) {
+    fn write_back(&mut self, block_dev: &mut dyn gbl_storage::AsBlockDevice) {
         self.sync_to_disk(block_dev);
     }
 }
@@ -288,7 +293,7 @@ impl<'a> SlotBlock<'a, AbrData> {
         self.slots_iter()
             .enumerate()
             .find(|(_, s)| s.suffix == slot_suffix)
-            .ok_or(Error::NoSuchSlot(slot_suffix))
+            .ok_or(Error::InvalidInput)
     }
 }
 
@@ -306,12 +311,12 @@ mod test {
             Slot {
                 suffix: 'a'.into(),
                 priority: DEFAULT_PRIORITY.into(),
-                bootability: Bootability::Retriable(sb.get_max_retries()),
+                bootability: Bootability::Retriable(sb.get_max_retries().unwrap()),
             },
             Slot {
                 suffix: 'b'.into(),
                 priority: DEFAULT_PRIORITY.into(),
-                bootability: Bootability::Retriable(sb.get_max_retries()),
+                bootability: Bootability::Retriable(sb.get_max_retries().unwrap()),
             },
         ];
         let actual: Vec<Slot> = sb.slots_iter().collect();
@@ -336,21 +341,24 @@ mod test {
     #[test]
     fn test_slot_block_parse_buffer_too_small() {
         let buffer: [u8; 0] = Default::default();
-        assert_eq!(AbrData::validate(&buffer[..]), Err(MetadataParseError::BufferTooSmall),);
+        assert_eq!(
+            AbrData::validate(&buffer[..]),
+            Err(Error::BufferTooSmall(Some(size_of::<AbrData>()))),
+        );
     }
 
     #[test]
     fn test_slot_block_parse_bad_magic() {
         let mut abr: AbrData = Default::default();
         abr.magic[0] += 1;
-        assert_eq!(AbrData::validate(abr.as_bytes()), Err(MetadataParseError::BadMagic));
+        assert_eq!(AbrData::validate(abr.as_bytes()), Err(Error::BadMagic));
     }
 
     #[test]
     fn test_slot_block_parse_bad_version_major() {
         let mut abr: AbrData = Default::default();
         abr.version_major = 15;
-        assert_eq!(AbrData::validate(abr.as_bytes()), Err(MetadataParseError::BadVersion));
+        assert_eq!(AbrData::validate(abr.as_bytes()), Err(Error::UnsupportedVersion));
     }
 
     #[test]
@@ -358,27 +366,39 @@ mod test {
         let mut abr: AbrData = Default::default();
         let bad_crc = abr.crc32.get() ^ BigEndianU32::MAX_VALUE.get();
         abr.crc32 = bad_crc.into();
-        assert_eq!(AbrData::validate(abr.as_bytes()), Err(MetadataParseError::BadChecksum));
+        assert_eq!(AbrData::validate(abr.as_bytes()), Err(Error::BadChecksum));
     }
 
     #[test]
     fn test_slot_mark_boot_attempt() {
         let mut sb: SlotBlock<AbrData> = Default::default();
-        let slot = Slot { suffix: 'a'.into(), ..Default::default() };
-        assert_eq!(sb.mark_boot_attempt(BootTarget::NormalBoot(slot)), Ok(BootToken(())));
+        assert_eq!(sb.mark_boot_attempt(), Ok(BootToken(())));
         assert_eq!(
             sb.slots_iter().next().unwrap(),
             Slot {
-                suffix: slot.suffix,
+                suffix: 'a'.into(),
                 priority: DEFAULT_PRIORITY.into(),
                 bootability: Bootability::Retriable((DEFAULT_RETRIES - 1).into())
             }
         );
 
         // Make sure we can call exactly once
+        assert_eq!(sb.mark_boot_attempt(), Err(Error::OperationProhibited));
+    }
+
+    #[test]
+    fn test_slot_mark_boot_attempt_tracks_active() {
+        let mut sb: SlotBlock<AbrData> = Default::default();
+        assert!(sb.set_active_slot('b'.into()).is_ok());
+
+        assert_eq!(sb.mark_boot_attempt(), Ok(BootToken(())));
         assert_eq!(
-            sb.mark_boot_attempt(BootTarget::NormalBoot(slot)),
-            Err(Error::OperationProhibited)
+            sb.get_boot_target().unwrap(),
+            BootTarget::NormalBoot(Slot {
+                suffix: 'b'.into(),
+                priority: DEFAULT_PRIORITY.into(),
+                bootability: Bootability::Retriable((DEFAULT_RETRIES - 1).into())
+            })
         );
     }
 
@@ -386,12 +406,11 @@ mod test {
     fn test_slot_mark_boot_attempt_no_more_tries() {
         let mut sb: SlotBlock<AbrData> = Default::default();
         sb.get_mut_data().slot_data[0].tries = 1;
-        let slot = Slot { suffix: 'a'.into(), ..Default::default() };
-        assert_eq!(sb.mark_boot_attempt(BootTarget::NormalBoot(slot)), Ok(BootToken(())));
+        assert_eq!(sb.mark_boot_attempt(), Ok(BootToken(())));
         assert_eq!(
             sb.slots_iter().next().unwrap(),
             Slot {
-                suffix: slot.suffix,
+                suffix: 'a'.into(),
                 priority: DEFAULT_PRIORITY.into(),
                 bootability: Bootability::Unbootable(UnbootableReason::NoMoreTries)
             }
@@ -407,49 +426,31 @@ mod test {
             priority: DEFAULT_PRIORITY.into(),
             bootability: Bootability::Successful,
         });
-        assert_eq!(sb.mark_boot_attempt(target), Ok(BootToken(())));
-        assert_eq!(sb.get_boot_target(), target);
-    }
-
-    #[test]
-    fn test_slot_mark_tried_no_such_slot() {
-        let mut sb: SlotBlock<AbrData> = Default::default();
-        let slot = Slot { suffix: '$'.into(), ..Default::default() };
-        assert_eq!(
-            sb.mark_boot_attempt(BootTarget::NormalBoot(slot)),
-            Err(Error::NoSuchSlot(slot.suffix))
-        );
+        assert_eq!(sb.mark_boot_attempt(), Ok(BootToken(())));
+        assert_eq!(sb.get_boot_target().unwrap(), target);
     }
 
     #[test]
     fn test_slot_mark_tried_recovery() {
         let mut sb: SlotBlock<AbrData> = Default::default();
         let recovery_tgt = BootTarget::Recovery(RecoveryTarget::Dedicated);
-        assert_eq!(sb.mark_boot_attempt(recovery_tgt), Ok(BootToken(())));
+        assert!(sb.set_slot_unbootable('a'.into(), UnbootableReason::UserRequested).is_ok());
+        assert!(sb.set_slot_unbootable('b'.into(), UnbootableReason::UserRequested).is_ok());
+        assert_eq!(sb.mark_boot_attempt(), Ok(BootToken(())));
 
         // Make sure a second attempt fails due to the moved boot token
-        assert_eq!(sb.mark_boot_attempt(recovery_tgt), Err(Error::OperationProhibited));
+        assert_eq!(sb.mark_boot_attempt(), Err(Error::OperationProhibited));
     }
 
     #[test]
-    fn test_mark_slot_tried_slotted_recovery() {
+    fn test_slot_mark_tried_recovery_oneshot() {
         let mut sb: SlotBlock<AbrData> = Default::default();
-        let slot: Slot = Default::default();
-        assert_eq!(
-            sb.mark_boot_attempt(BootTarget::Recovery(RecoveryTarget::Slotted(slot))),
-            Err(Error::OperationProhibited)
-        );
-    }
+        let tgt = sb.get_boot_target();
+        assert!(sb.set_oneshot_status(OneShot::Continue(RecoveryTarget::Dedicated)).is_ok());
+        assert_eq!(sb.mark_boot_attempt(), Ok(BootToken(())));
 
-    #[test]
-    fn test_slot_mark_tried_unbootable() {
-        let mut sb: SlotBlock<AbrData> = Default::default();
-        let slot = Slot { suffix: 'b'.into(), ..Default::default() };
-        assert_eq!(sb.set_slot_unbootable(slot.suffix, UnbootableReason::UserRequested), Ok(()));
-        assert_eq!(
-            sb.mark_boot_attempt(BootTarget::NormalBoot(slot)),
-            Err(Error::OperationProhibited)
-        );
+        // Verify that tries weren't decremented
+        assert_eq!(sb.get_boot_target(), tgt);
     }
 
     macro_rules! set_unbootable_tests {
@@ -490,7 +491,7 @@ mod test {
                 Ok(())
             );
         }
-        assert_eq!(sb.get_boot_target(), BootTarget::Recovery(RecoveryTarget::Dedicated));
+        assert_eq!(sb.get_boot_target().unwrap(), BootTarget::Recovery(RecoveryTarget::Dedicated));
     }
 
     #[test]
@@ -498,10 +499,10 @@ mod test {
         let mut sb: SlotBlock<AbrData> = Default::default();
         let v: Vec<Slot> = sb.slots_iter().collect();
 
-        assert_eq!(sb.get_boot_target(), BootTarget::NormalBoot(v[0]));
+        assert_eq!(sb.get_boot_target().unwrap(), BootTarget::NormalBoot(v[0]));
         for slot in v.iter() {
             assert_eq!(sb.set_active_slot(slot.suffix), Ok(()));
-            assert_eq!(sb.get_boot_target(), BootTarget::NormalBoot(*slot));
+            assert_eq!(sb.get_boot_target().unwrap(), BootTarget::NormalBoot(*slot));
         }
     }
 
@@ -509,7 +510,7 @@ mod test {
     fn test_set_active_slot_no_such_slot() {
         let mut sb: SlotBlock<AbrData> = Default::default();
         let bad_suffix: Suffix = '$'.into();
-        assert_eq!(sb.set_active_slot(bad_suffix), Err(Error::NoSuchSlot(bad_suffix)));
+        assert_eq!(sb.set_active_slot(bad_suffix), Err(Error::InvalidInput));
     }
 
     #[test]
@@ -517,12 +518,12 @@ mod test {
         let mut sb: SlotBlock<AbrData> = Default::default();
         let v: Vec<Slot> = sb.slots_iter().collect();
         assert_eq!(sb.set_active_slot(v[0].suffix), Ok(()));
-        assert_eq!(sb.get_slot_last_set_active(), v[0]);
+        assert_eq!(sb.get_slot_last_set_active().unwrap(), v[0]);
         for slot in v.iter() {
             assert_eq!(sb.set_slot_unbootable(slot.suffix, NoMoreTries), Ok(()));
         }
 
-        assert_eq!(sb.get_slot_last_set_active(), sb.slots_iter().next().unwrap());
+        assert_eq!(sb.get_slot_last_set_active().unwrap(), sb.slots_iter().next().unwrap());
     }
 
     macro_rules! set_oneshot_tests {
@@ -534,12 +535,12 @@ mod test {
                             assert_eq!(sb.set_oneshot_status($value), Ok(()));
                             assert_eq!(sb.get_oneshot_status(), Some($value));
 
-                            assert_eq!(sb.get_boot_target(),
+                            assert_eq!(sb.get_boot_target().unwrap(),
                                        BootTarget::NormalBoot(
                                            Slot{
                                                suffix: 'a'.into(),
                                                priority: DEFAULT_PRIORITY.into(),
-                                               bootability: Bootability::Retriable(sb.get_max_retries()),
+                                               bootability: Bootability::Retriable(sb.get_max_retries().unwrap()),
                                            },
                                        ));
                         }
@@ -647,7 +648,6 @@ mod test {
             include_bytes!("../../testdata/writeback_test_disk.bin").as_slice().into();
         assert!(block_dev.sync_gpt().is_ok());
         let mut read_buffer: [u8; size_of::<AbrData>()] = Default::default();
-        let mut abr_data;
 
         let mut sb: SlotBlock<AbrData> = Default::default();
         sb.partition = PARTITION;
@@ -655,16 +655,12 @@ mod test {
 
         // New block to trigger drop on the cursor.
         {
-            let mut cursor = Cursor { ctx: sb, block_dev: &mut block_dev };
+            let cursor = Cursor { ctx: &mut sb, block_dev: &mut block_dev };
             assert!(cursor.ctx.set_active_slot('b'.into()).is_ok());
-            abr_data = cursor.ctx.get_data().clone();
         }
 
-        // Need to manually recalculate crc because the cursor updates that
-        // right before writing to disk.
-        abr_data.prepare_for_sync();
         let res = block_dev.read_gpt_partition(PARTITION, OFFSET, &mut read_buffer);
         assert!(res.is_ok());
-        assert_eq!(read_buffer, abr_data.as_bytes());
+        assert_eq!(read_buffer, sb.get_data().as_bytes());
     }
 }

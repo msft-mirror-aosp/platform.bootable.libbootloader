@@ -22,6 +22,7 @@ pub mod android;
 pub mod partition;
 
 use core::mem::size_of;
+use liberror::Error;
 
 /// A type safe container for describing the number of retries a slot has left
 /// before it becomes unbootable.
@@ -85,7 +86,15 @@ impl TryFrom<usize> for Suffix {
     type Error = Error;
 
     fn try_from(value: usize) -> Result<Self, Self::Error> {
-        u32::try_from(value).ok().and_then(char::from_u32).ok_or(Error::Other).map(Self)
+        u32::try_from(value).ok().and_then(char::from_u32).ok_or(Error::InvalidInput).map(Self)
+    }
+}
+
+impl TryFrom<u32> for Suffix {
+    type Error = Error;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        char::from_u32(value).ok_or(Error::InvalidInput).map(Self)
     }
 }
 
@@ -266,17 +275,6 @@ pub mod private {
     }
 }
 
-/// Custom error type.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Error {
-    /// An API method has attempted an operation on a slot that does not exist.
-    NoSuchSlot(Suffix),
-    /// The backend policy has denied permission for the given operation.
-    OperationProhibited,
-    /// Unspecified error.
-    Other,
-}
-
 /// A helper structure for iterating over slots.
 pub struct SlotIterator<'a> {
     count: usize,
@@ -329,33 +327,32 @@ pub trait Manager: private::SlotGet {
 
     /// Returns the current active slot,
     /// or Recovery if the system will try to boot to recovery.
-    fn get_boot_target(&self) -> BootTarget;
+    fn get_boot_target(&self) -> Result<BootTarget, Error>;
 
     /// Returns the slot last set active.
     /// Note that this is different from get_boot_target in that
     /// the slot last set active cannot be Recovery.
-    fn get_slot_last_set_active(&self) -> Slot {
-        // We can safely assume that we have at least one slot.
-        self.slots_iter().max_by_key(|slot| (slot.priority, slot.suffix.rank())).unwrap()
+    fn get_slot_last_set_active(&self) -> Result<Slot, Error> {
+        self.slots_iter()
+            .max_by_key(|slot| (slot.priority, slot.suffix.rank()))
+            .ok_or(Error::Other(Some("Couldn't get slot last set active")))
     }
 
-    /// Given a boot target, updates internal metadata (usually the retry count)
-    /// indicating that the system will have tried to boot the slot.
+    /// Updates internal metadata (usually the retry count)
+    /// indicating that the system will have tried to boot the current active slot.
     /// Returns Ok(BootToken) on success to verify that boot attempt metadata has been updated.
     /// The token must be consumed by `kernel_jump`.
     ///
-    /// Can return Err if the designated slot does not exist,
-    /// if it is ineligible to try,
-    /// or for other, backend reasons.
+    /// If the current boot target is a recovery target,
+    /// or if the oneshot target is a recovery target,
+    /// no metadata is updated but the boot token is still returned.
+    ///
+    /// Returns Err if `mark_boot_attempt` has already been called.
     ///
     /// Note: mark_boot_attempt is NOT idempotent.
     /// It is intended to be called EXACTLY once,
     /// right before jumping into the kernel.
-    ///
-    /// Note: mark_boot_attempt takes a BootTarget to facilitate generating
-    /// the boot token when booting to recovery. If the boot target is recovery,
-    /// then implementations SHOULD NOT update internal metadata.
-    fn mark_boot_attempt(&mut self, boot_target: BootTarget) -> Result<BootToken, Error>;
+    fn mark_boot_attempt(&mut self) -> Result<BootToken, Error>;
 
     /// Attempts to set the active slot.
     ///
@@ -372,8 +369,8 @@ pub trait Manager: private::SlotGet {
     ) -> Result<(), Error>;
 
     /// Default for initial tries
-    fn get_max_retries(&self) -> Tries {
-        7u8.into()
+    fn get_max_retries(&self) -> Result<Tries, Error> {
+        Ok(7u8.into())
     }
 
     /// Optional oneshot boot support
@@ -408,19 +405,19 @@ pub trait Manager: private::SlotGet {
     /// This is useful for partition based slot setups,
     /// where we do not write back every interaction in order to coalesce writes
     /// and preserve disk lifetime.
-    fn write_back<B: gbl_storage::AsBlockDevice>(&mut self, block_dev: &mut B) {}
+    fn write_back(&mut self, block_dev: &mut dyn gbl_storage::AsBlockDevice) {}
 }
 
 /// RAII helper object for coalescing changes.
-pub struct Cursor<'a, B: gbl_storage::AsBlockDevice, M: Manager> {
+pub struct Cursor<'a, B: gbl_storage::AsBlockDevice> {
     /// The backing manager for slot metadata.
-    pub ctx: M,
+    pub ctx: &'a mut dyn Manager,
     /// The backing disk. Used for partition-backed metadata implementations
     /// and for fastboot.
     pub block_dev: &'a mut B,
 }
 
-impl<'a, B: gbl_storage::AsBlockDevice, M: Manager> Drop for Cursor<'a, B, M> {
+impl<'a, B: gbl_storage::AsBlockDevice> Drop for Cursor<'a, B> {
     fn drop(&mut self) {
         self.ctx.write_back(&mut self.block_dev);
     }

@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{aligned_subslice, read, write_bytes, write_bytes_mut, BlockIo, Result, StorageError};
+use crate::{aligned_subslice, read_async, write_async, BlockIoAsync, Result};
+use core::convert::TryFrom;
 use core::default::Default;
 use core::mem::{align_of, size_of};
 use core::num::NonZeroU64;
@@ -20,25 +21,43 @@ use crc32fast::Hasher;
 use safemath::SafeNum;
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 
+use liberror::Error;
+
 const GPT_GUID_LEN: usize = 16;
+/// The maximum number of UTF-16 characters in a GPT partition name, including termination.
 pub const GPT_NAME_LEN_U16: usize = 36;
 
+/// The top-level GPT header.
 #[repr(C, packed)]
 #[derive(Debug, Default, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
 pub struct GptHeader {
+    /// Magic bytes; must be [GPT_MAGIC].
     pub magic: u64,
+    /// Header version.
     pub revision: u32,
+    /// Header size in bytes.
     pub size: u32,
+    /// CRC of the first `size` bytes, calculated with this field zeroed.
     pub crc32: u32,
+    /// Reserved; must be set to 0.
     pub reserved0: u32,
+    /// The on-disk block location of this header.
     pub current: u64,
+    /// The on-disk block location of the other header.
     pub backup: u64,
+    /// First usable block for partition contents.
     pub first: u64,
+    /// Last usable block for partition contents (inclusive).
     pub last: u64,
+    /// Disk GUID.
     pub guid: [u8; GPT_GUID_LEN],
+    /// Starting block for the partition entries array.
     pub entries: u64,
+    /// Number of partition entries.
     pub entries_count: u32,
+    /// The size of each partition entry in bytes.
     pub entries_size: u32,
+    /// CRC of the partition entries array.
     pub entries_crc: u32,
 }
 
@@ -59,18 +78,24 @@ impl GptHeader {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
 pub struct GptEntry {
+    /// Partition type GUID.
     pub part_type: [u8; GPT_GUID_LEN],
+    /// Unique partition GUID.
     pub guid: [u8; GPT_GUID_LEN],
+    /// First block.
     pub first: u64,
+    /// Last block (inclusive).
     pub last: u64,
+    /// Partition flags.
     pub flags: u64,
+    /// Partition name in UTF-16.
     pub name: [u16; GPT_NAME_LEN_U16],
 }
 
 impl GptEntry {
     /// Return the partition entry size in blocks.
     pub fn blocks(&self) -> Result<u64> {
-        u64::try_from((SafeNum::from(self.last) - self.first) + 1).map_err(|e| e.into())
+        u64::try_from((SafeNum::from(self.last) - self.first) + 1).map_err(Into::into)
     }
 
     /// Return whether this is a `NULL` entry. The first null entry marks the end of the partition
@@ -89,7 +114,7 @@ impl GptEntry {
                 c if c.len_utf8() <= buffer[index..].len() => {
                     index += c.encode_utf8(&mut buffer[index..]).len()
                 }
-                _ => return Err(StorageError::InvalidInput), // Not enough space in `buffer`.
+                _ => return Err(Error::InvalidInput), // Not enough space in `buffer`.
             }
         }
         // SAFETY:
@@ -117,11 +142,79 @@ const GPT_MAX_NUM_ENTRIES: u64 = 128;
 const GPT_HEADER_SIZE: u64 = size_of::<GptHeader>() as u64; // 92 bytes.
 const GPT_HEADER_SIZE_PADDED: u64 =
     (GPT_HEADER_SIZE + GPT_ENTRY_ALIGNMENT - 1) / GPT_ENTRY_ALIGNMENT * GPT_ENTRY_ALIGNMENT;
+/// GPT header magic bytes ("EFI PART" in ASCII).
 pub const GPT_MAGIC: u64 = 0x5452415020494645;
 
 enum HeaderType {
     Primary,
     Secondary,
+}
+
+/// `Partition` contains information about a GPT partition.
+#[derive(Debug, Copy, Clone)]
+pub struct Partition {
+    entry: GptEntry,
+    block_size: u64,
+}
+
+impl Partition {
+    /// Creates a new instance.
+    fn new(entry: GptEntry, block_size: u64) -> Self {
+        Self { entry, block_size }
+    }
+
+    /// Returns the partition size in bytes.
+    pub fn size(&self) -> Result<u64> {
+        u64::try_from(SafeNum::from(self.entry.blocks()?) * self.block_size).map_err(Error::from)
+    }
+
+    /// Returns the block size of this partition.
+    pub fn block_size(&self) -> u64 {
+        self.block_size
+    }
+
+    /// Returns the partition entry structure in the GPT header.
+    pub fn gpt_entry(&self) -> &GptEntry {
+        &self.entry
+    }
+
+    /// Returns the partition's absolute start/end offset in number of bytes.
+    pub fn absolute_range(&self) -> Result<(u64, u64)> {
+        let start = SafeNum::from(self.entry.first) * self.block_size;
+        let end = (SafeNum::from(self.entry.last) + 1) * self.block_size;
+        Ok((start.try_into()?, end.try_into()?))
+    }
+
+    /// Checks a given sub range and returns its absolute offset.
+    pub fn check_range(&self, off: u64, size: u64) -> Result<u64> {
+        let off = SafeNum::from(off);
+        let end: u64 = (off + size).try_into()?;
+        match end > self.size()? {
+            true => Err(Error::BadIndex(end as usize)),
+            _ => Ok((off + self.absolute_range()?.0).try_into()?),
+        }
+    }
+}
+
+/// `PartitionIterator` iterates all GPT partition entries.
+pub struct PartitionIterator<'a, 'b> {
+    gpt_cache: &'b GptCache<'a>,
+    idx: usize,
+}
+
+impl Iterator for PartitionIterator<'_, '_> {
+    type Item = Partition;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let res = self
+            .gpt_cache
+            .entries()
+            .ok()?
+            .get(self.idx)
+            .map(|v| Partition::new(*v, self.gpt_cache.info.block_size))?;
+        self.idx += 1;
+        Some(res)
+    }
 }
 
 #[repr(C)]
@@ -135,6 +228,8 @@ struct GptInfo {
     // and LESS THAN OR EQUAL TO the value of GPT_MAX_NUM_ENTRIES.
     // Values other than GPT_MAX_NUM_ENTRIES are mostly used in unit tests.
     max_entries: u64,
+    // Block size of the GPT disk.
+    block_size: u64,
 }
 
 impl GptInfo {
@@ -143,12 +238,12 @@ impl GptInfo {
     }
 
     fn num_valid_entries(&self) -> Result<u64> {
-        Ok(self.num_valid_entries.ok_or_else(|| StorageError::InvalidInput)?.get())
+        Ok(self.num_valid_entries.ok_or(Error::InvalidInput)?.get())
     }
 }
 
-/// An object that contains the GPT header/entries information.
-pub(crate) struct Gpt<'a> {
+/// GptCache contains the GPT header/entries information loaded from storage.
+pub struct GptCache<'a> {
     info: &'a mut GptInfo,
     /// Raw bytes of primary GPT header.
     primary_header: &'a mut [u8],
@@ -160,32 +255,34 @@ pub(crate) struct Gpt<'a> {
     secondary_entries: &'a mut [u8],
 }
 
-impl<'a> Gpt<'a> {
-    /// Create an uninitialized Gpt instance from a provided buffer.
+impl<'a> GptCache<'a> {
+    /// Create an uninitialized GptCache instance from a provided buffer.
     ///
     /// # Args:
     ///
     /// * `max_entries`: Maximum number of entries allowed.
     ///
     /// * `buffer`: Buffer for creating the object. Must have a size at least
-    ///   `Gpt::required_buffer_size(max_entries)`.
-    pub(crate) fn new_from_buffer(max_entries: u64, buffer: &'a mut [u8]) -> Result<Gpt<'a>> {
+    ///   `GptCache::required_buffer_size(max_entries)`.
+    pub fn from_uninit(max_entries: u64, buffer: &'a mut [u8]) -> Result<GptCache<'a>> {
         if max_entries > GPT_MAX_NUM_ENTRIES
             || buffer.len() < Self::required_buffer_size(max_entries)?
         {
-            return Err(StorageError::InvalidInput);
+            return Err(Error::InvalidInput);
         }
         let buffer = aligned_subslice(buffer, GPT_ENTRY_ALIGNMENT)?;
-        *GptInfo::from_bytes(buffer) = GptInfo { num_valid_entries: None, max_entries };
+        *GptInfo::from_bytes(buffer) =
+            GptInfo { num_valid_entries: None, max_entries, block_size: 0 };
         Self::from_existing(buffer)
     }
 
-    /// Reconstruct an existing Gpt struct from a buffer previously created with `new_from_buffer`.
+    /// Reconstructs an existing GptCache struct from a buffer previously created with
+    /// `Self::from_uninit()` and that has been initialized with `AsyncBlockDevice::sync_gpt()`.
     ///
     /// The method simply partitions the input buffer and populate the `GptInfo` struct and
     /// primary/secondary header/entries slices. It assumes that the buffer contains a valid
     /// GptInfo struct.
-    pub fn from_existing(buffer: &'a mut [u8]) -> Result<Gpt<'a>> {
+    pub fn from_existing(buffer: &'a mut [u8]) -> Result<GptCache<'a>> {
         let buffer = aligned_subslice(buffer, GPT_ENTRY_ALIGNMENT)?;
         let (info, remain) = Ref::<_, GptInfo>::new_from_prefix(buffer).unwrap();
         let entries_size = SafeNum::from(info.max_entries) * GPT_ENTRY_SIZE;
@@ -204,64 +301,100 @@ impl<'a> Gpt<'a> {
         })
     }
 
-    /// The minimum buffer size needed for `new_from_buffer()`
-    pub(crate) fn required_buffer_size(max_entries: u64) -> Result<usize> {
+    /// Creates a new `GptCache` instance that borrows the internal data of this instance.
+    pub fn as_mut_instance(&mut self) -> GptCache<'_> {
+        GptCache {
+            info: &mut self.info,
+            primary_header: &mut self.primary_header,
+            primary_entries: &mut self.primary_entries,
+            secondary_header: &mut self.secondary_header,
+            secondary_entries: &mut self.secondary_entries,
+        }
+    }
+
+    /// Returns an iterator to GPT partition entries.
+    pub fn partition_iter(&self) -> PartitionIterator {
+        PartitionIterator { gpt_cache: self, idx: 0 }
+    }
+
+    /// The minimum buffer size needed for `Self::from_uninit()`
+    pub fn required_buffer_size(max_entries: u64) -> Result<usize> {
         let entries_size = SafeNum::from(max_entries) * GPT_ENTRY_SIZE;
-        (((entries_size + GPT_HEADER_SIZE_PADDED) * 2) + size_of::<GptInfo>() + GPT_ENTRY_ALIGNMENT
-            - 1)
-        .try_into()
-        .map_err(|e: safemath::Error| e.into())
+        usize::try_from(
+            ((entries_size + GPT_HEADER_SIZE_PADDED) * 2)
+                + size_of::<GptInfo>()
+                + GPT_ENTRY_ALIGNMENT
+                - 1,
+        )
+        .map_err(Into::<Error>::into)
+    }
+
+    /// Checks if a read/write range into a GPT partition overflows and returns the range's absolute
+    /// offset in number of bytes.
+    pub fn check_range(&self, part_name: &str, offset: u64, size: usize) -> Result<u64> {
+        self.find_partition(part_name)?.check_range(offset, u64::try_from(size)?)
     }
 
     /// Return the list of GPT entries.
     ///
     /// If the object does not contain a valid GPT, the method returns Error.
-    pub(crate) fn entries(&self) -> Result<&[GptEntry]> {
+    fn entries(&self) -> Result<&[GptEntry]> {
         self.check_valid()?;
         Ok(&Ref::<_, [GptEntry]>::new_slice(&self.primary_entries[..]).unwrap().into_slice()
-            [..self.info.num_valid_entries()?.try_into()?])
+            [..usize::try_from(self.info.num_valid_entries()?)?])
     }
 
-    /// Search for a partition entry.
+    /// Returns the total number of partitions.
+    pub fn num_partitions(&self) -> Result<usize> {
+        Ok(self.entries()?.len())
+    }
+
+    /// Gets the `idx`th partition.
+    pub fn get_partition(&self, idx: usize) -> Result<Partition> {
+        let entry = *self.entries()?.get(idx).ok_or(Error::BadIndex(idx))?;
+        Ok(Partition::new(entry, self.info.block_size))
+    }
+
+    /// Returns the `Partition` for a partition.
     ///
-    /// If partition doesn't exist, the method returns `Ok(None)`.
+    /// # Args
     ///
-    /// If the object does not contain a valid GPT, the method returns Error.
-    pub(crate) fn find_partition(&self, part: &str) -> Result<&GptEntry> {
+    /// * `part`: Name of the partition.
+    pub fn find_partition(&self, part: &str) -> Result<Partition> {
         for entry in self.entries()? {
             let mut name_conversion_buffer = [0u8; GPT_NAME_LEN_U16 * 2];
             if entry.name_to_str(&mut name_conversion_buffer)? != part {
                 continue;
             }
-            return Ok(entry);
+            return Ok(Partition::new(*entry, self.info.block_size));
         }
-        Err(StorageError::NotExist)
+        Err(Error::NotFound)
     }
 
-    /// Check whether the Gpt has been initialized.
+    /// Checks whether the GptCache has been initialized.
     fn check_valid(&self) -> Result<()> {
         self.info.num_valid_entries()?;
         Ok(())
     }
 
     /// Helper function for loading and validating GPT header and entries.
-    fn validate_gpt(
+    async fn validate_gpt(
         &mut self,
-        blk_dev: &mut (impl BlockIo + ?Sized),
+        io: &mut impl BlockIoAsync,
         scratch: &mut [u8],
         header_type: HeaderType,
     ) -> Result<bool> {
         let (header_start, header_bytes, entries) = match header_type {
             HeaderType::Primary => {
-                (blk_dev.block_size().into(), &mut self.primary_header, &mut self.primary_entries)
+                (io.info().block_size.into(), &mut self.primary_header, &mut self.primary_entries)
             }
             HeaderType::Secondary => (
-                (SafeNum::from(blk_dev.num_blocks()) - 1) * blk_dev.block_size(),
+                (SafeNum::from(io.info().num_blocks) - 1) * io.info().block_size,
                 &mut self.secondary_header,
                 &mut self.secondary_entries,
             ),
         };
-        read(blk_dev, header_start.try_into()?, header_bytes, scratch)?;
+        read_async(io, header_start.try_into()?, header_bytes, scratch).await?;
         let header =
             Ref::<_, GptHeader>::new_from_prefix(header_bytes.as_bytes()).unwrap().0.into_ref();
 
@@ -270,10 +403,10 @@ impl<'a> Gpt<'a> {
         }
 
         let entries_size = SafeNum::from(header.entries_count) * GPT_ENTRY_SIZE;
-        let entries_offset = SafeNum::from(header.entries) * blk_dev.block_size();
+        let entries_offset = SafeNum::from(header.entries) * io.info().block_size;
         if self.info.max_entries < header.entries_count.into()
             || u64::try_from(entries_size + entries_offset)?
-                > ((SafeNum::from(blk_dev.num_blocks()) - 1) * blk_dev.block_size()).try_into()?
+                > ((SafeNum::from(io.info().num_blocks) - 1) * io.info().block_size).try_into()?
         {
             return Ok(false);
         }
@@ -289,21 +422,21 @@ impl<'a> Gpt<'a> {
 
         // Load the entries
         let out = &mut entries[..entries_size.try_into()?];
-        read(blk_dev, entries_offset.try_into()?, out, scratch)?;
+        read_async(io, entries_offset.try_into()?, out, scratch).await?;
         // Validate entries crc32.
         Ok(header.entries_crc == crc32(out))
     }
 
     /// Load and sync GPT from a block device.
-    fn load_and_sync(
+    pub(crate) async fn load_and_sync(
         &mut self,
-        blk_dev: &mut (impl BlockIo + ?Sized),
+        io: &mut impl BlockIoAsync,
         scratch: &mut [u8],
     ) -> Result<()> {
         self.info.num_valid_entries = None;
 
-        let block_size = blk_dev.block_size();
-        let total_blocks: SafeNum = blk_dev.num_blocks().into();
+        let block_size = io.info().block_size;
+        let total_blocks: SafeNum = io.info().num_blocks.into();
 
         let primary_header_blk = 1;
         let primary_header_pos = block_size;
@@ -313,14 +446,14 @@ impl<'a> Gpt<'a> {
         // Entries position for restoring.
         let primary_entries_blk = 2;
         let primary_entries_pos = SafeNum::from(primary_entries_blk) * block_size;
-        let primary_valid = self.validate_gpt(blk_dev, scratch, HeaderType::Primary)?;
-        let secondary_valid = self.validate_gpt(blk_dev, scratch, HeaderType::Secondary)?;
+        let primary_valid = self.validate_gpt(io, scratch, HeaderType::Primary).await?;
+        let secondary_valid = self.validate_gpt(io, scratch, HeaderType::Secondary).await?;
 
         let primary_header = GptHeader::from_bytes(self.primary_header);
         let secondary_header = GptHeader::from_bytes(self.secondary_header);
         if !primary_valid {
             if !secondary_valid {
-                return Err(StorageError::NoValidGpt);
+                return Err(Error::NoGpt);
             }
             // Restore to primary
             primary_header.as_bytes_mut().clone_from_slice(secondary_header.as_bytes());
@@ -330,13 +463,8 @@ impl<'a> Gpt<'a> {
             primary_header.entries = primary_entries_blk;
             primary_header.update_crc();
 
-            write_bytes_mut(blk_dev, primary_header_pos, primary_header.as_bytes_mut(), scratch)?;
-            write_bytes_mut(
-                blk_dev,
-                primary_entries_pos.try_into()?,
-                self.primary_entries,
-                scratch,
-            )?
+            write_async(io, primary_header_pos, primary_header.as_bytes_mut(), scratch).await?;
+            write_async(io, primary_entries_pos.try_into()?, self.primary_entries, scratch).await?
         } else if !secondary_valid {
             // Restore to secondary
             let secondary_entries_pos = secondary_header_pos
@@ -350,18 +478,15 @@ impl<'a> Gpt<'a> {
             secondary_header.entries = secondary_entries_blk.try_into()?;
             secondary_header.update_crc();
 
-            write_bytes_mut(
-                blk_dev,
+            write_async(
+                io,
                 secondary_header_pos.try_into()?,
                 secondary_header.as_bytes_mut(),
                 scratch,
-            )?;
-            write_bytes_mut(
-                blk_dev,
-                secondary_entries_pos.try_into()?,
-                self.secondary_entries,
-                scratch,
-            )?;
+            )
+            .await?;
+            write_async(io, secondary_entries_pos.try_into()?, self.secondary_entries, scratch)
+                .await?;
         }
 
         // Calculate actual number of GPT entries by finding the first invalid entry.
@@ -372,75 +497,20 @@ impl<'a> Gpt<'a> {
                 Some(idx) => idx as u64,
                 _ => self.info.max_entries,
             });
+        self.info.block_size = block_size;
         Ok(())
     }
 }
 
-/// Wrapper of gpt.load_and_sync(). Library internal helper for AsBlockDevice::sync_gpt().
-pub(crate) fn gpt_sync(
-    blk_dev: &mut (impl BlockIo + ?Sized),
-    gpt: &mut Gpt,
-    scratch: &mut [u8],
-) -> Result<()> {
-    gpt.load_and_sync(blk_dev, scratch)
-}
-
-/// Check if a relative offset/len into a partition overflows and returns the absolute offset.
-fn check_offset(
-    blk_dev: &mut (impl BlockIo + ?Sized),
-    entry: &GptEntry,
+/// Checks if a read/write range into a GPT partition overflows and returns the range's absolute
+/// offset in the block device.
+pub(crate) fn check_gpt_rw_params(
+    gpt_cache_buffer: &mut [u8],
+    part_name: &str,
     offset: u64,
-    len: usize,
+    size: usize,
 ) -> Result<u64> {
-    let s = SafeNum::from(offset) + len;
-    let total_size = SafeNum::from(entry.blocks()?) * blk_dev.block_size();
-    match u64::try_from(s)? <= total_size.try_into()? {
-        true => Ok((SafeNum::from(entry.first) * blk_dev.block_size() + offset).try_into()?),
-        false => Err(StorageError::OutOfRange),
-    }
-}
-
-/// Read GPT partition. Library internal helper for AsBlockDevice::read_gpt_partition().
-pub(crate) fn read_gpt_partition(
-    blk_dev: &mut (impl BlockIo + ?Sized),
-    gpt: &Gpt,
-    part_name: &str,
-    offset: u64,
-    out: &mut [u8],
-    scratch: &mut [u8],
-) -> Result<()> {
-    let e = gpt.find_partition(part_name)?;
-    let abs_offset = check_offset(blk_dev, e, offset, out.len())?;
-    read(blk_dev, abs_offset, out, scratch)
-}
-
-/// Write GPT partition. Library internal helper for AsBlockDevice::write_gpt_partition().
-pub(crate) fn write_gpt_partition(
-    blk_dev: &mut (impl BlockIo + ?Sized),
-    gpt: &Gpt,
-    part_name: &str,
-    offset: u64,
-    data: &[u8],
-    scratch: &mut [u8],
-) -> Result<()> {
-    let e = gpt.find_partition(part_name)?;
-    let abs_offset = check_offset(blk_dev, e, offset, data.len())?;
-    write_bytes(blk_dev, abs_offset, data, scratch)
-}
-
-/// Write GPT partition. Library internal helper for AsBlockDevice::write_gpt_partition().
-/// Optimized version for mutable buffers.
-pub(crate) fn write_gpt_partition_mut(
-    blk_dev: &mut (impl BlockIo + ?Sized),
-    gpt: &Gpt,
-    part_name: &str,
-    offset: u64,
-    data: &mut [u8],
-    scratch: &mut [u8],
-) -> Result<()> {
-    let e = gpt.find_partition(part_name)?;
-    let abs_offset = check_offset(blk_dev, e, offset, data.as_ref().len())?;
-    write_bytes_mut(blk_dev, abs_offset, data.as_mut(), scratch)
+    GptCache::from_existing(gpt_cache_buffer)?.check_range(part_name, offset, size)
 }
 
 fn crc32(data: &[u8]) -> u32 {
@@ -457,22 +527,22 @@ pub(crate) mod test {
     };
 
     /// Helper function to extract the gpt header from a test block device.
-    /// This function lives here and not as a method of TestBlockDevice so that
-    /// the Gpt type doesn't have to be exported.
-    fn gpt(dev: &mut TestBlockDevice) -> Gpt {
-        let (_, gpt) = dev.scratch.split_at_mut(alignment_scratch_size(&mut dev.io).unwrap());
-        Gpt::from_existing(gpt).unwrap()
+    fn gpt(dev: &mut TestBlockDevice) -> GptCache {
+        let info = dev.info();
+        let (_, gpt) = dev.scratch.split_at_mut(alignment_scratch_size(info).unwrap());
+        GptCache::from_existing(gpt).unwrap()
     }
 
     #[test]
-    fn test_new_from_buffer() {
+    fn test_load_and_sync() {
         let mut dev: TestBlockDevice = include_bytes!("../test/gpt_test_1.bin").as_slice().into();
         dev.sync_gpt().unwrap();
 
-        assert_eq!(dev.partition_iter().count(), 2);
-        dev.find_partition("boot_a").unwrap();
-        dev.find_partition("boot_b").unwrap();
-        assert!(dev.find_partition("boot_c").is_err());
+        let gpt_cache = gpt(&mut dev);
+        assert_eq!(gpt_cache.partition_iter().count(), 2);
+        gpt_cache.find_partition("boot_a").unwrap();
+        gpt_cache.find_partition("boot_b").unwrap();
+        assert!(gpt_cache.find_partition("boot_c").is_err());
     }
 
     #[test]
@@ -500,10 +570,11 @@ pub(crate) mod test {
         dev.io.storage[disk.len() - 512..].fill(0);
         dev.sync_gpt().unwrap();
 
-        assert_eq!(dev.partition_iter().count(), 2);
-        dev.find_partition("boot_a").unwrap();
-        dev.find_partition("boot_b").unwrap();
-        assert!(dev.find_partition("boot_c").is_err());
+        let gpt_cache = gpt(&mut dev);
+        assert_eq!(gpt_cache.partition_iter().count(), 2);
+        gpt_cache.find_partition("boot_a").unwrap();
+        gpt_cache.find_partition("boot_b").unwrap();
+        assert!(gpt_cache.find_partition("boot_c").is_err());
 
         // Check that secondary is restored
         assert_eq!(dev.io.storage, disk);
@@ -518,9 +589,10 @@ pub(crate) mod test {
         dev.io.storage[512..1024].fill(0);
         dev.sync_gpt().unwrap();
 
-        assert_eq!(dev.partition_iter().count(), 2);
-        dev.find_partition("boot_a").unwrap();
-        dev.find_partition("boot_b").unwrap();
+        let gpt_cache = gpt(&mut dev);
+        assert_eq!(gpt_cache.partition_iter().count(), 2);
+        gpt_cache.find_partition("boot_a").unwrap();
+        gpt_cache.find_partition("boot_b").unwrap();
 
         // Check that primary is restored
         assert_eq!(dev.io.storage, disk);
@@ -604,7 +676,7 @@ pub(crate) mod test {
         dev.io.storage[..64 * 1024].fill(0);
         // Load a bad GPT. Validate that the valid state is reset.
         assert!(dev.sync_gpt().is_err());
-        assert!(dev.find_partition("").is_err());
+        assert!(gpt(&mut dev).find_partition("").is_err());
     }
 
     #[test]
@@ -652,37 +724,21 @@ pub(crate) mod test {
 
         // "boot_a" partition
         // Mutable version
-        dev.write_gpt_partition_mut("boot_a", 0, expect_boot_a.as_mut_slice()).unwrap();
+        dev.write_gpt_partition("boot_a", 0, expect_boot_a.as_mut_slice()).unwrap();
         dev.read_gpt_partition("boot_a", 0, &mut actual_boot_a).unwrap();
         assert_eq!(expect_boot_a.to_vec(), actual_boot_a);
         // Mutable version, partial write.
-        dev.write_gpt_partition_mut("boot_a", 1, expect_boot_a[1..].as_mut()).unwrap();
-        dev.read_gpt_partition("boot_a", 1, &mut actual_boot_a[1..]).unwrap();
-        assert_eq!(expect_boot_a[1..], actual_boot_a[1..]);
-        // Immutable version
-        dev.write_gpt_partition("boot_a", 0, &expect_boot_a).unwrap();
-        dev.read_gpt_partition("boot_a", 0, &mut actual_boot_a).unwrap();
-        assert_eq!(expect_boot_a.to_vec(), actual_boot_a);
-        // Immutable version, partial write.
-        dev.write_gpt_partition("boot_a", 1, &expect_boot_a[1..]).unwrap();
+        dev.write_gpt_partition("boot_a", 1, expect_boot_a[1..].as_mut()).unwrap();
         dev.read_gpt_partition("boot_a", 1, &mut actual_boot_a[1..]).unwrap();
         assert_eq!(expect_boot_a[1..], actual_boot_a[1..]);
 
         // "boot_b" partition
         // Mutable version
-        dev.write_gpt_partition_mut("boot_b", 0, expect_boot_b.as_mut_slice()).unwrap();
+        dev.write_gpt_partition("boot_b", 0, expect_boot_b.as_mut_slice()).unwrap();
         dev.read_gpt_partition("boot_b", 0, &mut actual_boot_b).unwrap();
         assert_eq!(expect_boot_b.to_vec(), actual_boot_b);
         // Mutable version, partial write.
-        dev.write_gpt_partition_mut("boot_b", 1, expect_boot_b[1..].as_mut()).unwrap();
-        dev.read_gpt_partition("boot_b", 1, &mut actual_boot_b[1..]).unwrap();
-        assert_eq!(expect_boot_b[1..], actual_boot_b[1..]);
-        // Immutable version
-        dev.write_gpt_partition("boot_b", 0, &expect_boot_b).unwrap();
-        dev.read_gpt_partition("boot_b", 0, &mut actual_boot_b).unwrap();
-        assert_eq!(expect_boot_b.to_vec(), actual_boot_b);
-        // Immutable version, partial write.
-        dev.write_gpt_partition("boot_b", 1, &expect_boot_b[1..]).unwrap();
+        dev.write_gpt_partition("boot_b", 1, expect_boot_b[1..].as_mut()).unwrap();
         dev.read_gpt_partition("boot_b", 1, &mut actual_boot_b[1..]).unwrap();
         assert_eq!(expect_boot_b[1..], actual_boot_b[1..]);
     }
@@ -698,11 +754,9 @@ pub(crate) mod test {
         let mut boot_b = [0u8; include_bytes!("../test/boot_b.bin").len()];
 
         assert!(dev.read_gpt_partition("boot_a", 1, &mut boot_a).is_err());
-        assert!(dev.write_gpt_partition_mut("boot_a", 1, boot_a.as_mut_slice()).is_err());
-        assert!(dev.write_gpt_partition("boot_a", 1, &boot_a).is_err());
+        assert!(dev.write_gpt_partition("boot_a", 1, boot_a.as_mut_slice()).is_err());
 
         assert!(dev.read_gpt_partition("boot_b", 1, &mut boot_b).is_err());
-        assert!(dev.write_gpt_partition_mut("boot_b", 1, boot_b.as_mut_slice()).is_err());
-        assert!(dev.write_gpt_partition("boot_b", 1, &boot_b).is_err());
+        assert!(dev.write_gpt_partition("boot_b", 1, boot_b.as_mut_slice()).is_err());
     }
 }

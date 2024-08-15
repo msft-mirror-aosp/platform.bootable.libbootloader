@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(
     default_visibility = ["//visibility:public"],
@@ -20,8 +21,15 @@ package(
 
 rust_library(
     name = "libc",
-    srcs = glob(["**/*.rs"]),
+    srcs = ["src/lib.rs"],
     edition = "2021",
+    rustc_flags = ANDROID_RUST_LINTS,
+)
+
+rust_test(
+    name = "libc_test",
+    crate = ":libc",
+    rustc_flags = ANDROID_RUST_LINTS,
 )
 
 cc_library(
