@@ -79,8 +79,6 @@ use protocol::simple_text_output::SimpleTextOutputProtocol;
 use protocol::{Protocol, ProtocolInfo};
 
 mod error {
-    use crate::ab_slots;
-
     use super::defs::EFI_STATUS_SUCCESS;
     use super::EfiStatus;
 
@@ -122,10 +120,10 @@ mod error {
         }
     }
 
-    impl From<EfiError> for ab_slots::Error {
-        fn from(_err: EfiError) -> ab_slots::Error {
+    impl From<EfiError> for liberror::Error {
+        fn from(_err: EfiError) -> liberror::Error {
             // Lazy default
-            ab_slots::Error::Other
+            liberror::Error::Other(None)
         }
     }
 }
@@ -162,6 +160,13 @@ impl EfiEntry {
         DeviceHandle(self.image_handle)
     }
 }
+
+/// The vendor GUID for UEFI variables defined by GBL.
+pub const GBL_EFI_VENDOR_GUID: EfiGuid =
+    EfiGuid::new(0x5a6d92f3, 0xa2d0, 0x4083, [0x91, 0xa1, 0xa5, 0x0f, 0x6c, 0x3d, 0x98, 0x30]);
+
+/// The name of the UEFI variable that GBL defines to determine the target OS.
+pub const GBL_EFI_OS_BOOT_TARGET_VARNAME: &str = "gbl_os_boot_target";
 
 /// Creates an `EfiEntry` and initialize EFI global allocator.
 ///
@@ -330,6 +335,7 @@ impl<'a> BootServices<'a> {
     }
 
     /// Wrapper of `EFI_BOOT_SERVICES.CloseProtocol()`.
+    #[allow(dead_code)]
     fn close_protocol<T: ProtocolInfo>(&self, handle: DeviceHandle) -> EfiResult<()> {
         // SAFETY: EFI_BOOT_SERVICES method call.
         unsafe {
@@ -1146,16 +1152,8 @@ mod test {
             }
 
             // Close protocol is called as `protocol` goes out of scope.
-            EFI_CALL_TRACES.with(|trace| {
-                assert_eq!(
-                    trace.borrow_mut().close_protocol_trace.inputs,
-                    [(
-                        DeviceHandle(as_efi_handle(&mut device_handle)),
-                        BlockIoProtocol::GUID,
-                        image_handle
-                    ),]
-                )
-            });
+            EFI_CALL_TRACES
+                .with(|trace| assert_eq!(trace.borrow_mut().close_protocol_trace.inputs, []));
         })
     }
 

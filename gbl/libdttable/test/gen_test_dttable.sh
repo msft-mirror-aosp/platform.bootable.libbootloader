@@ -1,3 +1,5 @@
+#!/bin/bash
+#
 # Copyright (C) 2024 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,11 +14,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@rules_rust//rust:defs.bzl", "rust_library")
+set -e
 
-rust_library(
-    name = "arrayvec",
-    srcs = glob(["**/*.rs"]),
-    edition = "2018",
-    visibility = ["//visibility:public"],
-)
+readonly SCRIPT_DIR=`cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd`
+readonly TMP_DIR=`mktemp -d`
+
+dtc -I dts -O dtb -o ${TMP_DIR}/a.dtb ${SCRIPT_DIR}/a.dts
+dtc -I dts -O dtb -o ${TMP_DIR}/b.dtb ${SCRIPT_DIR}/b.dts
+
+echo "corrupted dttable" > ${SCRIPT_DIR}/corrupted_dttable.img
+
+# mkdtboimg is built by cd aosp/system/libufdt/utils && mm
+mkdtboimg create ${SCRIPT_DIR}/dttable.img \
+        --id=0x2 --rev=0x0 ${TMP_DIR}/b.dtb \
+        --id=0x1 --rev=0x0 ${TMP_DIR}/a.dtb

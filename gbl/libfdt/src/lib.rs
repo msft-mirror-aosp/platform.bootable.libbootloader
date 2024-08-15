@@ -27,29 +27,17 @@ use libfdt_c_def::{
     fdt_strerror, fdt_subnode_offset_namelen,
 };
 
+use liberror::{Error, Result};
+
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
-
-/// libfdt error type.
-#[derive(Debug)]
-pub enum FdtError {
-    /// The underlying libfdt C API returned an error with the given message.
-    CLibError(&'static str),
-    /// The provided buffer doesn't look like a valid FDT.
-    InvalidInput,
-    /// Overflow while calculating offsets or lengths.
-    IntegerOverflow,
-}
-
-/// libfdt result type,
-pub type Result<T> = core::result::Result<T, FdtError>;
 
 /// Convert libfdt_c error code to Result
 fn map_result(code: core::ffi::c_int) -> Result<core::ffi::c_int> {
     match code {
         // SAFETY: Static null terminated string returned from libfdt_c API.
-        v if v < 0 => Err(FdtError::CLibError(unsafe {
+        v if v < 0 => Err(Error::Other(Some(unsafe {
             core::ffi::CStr::from_ptr(fdt_strerror(v)).to_str().unwrap()
-        })),
+        }))),
         v => Ok(v),
     }
 }
@@ -59,7 +47,7 @@ fn fdt_check_header(fdt: &[u8]) -> Result<()> {
     map_result(unsafe { libfdt_c_def::fdt_check_header(fdt.as_ptr() as *const _) })?;
     match FdtHeader::from_bytes_ref(fdt)?.totalsize() <= fdt.len() {
         true => Ok(()),
-        _ => Err(FdtError::InvalidInput),
+        _ => Err(Error::InvalidInput),
     }
 }
 
@@ -75,7 +63,7 @@ fn fdt_add_subnode(
             fdt.as_mut_ptr() as *mut _,
             parent,
             name.as_ptr() as *const _,
-            name.len().try_into().map_err(|_| FdtError::IntegerOverflow)?,
+            name.len().try_into()?,
         )
     })
 }
@@ -92,7 +80,7 @@ fn fdt_subnode_offset(
             fdt.as_ptr() as *const _,
             parent,
             name.as_ptr() as *const _,
-            name.len().try_into().map_err(|_| FdtError::IntegerOverflow)?,
+            name.len().try_into()?,
         )
     })
 }
@@ -123,7 +111,7 @@ impl FdtHeader {
     /// Cast a bytes into a reference of FDT header
     pub fn from_bytes_ref(buffer: &[u8]) -> Result<&FdtHeader> {
         Ok(Ref::<_, FdtHeader>::new_from_prefix(buffer)
-            .ok_or_else(|| FdtError::InvalidInput)?
+            .ok_or(Error::BufferTooSmall(Some(size_of::<FdtHeader>())))?
             .0
             .into_ref())
     }
@@ -131,7 +119,7 @@ impl FdtHeader {
     /// Cast a bytes into a mutable reference of FDT header.
     pub fn from_bytes_mut(buffer: &mut [u8]) -> Result<&mut FdtHeader> {
         Ok(Ref::<_, FdtHeader>::new_from_prefix(buffer)
-            .ok_or_else(|| FdtError::InvalidInput)?
+            .ok_or(Error::BufferTooSmall(Some(size_of::<FdtHeader>())))?
             .0
             .into_mut())
     }
@@ -193,7 +181,7 @@ impl<T: AsRef<[u8]>> Fdt<T> {
             Some(v) => Ok(unsafe {
                 from_raw_parts(
                     v.data.as_ptr() as *const u8,
-                    u32::from_be(v.len).try_into().map_err(|_| FdtError::IntegerOverflow)?,
+                    u32::from_be(v.len).try_into().or(Err(Error::Other(None)))?,
                 )
             }),
             _ => Err(map_result(len).unwrap_err()),
@@ -223,10 +211,10 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
             libfdt_c_def::fdt_move(
                 init.as_ptr() as *const _,
                 fdt.as_mut().as_ptr() as *mut _,
-                fdt.as_mut().len().try_into().map_err(|_| FdtError::IntegerOverflow)?,
+                fdt.as_mut().len().try_into().or(Err(Error::Other(None)))?,
             )
         })?;
-        let new_size: u32 = fdt.as_mut().len().try_into().map_err(|_| FdtError::IntegerOverflow)?;
+        let new_size: u32 = fdt.as_mut().len().try_into().or(Err(Error::Other(None)))?;
         let mut ret = Fdt::new(fdt)?;
         ret.header_mut()?.set_totalsize(new_size);
         Ok(ret)
@@ -267,7 +255,7 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
                 node,
                 name.to_bytes_with_nul().as_ptr() as *const _,
                 val.as_ptr() as *const _,
-                val.len().try_into().map_err(|_| FdtError::IntegerOverflow)?,
+                val.len().try_into().or(Err(Error::Other(None)))?,
             )
         })?;
         Ok(())
@@ -290,7 +278,7 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
                 self.0.as_mut().as_mut_ptr() as *mut _,
                 node,
                 name.to_bytes_with_nul().as_ptr() as *const _,
-                len.try_into().map_err(|_| FdtError::IntegerOverflow)?,
+                len.try_into().or(Err(Error::Other(None)))?,
                 &mut out_ptr as *mut *mut u8 as *mut _,
             )
         })?;

@@ -1,4 +1,4 @@
-# Copyright (C) 2023 The Android Open Source Project
+# Copyright (C) 2024 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,11 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 rust_library(
-    name = "byteorder",
-    srcs = glob(["**/*.rs"]),
+    name = "liberror",
+    srcs = glob(
+        ["**/*.rs"],
+    ),
     edition = "2021",
+    rustc_flags = ANDROID_RUST_LINTS,
     visibility = ["//visibility:public"],
+    deps = [
+        "@gbl//libsafemath",
+    ],
+)
+
+rust_test(
+    name = "liberror_test",
+    crate = ":liberror",
+    rustc_flags = ANDROID_RUST_LINTS,
 )

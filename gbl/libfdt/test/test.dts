@@ -1,5 +1,6 @@
 /dts-v1/;
 
+// re-generate and push test artifacts using ./gen_test_dtb.sh after change in this file
 / {
 	info = "test device tree";
 

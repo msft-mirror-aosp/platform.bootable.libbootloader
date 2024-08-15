@@ -97,6 +97,7 @@ rust_library(
     deps = [
         "@arrayvec",
         "@gbl//libasync",
+        "@gbl//liberror",
         "@gbl//libgbl",
         "@gbl//libstorage",
         "@spin",
@@ -111,5 +112,6 @@ rust_test(
     deps = [
         "@gbl//libavb:sysdeps",
         "@gbl//libstorage:libstorage_testlib",
+        "@gbl//third_party/libzbi",
     ],
 )
