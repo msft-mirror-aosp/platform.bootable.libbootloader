@@ -15,15 +15,15 @@
 //! Rust wrapper for `EFI_BLOCK_IO2_PROTOCOL`.
 
 use crate::{
-    defs::{
-        EfiBlockIo2Protocol, EfiBlockIo2Token, EfiBlockIoMedia, EfiGuid,
-        EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_NOT_FOUND, EFI_STATUS_NOT_READY,
-    },
-    efi_call, map_efi_err,
+    efi_call,
     protocol::{Protocol, ProtocolInfo},
-    EfiResult, Event, EventNotify, EventType, Tpl,
+    Event, EventNotify, EventType, Tpl,
+};
+use efi_types::{
+    EfiBlockIo2Protocol, EfiBlockIo2Token, EfiBlockIoMedia, EfiGuid, EFI_STATUS_NOT_READY,
 };
 use gbl_async::yield_now;
+use liberror::{efi_status_to_result, Error, Result};
 
 /// EFI_BLOCK_IO2_PROTOCOL
 pub struct BlockIo2Protocol;
@@ -38,7 +38,7 @@ impl ProtocolInfo for BlockIo2Protocol {
 // Protocol interface wrappers.
 impl Protocol<'_, BlockIo2Protocol> {
     /// Syncs a non-blocking operation by waiting for the corresponding EFI event to be signaled.
-    async fn wait_io_completion(&self, event: &Event<'_, '_>) -> EfiResult<()> {
+    async fn wait_io_completion(&self, event: &Event<'_, '_>) -> Result<()> {
         let bs = self.efi_entry().system_table().boot_services();
         loop {
             match bs.check_event(&event) {
@@ -55,7 +55,7 @@ impl Protocol<'_, BlockIo2Protocol> {
     }
 
     /// Wraps `EfiBlockIo2Protocol.read_blocks_ex`.
-    pub async fn read_blocks_ex(&self, lba: u64, buffer: &mut [u8]) -> EfiResult<()> {
+    pub async fn read_blocks_ex(&self, lba: u64, buffer: &mut [u8]) -> Result<()> {
         let bs = self.efi_entry().system_table().boot_services();
         // UEFI spec requires that NOTIFY_WAIT event be always created with a callback.
         let mut notify_fn = &mut |_| ();
@@ -83,11 +83,11 @@ impl Protocol<'_, BlockIo2Protocol> {
             )?;
         }
         self.wait_io_completion(&event).await?;
-        map_efi_err(token.transaction_status)
+        efi_status_to_result(token.transaction_status)
     }
 
     /// Wraps `EfiBlockIo2Protocol.write_blocks_ex`.
-    pub async fn write_blocks_ex(&self, lba: u64, buffer: &mut [u8]) -> EfiResult<()> {
+    pub async fn write_blocks_ex(&self, lba: u64, buffer: &mut [u8]) -> Result<()> {
         let bs = self.efi_entry().system_table().boot_services();
         let mut notify_fn = &mut |_| ();
         let mut notify = EventNotify::new(Tpl::Callback, &mut notify_fn);
@@ -107,11 +107,11 @@ impl Protocol<'_, BlockIo2Protocol> {
             )?;
         }
         self.wait_io_completion(&event).await?;
-        map_efi_err(token.transaction_status)
+        efi_status_to_result(token.transaction_status)
     }
 
     /// Wraps `EFI_BLOCK_IO2_PROTOCOL.flush_blocks_ex()`
-    pub async fn flush_blocks_ex(&self) -> EfiResult<()> {
+    pub async fn flush_blocks_ex(&self) -> Result<()> {
         let bs = self.efi_entry().system_table().boot_services();
         let mut notify_fn = &mut |_| ();
         let mut notify = EventNotify::new(Tpl::Callback, &mut notify_fn);
@@ -123,11 +123,11 @@ impl Protocol<'_, BlockIo2Protocol> {
             efi_call!(self.interface()?.flush_blocks_ex, self.interface, &mut token,)?;
         }
         self.wait_io_completion(&event).await?;
-        map_efi_err(token.transaction_status)
+        efi_status_to_result(token.transaction_status)
     }
 
     /// Wraps `EFI_BLOCK_IO2_PROTOCOL.reset()`
-    pub fn reset(&self, extended_verification: bool) -> EfiResult<()> {
+    pub fn reset(&self, extended_verification: bool) -> Result<()> {
         // SAFETY:
         // * See safety comment for `Self::read_blocks_ex()`.
         // * The operation is synchronous, no need to call wait_io_completion().
@@ -135,9 +135,9 @@ impl Protocol<'_, BlockIo2Protocol> {
     }
 
     /// Gets a copy of the `EFI_BLOCK_IO2_PROTOCOL.Media` structure.
-    pub fn media(&self) -> EfiResult<EfiBlockIoMedia> {
+    pub fn media(&self) -> Result<EfiBlockIoMedia> {
         let ptr = self.interface()?.media;
         // SAFETY: Pointers to EFI data structure.
-        Ok(*unsafe { ptr.as_ref() }.ok_or(EFI_STATUS_INVALID_PARAMETER)?)
+        Ok(*unsafe { ptr.as_ref() }.ok_or(Error::InvalidInput)?)
     }
 }

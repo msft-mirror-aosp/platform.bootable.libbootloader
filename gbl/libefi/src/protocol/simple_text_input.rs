@@ -14,11 +14,10 @@
 
 //! Rust wrapper for `EFI_SIMPLE_TEXT_INPUT_PROTOCOL`.
 
-use crate::defs::{
-    EfiGuid, EfiInputKey, EfiSimpleTextInputProtocol, EFI_STATUS_NOT_FOUND, EFI_STATUS_NOT_READY,
-};
+use crate::efi_call;
 use crate::protocol::{Protocol, ProtocolInfo};
-use crate::{efi_call, map_efi_err, EfiResult};
+use efi_types::{EfiGuid, EfiInputKey, EfiSimpleTextInputProtocol};
+use liberror::{Error, Result};
 
 /// EFI_SIMPLE_TEXT_INPUT_PROTOCOL
 pub struct SimpleTextInputProtocol;
@@ -32,7 +31,7 @@ impl ProtocolInfo for SimpleTextInputProtocol {
 
 impl Protocol<'_, SimpleTextInputProtocol> {
     /// Wrapper of `EFI_SIMPLE_TEXT_INPUT_PROTOCOL.reset()`
-    pub fn reset(&self, extendend_verification: bool) -> EfiResult<()> {
+    pub fn reset(&self, extendend_verification: bool) -> Result<()> {
         // SAFETY:
         // `self.interface()?` guarantees `self.interface` is non-null and points to a valid object
         // established by `Protocol::new()`.
@@ -44,7 +43,7 @@ impl Protocol<'_, SimpleTextInputProtocol> {
     ///
     /// Returns `Ok(Some(EfiInputKey))` if there is a key stroke, Ok(None) if no key stroke is
     /// pressed.
-    pub fn read_key_stroke(&self) -> EfiResult<Option<EfiInputKey>> {
+    pub fn read_key_stroke(&self) -> Result<Option<EfiInputKey>> {
         let mut key: EfiInputKey = Default::default();
         // SAFETY:
         // `self.interface()?` guarantees `self.interface` is non-null and points to a valid object
@@ -53,7 +52,7 @@ impl Protocol<'_, SimpleTextInputProtocol> {
         // `key` is an output argument. It outlives the call and will not be taken.
         match unsafe { efi_call!(self.interface()?.read_key_stroke, self.interface, &mut key) } {
             Ok(()) => Ok(Some(key)),
-            Err(e) if e.is_efi_err(EFI_STATUS_NOT_READY) => Ok(None),
+            Err(Error::NotReady) => Ok(None),
             Err(e) => Err(e),
         }
     }
