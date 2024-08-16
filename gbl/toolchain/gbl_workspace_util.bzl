@@ -125,7 +125,7 @@ gbl_llvm_prebuilts = repository_rule(
     environ = ["GBL_LLVM_PREBUILTS", "GBL_LINUX_SYSROOT"],
 )
 
-# The current rust version used by GBL. This needs to be manually udpated when new version of
+# The current rust version used by GBL. This needs to be manually updated when new version of
 # prebuilts is uploaded to https://android.googlesource.com/platform/prebuilts/rust/
 GBL_RUST_VERSION = "1.77.1.p1"
 

@@ -14,13 +14,15 @@
 
 use crate::{
     efi_blocks::find_block_devices,
-    error::{EfiAppError, Result},
-    utils::{aligned_subslice, get_efi_fdt, to_usize, usize_add},
+    error::Result,
+    utils::{aligned_subslice, get_efi_fdt},
 };
 use core::fmt::Write;
 use core::mem::size_of;
 use efi::{efi_print, efi_println, EfiEntry};
 use fdt::Fdt;
+use liberror::Error;
+use safemath::SafeNum;
 use zbi::{ZbiContainer, ZbiFlags, ZbiHeader, ZbiType, ZBI_ALIGNMENT_USIZE};
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 
@@ -41,34 +43,39 @@ const ZIRCON_KERNEL_ALIGN: usize = 64 * 1024;
 /// Relocates a ZBI kernel to a different buffer and returns the kernel entry offset.
 pub fn relocate_kernel(kernel: &[u8], dest: &mut [u8]) -> Result<usize> {
     if (dest.as_ptr() as usize % ZIRCON_KERNEL_ALIGN) != 0 {
-        return Err(EfiAppError::BufferAlignment.into());
+        return Err(Error::InvalidAlignment.into());
     }
 
     let container = ZbiContainer::parse(&kernel[..])?;
     container.is_bootable()?;
     let kernel_header = Ref::<_, ZbiKernelHeader>::new_from_prefix(kernel)
-        .ok_or_else(|| EfiAppError::InvalidInput)?
+        .ok_or(Error::BufferTooSmall(Some(size_of::<ZbiKernelHeader>())))?
         .0
         .into_ref();
-    let kernel_size = usize_add(2 * size_of::<ZbiHeader>(), kernel_header.zbi_item_header.length)?;
-    if dest.len() < usize_add(kernel_size, kernel_header.reserve_memory_size)? {
-        return Err(EfiAppError::BufferTooSmall.into());
+    let kernel_size =
+        SafeNum::from(size_of::<ZbiHeader>()) * 2 + kernel_header.zbi_item_header.length;
+    let kernel_header_reserve: usize =
+        (kernel_size + kernel_header.reserve_memory_size).try_into().map_err(Error::from)?;
+    if dest.len() < kernel_header_reserve {
+        return Err(Error::BufferTooSmall(Some(kernel_header_reserve)).into());
     }
 
+    let kernel_size = kernel_size.try_into().map_err(Error::from)?;
     dest[..kernel_size].clone_from_slice(&kernel[..kernel_size]);
     // Updates destination ZBI container/item header.
     let dest_kernel_header =
         Ref::<_, ZbiKernelHeader>::new_from_prefix(&mut dest[..]).unwrap().0.into_mut();
-    dest_kernel_header.container_header.length = (kernel_size - size_of::<ZbiHeader>())
-        .try_into()
-        .map_err(|_| EfiAppError::ArithmeticOverflow)?;
-    Ok(to_usize(dest_kernel_header.entry)?)
+    dest_kernel_header.container_header.length =
+        (kernel_size - size_of::<ZbiHeader>()).try_into().map_err(Error::from)?;
+    Ok(usize::try_from(dest_kernel_header.entry).map_err(Error::from)?)
 }
 
 /// A helper for getting the total size of a ZBI container, including payload and header.
 fn zbi_container_size(zbi: &[u8]) -> Result<usize> {
-    let payload_length = ZbiContainer::parse(&zbi[..])?.get_payload_length_usize();
-    Ok(usize_add(payload_length, size_of::<ZbiHeader>())?)
+    Ok((SafeNum::from(ZbiContainer::parse(&zbi[..])?.get_payload_length_usize())
+        + size_of::<ZbiHeader>())
+    .try_into()
+    .map_err(Error::from)?)
 }
 
 /// A helper for getting the trailing unused portion of a ZBI container buffer.
@@ -98,7 +105,7 @@ fn load_fuchsia_simple<'a>(efi_entry: &EfiEntry, load: &'a mut [u8]) -> Result<&
     let mut gpt_devices = find_block_devices(&efi_entry)?;
 
     // Gets FDT from EFI configuration table.
-    let (_, fdt_bytes) = get_efi_fdt(&efi_entry).ok_or_else(|| EfiAppError::NoFdt).unwrap();
+    let (_, fdt_bytes) = get_efi_fdt(&efi_entry).ok_or(Error::NoFdt).unwrap();
     let fdt = Fdt::new(fdt_bytes)?;
 
     // Checks if UEFI loader passes any custom ZBI blob.
@@ -120,7 +127,7 @@ fn load_fuchsia_simple<'a>(efi_entry: &EfiEntry, load: &'a mut [u8]) -> Result<&
         .read_gpt_partition_sync("zircon_a", 0, &mut load[..size_of::<ZbiHeader>()])
         .unwrap();
     let image_length = Ref::<_, ZbiHeader>::new_from_prefix(&mut load[..])
-        .ok_or_else(|| EfiAppError::NoZbiImage)?
+        .ok_or(Error::BufferTooSmall(Some(size_of::<ZbiHeader>())))?
         .0
         .into_ref()
         .length;
@@ -130,7 +137,9 @@ fn load_fuchsia_simple<'a>(efi_entry: &EfiEntry, load: &'a mut [u8]) -> Result<&
         .read_gpt_partition_sync(
             "zircon_a",
             0,
-            &mut load[..usize_add(size_of::<ZbiHeader>(), image_length)?],
+            &mut load[..(SafeNum::from(size_of::<ZbiHeader>()) + image_length)
+                .try_into()
+                .map_err(Error::from)?],
         )
         .unwrap();
 
@@ -165,7 +174,7 @@ pub fn is_fuchsia_gpt(efi_entry: &EfiEntry) -> Result<()> {
     ];
     for partition in partitions {
         if !partition.iter().any(|v| gpt_devices.find_partition(*v).is_ok()) {
-            return Err(EfiAppError::NotFound.into());
+            return Err(Error::NotFound.into());
         }
     }
     Ok(())
@@ -195,7 +204,7 @@ pub fn fuchsia_boot_demo(efi_entry: EfiEntry) -> Result<()> {
     let mut load_buffer = vec![0u8; 128 * 1024 * 1024]; // 128MB
     let zbi_kernel = load_fuchsia_simple(&efi_entry, &mut load_buffer[..])?;
     #[allow(unused_variables)]
-    let (original, relocated, kernel_entry) = relocate_to_tail(&mut zbi_kernel[..])?;
+    let (original, relocated, _) = relocate_to_tail(&mut zbi_kernel[..])?;
 
     #[cfg(target_arch = "aarch64")]
     {
@@ -206,7 +215,7 @@ pub fn fuchsia_boot_demo(efi_entry: EfiEntry) -> Result<()> {
         let (_, remains) = zbi_get_unused_buffer(relocated)?;
         let _ = efi::exit_boot_services(efi_entry, remains).unwrap();
         // SAFETY: For demo, we assume images are provided valid.
-        unsafe { boot::aarch64::jump_zircon_el2_or_lower(relocated, kernel_entry, original) };
+        unsafe { boot::aarch64::jump_zircon_el2_or_lower(relocated, original) };
     }
 
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
