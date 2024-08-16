@@ -15,14 +15,16 @@
 //! Rust wrapper for `EFI_GBL_SLOT_PROTOCOL`.
 extern crate libgbl;
 
-use crate::defs::{
-    EfiBootReason, EfiGblSlotInfo, EfiGblSlotMetadataBlock, EfiGblSlotProtocol, EfiGuid,
-    EfiUnbootableReason, EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_NOT_FOUND,
-    EFI_UNBOOTABLE_REASON_NO_MORE_TRIES, EFI_UNBOOTABLE_REASON_SYSTEM_UPDATE,
-    EFI_UNBOOTABLE_REASON_USER_REQUESTED, EFI_UNBOOTABLE_REASON_VERIFICATION_FAILURE,
-};
+use crate::efi_call;
 use crate::protocol::{Protocol, ProtocolInfo};
-use crate::{efi_call, error::EfiError, map_efi_err, EfiResult};
+use efi_types::{
+    EfiGuid, GblEfiBootReason, GblEfiSlotInfo, GblEfiSlotMetadataBlock, GblEfiSlotProtocol,
+    GblEfiUnbootableReason, GBL_EFI_UNBOOTABLE_REASON_GBL_EFI_NO_MORE_TRIES as NO_MORE_TRIES,
+    GBL_EFI_UNBOOTABLE_REASON_GBL_EFI_SYSTEM_UPDATE as SYSTEM_UPDATE,
+    GBL_EFI_UNBOOTABLE_REASON_GBL_EFI_USER_REQUESTED as USER_REQUESTED,
+    GBL_EFI_UNBOOTABLE_REASON_GBL_EFI_VERIFICATION_FAILURE as VERIFICATION_FAILURE,
+};
+use liberror::{Error, Result};
 
 use libgbl::slots::{Bootability, Slot, UnbootableReason};
 
@@ -30,25 +32,35 @@ use libgbl::slots::{Bootability, Slot, UnbootableReason};
 pub struct GblSlotProtocol;
 
 impl ProtocolInfo for GblSlotProtocol {
-    type InterfaceType = EfiGblSlotProtocol;
+    type InterfaceType = GblEfiSlotProtocol;
 
     const GUID: EfiGuid =
-        EfiGuid::new(0xDEADBEEF, 0xCAFE, 0xD00D, [0xCA, 0xBB, 0xA6, 0xE5, 0xCA, 0xBB, 0xA6, 0xE5]);
+        EfiGuid::new(0x9a7a7db4, 0x614b, 0x4a08, [0x3d, 0xf9, 0x00, 0x6f, 0x49, 0xb0, 0xd8, 0x0c]);
 }
 
-fn from_efi_unbootable_reason(reason: EfiUnbootableReason) -> UnbootableReason {
+fn from_efi_unbootable_reason(reason: GblEfiUnbootableReason) -> UnbootableReason {
     match reason {
-        EFI_UNBOOTABLE_REASON_NO_MORE_TRIES => UnbootableReason::NoMoreTries,
-        EFI_UNBOOTABLE_REASON_SYSTEM_UPDATE => UnbootableReason::SystemUpdate,
-        EFI_UNBOOTABLE_REASON_USER_REQUESTED => UnbootableReason::UserRequested,
-        EFI_UNBOOTABLE_REASON_VERIFICATION_FAILURE => UnbootableReason::VerificationFailure,
+        NO_MORE_TRIES => UnbootableReason::NoMoreTries,
+        SYSTEM_UPDATE => UnbootableReason::SystemUpdate,
+        USER_REQUESTED => UnbootableReason::UserRequested,
+        VERIFICATION_FAILURE => UnbootableReason::VerificationFailure,
         _ => UnbootableReason::Unknown,
     }
 }
 
-impl TryFrom<EfiGblSlotInfo> for libgbl::slots::Slot {
-    type Error = libgbl::slots::Error;
-    fn try_from(info: EfiGblSlotInfo) -> Result<Self, Self::Error> {
+/// Newtype around GblEfiSlotInfo to bypass orphan rule.
+pub struct GblSlot(pub(crate) GblEfiSlotInfo);
+
+impl From<GblEfiSlotInfo> for GblSlot {
+    fn from(slot: GblEfiSlotInfo) -> Self {
+        Self(slot)
+    }
+}
+
+impl TryFrom<GblSlot> for libgbl::slots::Slot {
+    type Error = liberror::Error;
+    fn try_from(info: GblSlot) -> Result<Self> {
+        let info = info.0;
         Ok(Slot {
             suffix: info.suffix.try_into()?,
             priority: info.priority.into(),
@@ -63,8 +75,8 @@ impl TryFrom<EfiGblSlotInfo> for libgbl::slots::Slot {
 
 impl<'a> Protocol<'a, GblSlotProtocol> {
     /// Wrapper of `EFI_GBL_SLOT_PROTOCOL.load_boot_data()`
-    pub fn load_boot_data(&self) -> EfiResult<EfiGblSlotMetadataBlock> {
-        let mut block: EfiGblSlotMetadataBlock = Default::default();
+    pub fn load_boot_data(&self) -> Result<GblEfiSlotMetadataBlock> {
+        let mut block: GblEfiSlotMetadataBlock = Default::default();
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
         // established by `Protocol::new()`.
@@ -75,31 +87,31 @@ impl<'a> Protocol<'a, GblSlotProtocol> {
     }
 
     /// Wrapper of `EFI_GBL_SLOT_PROTOCOL.get_slot_info()`
-    pub fn get_slot_info(&self, idx: u8) -> EfiResult<EfiGblSlotInfo> {
-        let mut info: EfiGblSlotInfo = Default::default();
+    pub fn get_slot_info(&self, idx: u8) -> Result<GblSlot> {
+        let mut info: GblEfiSlotInfo = Default::default();
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
         // established by `Protocol::new()`.
         // `self.interface` is an input parameter and will not be retained. It outlives the call.
         // `info` is an output parameter and will not be retained. It outlives the call.
         unsafe { efi_call!(self.interface()?.get_slot_info, self.interface, idx, &mut info,)? }
-        Ok(info)
+        Ok(info.into())
     }
 
     /// Wrapper of `EFI_GBL_SLOT_PROTOCOL.get_current_slot()`
-    pub fn get_current_slot(&self) -> EfiResult<EfiGblSlotInfo> {
-        let mut info: EfiGblSlotInfo = Default::default();
+    pub fn get_current_slot(&self) -> Result<GblSlot> {
+        let mut info: GblEfiSlotInfo = Default::default();
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
         // established by `Protocol::new()`.
         // `self.interface` is an input parameter and will not be retained. It outlives the call.
         // `info` is an output parameter and will not be retained. It outlives the call.
         unsafe { efi_call!(self.interface()?.get_current_slot, self.interface, &mut info)? }
-        Ok(info)
+        Ok(info.into())
     }
 
     /// Wrapper of `EFI_GBL_SLOT_PROTOCOL.set_active_slot()`
-    pub fn set_active_slot(&self, idx: u8) -> EfiResult<()> {
+    pub fn set_active_slot(&self, idx: u8) -> Result<()> {
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
         // established by `Protocol::new()`.
@@ -108,9 +120,8 @@ impl<'a> Protocol<'a, GblSlotProtocol> {
     }
 
     /// Wrapper of `EFI_GBL_SLOT_PROTOCOL.set_slot_unbootable()`
-    pub fn set_slot_unbootable(&self, idx: u8, reason: EfiUnbootableReason) -> EfiResult<()> {
-        let reason: u32 =
-            reason.try_into().or(Err(EfiError::from(EFI_STATUS_INVALID_PARAMETER)))?;
+    pub fn set_slot_unbootable(&self, idx: u8, reason: GblEfiUnbootableReason) -> Result<()> {
+        let reason: u32 = reason.try_into().or(Err(Error::InvalidInput))?;
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
         // established by `Protocol::new()`.
@@ -119,7 +130,7 @@ impl<'a> Protocol<'a, GblSlotProtocol> {
     }
 
     /// Wrapper of `EFI_GBL_SLOT_PROTOCOL.mark_boot_attempt()`
-    pub fn mark_boot_attempt(&self) -> EfiResult<()> {
+    pub fn mark_boot_attempt(&self) -> Result<()> {
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
         // established by `Protocol::new()`.
@@ -128,7 +139,7 @@ impl<'a> Protocol<'a, GblSlotProtocol> {
     }
 
     /// Wrapper of `EFI_GBL_SLOT_PROTOCOL.reinitialize()`
-    pub fn reinitialize(&self) -> EfiResult<()> {
+    pub fn reinitialize(&self) -> Result<()> {
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
         // established by `Protocol::new()`.
@@ -137,7 +148,7 @@ impl<'a> Protocol<'a, GblSlotProtocol> {
     }
 
     /// Wrapper of `EFI_GBL_SLOT_PROTOCOL.get_boot_reason()`
-    pub fn get_boot_reason(&self, subreason: &mut [u8]) -> EfiResult<(EfiBootReason, usize)> {
+    pub fn get_boot_reason(&self, subreason: &mut [u8]) -> Result<(GblEfiBootReason, usize)> {
         let mut reason: u32 = 0;
         let mut subreason_size = subreason.len();
         // SAFETY:
@@ -149,6 +160,7 @@ impl<'a> Protocol<'a, GblSlotProtocol> {
         // `subreason` remains valid during the call.
         unsafe {
             efi_call!(
+                @bufsize subreason_size,
                 self.interface()?.get_boot_reason,
                 self.interface,
                 &mut reason,
@@ -157,13 +169,12 @@ impl<'a> Protocol<'a, GblSlotProtocol> {
             )?
         }
 
-        let reason: EfiBootReason =
-            reason.try_into().or(Err(EfiError::from(EFI_STATUS_INVALID_PARAMETER)))?;
+        let reason: GblEfiBootReason = reason.try_into().or(Err(Error::InvalidInput))?;
         Ok((reason, subreason_size))
     }
 
     /// Wrapper of `EFI_GBL_SLOT_PROTOCOL.set_boot_reason()`
-    pub fn set_boot_reason(&self, reason: EfiBootReason, subreason: &[u8]) -> EfiResult<()> {
+    pub fn set_boot_reason(&self, reason: GblEfiBootReason, subreason: &[u8]) -> Result<()> {
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
         // established by `Protocol::new()`.
@@ -173,7 +184,7 @@ impl<'a> Protocol<'a, GblSlotProtocol> {
             efi_call!(
                 self.interface()?.set_boot_reason,
                 self.interface,
-                reason.try_into().or(Err(EfiError::from(EFI_STATUS_INVALID_PARAMETER)))?,
+                reason.try_into().or(Err(Error::InvalidInput))?,
                 subreason.len(),
                 subreason.as_ptr(),
             )
@@ -181,7 +192,7 @@ impl<'a> Protocol<'a, GblSlotProtocol> {
     }
 
     /// Wrapper of `EFI_GBL_SLOT_PROTOCOL.flush()`
-    pub fn flush(&self) -> EfiResult<()> {
+    pub fn flush(&self) -> Result<()> {
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
         // established by `Protocol::new()`.
@@ -190,7 +201,7 @@ impl<'a> Protocol<'a, GblSlotProtocol> {
     }
 
     /// Wrapper of `EFI_GBL_SLOT_PROTOCOL.version`
-    pub fn version(&self) -> EfiResult<u32> {
+    pub fn version(&self) -> Result<u32> {
         Ok(self.interface()?.version)
     }
 }

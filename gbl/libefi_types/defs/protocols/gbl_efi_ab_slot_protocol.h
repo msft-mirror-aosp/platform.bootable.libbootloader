@@ -15,35 +15,35 @@
  *
  */
 
-#ifndef __AB_SLOT_PROTOCOL_H__
-#define __AB_SLOT_PROTOCOL_H__
+#ifndef __GBL_EFI_AB_SLOT_PROTOCOL_H__
+#define __GBL_EFI_AB_SLOT_PROTOCOL_H__
 
 #include "system_table.h"
 #include "types.h"
 
-typedef enum EFI_UNBOOTABLE_REASON {
-  UNKNOWN_REASON = 0,
-  NO_MORE_TRIES,
-  SYSTEM_UPDATE,
-  USER_REQUESTED,
-  VERIFICATION_FAILURE,
-} EfiUnbootableReason;
+typedef enum GBL_EFI_UNBOOTABLE_REASON {
+  GBL_EFI_UNKNOWN_REASON = 0,
+  GBL_EFI_NO_MORE_TRIES,
+  GBL_EFI_SYSTEM_UPDATE,
+  GBL_EFI_USER_REQUESTED,
+  GBL_EFI_VERIFICATION_FAILURE,
+} GblEfiUnbootableReason;
 
-typedef enum EFI_BOOT_REASON {
-  EMPTY_EFI_BOOT_REASON = 0,
-  UNKNOWN_EFI_BOOT_REASON = 1,
-  WATCHDOG = 14,
-  KERNEL_PANIC = 15,
-  RECOVERY = 3,
-  BOOTLOADER = 55,
-  COLD = 56,
-  HARD = 57,
-  WARM = 58,
-  SHUTDOWN,
-  REBOOT = 18,
-} EfiBootReason;
+typedef enum GBL_EFI_BOOT_REASON {
+  GBL_EFI_EMPTY_BOOT_REASON = 0,
+  GBL_EFI_UNKNOWN_EFI_BOOT_REASON = 1,
+  GBL_EFI_WATCHDOG = 14,
+  GBL_EFI_KERNEL_PANIC = 15,
+  GBL_EFI_RECOVERY = 3,
+  GBL_EFI_BOOTLOADER = 55,
+  GBL_EFI_COLD = 56,
+  GBL_EFI_HARD = 57,
+  GBL_EFI_WARM = 58,
+  GBL_EFI_SHUTDOWN,
+  GBL_EFI_REBOOT = 18,
+} GblEfiBootReason;
 
-typedef struct EfiGblSlotInfo {
+typedef struct {
   // One UTF-8 encoded single character
   uint32_t suffix;
   // Any value other than those explicitly enumerated in EFI_UNBOOTABLE_REASON
@@ -54,39 +54,39 @@ typedef struct EfiGblSlotInfo {
   // Value of 1 if slot has successfully booted.
   uint8_t successful;
   uint8_t merge_status;
-} EfiGblSlotInfo;
+} GblEfiSlotInfo;
 
-typedef struct EfiGblSlotMetadataBlock {
+typedef struct {
   // Value of 1 if persistent metadata tracks slot unbootable reasons.
   uint8_t unbootable_metadata;
   uint8_t max_retries;
   uint8_t slot_count;
-} EfiGblSlotMetadataBlock;
+} GblEfiSlotMetadataBlock;
 
-typedef struct EfiGblSlotProtocol {
+typedef struct GblEfiSlotProtocol {
   // Currently must contain 0x00010000
   uint32_t version;
   // Slot metadata query methods
-  EfiStatus (*load_boot_data)(struct EfiGblSlotProtocol*,
-                              EfiGblSlotMetadataBlock* /* out param*/);
-  EfiStatus (*get_slot_info)(struct EfiGblSlotProtocol*, uint8_t,
-                             EfiGblSlotInfo* /* out param */);
-  EfiStatus (*get_current_slot)(struct EfiGblSlotProtocol*,
-                                EfiGblSlotInfo* /* out param */);
+  EfiStatus (*load_boot_data)(struct GblEfiSlotProtocol*,
+                              GblEfiSlotMetadataBlock* /* out param*/);
+  EfiStatus (*get_slot_info)(struct GblEfiSlotProtocol*, uint8_t,
+                             GblEfiSlotInfo* /* out param */);
+  EfiStatus (*get_current_slot)(struct GblEfiSlotProtocol*,
+                                GblEfiSlotInfo* /* out param */);
   // Slot metadata manipulation methods
-  EfiStatus (*set_active_slot)(struct EfiGblSlotProtocol*, uint8_t);
-  EfiStatus (*set_slot_unbootable)(struct EfiGblSlotProtocol*, uint8_t,
+  EfiStatus (*set_active_slot)(struct GblEfiSlotProtocol*, uint8_t);
+  EfiStatus (*set_slot_unbootable)(struct GblEfiSlotProtocol*, uint8_t,
                                    uint32_t);
-  EfiStatus (*mark_boot_attempt)(struct EfiGblSlotProtocol*);
-  EfiStatus (*reinitialize)(struct EfiGblSlotProtocol*);
+  EfiStatus (*mark_boot_attempt)(struct GblEfiSlotProtocol*);
+  EfiStatus (*reinitialize)(struct GblEfiSlotProtocol*);
   // Miscellaneous methods
-  EfiStatus (*get_boot_reason)(struct EfiGblSlotProtocol*,
+  EfiStatus (*get_boot_reason)(struct GblEfiSlotProtocol*,
                                uint32_t* /* out param */,
                                size_t* /* in-out param */,
                                uint8_t* /* out param*/);
-  EfiStatus (*set_boot_reason)(struct EfiGblSlotProtocol*, uint32_t, size_t,
+  EfiStatus (*set_boot_reason)(struct GblEfiSlotProtocol*, uint32_t, size_t,
                                const uint8_t*);
-  EfiStatus (*flush)(struct EfiGblSlotProtocol*);
-} EfiGblSlotProtocol;
+  EfiStatus (*flush)(struct GblEfiSlotProtocol*);
+} GblEfiSlotProtocol;
 
 #endif

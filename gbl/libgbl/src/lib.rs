@@ -42,6 +42,7 @@ pub mod boot_mode;
 pub mod boot_reason;
 pub mod error;
 pub mod fastboot;
+pub mod fuchsia_boot;
 pub mod ops;
 mod overlap;
 
@@ -54,12 +55,10 @@ use slots::{BootTarget, BootToken, Cursor, OneShot, SuffixBytes, UnbootableReaso
 pub use avb::Descriptor;
 pub use boot_mode::BootMode;
 pub use boot_reason::KnownBootReason;
-pub use error::{Error, IntegrationError, Result};
-pub use ops::{
-    AndroidBootImages, BootImages, DefaultGblOps, FuchsiaBootImages, GblOps, GblOpsError,
-};
+pub use error::{IntegrationError, Result};
+use liberror::Error;
+pub use ops::{AndroidBootImages, BootImages, DefaultGblOps, FuchsiaBootImages, GblAvbOps, GblOps};
 
-use gbl_async::block_on;
 use overlap::is_overlap;
 
 // TODO: b/312607649 - Replace placeholders with actual structures: https://r.android.com/2721974, etc
@@ -207,7 +206,7 @@ where
         let bytes: SuffixBytes =
             if let Some(tgt) = boot_target { tgt.suffix().into() } else { Default::default() };
 
-        let avb_suffix = CStr::from_bytes_until_nul(&bytes)?;
+        let avb_suffix = CStr::from_bytes_until_nul(&bytes).map_err(Error::from)?;
 
         Ok(avb::slot_verify(
             avb_ops,
@@ -233,9 +232,7 @@ where
         block_device: &'a mut B,
     ) -> Result<Cursor<'a, B>> {
         let boot_token = self.boot_token.take().ok_or(Error::OperationProhibited)?;
-        self.ops
-            .load_slot_interface::<B>(block_device, boot_token)
-            .map_err(move |_| Error::OperationProhibited.into())
+        self.ops.load_slot_interface::<B>(block_device, boot_token)
     }
 
     /// Info Load
@@ -445,7 +442,7 @@ where
         if oneshot_status == Some(OneShot::Bootloader) {
             match self.ops.do_fastboot(&mut slot_cursor) {
                 Ok(_) => oneshot_status = slot_cursor.ctx.get_oneshot_status(),
-                Err(IntegrationError::GblNativeError(Error::NotImplemented)) => (),
+                Err(IntegrationError::UnificationError(Error::NotImplemented)) => (),
                 Err(e) => return Err(e),
             }
         }
@@ -495,7 +492,7 @@ where
             &ramdisk.0,
             kernel_load_buffer,
         ]) {
-            return Err(IntegrationError::GblNativeError(Error::BufferOverlap));
+            return Err(IntegrationError::UnificationError(Error::BufferOverlap));
         }
 
         let info_struct = self.unpack_boot_image(&boot_image, Some(boot_target))?;
@@ -515,25 +512,6 @@ where
 
         Ok((kernel_image, token))
     }
-
-    /// Loads and boots a Zircon kernel according to ABR + AVB.
-    pub fn zircon_load_and_boot(&mut self, load_buffer: &mut [u8]) -> Result<()> {
-        // TODO(b/334962583): Implement zircon ABR + AVB.
-        // The following are place holder for test of invocation in the integration test only.
-        let ptn_size = self
-            .ops
-            .partition_size("zircon_a")?
-            .ok_or(Error::MissingImage)?
-            .try_into()
-            .or(Err(Error::ArithmeticOverflow))?;
-        let (kernel, remains) = load_buffer.split_at_mut(ptn_size);
-        block_on(self.ops.read_from_partition("zircon_a", 0, kernel))?;
-        self.ops.boot(BootImages::Fuchsia(FuchsiaBootImages {
-            zbi_kernel: kernel,
-            zbi_items: &mut [],
-        }))?;
-        Err(Error::BootFailed.into())
-    }
 }
 
 #[cfg(test)]
@@ -548,7 +526,7 @@ mod tests {
 
     const TEST_ZIRCON_PARTITION_NAME: &str = "zircon_a";
     const TEST_ZIRCON_PARTITION_NAME_CSTR: &CStr = c"zircon_a";
-    const TEST_ZIRCON_IMAGE_PATH: &str = "zircon_a.bin";
+    const TEST_ZIRCON_IMAGE_PATH: &str = "zircon_a.zbi";
     const TEST_ZIRCON_VBMETA_PATH: &str = "zircon_a.vbmeta";
     const TEST_ZIRCON_VBMETA_CERT_PATH: &str = "zircon_a.vbmeta.cert";
     const TEST_PUBLIC_KEY_PATH: &str = "testkey_rsa4096_pub.bin";
