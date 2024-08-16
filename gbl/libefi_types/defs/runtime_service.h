@@ -22,7 +22,7 @@ typedef struct {
                                       EfiGuid* vendor_guid);
   EfiStatus (*set_variable)(const char16_t* variable_name,
                             const EfiGuid* vendor_guid, uint32_t attributes,
-                            size_t data_size, void* data);
+                            size_t data_size, const void* data);
   EfiStatus (*get_next_high_monotonic_count)(uint32_t* high_count);
   void (*reset_system)(EfiResetType reset_type, EfiStatus reset_status,
                        size_t data_size, void* reset_data);
