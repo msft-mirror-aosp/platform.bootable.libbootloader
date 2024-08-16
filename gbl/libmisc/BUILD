@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(
@@ -23,10 +24,15 @@ rust_library(
     srcs = ["src/lib.rs"],
     crate_name = "misc",
     edition = "2021",
-    deps = ["@zerocopy"],
+    rustc_flags = ANDROID_RUST_LINTS,
+    deps = [
+        "@gbl//liberror",
+        "@zerocopy",
+    ],
 )
 
 rust_test(
     name = "libmisc_test",
     crate = ":libmisc",
+    rustc_flags = ANDROID_RUST_LINTS,
 )

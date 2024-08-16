@@ -17,6 +17,7 @@
 //!   https://www.kernel.org/doc/html/v5.11/arm64/booting.html
 
 use core::arch::asm;
+use zbi::ZbiContainer;
 
 /// ARM exception levels.
 #[allow(missing_docs)]
@@ -119,13 +120,14 @@ pub unsafe fn jump_linux_el2_or_lower(kernel: &[u8], ramdisk: &[u8], fdt: &[u8])
 ///
 /// # Safety
 ///
-/// Caller must ensure that `zbi_kernel` contains a valid zircon kernel ZBI item and `entry_off` is
-/// the correct kernel entry offset.
-pub unsafe fn jump_zircon_el2_or_lower(zbi_kernel: &[u8], entry_off: usize, zbi_item: &[u8]) -> ! {
+/// Caller must ensure that `zbi_kernel` contains a valid zircon kernel ZBI item.
+pub unsafe fn jump_zircon_el2_or_lower(kernel: &[u8], zbi_item: &[u8]) -> ! {
     assert_ne!(current_el(), ExceptionLevel::EL3);
-    flush_dcache_buffer(zbi_kernel);
+    let (entry, _) =
+        ZbiContainer::parse(zbi_item).unwrap().get_kernel_entry_and_reserved_memory_size().unwrap();
+    flush_dcache_buffer(kernel);
     flush_dcache_buffer(zbi_item);
-    let addr = (zbi_kernel.as_ptr() as usize).checked_add(entry_off).unwrap();
+    let addr = (kernel.as_ptr() as usize).checked_add(usize::try_from(entry).unwrap()).unwrap();
     // SAFETY:
     // * `zbi_kernel` and `zbi_item` have been flushed.
     // * By requirement of this function, the computed `addr` is a valid kernel entry point.

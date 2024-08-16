@@ -147,7 +147,27 @@ use core::panic::Location;
 /// The underlying primitive type used for [SafeNum] operations.
 pub type Primitive = u64;
 /// Safe math error type, which points to the location of the original failed operation.
-pub type Error = &'static Location<'static>;
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Error(&'static Location<'static>);
+
+impl From<&'static Location<'static>> for Error {
+    fn from(loc: &'static Location<'static>) -> Self {
+        Self(loc)
+    }
+}
+
+impl From<Error> for &'static Location<'static> {
+    fn from(err: Error) -> Self {
+        err.0
+    }
+}
+
+impl From<core::num::TryFromIntError> for Error {
+    #[track_caller]
+    fn from(_err: core::num::TryFromIntError) -> Self {
+        Self(Location::caller())
+    }
+}
 
 /// Wraps a raw [Primitive] type for safe-by-default math. See module docs for info and usage.
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -159,6 +179,12 @@ impl fmt::Debug for SafeNum {
             Ok(val) => write!(f, "{}", val),
             Err(location) => write!(f, "error at {}", location),
         }
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
     }
 }
 
@@ -207,7 +233,7 @@ macro_rules! try_conversion_func {
 
             #[track_caller]
             fn try_from(val: SafeNum) -> Result<Self, Self::Error> {
-                Self::try_from(val.0?).map_err(|_| Location::caller())
+                Self::try_from(val.0?).map_err(|_| Location::caller().into())
             }
         }
     };
@@ -230,7 +256,7 @@ macro_rules! conversion_func_maybe_error {
         impl From<$from_type> for SafeNum {
             #[track_caller]
             fn from(val: $from_type) -> Self {
-                Self(Primitive::try_from(val).map_err(|_| Location::caller()))
+                Self(Primitive::try_from(val).map_err(|_| Location::caller().into()))
             }
         }
 
@@ -249,7 +275,9 @@ macro_rules! arithmetic_impl {
                 match (self.0, rhs.0) {
                     (Err(_), _) => self,
                     (_, Err(_)) => rhs,
-                    (Ok(lhs), Ok(rhs)) => Self(lhs.$func(rhs).ok_or_else(Location::caller)),
+                    (Ok(lhs), Ok(rhs)) => {
+                        Self(lhs.$func(rhs).ok_or_else(|| Location::caller().into()))
+                    }
                 }
             }
         }

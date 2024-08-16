@@ -16,24 +16,6 @@
 
 #![cfg_attr(not(test), no_std)]
 
-/// Library error type.
-#[derive(Debug)]
-pub enum BootError {
-    /// Value overflow while setting up structures for kernel jump.
-    IntegerOverflow,
-    /// Data provided was either too small to be valid or not properly aligned.
-    InvalidInput,
-    /// Data provided does not look like a valid kernel zimage (x86 only).
-    InvalidZImage,
-    /// The kernel zimage is not a supported version (x86 only).
-    UnsupportedZImage,
-    /// The e820 memory map callback failed (x86 only).
-    E820MemoryMapCallbackError(i64),
-}
-
-/// Library result type,
-pub type Result<T> = core::result::Result<T, BootError>;
-
 #[cfg(target_arch = "aarch64")]
 pub mod aarch64;
 #[cfg(target_arch = "riscv64")]

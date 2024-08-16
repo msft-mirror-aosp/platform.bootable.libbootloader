@@ -22,7 +22,7 @@
 //! and prints out the device path, block size and io alignment info for each of them.
 //!
 //! ```
-//! fn main(image: EfiHandle, systab_ptr: *mut EfiSystemTable) -> efi::EfiResult<()> {
+//! fn main(image: EfiHandle, systab_ptr: *mut EfiSystemTable) -> liberror::Result<()> {
 //!     let efi_entry = initialize(image, systab_ptr)?;
 //!     let mut con_out = efi_entry.system_table().con_out()?;
 //!     let boot_services = efi_entry.system_table().boot_services();
@@ -60,75 +60,28 @@ use core::{fmt::Write, panic::PanicInfo};
 
 use zerocopy::Ref;
 
-#[rustfmt::skip]
-pub mod defs;
-use defs::*;
-
 #[cfg(not(test))]
 mod allocation;
 
 #[cfg(not(test))]
 pub use allocation::{efi_free, efi_malloc};
 
+/// The Android EFI protocol implementation of an A/B slot manager.
+pub mod ab_slots;
 pub mod protocol;
+pub mod utils;
+
+use efi_types::{
+    EfiBootService, EfiConfigurationTable, EfiEvent, EfiEventNotify, EfiGuid, EfiHandle,
+    EfiMemoryDescriptor, EfiMemoryType, EfiRuntimeService, EfiSystemTable, EfiTimerDelay, EfiTpl,
+    EFI_EVENT_TYPE_NOTIFY_SIGNAL, EFI_EVENT_TYPE_NOTIFY_WAIT, EFI_EVENT_TYPE_RUNTIME,
+    EFI_EVENT_TYPE_SIGNAL_EXIT_BOOT_SERVICES, EFI_EVENT_TYPE_SIGNAL_VIRTUAL_ADDRESS_CHANGE,
+    EFI_EVENT_TYPE_TIMER, EFI_LOCATE_HANDLE_SEARCH_TYPE_BY_PROTOCOL,
+    EFI_OPEN_PROTOCOL_ATTRIBUTE_BY_HANDLE_PROTOCOL,
+};
+use liberror::{Error, Result};
 use protocol::simple_text_output::SimpleTextOutputProtocol;
 use protocol::{Protocol, ProtocolInfo};
-
-mod error {
-    use super::defs::EFI_STATUS_SUCCESS;
-    use super::EfiStatus;
-
-    /// Wrapper for [EfiStatus] to split the `EFI_SUCCESS` and error cases.
-    #[derive(Debug, Copy, Clone, PartialEq)]
-    pub enum ErrorTypes {
-        /// Unknown state, e.g. trying to create [ErrorTypes] from `EFI_SUCCESS`.
-        Unknown,
-        /// An [EfiStatus] error code.
-        EfiStatusError(EfiStatus),
-    }
-
-    /// Wraps [ErrorTypes] to provide some additional functionality.
-    #[derive(Debug, PartialEq)]
-    pub struct EfiError(ErrorTypes);
-
-    impl EfiError {
-        /// Returns the underlying [ErrorTypes] enum.
-        pub fn err(&self) -> ErrorTypes {
-            self.0
-        }
-
-        /// Checks if the error is a particular EFI error.
-        pub fn is_efi_err(&self, code: EfiStatus) -> bool {
-            *self == code.into()
-        }
-    }
-
-    impl From<EfiStatus> for EfiError {
-        fn from(efi_status: EfiStatus) -> EfiError {
-            EfiError(match efi_status {
-                EFI_STATUS_SUCCESS => ErrorTypes::Unknown,
-                _ => ErrorTypes::EfiStatusError(
-                    // Remove the highest bit in the error code so that it's eaiser to interpret
-                    // when printing.
-                    efi_status & !(1 << (core::mem::size_of::<EfiStatus>() * 8 - 1)),
-                ),
-            })
-        }
-    }
-}
-
-pub use error::*;
-
-/// Result type for this library.
-pub type EfiResult<T> = core::result::Result<T, EfiError>;
-
-/// Helper method to convert an EFI status code to EfiResult.
-fn map_efi_err(code: EfiStatus) -> EfiResult<()> {
-    match code {
-        EFI_STATUS_SUCCESS => Ok(()),
-        _ => Err(code.into()),
-    }
-}
 
 /// `EfiEntry` stores the EFI system table pointer and image handle passed from the entry point.
 /// It's the root data structure that derives all other wrapper APIs and structures.
@@ -150,6 +103,13 @@ impl EfiEntry {
     }
 }
 
+/// The vendor GUID for UEFI variables defined by GBL.
+pub const GBL_EFI_VENDOR_GUID: EfiGuid =
+    EfiGuid::new(0x5a6d92f3, 0xa2d0, 0x4083, [0x91, 0xa1, 0xa5, 0x0f, 0x6c, 0x3d, 0x98, 0x30]);
+
+/// The name of the UEFI variable that GBL defines to determine the target OS.
+pub const GBL_EFI_OS_BOOT_TARGET_VARNAME: &str = "gbl_os_boot_target";
+
 /// Creates an `EfiEntry` and initialize EFI global allocator.
 ///
 /// # Safety
@@ -161,7 +121,7 @@ impl EfiEntry {
 pub unsafe fn initialize(
     image_handle: EfiHandle,
     systab_ptr: *const EfiSystemTable,
-) -> EfiResult<EfiEntry> {
+) -> Result<EfiEntry> {
     let efi_entry = EfiEntry { image_handle, systab_ptr };
     // SAFETY: By safety requirement of this function, `initialize` is only called once upon
     // entering EFI application, where there should be no event notify function that can be
@@ -192,9 +152,9 @@ pub fn aligned_subslice(buffer: &mut [u8], alignment: usize) -> Option<&mut [u8]
 ///
 /// Existing heap allocated memories will maintain their states. All system memory including them
 /// will be under onwership of the subsequent OS or OS loader code.
-pub fn exit_boot_services(entry: EfiEntry, mmap_buffer: &mut [u8]) -> EfiResult<EfiMemoryMap> {
+pub fn exit_boot_services(entry: EfiEntry, mmap_buffer: &mut [u8]) -> Result<EfiMemoryMap> {
     let aligned = aligned_subslice(mmap_buffer, core::mem::align_of::<EfiMemoryDescriptor>())
-        .ok_or_else::<EfiError, _>(|| EFI_STATUS_BUFFER_TOO_SMALL.into())?;
+        .ok_or(Error::BufferTooSmall(None))?;
 
     let res = entry.system_table().boot_services().get_memory_map(aligned)?;
     entry.system_table().boot_services().exit_boot_services(&res)?;
@@ -234,7 +194,7 @@ impl<'a> SystemTable<'a> {
     }
 
     /// Gets the `EFI_SYSTEM_TABLE.ConOut` field.
-    pub fn con_out(&self) -> EfiResult<Protocol<'a, SimpleTextOutputProtocol>> {
+    pub fn con_out(&self) -> Result<Protocol<'a, SimpleTextOutputProtocol>> {
         // SAFETY: `EFI_SYSTEM_TABLE.ConOut` is a pointer to EfiSimpleTextOutputProtocol structure
         // by definition. It lives until ExitBootService and thus as long as `self.efi_entry` or,
         // 'a
@@ -277,7 +237,7 @@ impl<'a> BootServices<'a> {
         &self,
         pool_type: EfiMemoryType,
         size: usize,
-    ) -> EfiResult<*mut core::ffi::c_void> {
+    ) -> Result<*mut core::ffi::c_void> {
         let mut out: *mut core::ffi::c_void = null_mut();
         // SAFETY: `EFI_BOOT_SERVICES` method call.
         unsafe {
@@ -287,16 +247,13 @@ impl<'a> BootServices<'a> {
     }
 
     /// Wrapper of `EFI_BOOT_SERVICES.FreePool()`.
-    fn free_pool(&self, buf: *mut core::ffi::c_void) -> EfiResult<()> {
+    fn free_pool(&self, buf: *mut core::ffi::c_void) -> Result<()> {
         // SAFETY: `EFI_BOOT_SERVICES` method call.
         unsafe { efi_call!(self.boot_services.free_pool, buf) }
     }
 
     /// Wrapper of `EFI_BOOT_SERVICES.OpenProtocol()`.
-    pub fn open_protocol<T: ProtocolInfo>(
-        &self,
-        handle: DeviceHandle,
-    ) -> EfiResult<Protocol<'a, T>> {
+    pub fn open_protocol<T: ProtocolInfo>(&self, handle: DeviceHandle) -> Result<Protocol<'a, T>> {
         let mut out_handle: EfiHandle = null_mut();
         // SAFETY: EFI_BOOT_SERVICES method call.
         unsafe {
@@ -317,7 +274,8 @@ impl<'a> BootServices<'a> {
     }
 
     /// Wrapper of `EFI_BOOT_SERVICES.CloseProtocol()`.
-    fn close_protocol<T: ProtocolInfo>(&self, handle: DeviceHandle) -> EfiResult<()> {
+    #[allow(dead_code)]
+    fn close_protocol<T: ProtocolInfo>(&self, handle: DeviceHandle) -> Result<()> {
         // SAFETY: EFI_BOOT_SERVICES method call.
         unsafe {
             efi_call!(
@@ -332,9 +290,7 @@ impl<'a> BootServices<'a> {
 
     /// Call `EFI_BOOT_SERVICES.LocateHandleBuffer()` with fixed
     /// `EFI_LOCATE_HANDLE_SEARCH_TYPE_BY_PROTOCOL` and without search key.
-    pub fn locate_handle_buffer_by_protocol<T: ProtocolInfo>(
-        &self,
-    ) -> EfiResult<LocatedHandles<'a>> {
+    pub fn locate_handle_buffer_by_protocol<T: ProtocolInfo>(&self) -> Result<LocatedHandles<'a>> {
         let mut num_handles: usize = 0;
         let mut handles: *mut EfiHandle = null_mut();
         // SAFETY: EFI_BOOT_SERVICES method call.
@@ -355,19 +311,19 @@ impl<'a> BootServices<'a> {
     }
 
     /// Search and open the first found target EFI protocol.
-    pub fn find_first_and_open<T: ProtocolInfo>(&self) -> EfiResult<Protocol<'a, T>> {
+    pub fn find_first_and_open<T: ProtocolInfo>(&self) -> Result<Protocol<'a, T>> {
         // We don't use EFI_BOOT_SERVICES.LocateProtocol() because it doesn't give device handle
         // which is required to close the protocol.
         let handle = *self
             .locate_handle_buffer_by_protocol::<T>()?
             .handles()
             .first()
-            .ok_or::<EfiError>(EFI_STATUS_NOT_FOUND.into())?;
+            .ok_or(Error::NotFound)?;
         self.open_protocol::<T>(handle)
     }
 
     /// Wrapper of `EFI_BOOT_SERVICE.GetMemoryMap()`.
-    pub fn get_memory_map<'b>(&self, mmap_buffer: &'b mut [u8]) -> EfiResult<EfiMemoryMap<'b>> {
+    pub fn get_memory_map<'b>(&self, mmap_buffer: &'b mut [u8]) -> Result<EfiMemoryMap<'b>> {
         let mut mmap_size = mmap_buffer.len();
         let mut map_key: usize = 0;
         let mut descriptor_size: usize = 0;
@@ -392,7 +348,7 @@ impl<'a> BootServices<'a> {
     }
 
     /// Wrapper of `EFI_BOOT_SERVICE.ExitBootServices()`.
-    fn exit_boot_services<'b>(&self, mmap: &'b EfiMemoryMap<'b>) -> EfiResult<()> {
+    fn exit_boot_services<'b>(&self, mmap: &'b EfiMemoryMap<'b>) -> Result<()> {
         // SAFETY: EFI_BOOT_SERVICES method call.
         unsafe {
             efi_call!(
@@ -404,7 +360,7 @@ impl<'a> BootServices<'a> {
     }
 
     /// Wrapper of `EFI_BOOT_SERVICE.Stall()`.
-    pub fn stall(&self, micro: usize) -> EfiResult<()> {
+    pub fn stall(&self, micro: usize) -> Result<()> {
         // SAFETY: EFI_BOOT_SERVICES method call.
         unsafe { efi_call!(self.boot_services.stall, micro) }
     }
@@ -420,7 +376,7 @@ impl<'a> BootServices<'a> {
         &self,
         event_type: EventType,
         mut cb: Option<&'n mut EventNotify<'e>>,
-    ) -> EfiResult<Event<'a, 'n>> {
+    ) -> Result<Event<'a, 'n>> {
         let mut efi_event: EfiEvent = null_mut();
         let (tpl, c_callback, cookie): (EfiTpl, EfiEventNotify, *mut core::ffi::c_void) = match cb {
             Some(ref mut event_notify) => {
@@ -452,7 +408,7 @@ impl<'a> BootServices<'a> {
     }
 
     /// Wrapper of `EFI_BOOT_SERVICE.CloseEvent()`.
-    fn close_event(&self, event: &Event) -> EfiResult<()> {
+    fn close_event(&self, event: &Event) -> Result<()> {
         // SAFETY: EFI_BOOT_SERVICES method call.
         unsafe { efi_call!(self.boot_services.close_event, event.efi_event) }
     }
@@ -460,10 +416,10 @@ impl<'a> BootServices<'a> {
     /// Wrapper of `EFI_BOOT_SERVICE.CheckEvent()`.
     ///
     /// On success, returns true if the event is signaled, false if not.
-    pub fn check_event(&self, event: &Event) -> EfiResult<bool> {
+    pub fn check_event(&self, event: &Event) -> Result<bool> {
         // SAFETY: EFI_BOOT_SERVICES method call.
         match unsafe { efi_call!(self.boot_services.check_event, event.efi_event) } {
-            Err(e) if e != EFI_STATUS_NOT_READY.into() => Err(e),
+            Err(e) if e != Error::NotReady => Err(e),
             Ok(()) => Ok(true),
             _ => Ok(false),
         }
@@ -475,7 +431,7 @@ impl<'a> BootServices<'a> {
         event: &Event,
         delay_type: EfiTimerDelay,
         trigger_time: u64,
-    ) -> EfiResult<()> {
+    ) -> Result<()> {
         // SAFETY: EFI_BOOT_SERVICES method call.
         unsafe {
             efi_call!(self.boot_services.set_timer, event.efi_event, delay_type, trigger_time)
@@ -491,7 +447,7 @@ pub struct RuntimeServices<'a> {
 
 impl<'a> RuntimeServices<'a> {
     /// Wrapper of `EFI_RUNTIME_SERVICES.GetVariable()`.
-    pub fn get_variable(&self, guid: &EfiGuid, name: &str, out: &mut [u8]) -> EfiResult<usize> {
+    pub fn get_variable(&self, guid: &EfiGuid, name: &str, out: &mut [u8]) -> Result<usize> {
         let mut size = out.len();
 
         let mut name_utf16: Vec<u16> = name.encode_utf16().collect();
@@ -579,6 +535,8 @@ impl<'a, 'n> Event<'a, 'n> {
     }
 
     /// Creates an  unowned `Event`. The `Event` is not closed when going out of scope.
+    // TODO allow unused?
+    #[allow(dead_code)]
     fn new_unowned(efi_event: EfiEvent) -> Self {
         Self { efi_entry: None, efi_event: efi_event, _cb: None }
     }
@@ -678,6 +636,13 @@ impl<'a: 'b, 'b> IntoIterator for &'b EfiMemoryMap<'a> {
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct DeviceHandle(EfiHandle);
 
+impl DeviceHandle {
+    /// Public constructor
+    pub fn new(handle: EfiHandle) -> Self {
+        Self(handle)
+    }
+}
+
 /// `LocatedHandles` holds the array of handles return by
 /// `BootServices::locate_handle_buffer_by_protocol()`.
 pub struct LocatedHandles<'a> {
@@ -725,8 +690,10 @@ macro_rules! efi_print {
 #[macro_export]
 macro_rules! efi_println {
     ( $efi_entry:expr, $( $x:expr ),* ) => {
-        efi_print!($efi_entry, $($x,)*);
-        efi_print!($efi_entry, "\r\n");
+        {
+            efi_print!($efi_entry, $($x,)*);
+            efi_print!($efi_entry, "\r\n");
+        }
     };
 }
 
@@ -753,6 +720,11 @@ pub fn panic(panic: &PanicInfo) -> ! {
 mod test {
     use super::*;
     use crate::protocol::block_io::BlockIoProtocol;
+    use efi_types::{
+        EfiBlockIoProtocol, EfiLocateHandleSearchType, EfiStatus, EFI_MEMORY_TYPE_LOADER_CODE,
+        EFI_MEMORY_TYPE_LOADER_DATA, EFI_STATUS_NOT_FOUND, EFI_STATUS_NOT_READY,
+        EFI_STATUS_SUCCESS, EFI_STATUS_UNSUPPORTED,
+    };
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::mem::size_of;
@@ -1020,7 +992,7 @@ mod test {
     /// A test wrapper that sets up a system table, image handle and runs a test function like it
     /// is an EFI application.
     /// TODO(300168989): Investigate using procedural macro to generate test that auto calls this.
-    pub fn run_test(func: fn(EfiHandle, *mut EfiSystemTable) -> ()) {
+    pub fn run_test(func: impl FnOnce(EfiHandle, *mut EfiSystemTable) -> ()) {
         // Reset all traces
         EFI_CALL_TRACES.with(|trace| {
             *trace.borrow_mut() = Default::default();
@@ -1049,8 +1021,33 @@ mod test {
         });
     }
 
+    /// Constructs a mock protocol `P` and run the given callback on it.
+    ///
+    /// This is similar to `run_test()`, but also provides the construction of a single mock
+    /// protocol to reduce boilerplate for tests to check the interface between a C EFI protocol
+    /// struct and our Rust wrappers.
+    ///
+    /// # Arguments
+    /// * `c_interface`: the raw C struct interface implementing the desired protocol.
+    /// * `f`: the callback function to run, given the resulting protocol as an argument.
+    pub fn run_test_with_mock_protocol<P: ProtocolInfo>(
+        mut c_interface: P::InterfaceType,
+        f: impl FnOnce(&Protocol<P>),
+    ) {
+        run_test(|image_handle, systab_ptr| {
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+            // SAFETY:
+            // * `c_interface` is a valid C interface for proto `P`
+            // * `c_interface` outlives the created `protocol`
+            let protocol = unsafe {
+                Protocol::new(DeviceHandle::new(null_mut()), &mut c_interface, &efi_entry)
+            };
+            f(&protocol);
+        });
+    }
+
     /// Get the pointer to an object as an EfiHandle type.
-    fn as_efi_handle<T>(val: &mut T) -> EfiHandle {
+    pub fn as_efi_handle<T>(val: &mut T) -> EfiHandle {
         val as *mut T as *mut _
     }
 
@@ -1097,16 +1094,8 @@ mod test {
             }
 
             // Close protocol is called as `protocol` goes out of scope.
-            EFI_CALL_TRACES.with(|trace| {
-                assert_eq!(
-                    trace.borrow_mut().close_protocol_trace.inputs,
-                    [(
-                        DeviceHandle(as_efi_handle(&mut device_handle)),
-                        BlockIoProtocol::GUID,
-                        image_handle
-                    ),]
-                )
-            });
+            EFI_CALL_TRACES
+                .with(|trace| assert_eq!(trace.borrow_mut().close_protocol_trace.inputs, []));
         })
     }
 
@@ -1423,11 +1412,5 @@ mod test {
             assert_eq!(efi_entry.system_table().boot_services().check_event(&res), Ok(false));
             assert!(efi_entry.system_table().boot_services().check_event(&res).is_err());
         });
-    }
-
-    #[test]
-    fn test_efi_error() {
-        let res: EfiResult<()> = Err(EFI_STATUS_NOT_FOUND.into());
-        assert_eq!(res.unwrap_err().err(), ErrorTypes::EfiStatusError(14));
     }
 }
