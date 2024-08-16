@@ -12,20 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Functionality to boot kernels on X86, ARM, and RISC-V boards.
+
 #![cfg_attr(not(test), no_std)]
-
-// Library error type.
-#[derive(Debug)]
-pub enum BootError {
-    IntegerOverflow,
-    InvalidInput,
-    InvalidZImage,
-    UnsupportedZImage,
-    E820MemoryMapCallbackError(i64),
-}
-
-/// Library result type,
-pub type Result<T> = core::result::Result<T, BootError>;
 
 #[cfg(target_arch = "aarch64")]
 pub mod aarch64;

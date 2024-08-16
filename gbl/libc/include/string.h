@@ -19,7 +19,7 @@
 
 #include <stddef.h>
 
-size_t strlen(const char * str);
+size_t strlen(const char *str);
 void *memchr(const void *ptr, int ch, size_t count);
 char *strrchr(const char *str, int c);
 size_t strnlen(const char *s, size_t maxlen);

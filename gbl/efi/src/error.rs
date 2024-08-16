@@ -13,53 +13,39 @@
 // limitations under the License.
 
 use avb::{IoError, SlotVerifyError};
-use boot::BootError;
-use bootconfig::BootConfigError;
-use bootimg::ImageError;
-use efi::EfiError;
-use fastboot::TransportError;
-use fdt::FdtError;
-use gbl_storage::StorageError;
+use liberror::Error;
 use libgbl::composite_enum;
-use misc::BcbError;
 use smoltcp::socket::tcp::{ListenError, RecvError, SendError};
 use zbi::ZbiError;
-
-/// Error types for EFI application.
-#[derive(Debug)]
-pub enum EfiAppError {
-    ArithmeticOverflow,
-    BufferAlignment,
-    BufferTooSmall,
-    InvalidInput,
-    InvalidString,
-    NoFdt,
-    NotFound,
-    NoZbiImage,
-    PeerClosed,
-    Timeout,
-    Unsupported,
-}
 
 composite_enum! {
     /// A top level error type that consolidates errors from different libraries.
     #[derive(Debug)]
     pub enum GblEfiError {
         AvbIoError(IoError),
-        BcbError(BcbError),
-        BootConfigError(BootConfigError),
-        BootError(BootError),
-        EfiAppError(EfiAppError),
-        EfiError(EfiError),
-        FdtError(FdtError),
-        ImageError(ImageError),
-        ListenError(ListenError),
-        RecvError(RecvError),
-        SendError(SendError),
         SlotVerifyError(SlotVerifyError<'static>),
-        StorageError(StorageError),
-        TransportError(TransportError),
+        UnifiedError(Error),
         ZbiError(ZbiError),
+    }
+}
+
+pub fn recv_to_unified(err: RecvError) -> Error {
+    match err {
+        RecvError::InvalidState => Error::InvalidState,
+        RecvError::Finished => Error::Finished,
+    }
+}
+
+pub fn send_to_unified(err: SendError) -> Error {
+    match err {
+        SendError::InvalidState => Error::InvalidState,
+    }
+}
+
+pub fn listen_to_unified(err: ListenError) -> Error {
+    match err {
+        ListenError::InvalidState => Error::InvalidState,
+        ListenError::Unaddressable => Error::Unaddressable,
     }
 }
 

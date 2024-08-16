@@ -144,9 +144,32 @@ use core::fmt;
 use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Rem, RemAssign, Sub, SubAssign};
 use core::panic::Location;
 
+/// The underlying primitive type used for [SafeNum] operations.
 pub type Primitive = u64;
-pub type Error = &'static Location<'static>;
+/// Safe math error type, which points to the location of the original failed operation.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Error(&'static Location<'static>);
 
+impl From<&'static Location<'static>> for Error {
+    fn from(loc: &'static Location<'static>) -> Self {
+        Self(loc)
+    }
+}
+
+impl From<Error> for &'static Location<'static> {
+    fn from(err: Error) -> Self {
+        err.0
+    }
+}
+
+impl From<core::num::TryFromIntError> for Error {
+    #[track_caller]
+    fn from(_err: core::num::TryFromIntError) -> Self {
+        Self(Location::caller())
+    }
+}
+
+/// Wraps a raw [Primitive] type for safe-by-default math. See module docs for info and usage.
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct SafeNum(Result<Primitive, Error>);
 
@@ -159,9 +182,18 @@ impl fmt::Debug for SafeNum {
     }
 }
 
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 impl SafeNum {
+    /// The maximum [SafeNum].
     pub const MAX: SafeNum = SafeNum(Ok(u64::MAX));
+    /// The minimum [SafeNum].
     pub const MIN: SafeNum = SafeNum(Ok(u64::MIN));
+    /// Zero as a [SafeNum].
     pub const ZERO: SafeNum = SafeNum(Ok(0));
 
     /// Round `self` down to the nearest multiple of `rhs`.
@@ -201,7 +233,7 @@ macro_rules! try_conversion_func {
 
             #[track_caller]
             fn try_from(val: SafeNum) -> Result<Self, Self::Error> {
-                Self::try_from(val.0?).map_err(|_| Location::caller())
+                Self::try_from(val.0?).map_err(|_| Location::caller().into())
             }
         }
     };
@@ -224,7 +256,7 @@ macro_rules! conversion_func_maybe_error {
         impl From<$from_type> for SafeNum {
             #[track_caller]
             fn from(val: $from_type) -> Self {
-                Self(Primitive::try_from(val).map_err(|_| Location::caller()))
+                Self(Primitive::try_from(val).map_err(|_| Location::caller().into()))
             }
         }
 
@@ -243,7 +275,9 @@ macro_rules! arithmetic_impl {
                 match (self.0, rhs.0) {
                     (Err(_), _) => self,
                     (_, Err(_)) => rhs,
-                    (Ok(lhs), Ok(rhs)) => Self(lhs.$func(rhs).ok_or_else(Location::caller)),
+                    (Ok(lhs), Ok(rhs)) => {
+                        Self(lhs.$func(rhs).ok_or_else(|| Location::caller().into()))
+                    }
                 }
             }
         }

@@ -11,65 +11,18 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use core::cell::RefCell;
+
+//! Utilities for writing tests with libstorage, e.g. creating fake block devices.
+
 use crc32fast::Hasher;
-pub use gbl_storage::{
-    alignment_scratch_size, is_aligned, is_buffer_aligned, required_scratch_size, AsBlockDevice,
-    AsMultiBlockDevices, BlockDeviceEx, BlockInfo, BlockIo, BlockIoError, GptEntry, GptHeader,
-    IoStatus, NonBlockingBlockIo, GPT_MAGIC, GPT_NAME_LEN_U16,
-};
+use gbl_async::yield_now;
+pub use gbl_storage::*;
+use liberror::{Error, Result};
 use safemath::SafeNum;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use zerocopy::AsBytes;
 
-// Declares a per-thread global instance of timestamp. The timestamp is used to control the
-// execution of non-blocking IO.
-thread_local! {
-    static TIMESTAMP: RefCell<u64> = RefCell::new(Default::default());
-    /// Number of `TimestampPauser` in effect.
-    static NUM_TIMESTAMP_PAUSER: RefCell<u64> = RefCell::new(Default::default());
-}
-
-/// Increases the value of timestamp.
-pub fn advance_timestamp() {
-    TIMESTAMP.with(|ts| (*ts.borrow_mut()) += 1);
-}
-
-/// Queries the current value of timestamp.
-pub fn query_timestamp() -> u64 {
-    NUM_TIMESTAMP_PAUSER.with(|v| (*v.borrow() == 0).then(|| advance_timestamp()));
-    TIMESTAMP.with(|ts| *ts.borrow())
-}
-
-/// When a `TimestampPauser` is in scope, timestamp will not be increased by query.
-pub struct TimestampPauser {}
-
-impl Drop for TimestampPauser {
-    fn drop(&mut self) {
-        NUM_TIMESTAMP_PAUSER.with(|v| *v.borrow_mut() -= 1);
-    }
-}
-
-impl TimestampPauser {
-    /// Creates a new instance to pause the timestamp.
-    pub fn new() -> Self {
-        NUM_TIMESTAMP_PAUSER.with(|v| *v.borrow_mut() += 1);
-        Self {}
-    }
-
-    /// Consumes the pauser, causing it to go out of scope. When all pausers go out of scope,
-    /// timestamp resumes.
-    pub fn resume(self) {}
-}
-
-/// `NonBlockingIoState` tracks the non-blocking IO state.
-enum NonBlockingIoState {
-    // (timestamp when initiated, blk offset, buffer, is read)
-    Pending(u64, u64, &'static mut [u8], bool),
-    Ready(IoStatus),
-}
-
-/// Helper `gbl_storage::BlockIo` struct for TestBlockDevice.
+/// Helper `gbl_storage::BlockIoSync` struct for TestBlockDevice.
 pub struct TestBlockIo {
     /// The storage block size in bytes.
     pub block_size: u64,
@@ -81,45 +34,30 @@ pub struct TestBlockIo {
     pub num_writes: usize,
     /// The number of successful read calls.
     pub num_reads: usize,
-    /// Pending non-blocking IO
-    io: Option<NonBlockingIoState>,
+    /// Injected errors.
+    pub errors: VecDeque<Error>,
 }
 
 impl TestBlockIo {
+    /// Creates a new [TestBlockIo].
     pub fn new(block_size: u64, alignment: u64, data: Vec<u8>) -> Self {
-        Self { block_size, alignment, storage: data, num_writes: 0, num_reads: 0, io: None }
+        Self {
+            block_size,
+            alignment,
+            storage: data,
+            num_writes: 0,
+            num_reads: 0,
+            errors: Default::default(),
+        }
     }
 
     fn check_alignment(&mut self, buffer: &[u8]) -> bool {
-        matches!(is_buffer_aligned(buffer, self.alignment()), Ok(true))
-            && matches!(is_aligned(buffer.len().into(), self.block_size().into()), Ok(true))
+        matches!(is_buffer_aligned(buffer, self.alignment), Ok(true))
+            && matches!(is_aligned(buffer.len().into(), self.block_size.into()), Ok(true))
     }
 }
 
-impl BlockIo for TestBlockIo {
-    fn info(&mut self) -> BlockInfo {
-        NonBlockingBlockIo::info(self)
-    }
-
-    fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> Result<(), BlockIoError> {
-        // `BlockIo` is implemented for `&mut dyn NonBlockingBlockIo`
-        BlockIo::read_blocks(&mut (self as &mut dyn NonBlockingBlockIo), blk_offset, out)
-    }
-
-    fn write_blocks(&mut self, blk_offset: u64, data: &mut [u8]) -> Result<(), BlockIoError> {
-        BlockIo::write_blocks(&mut (self as &mut dyn NonBlockingBlockIo), blk_offset, data)
-    }
-}
-
-// SAFETY:
-// * When `TestBlockIo::io` is `Some(NonBlockingIoState(Pending(_, _, buffer, _)))`,
-//   `check_status()` always returns `IoStatus::Pending`. `check_status()` returns other `IoStatus`
-//   values if and only if `TestBlockIo::io` is not `Some(NonBlockingIoState(Pending())`, in which
-//   case the buffer is not tracked anymore and thus will not be retained again.
-// * `Self::check_status()` does not dereference the input pointer.
-// * `TestBlockIo::io` is set to `Some(NonBlockingIoState(Pending(_, _, buffer, _)))` and retains
-//   the buffer only on success (returning Ok(())).
-unsafe impl NonBlockingBlockIo for TestBlockIo {
+impl BlockIoAsync for TestBlockIo {
     /// Returns a `BlockInfo` for the block device.
     fn info(&mut self) -> BlockInfo {
         BlockInfo {
@@ -129,95 +67,34 @@ unsafe impl NonBlockingBlockIo for TestBlockIo {
         }
     }
 
-    unsafe fn write_blocks(
-        &mut self,
-        blk_offset: u64,
-        buffer: *mut [u8],
-    ) -> core::result::Result<(), BlockIoError> {
-        match self.io {
-            Some(_) => Err(BlockIoError::MediaBusy),
-            _ => {
-                self.num_writes += 1;
-                // SAFETY: By safety requirement, trait implementation can retain the buffer until
-                // it no longer returns `IoStatus::Pending` in `Self::check_status()`.
-                let buffer = unsafe { &mut *buffer };
-                assert!(self.check_alignment(buffer));
-                self.io =
-                    Some(NonBlockingIoState::Pending(query_timestamp(), blk_offset, buffer, false));
-                Ok(())
-            }
+    async fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> Result<()> {
+        assert!(self.check_alignment(out));
+        let offset = (SafeNum::from(blk_offset) * self.block_size).try_into().unwrap();
+        yield_now().await; // yield once to simulate IO pending.
+        match self.errors.pop_front() {
+            Some(e) => Err(e),
+            _ => Ok(out.clone_from_slice(&self.storage[offset..][..out.len()])),
         }
     }
 
-    unsafe fn read_blocks(
-        &mut self,
-        blk_offset: u64,
-        buffer: *mut [u8],
-    ) -> core::result::Result<(), BlockIoError> {
-        match self.io {
-            Some(_) => Err(BlockIoError::MediaBusy),
-            _ => {
-                self.num_reads += 1;
-                // SAFETY: By safety requirement, trait implementation can retain the buffer until
-                // it no longer returns `IoStatus::Pending` in `Self::check_status()`.
-                let buffer = unsafe { &mut *buffer };
-                assert!(self.check_alignment(buffer));
-                self.io =
-                    Some(NonBlockingIoState::Pending(query_timestamp(), blk_offset, buffer, true));
-                Ok(())
-            }
+    async fn write_blocks(&mut self, blk_offset: u64, data: &mut [u8]) -> Result<()> {
+        assert!(self.check_alignment(data));
+        let offset = (SafeNum::from(blk_offset) * self.block_size).try_into().unwrap();
+        yield_now().await; // yield once to simulate IO pending.
+        match self.errors.pop_front() {
+            Some(e) => Err(e),
+            _ => Ok(self.storage[offset..][..data.len()].clone_from_slice(data)),
         }
-    }
-
-    fn check_status(&mut self, buf: *mut [u8]) -> IoStatus {
-        match self.io.as_mut() {
-            Some(NonBlockingIoState::Pending(ts, blk_offset, ref mut buffer, is_read))
-                if std::ptr::eq(*buffer as *const [u8], buf as _) =>
-            {
-                // Executes the IO if current timestamp is newer.
-                if query_timestamp() > *ts {
-                    let offset = (SafeNum::from(*blk_offset) * self.block_size).try_into().unwrap();
-                    match is_read {
-                        true => buffer.clone_from_slice(&self.storage[offset..][..buffer.len()]),
-                        _ => self.storage[offset..][..buffer.len()].clone_from_slice(buffer),
-                    }
-                    self.io = Some(NonBlockingIoState::Ready(IoStatus::Completed));
-                }
-                IoStatus::Pending
-            }
-            Some(NonBlockingIoState::Ready(v)) => {
-                let res = *v;
-                self.io.take();
-                res
-            }
-            _ => IoStatus::NotFound,
-        }
-    }
-
-    fn abort(&mut self) -> core::result::Result<(), BlockIoError> {
-        match self.io {
-            Some(NonBlockingIoState::Pending(_, _, _, _)) => {
-                self.io = Some(NonBlockingIoState::Ready(IoStatus::Aborted));
-            }
-            _ => {}
-        }
-        Ok(())
     }
 }
 
 /// Simple RAM based block device used by unit tests.
 pub struct TestBlockDevice {
-    /// The BlockIo helper struct.
+    /// The mock block device.
     pub io: TestBlockIo,
     /// In-memory backing store.
     pub scratch: Vec<u8>,
     max_gpt_entries: u64,
-}
-
-impl TestBlockDevice {
-    pub fn as_block_device_ex(&mut self) -> BlockDeviceEx {
-        BlockDeviceEx::new((&mut self.io as &mut dyn NonBlockingBlockIo).into())
-    }
 }
 
 impl From<&[u8]> for TestBlockDevice {
@@ -227,7 +104,7 @@ impl From<&[u8]> for TestBlockDevice {
 }
 
 impl AsBlockDevice for TestBlockDevice {
-    fn with(&mut self, f: &mut dyn FnMut(&mut dyn BlockIo, &mut [u8], u64)) {
+    fn with(&mut self, f: &mut dyn FnMut(&mut dyn BlockIoSync, &mut [u8], u64)) {
         f(&mut self.io, &mut self.scratch[..], self.max_gpt_entries)
     }
 }
@@ -238,12 +115,26 @@ impl Default for TestBlockDevice {
     }
 }
 
+impl TestBlockDevice {
+    /// Creates an instance of `AsyncGptDevice`
+    pub fn as_gpt_dev(&mut self) -> AsyncGptDevice<'_, &mut TestBlockIo> {
+        AsyncGptDevice::<&mut TestBlockIo>::new_from_monotonic_buffer(
+            &mut self.io,
+            &mut self.scratch[..],
+            self.max_gpt_entries,
+        )
+        .unwrap()
+    }
+}
+
 /// A description of the backing data store for a block device or partition.
 /// Can either describe explicit data the device or partition is initialized with
 /// OR a size in bytes if the device or partition can be initialized in a blank state.
 #[derive(Copy, Clone)]
 pub enum BackingStore<'a> {
+    /// Exact data to use for the storage.
     Data(&'a [u8]),
+    /// Data size to use, will be initialized as zeros.
     Size(usize),
 }
 
@@ -400,7 +291,9 @@ impl<'a> TestBlockDeviceBuilder<'a> {
         let mut io = TestBlockIo::new(self.block_size, self.alignment, storage);
         let scratch_size = match self.scratch_size {
             Some(s) => s,
-            None => required_scratch_size(&mut io, self.max_gpt_entries).unwrap(),
+            None => {
+                required_scratch_size(BlockIoSync::info(&mut io), self.max_gpt_entries).unwrap()
+            }
         };
         TestBlockDevice {
             io,
@@ -537,17 +430,10 @@ fn partitions_to_disk_data(
 /// Simple RAM based multi-block device used for unit tests.
 pub struct TestMultiBlockDevices(pub Vec<TestBlockDevice>);
 
-impl AsMultiBlockDevices for TestMultiBlockDevices {
-    fn for_each(
-        &mut self,
-        f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64),
-    ) -> core::result::Result<(), Option<&'static str>> {
-        let _ = self
-            .0
-            .iter_mut()
-            .enumerate()
-            .for_each(|(idx, ele)| f(ele, u64::try_from(idx).unwrap()));
-        Ok(())
+impl TestMultiBlockDevices {
+    /// Creates a vector of `AsyncGptDevice`;
+    pub fn as_gpt_devs(&mut self) -> Vec<AsyncGptDevice<&mut TestBlockIo>> {
+        self.0.iter_mut().map(|v| v.as_gpt_dev()).collect::<Vec<_>>()
     }
 }
 

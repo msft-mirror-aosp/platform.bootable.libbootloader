@@ -12,13 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::defs::{
-    EfiGuid, EfiMacAddress, EfiSimpleNetworkMode, EfiSimpleNetworkProtocol, EFI_STATUS_NOT_FOUND,
-};
+//! Rust wrapper for `EFI_SIMPLE_NETWORK_PROTOCOL`.
+
+use crate::efi_call;
 use crate::protocol::{Protocol, ProtocolInfo};
-use crate::{efi_call, map_efi_err, EfiResult};
 use core::ffi::c_void;
 use core::ptr::null_mut;
+use efi_types::{EfiGuid, EfiMacAddress, EfiSimpleNetworkMode, EfiSimpleNetworkProtocol};
+use liberror::{Error, Result};
 
 /// EFI_SIMPLE_NETWORK_PROTOCOL
 pub struct SimpleNetworkProtocol;
@@ -32,7 +33,7 @@ impl ProtocolInfo for SimpleNetworkProtocol {
 
 impl<'a> Protocol<'a, SimpleNetworkProtocol> {
     /// Wrapper of `EFI_SIMPLE_NETWORK.Start()`
-    pub fn start(&self) -> EfiResult<()> {
+    pub fn start(&self) -> Result<()> {
         // SAFETY:
         // `self.interface()?` guarantees to return a valid object pointer as established by
         // `Protocol::new()`.
@@ -41,13 +42,13 @@ impl<'a> Protocol<'a, SimpleNetworkProtocol> {
     }
 
     /// Wrapper of `EFI_SIMPLE_NETWORK.Stop()`
-    pub fn stop(&self) -> EfiResult<()> {
+    pub fn stop(&self) -> Result<()> {
         // SAFETY: See safety reasoning of `start()`.
         unsafe { efi_call!(self.interface()?.stop, self.interface) }
     }
 
     /// Wrapper of `EFI_SIMPLE_NETWORK.Initialize()`
-    pub fn initialize(&self, extra_rx_buf_size: usize, extra_tx_buf_size: usize) -> EfiResult<()> {
+    pub fn initialize(&self, extra_rx_buf_size: usize, extra_tx_buf_size: usize) -> Result<()> {
         // SAFETY: See safety reasoning of `start()`.
         unsafe {
             efi_call!(
@@ -60,13 +61,13 @@ impl<'a> Protocol<'a, SimpleNetworkProtocol> {
     }
 
     /// Wrapper of `EFI_SIMPLE_NETWORK.Reset()`
-    pub fn reset(&self, extended_verification: bool) -> EfiResult<()> {
+    pub fn reset(&self, extended_verification: bool) -> Result<()> {
         // SAFETY: See safety reasoning of `start()`.
         unsafe { efi_call!(self.interface()?.reset, self.interface, extended_verification) }
     }
 
     /// Wrapper of `EFI_SIMPLE_NETWORK.Shutdown()`
-    pub fn shutdown(&self) -> EfiResult<()> {
+    pub fn shutdown(&self) -> Result<()> {
         // SAFETY: See safety reasoning of `start()`.
         unsafe { efi_call!(self.interface()?.shutdown, self.interface) }
     }
@@ -76,7 +77,7 @@ impl<'a> Protocol<'a, SimpleNetworkProtocol> {
         &self,
         interrupt_status: Option<&mut u32>,
         recycle_buffer: Option<&mut *mut c_void>,
-    ) -> EfiResult<()> {
+    ) -> Result<()> {
         // SAFETY:
         // See safety reasoning of `start()`.
         // Pointers to `interrupt_status`, `recycled_buffer` are valid during the call and for
@@ -109,8 +110,9 @@ impl<'a> Protocol<'a, SimpleNetworkProtocol> {
         mut src: EfiMacAddress,
         mut dest: EfiMacAddress,
         mut protocol: u16,
-    ) -> EfiResult<()> {
-        let buf = buf.as_mut().unwrap();
+    ) -> Result<()> {
+        // SAFETY: function safety docs require valid `buf`.
+        let buf = unsafe { buf.as_mut() }.unwrap();
         // SAFETY:
         // See safety reasoning of `start()`.
         // All pointers passed are valid, outlive the call and are not retained by the call.
@@ -137,7 +139,7 @@ impl<'a> Protocol<'a, SimpleNetworkProtocol> {
         src: Option<&mut EfiMacAddress>,
         dest: Option<&mut EfiMacAddress>,
         protocol: Option<&mut u16>,
-    ) -> EfiResult<()> {
+    ) -> Result<()> {
         // SAFETY:
         // See safety reasoning of `start()`.
         // All pointers passed are valid, outlive the call and are not retained by the call.
@@ -157,9 +159,9 @@ impl<'a> Protocol<'a, SimpleNetworkProtocol> {
     }
 
     /// Returns `EFI_SIMPLE_NETWORK.Mode` structure
-    pub fn mode(&self) -> EfiResult<EfiSimpleNetworkMode> {
+    pub fn mode(&self) -> Result<EfiSimpleNetworkMode> {
         // SAFETY: Non-null pointer from UEFI interface points to valid object.
-        unsafe { self.interface()?.mode.as_ref() }.ok_or(EFI_STATUS_NOT_FOUND.into()).copied()
+        unsafe { self.interface()?.mode.as_ref() }.ok_or(Error::NotFound).copied()
     }
 }
 
