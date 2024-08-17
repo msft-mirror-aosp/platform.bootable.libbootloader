@@ -15,11 +15,11 @@
 use alloc::vec::Vec;
 use core::{cmp::max, fmt::Write};
 use efi::{
-    defs::EfiBlockIoMedia,
     efi_print, efi_println,
     protocol::{block_io::BlockIoProtocol, block_io2::BlockIo2Protocol, Protocol},
     EfiEntry,
 };
+use efi_types::EfiBlockIoMedia;
 use gbl_async::block_on;
 use gbl_storage::{
     check_part_unique, read_unique_gpt_partition, AsAsyncGptDeviceIter, AsyncBlockDevice,

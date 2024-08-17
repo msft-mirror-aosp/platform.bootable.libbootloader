@@ -25,8 +25,8 @@
 extern crate alloc;
 use core::fmt::Write;
 
-use efi::defs::EfiSystemTable;
 use efi::{efi_print, efi_println, initialize, panic};
+use efi_types::EfiSystemTable;
 use libgbl::GblOps;
 
 #[macro_use]
