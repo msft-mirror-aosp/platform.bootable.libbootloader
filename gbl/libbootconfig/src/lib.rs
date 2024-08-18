@@ -18,19 +18,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
-/// Library error type.
-#[derive(Debug)]
-pub enum BootConfigError {
-    /// Overflow while processing bootconfig.
-    ArithmeticOverflow,
-    /// Provided buffer was not large enough.
-    BufferTooSmall,
-    /// Bootconfig read callback failed.
-    GenericReaderError(i64),
-}
-
-/// The type of Result used in this library.
-pub type Result<T> = core::result::Result<T, BootConfigError>;
+use liberror::{Error, Result};
 
 /// A class for constructing bootconfig section.
 pub struct BootConfigBuilder<'a> {
@@ -51,7 +39,7 @@ impl<'a> BootConfigBuilder<'a> {
     /// Initialize with a given buffer.
     pub fn new(buffer: &'a mut [u8]) -> Result<Self> {
         if buffer.len() < BOOTCONFIG_TRAILER_SIZE {
-            return Err(BootConfigError::BufferTooSmall);
+            return Err(Error::BufferTooSmall(Some(BOOTCONFIG_TRAILER_SIZE)));
         }
         let mut ret = Self { current_size: 0, buffer: buffer };
         ret.update_trailer()?;
@@ -77,8 +65,8 @@ impl<'a> BootConfigBuilder<'a> {
     /// Append a new config via a reader callback.
     ///
     /// A `&mut [u8]` that covers the remaining space is passed to the callback for reading the
-    /// config bytes. It should return the total size read if operation is successful or a custom
-    /// error code via `BootConfigError::GenericReaderError(<code>)`. Attempting to return a size
+    /// config bytes. It should return the total size read if operation is successful or
+    /// `Error::BufferTooSmall(Some(<minimum_buffer_size>))`. Attempting to return a size
     /// greater than the input will cause it to panic. Empty read is allowed. It's up to the caller
     /// to make sure the read content will eventually form a valid boot config. The API is for
     /// situations where configs are read from sources such as disk and separate buffer allocation
@@ -98,7 +86,7 @@ impl<'a> BootConfigBuilder<'a> {
     /// Append a new config from string.
     pub fn add(&mut self, config: &str) -> Result<()> {
         if self.remaining_capacity() < config.len() {
-            return Err(BootConfigError::BufferTooSmall);
+            return Err(Error::BufferTooSmall(Some(config.len())));
         }
         self.add_with(|out| {
             out[..config.len()].clone_from_slice(config.as_bytes());
@@ -111,8 +99,7 @@ impl<'a> BootConfigBuilder<'a> {
     /// https://source.android.com/docs/core/architecture/bootloader/implementing-bootconfig#bootloader-changes
     fn update_trailer(&mut self) -> Result<()> {
         // Config size
-        let size: u32 =
-            self.current_size.try_into().map_err(|_| BootConfigError::ArithmeticOverflow)?;
+        let size: u32 = self.current_size.try_into().or(Err(Error::Other(None)))?;
         // Check sum.
         let checksum = self.checksum();
         let trailer = &mut self.buffer[self.current_size..];
@@ -146,7 +133,7 @@ impl core::fmt::Write for BootConfigBuilder<'_> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         self.add_with(|out| {
             out.get_mut(..s.len())
-                .ok_or(BootConfigError::BufferTooSmall)?
+                .ok_or(Error::BufferTooSmall(Some(s.len())))?
                 .clone_from_slice(s.as_bytes());
             Ok(s.len())
         })
@@ -272,6 +259,6 @@ androidboot.verifiedbootstate=orange
     fn test_add_with_error() {
         let mut buffer = [0u8; BOOTCONFIG_TRAILER_SIZE + 1];
         let mut builder = BootConfigBuilder::new(&mut buffer[..]).unwrap();
-        assert!(builder.add_with(|_| Err(BootConfigError::GenericReaderError(123))).is_err());
+        assert!(builder.add_with(|_| Err(Error::Other(None))).is_err());
     }
 }

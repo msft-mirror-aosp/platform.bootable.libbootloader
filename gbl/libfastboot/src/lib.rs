@@ -45,7 +45,7 @@
 //!         var: &str,
 //!         args: Split<char>,
 //!         out: &mut [u8],
-//!     ) -> Result<usize, CommandError> {
+//!     ) -> CommandResult<usize> {
 //!         todo!();
 //!     }
 //!
@@ -69,10 +69,11 @@
 
 use core::{
     cmp::min,
-    fmt::{Debug, Display, Error, Formatter, Write},
+    fmt::{Debug, Display, Formatter, Write},
     str::{from_utf8, Split},
 };
 use gbl_async::{block_on, yield_now};
+use liberror::{Error, Result};
 
 /// Maximum packet size that can be accepted from the host.
 ///
@@ -85,29 +86,6 @@ pub const MAX_COMMAND_SIZE: usize = 4096;
 ///
 /// The transport layer may have its own size limits that reduce the packet size further.
 pub const MAX_RESPONSE_SIZE: usize = 256;
-
-/// Transport errors.
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub enum TransportError {
-    /// Failed to initialize communication with the host.
-    InvalidHandshake,
-    /// Internal error; library got into an unexpected state.
-    InvalidState,
-    /// Attempted to send or receive a packet that cause a numeric overflow (larger than u64).
-    PacketSizeOverflow,
-    /// Host sent a packet larger than the transport maximum size.
-    PacketSizeExceedMaximum,
-    /// Upload command errored out before all the data was sent.
-    NotEnoughUpload,
-    /// Custom error that contains a string indicating what went wrong.
-    Others(&'static str),
-}
-
-impl Display for TransportError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
-        write!(f, "{:?}", self)
-    }
-}
 
 /// Trait to provide the transport layer for a fastboot implementation.
 ///
@@ -123,13 +101,13 @@ pub trait Transport {
     /// TODO(b/322540167): In the future, we may want to support using `[MaybeUninit<u8>]` as the
     /// download buffer to avoid expensive initialization at the beginning. This would require an
     /// interface where the implementation provides the buffer for us to copy instead of us.
-    async fn receive_packet(&mut self, out: &mut [u8]) -> Result<usize, TransportError>;
+    async fn receive_packet(&mut self, out: &mut [u8]) -> Result<usize>;
 
     /// Sends a fastboot packet.
     ///
     /// The method assumes `packet` is sent or at least copied to queue after it returns, where
     /// the buffer can go out of scope without affecting anything.
-    async fn send_packet(&mut self, packet: &[u8]) -> Result<(), TransportError>;
+    async fn send_packet(&mut self, packet: &[u8]) -> Result<()>;
 }
 
 /// For now, we hardcode the expected version, until we need to distinguish between multiple
@@ -142,10 +120,10 @@ const TCP_HANDSHAKE_MESSAGE: &[u8] = b"FB01";
 /// to perform fastboot over TCP. It internally handles handshake and wire message parsing.
 pub trait TcpStream {
     /// Reads to `out` for exactly `out.len()` number bytes from the TCP connection.
-    async fn read_exact(&mut self, out: &mut [u8]) -> Result<(), TransportError>;
+    async fn read_exact(&mut self, out: &mut [u8]) -> Result<()>;
 
     /// Sends exactly `data.len()` number bytes from `data` to the TCP connection.
-    async fn write_exact(&mut self, data: &[u8]) -> Result<(), TransportError>;
+    async fn write_exact(&mut self, data: &[u8]) -> Result<()>;
 }
 
 /// Implements [Transport] on a [TcpStream].
@@ -153,26 +131,24 @@ pub struct TcpTransport<'a, T: TcpStream>(&'a mut T);
 
 impl<'a, T: TcpStream> TcpTransport<'a, T> {
     /// Creates an instance from a newly connected TcpStream and performs handshake.
-    pub fn new_and_handshake(tcp_stream: &'a mut T) -> Result<Self, TransportError> {
+    pub fn new_and_handshake(tcp_stream: &'a mut T) -> Result<Self> {
         let mut handshake = [0u8; 4];
         block_on(tcp_stream.write_exact(TCP_HANDSHAKE_MESSAGE))?;
         block_on(tcp_stream.read_exact(&mut handshake[..]))?;
         match handshake == *TCP_HANDSHAKE_MESSAGE {
             true => Ok(Self(tcp_stream)),
-            _ => Err(TransportError::InvalidHandshake),
+            _ => Err(Error::InvalidHandshake),
         }
     }
 }
 
 impl<'a, T: TcpStream> Transport for TcpTransport<'a, T> {
-    async fn receive_packet(&mut self, out: &mut [u8]) -> Result<usize, TransportError> {
+    async fn receive_packet(&mut self, out: &mut [u8]) -> Result<usize> {
         let mut length_prefix = [0u8; 8];
         self.0.read_exact(&mut length_prefix[..]).await?;
-        let packet_size: usize = u64::from_be_bytes(length_prefix)
-            .try_into()
-            .map_err(|_| TransportError::PacketSizeOverflow)?;
+        let packet_size: usize = u64::from_be_bytes(length_prefix).try_into()?;
         match out.len() < packet_size {
-            true => Err(TransportError::PacketSizeExceedMaximum),
+            true => Err(Error::InvalidInput),
             _ => {
                 self.0.read_exact(&mut out[..packet_size]).await?;
                 Ok(packet_size)
@@ -180,14 +156,8 @@ impl<'a, T: TcpStream> Transport for TcpTransport<'a, T> {
         }
     }
 
-    async fn send_packet(&mut self, packet: &[u8]) -> Result<(), TransportError> {
-        self.0
-            .write_exact(
-                &mut u64::try_from(packet.len())
-                    .map_err(|_| TransportError::PacketSizeOverflow)?
-                    .to_be_bytes()[..],
-            )
-            .await?;
+    async fn send_packet(&mut self, packet: &[u8]) -> Result<()> {
+        self.0.write_exact(&mut u64::try_from(packet.len())?.to_be_bytes()[..]).await?;
         self.0.write_exact(packet).await
     }
 }
@@ -215,7 +185,7 @@ impl CommandError {
 }
 
 impl Debug for CommandError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.to_str())
     }
 }
@@ -227,6 +197,9 @@ impl<T: Display> From<T> for CommandError {
         res
     }
 }
+
+/// Type alias for Result that wraps a CommandError
+pub type CommandResult<T> = core::result::Result<T, CommandError>;
 
 /// Implementation for Fastboot command backends.
 pub trait FastbootImplementation {
@@ -251,7 +224,7 @@ pub trait FastbootImplementation {
         args: Split<char>,
         out: &mut [u8],
         utils: &mut impl FastbootUtils,
-    ) -> Result<usize, CommandError>;
+    ) -> CommandResult<usize>;
 
     /// A helper API for getting the value of a fastboot variable and decoding it into string.
     async fn get_var_as_str<'s>(
@@ -260,7 +233,7 @@ pub trait FastbootImplementation {
         args: Split<'_, char>,
         out: &'s mut [u8],
         utils: &mut impl FastbootUtils,
-    ) -> Result<&'s str, CommandError> {
+    ) -> CommandResult<&'s str> {
         let size = self.get_var(var, args, out, utils).await?;
         Ok(from_utf8(out.get(..size).ok_or("Invalid variable size")?)
             .map_err(|_| "Value is not string")?)
@@ -278,7 +251,7 @@ pub trait FastbootImplementation {
     ///   response to `fastboot getvarl all`:
     ///
     ///   async fn get_var_all(&mut self, f: F, utils: &mut impl FastbootUtils)
-    ///     -> Result<(), CommandError> {
+    ///     -> CommandResult<()> {
     ///       sender.send("partition-size", &["boot_a"], /* size of boot_a */).await?;
     ///       sender.send("partition-size", &["boot_b"], /* size of boot_b */).await?;
     ///       sender.send("partition-size", &["init_boot_a"], /* size of init_boot_a */).await?;
@@ -303,13 +276,13 @@ pub trait FastbootImplementation {
         &mut self,
         sender: &mut impl VarSender,
         utils: &mut impl FastbootUtils,
-    ) -> Result<(), CommandError>;
+    ) -> CommandResult<()>;
 
     /// Backend for getting download buffer
     async fn get_download_buffer(&mut self) -> &mut [u8];
 
     /// Notifies that a download is completed.
-    async fn download_complete(&mut self, download_size: usize) -> Result<(), CommandError>;
+    async fn download_complete(&mut self, download_size: usize) -> CommandResult<()>;
 
     /// Backend for `fastboot flash ...`
     ///
@@ -317,11 +290,7 @@ pub trait FastbootImplementation {
     ///
     /// * `part`: Name of the partition.
     /// * `utils`: A mutable reference to an instance of `FastbootUtils`.
-    async fn flash(
-        &mut self,
-        part: &str,
-        utils: &mut impl FastbootUtils,
-    ) -> Result<(), CommandError>;
+    async fn flash(&mut self, part: &str, utils: &mut impl FastbootUtils) -> CommandResult<()>;
 
     /// Backend for `fastboot get_staged ...`
     ///
@@ -335,7 +304,7 @@ pub trait FastbootImplementation {
     ///       &mut self,
     ///       upload_builder: UploadBuilder,
     ///       utils: &mut impl FastbootUtils,
-    ///   ) -> Result<(), CommandError> {
+    ///   ) -> CommandResult<()> {
     ///       // Sends a total of 1024 bytes data.
     ///       let mut uploader = upload_builder.start(1024).await?;
     ///       // Can upload in multiple batches.
@@ -353,7 +322,7 @@ pub trait FastbootImplementation {
         &mut self,
         upload_builder: impl UploadBuilder,
         utils: &mut impl FastbootUtils,
-    ) -> Result<(), CommandError>;
+    ) -> CommandResult<()>;
 
     /// Backend for `fastboot fetch ...`
     ///
@@ -371,7 +340,7 @@ pub trait FastbootImplementation {
         size: u64,
         upload_builder: impl UploadBuilder,
         utils: &mut impl FastbootUtils,
-    ) -> Result<(), CommandError>;
+    ) -> CommandResult<()>;
 
     /// Backend for `fastboot oem ...`.
     ///
@@ -390,7 +359,7 @@ pub trait FastbootImplementation {
         cmd: &str,
         utils: &mut impl FastbootUtils,
         res: &'a mut [u8],
-    ) -> Result<&'a [u8], CommandError>;
+    ) -> CommandResult<&'a [u8]>;
 
     // TODO(b/322540167): Add methods for other commands.
 }
@@ -430,17 +399,17 @@ pub trait VarSender {
     ///
     /// In actual fastboot context, the method should send an "INFO<var>:<args>:<val>" message to
     /// the host.
-    async fn send(&mut self, name: &str, args: &[&str], val: &str) -> Result<(), CommandError>;
+    async fn send(&mut self, name: &str, args: &[&str], val: &str) -> CommandResult<()>;
 }
 
 /// `FbVarSender` wraps a fastboot transport and implements `VarSender`
 struct FbVarSender<'a, T: Transport> {
     transport: &'a mut T,
-    transport_error: &'a mut Result<(), TransportError>,
+    transport_error: &'a mut Result<()>,
 }
 
 impl<'a, T: Transport> VarSender for FbVarSender<'a, T> {
-    async fn send(&mut self, name: &str, args: &[&str], val: &str) -> Result<(), CommandError> {
+    async fn send(&mut self, name: &str, args: &[&str], val: &str) -> CommandResult<()> {
         // Sends a "INFO<var>:<':'-separated args>:<val>" packet to the host.
         let mut res = [0u8; MAX_RESPONSE_SIZE];
         let mut formatted_bytes = FormattedBytes::new(&mut res);
@@ -457,16 +426,16 @@ impl<'a, T: Transport> VarSender for FbVarSender<'a, T> {
 /// fastboot INFO messages.
 pub trait FastbootUtils {
     /// Sends a Fastboot "INFO<`msg`>" packet.
-    async fn send_info(&mut self, msg: &str) -> Result<(), CommandError>;
+    async fn send_info(&mut self, msg: &str) -> CommandResult<()>;
 
     /// Returns transport errors if there are any.
-    fn transport_error(&self) -> Result<(), TransportError>;
+    fn transport_error(&self) -> Result<()>;
 }
 
 /// `FastbootUtilData` implements the FastbootUtil trait for user backend to use.
 struct FastbootUtilData<'a, T: Transport> {
     transport: &'a mut T,
-    transport_error: Result<(), TransportError>,
+    transport_error: Result<()>,
 }
 
 impl<'a, T: Transport> FastbootUtilData<'a, T> {
@@ -476,7 +445,7 @@ impl<'a, T: Transport> FastbootUtilData<'a, T> {
 }
 
 impl<T: Transport> FastbootUtils for FastbootUtilData<'_, T> {
-    async fn send_info(&mut self, msg: &str) -> Result<(), CommandError> {
+    async fn send_info(&mut self, msg: &str) -> CommandResult<()> {
         self.transport_error?;
         let mut res = [0u8; MAX_RESPONSE_SIZE];
         self.transport_error = self.transport.send_packet(fastboot_info!(res, "{}", msg)).await;
@@ -484,7 +453,7 @@ impl<T: Transport> FastbootUtils for FastbootUtilData<'_, T> {
     }
 
     /// Returns the `Self:;transport_error`.
-    fn transport_error(&self) -> Result<(), TransportError> {
+    fn transport_error(&self) -> Result<()> {
         self.transport_error
     }
 }
@@ -493,11 +462,11 @@ impl<T: Transport> FastbootUtils for FastbootUtilData<'_, T> {
 struct NoopTransport {}
 
 impl Transport for NoopTransport {
-    async fn receive_packet(&mut self, _: &mut [u8]) -> Result<usize, TransportError> {
+    async fn receive_packet(&mut self, _: &mut [u8]) -> Result<usize> {
         Ok(0)
     }
 
-    async fn send_packet(&mut self, _: &[u8]) -> Result<(), TransportError> {
+    async fn send_packet(&mut self, _: &[u8]) -> Result<()> {
         Ok(())
     }
 }
@@ -508,24 +477,24 @@ pub trait UploadBuilder {
     ///
     /// In a real fastboot context, the method should send `DATA0xXXXXXXXX` to the remote host to
     /// start the download. An `Uploader` implementation should be returned for uploading payload.
-    async fn start(self, data_size: u64) -> Result<impl Uploader, CommandError>;
+    async fn start(self, data_size: u64) -> CommandResult<impl Uploader>;
 }
 
 /// `UploadBuilder` provides API for uploading payload.
 pub trait Uploader {
     /// Uploads data to the Fastboot host.
-    async fn upload(&mut self, data: &[u8]) -> Result<(), CommandError>;
+    async fn upload(&mut self, data: &[u8]) -> CommandResult<()>;
 }
 
 /// `FbUploadBuilder` implements the `UploadBuilder`/`Uploader` traits for uploading user payload.
 struct FbUploadBuilder<'a, T: Transport> {
     transport: &'a mut T,
-    error: &'a mut Result<(), TransportError>,
+    error: &'a mut Result<()>,
     remaining: &'a mut u64,
 }
 
 impl<'a, T: Transport> UploadBuilder for FbUploadBuilder<'a, T> {
-    async fn start(self, data_size: u64) -> Result<impl Uploader, CommandError> {
+    async fn start(self, data_size: u64) -> CommandResult<impl Uploader> {
         let mut res = [0u8; 16];
         self.transport.send_packet(snprintf!(res, "DATA{:08x}", data_size).as_bytes()).await?;
         *self.remaining = data_size;
@@ -536,7 +505,7 @@ impl<'a, T: Transport> UploadBuilder for FbUploadBuilder<'a, T> {
 impl<'a, T: Transport> Uploader for FbUploadBuilder<'a, T> {
     /// Uploads data. Returns error if accumulative amount exceeds `data_size` passed to
     /// `UploadBuilder::start()`.
-    async fn upload(&mut self, data: &[u8]) -> Result<(), CommandError> {
+    async fn upload(&mut self, data: &[u8]) -> CommandResult<()> {
         (*self.error)?;
         *self.remaining = self
             .remaining
@@ -550,7 +519,7 @@ impl<'a, T: Transport> Uploader for FbUploadBuilder<'a, T> {
 pub mod test_utils {
     //! Test utilities to help users of this library write unit tests.
 
-    use crate::{CommandError, UploadBuilder, Uploader};
+    use crate::{CommandResult, UploadBuilder, Uploader};
 
     /// A test implementation of `UploadBuilder` for unittesting
     /// `FastbootImplementation::upload()`.
@@ -559,7 +528,7 @@ pub mod test_utils {
     pub struct TestUploadBuilder<'a>(pub &'a mut [u8]);
 
     impl<'a> UploadBuilder for TestUploadBuilder<'a> {
-        async fn start(self, _: u64) -> Result<impl Uploader, CommandError> {
+        async fn start(self, _: u64) -> CommandResult<impl Uploader> {
             Ok(TestUploader(0, self.0))
         }
     }
@@ -568,7 +537,7 @@ pub mod test_utils {
     struct TestUploader<'a>(usize, &'a mut [u8]);
 
     impl Uploader for TestUploader<'_> {
-        async fn upload(&mut self, data: &[u8]) -> Result<(), CommandError> {
+        async fn upload(&mut self, data: &[u8]) -> CommandResult<()> {
             self.1[self.0..][..data.len()].clone_from_slice(data);
             self.0 = self.0.checked_add(data.len()).unwrap();
             Ok(())
@@ -585,7 +554,7 @@ async fn get_var_str<'s>(
     out: &'s mut [u8],
     transport: &mut impl Transport,
     fb_impl: &mut impl FastbootImplementation,
-) -> Result<&'s str, CommandError> {
+) -> CommandResult<&'s str> {
     let mut utils = FastbootUtilData::new(transport);
     fb_impl.get_var_as_str(var, args, out, &mut utils).await
 }
@@ -595,7 +564,7 @@ async fn get_var(
     mut args: Split<'_, char>,
     transport: &mut impl Transport,
     fb_impl: &mut impl FastbootImplementation,
-) -> Result<(), TransportError> {
+) -> Result<()> {
     let mut res = [0u8; MAX_RESPONSE_SIZE];
     let Some(var) = args.next() else {
         return transport.send_packet(fastboot_fail!(res, "Missing variable")).await;
@@ -621,7 +590,7 @@ async fn get_var(
 async fn get_var_all_with_native(
     fb_impl: &mut impl FastbootImplementation,
     sender: &mut impl VarSender,
-) -> Result<(), CommandError> {
+) -> CommandResult<()> {
     // Process the built-in MAX_DOWNLOAD_SIZE_NAME variable.
     let mut size_str = [0u8; 32];
     let size_str = snprintf!(size_str, "{:#x}", fb_impl.get_download_buffer().await.len());
@@ -634,7 +603,7 @@ async fn get_var_all_with_native(
 async fn get_var_all(
     transport: &mut impl Transport,
     fb_impl: &mut impl FastbootImplementation,
-) -> Result<(), TransportError> {
+) -> Result<()> {
     let mut res = [0u8; MAX_RESPONSE_SIZE];
     let transport_error = &mut Ok(());
     let mut sender = FbVarSender { transport, transport_error };
@@ -651,9 +620,9 @@ async fn download(
     mut args: Split<'_, char>,
     transport: &mut impl Transport,
     fb_impl: &mut impl FastbootImplementation,
-) -> Result<(), TransportError> {
+) -> Result<()> {
     let mut res = [0u8; MAX_RESPONSE_SIZE];
-    let total_download_size = match (|| -> Result<usize, CommandError> {
+    let total_download_size = match (|| -> CommandResult<usize> {
         usize::try_from(next_arg_u64(&mut args, Err("Not enough argument".into()))?)
             .map_err(|_| "Download size overflow".into())
     })() {
@@ -681,7 +650,7 @@ async fn download(
                     return transport.send_packet(msg.as_bytes()).await;
                 }
                 Some(v) => downloaded = v,
-                _ => return Err(TransportError::Others("Invalid read size from transport")),
+                _ => return Err(Error::Other(Some("Invalid read size from transport"))),
             },
         };
     }
@@ -696,7 +665,7 @@ async fn flash(
     cmd: &str,
     transport: &mut impl Transport,
     fb_impl: &mut impl FastbootImplementation,
-) -> Result<(), TransportError> {
+) -> Result<()> {
     let mut res = [0u8; MAX_RESPONSE_SIZE];
     let flash_res =
         match cmd.strip_prefix("flash:").ok_or::<CommandError>("Missing partition".into()) {
@@ -713,7 +682,7 @@ async fn flash(
 async fn upload(
     transport: &mut impl Transport,
     fb_impl: &mut impl FastbootImplementation,
-) -> Result<(), TransportError> {
+) -> Result<()> {
     let mut res = [0u8; MAX_RESPONSE_SIZE];
     // No INFO message should be sent during upload.
     let noop_transport = &mut NoopTransport {};
@@ -725,7 +694,7 @@ async fn upload(
     let upload_res = fb_impl.upload(upload_builder, &mut utils).await;
     upload_error?;
     match remaining > 0 {
-        true => return Err(TransportError::NotEnoughUpload),
+        true => return Err(Error::InvalidInput),
         _ => match upload_res {
             Err(e) => transport.send_packet(fastboot_fail!(res, "{}", e.to_str())).await,
             _ => transport.send_packet(fastboot_okay!(res, "")).await,
@@ -739,7 +708,7 @@ async fn fetch(
     args: Split<'_, char>,
     transport: &mut impl Transport,
     fb_impl: &mut impl FastbootImplementation,
-) -> Result<(), TransportError> {
+) -> Result<()> {
     let mut res = [0u8; MAX_RESPONSE_SIZE];
     let mut upload_error = Ok(());
     let mut remaining = 0;
@@ -764,7 +733,7 @@ async fn fetch(
     .await;
     upload_error?;
     match remaining > 0 {
-        true => return Err(TransportError::NotEnoughUpload),
+        true => return Err(Error::InvalidInput),
         _ => match fetch_res {
             Err(e) => transport.send_packet(fastboot_fail!(res, "{}", e.to_str())).await,
             _ => transport.send_packet(fastboot_okay!(res, "")).await,
@@ -777,7 +746,7 @@ async fn oem(
     cmd: &str,
     transport: &mut impl Transport,
     fb_impl: &mut impl FastbootImplementation,
-) -> Result<(), TransportError> {
+) -> Result<()> {
     let mut utils = FastbootUtilData::new(transport);
     let mut oem_out = [0u8; MAX_RESPONSE_SIZE - 4];
     let oem_res = fb_impl.oem(cmd, &mut utils, &mut oem_out[..]).await;
@@ -798,7 +767,7 @@ async fn oem(
 pub async fn process_next_command(
     transport: &mut impl Transport,
     fb_impl: &mut impl FastbootImplementation,
-) -> Result<(), TransportError> {
+) -> Result<()> {
     let mut packet = [0u8; MAX_COMMAND_SIZE];
     let cmd_size = match transport.receive_packet(&mut packet[..]).await? {
         0 => return Ok(()),
@@ -827,7 +796,7 @@ pub async fn process_next_command(
 pub async fn run(
     transport: &mut impl Transport,
     fb_impl: &mut impl FastbootImplementation,
-) -> Result<(), TransportError> {
+) -> Result<()> {
     loop {
         process_next_command(transport, fb_impl).await?;
     }
@@ -839,7 +808,7 @@ pub async fn run(
 pub async fn run_tcp_session(
     tcp_stream: &mut impl TcpStream,
     fb_impl: &mut impl FastbootImplementation,
-) -> Result<(), TransportError> {
+) -> Result<()> {
     run(&mut TcpTransport::new_and_handshake(tcp_stream)?, fb_impl).await
 }
 
@@ -895,7 +864,7 @@ macro_rules! snprintf {
 }
 
 /// A helper to convert a hex string into u64.
-pub(crate) fn hex_to_u64(s: &str) -> Result<u64, CommandError> {
+pub(crate) fn hex_to_u64(s: &str) -> CommandResult<u64> {
     Ok(u64::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16)?)
 }
 
@@ -909,8 +878,8 @@ pub(crate) fn hex_to_u64(s: &str) -> Result<u64, CommandError> {
 ///   requiring that the next argument is mandatory.
 pub fn next_arg<'a, T: Iterator<Item = &'a str>>(
     args: &mut T,
-    default: Result<&'a str, CommandError>,
-) -> Result<&'a str, CommandError> {
+    default: CommandResult<&'a str>,
+) -> CommandResult<&'a str> {
     args.next().filter(|v| *v != "").ok_or("").or(default.map_err(|e| e.into()))
 }
 
@@ -926,8 +895,8 @@ pub fn next_arg<'a, T: Iterator<Item = &'a str>>(
 /// Returns error if the next argument is not a valid hex string.
 pub fn next_arg_u64<'a, T: Iterator<Item = &'a str>>(
     args: &mut T,
-    default: Result<u64, CommandError>,
-) -> Result<u64, CommandError> {
+    default: CommandResult<u64>,
+) -> CommandResult<u64> {
     match next_arg(args, Err("".into())) {
         Ok(v) => hex_to_u64(v),
         _ => default.map_err(|e| e.into()),
@@ -963,7 +932,7 @@ mod test {
             args: Split<'_, char>,
             out: &mut [u8],
             _: &mut impl FastbootUtils,
-        ) -> Result<usize, CommandError> {
+        ) -> CommandResult<usize> {
             let args = args.collect::<Vec<_>>();
             match self.vars.get(&(var, &args[..])) {
                 Some(v) => {
@@ -978,7 +947,7 @@ mod test {
             &mut self,
             sender: &mut impl VarSender,
             _: &mut impl FastbootUtils,
-        ) -> Result<(), CommandError> {
+        ) -> CommandResult<()> {
             for ((var, config), value) in &self.vars {
                 sender.send(var, config, value).await?;
             }
@@ -989,16 +958,12 @@ mod test {
             self.download_buffer.as_mut_slice()
         }
 
-        async fn download_complete(&mut self, download_size: usize) -> Result<(), CommandError> {
+        async fn download_complete(&mut self, download_size: usize) -> CommandResult<()> {
             self.downloaded_size = download_size;
             Ok(())
         }
 
-        async fn flash(
-            &mut self,
-            part: &str,
-            _: &mut impl FastbootUtils,
-        ) -> Result<(), CommandError> {
+        async fn flash(&mut self, part: &str, _: &mut impl FastbootUtils) -> CommandResult<()> {
             self.flash_partition = part.into();
             Ok(())
         }
@@ -1007,7 +972,7 @@ mod test {
             &mut self,
             upload_builder: impl UploadBuilder,
             _utils: &mut impl FastbootUtils,
-        ) -> Result<(), CommandError> {
+        ) -> CommandResult<()> {
             let (size, batches) = &self.upload_config;
             let mut uploader = upload_builder.start(*size).await?;
             for ele in batches {
@@ -1023,7 +988,7 @@ mod test {
             size: u64,
             upload_builder: impl UploadBuilder,
             _utils: &mut impl FastbootUtils,
-        ) -> Result<(), CommandError> {
+        ) -> CommandResult<()> {
             let (size_override, data) = self.fetch_data.get(part).ok_or("Not Found")?;
             let mut uploader = upload_builder.start(*size_override).await?;
             uploader.upload(&data[offset.try_into().unwrap()..][..size.try_into().unwrap()]).await
@@ -1034,7 +999,7 @@ mod test {
             cmd: &str,
             utils: &mut impl FastbootUtils,
             res: &'b mut [u8],
-        ) -> Result<&'b [u8], CommandError> {
+        ) -> CommandResult<&'b [u8]> {
             let (res_str, infos) = &mut self.oem_output;
             self.oem_command = cmd.into();
             for ele in infos {
@@ -1060,7 +1025,7 @@ mod test {
     }
 
     impl Transport for TestTransport {
-        async fn receive_packet(&mut self, out: &mut [u8]) -> Result<usize, TransportError> {
+        async fn receive_packet(&mut self, out: &mut [u8]) -> Result<usize> {
             match self.in_queue.pop_front() {
                 Some(v) => {
                     let size = min(out.len(), v.len());
@@ -1068,11 +1033,11 @@ mod test {
                     // Returns the input length so that we can test bogus download size.
                     Ok(v.len())
                 }
-                _ => Err(TransportError::Others("No more data")),
+                _ => Err(Error::Other(Some("No more data"))),
             }
         }
 
-        async fn send_packet(&mut self, packet: &[u8]) -> Result<(), TransportError> {
+        async fn send_packet(&mut self, packet: &[u8]) -> Result<()> {
             self.out_queue.push_back(packet.into());
             Ok(())
         }
@@ -1098,14 +1063,14 @@ mod test {
     }
 
     impl TcpStream for TestTcpStream {
-        async fn read_exact(&mut self, out: &mut [u8]) -> Result<(), TransportError> {
+        async fn read_exact(&mut self, out: &mut [u8]) -> Result<()> {
             for ele in out {
-                *ele = self.in_queue.pop_front().ok_or(TransportError::Others("No more data"))?;
+                *ele = self.in_queue.pop_front().ok_or(Error::OperationProhibited)?;
             }
             Ok(())
         }
 
-        async fn write_exact(&mut self, data: &[u8]) -> Result<(), TransportError> {
+        async fn write_exact(&mut self, data: &[u8]) -> Result<()> {
             data.iter().for_each(|v| self.out_queue.push_back(*v));
             Ok(())
         }
@@ -1468,7 +1433,7 @@ mod test {
         tcp_stream.add_input(b"ABCD");
         assert_eq!(
             block_on(run_tcp_session(&mut tcp_stream, &mut fastboot_impl)).unwrap_err(),
-            TransportError::InvalidHandshake
+            Error::InvalidHandshake
         );
     }
 
@@ -1481,7 +1446,7 @@ mod test {
         tcp_stream.add_input(&(MAX_COMMAND_SIZE + 1).to_be_bytes());
         assert_eq!(
             block_on(run_tcp_session(&mut tcp_stream, &mut fastboot_impl)).unwrap_err(),
-            TransportError::PacketSizeExceedMaximum
+            Error::InvalidInput
         );
     }
 }

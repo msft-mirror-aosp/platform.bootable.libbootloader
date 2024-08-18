@@ -25,7 +25,10 @@ rust_library(
     crate_name = "misc",
     edition = "2021",
     rustc_flags = ANDROID_RUST_LINTS,
-    deps = ["@zerocopy"],
+    deps = [
+        "@gbl//liberror",
+        "@zerocopy",
+    ],
 )
 
 rust_test(
