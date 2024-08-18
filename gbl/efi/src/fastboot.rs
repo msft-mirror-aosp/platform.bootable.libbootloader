@@ -19,13 +19,11 @@
 
 use crate::{
     efi_blocks::{find_block_devices, EfiBlockDeviceIo},
-    error::{GblEfiError, Result as GblResult},
     net::{with_efi_network, EfiTcpSocket},
 };
 use alloc::vec::Vec;
 use core::{cmp::min, fmt::Write, future::Future, mem::take};
 use efi::{
-    defs::EFI_STATUS_NOT_STARTED,
     efi_print, efi_println,
     protocol::{gbl_efi_fastboot_usb::GblFastbootUsbProtocol, Protocol},
     EfiEntry,
@@ -41,7 +39,7 @@ const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 const FASTBOOT_TCP_PORT: u16 = 5554;
 
 struct EfiFastbootTcpTransport<'a, 'b, 'c> {
-    last_err: GblResult<()>,
+    last_err: Result<()>,
     socket: &'c mut EfiTcpSocket<'a, 'b>,
 }
 
@@ -70,7 +68,7 @@ impl TcpStream for EfiFastbootTcpTransport<'_, '_, '_> {
 /// `UsbTransport` implements the `fastboot::Transport` trait using USB interfaces from
 /// GBL_EFI_FASTBOOT_USB_PROTOCOL.
 pub struct UsbTransport<'a> {
-    last_err: GblResult<()>,
+    last_err: Result<()>,
     max_packet_size: usize,
     protocol: Protocol<'a, GblFastbootUsbProtocol>,
     io_yield_counter: YieldCounter,
@@ -131,7 +129,7 @@ impl Transport for UsbTransport<'_> {
     async fn receive_packet(&mut self, out: &mut [u8]) -> Result<usize> {
         match &mut self.prefetched {
             (pkt, len) if *len > 0 => {
-                let out = out.get_mut(..*len).ok_or(Error::Other(Some("Buffer too small")))?;
+                let out = out.get_mut(..*len).ok_or(Error::BufferTooSmall(Some(*len)))?;
                 let src = pkt.get(..*len).ok_or(Error::Other(Some("Invalid USB read size")))?;
                 out.clone_from_slice(src);
                 return Ok(take(len));
@@ -160,14 +158,13 @@ impl Transport for UsbTransport<'_> {
 }
 
 /// Initializes the Fastboot USB interface and returns a `UsbTransport`.
-fn init_usb(efi_entry: &EfiEntry) -> GblResult<UsbTransport> {
+fn init_usb(efi_entry: &EfiEntry) -> Result<UsbTransport> {
     let protocol =
         efi_entry.system_table().boot_services().find_first_and_open::<GblFastbootUsbProtocol>()?;
     match protocol.fastboot_usb_interface_stop() {
-        Err(e) if !e.is_efi_err(EFI_STATUS_NOT_STARTED) => return Err(e.into()),
-        _ => {}
-    };
-    Ok(UsbTransport::new(protocol.fastboot_usb_interface_start()?, protocol))
+        Err(e) if e != Error::NotStarted => Err(e),
+        _ => Ok(UsbTransport::new(protocol.fastboot_usb_interface_start()?, protocol)),
+    }
 }
 
 /// `EfiFbTaskExecutor` implements the `TasksExecutor` trait used by GBL fastboot for scheduling
@@ -237,7 +234,7 @@ async fn fastboot_tcp(
             let mut transport = EfiFastbootTcpTransport::new(socket);
             let _ = run_tcp_session(&mut transport, *gbl_fb).await;
             match transport.last_err {
-                Ok(()) | Err(GblEfiError::UnifiedError(Error::Disconnected)) => {}
+                Ok(()) | Err(Error::Disconnected) => {}
                 Err(e) => efi_println!(efi_entry, "Fastboot TCP error {:?}", e),
             }
             reset_socket = true;
@@ -261,7 +258,7 @@ fn run_fastboot<'a>(
     gbl_fb: &mut GblFastboot<'_, 'a, EfiFbTaskExecutor<'a>, &mut EfiBlockDeviceIo>,
     socket: Option<&mut EfiTcpSocket>,
     usb: Option<&mut UsbTransport>,
-) -> GblResult<()> {
+) -> Result<()> {
     assert!(socket.is_some() || usb.is_some());
     let blk_io_executor = gbl_fb.blk_io_executor();
     let gbl_fb = gbl_fb.into();
@@ -299,7 +296,7 @@ fn run_fastboot<'a>(
 }
 
 /// Runs Fastboot.
-pub fn fastboot(efi_entry: &EfiEntry) -> GblResult<()> {
+pub fn fastboot(efi_entry: &EfiEntry) -> Result<()> {
     // TODO(b/328786603): Figure out where to get download buffer size.
     let mut download_buffers = vec![vec![0u8; 512 * 1024 * 1024]; 2];
     let mut gbl_fb_download_buffers =
