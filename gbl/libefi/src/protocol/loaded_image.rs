@@ -14,9 +14,10 @@
 
 //! Rust wrapper for `EFI_LOADED_IMAGE_PROTOCOL`.
 
-use crate::defs::{EfiGuid, EfiLoadedImageProtocol};
 use crate::protocol::{Protocol, ProtocolInfo};
-use crate::{DeviceHandle, EfiResult};
+use crate::DeviceHandle;
+use efi_types::{EfiGuid, EfiLoadedImageProtocol};
+use liberror::Result;
 
 /// EFI_LOADED_IMAGE_PROTOCOL
 pub struct LoadedImageProtocol;
@@ -30,7 +31,7 @@ impl ProtocolInfo for LoadedImageProtocol {
 
 impl<'a> Protocol<'a, LoadedImageProtocol> {
     /// Wraps `EFI_LOADED_IMAGE_PROTOCOL.DeviceHandle`.
-    pub fn device_handle(&self) -> EfiResult<DeviceHandle> {
+    pub fn device_handle(&self) -> Result<DeviceHandle> {
         Ok(DeviceHandle(self.interface()?.device_handle))
     }
 }

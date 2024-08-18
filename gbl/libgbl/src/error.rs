@@ -14,61 +14,8 @@
 
 //! Error types used in libgbl.
 
-use avb::{DescriptorError, SlotVerifyError};
-use core::ffi::{FromBytesUntilNulError, FromBytesWithNulError};
+use avb::{DescriptorError, IoError, SlotVerifyError};
 use core::fmt::{Debug, Display, Formatter};
-
-/// Helper type GBL functions will return.
-pub type Result<T> = core::result::Result<T, IntegrationError>;
-
-#[derive(Debug, PartialEq, Eq)]
-/// Errors originating from GBL native logic.
-pub enum Error {
-    /// Unexpected overflow in size/length calculation.
-    ArithmeticOverflow,
-    /// Fail to hand off to kernel.
-    BootFailed,
-    /// Generic error
-    Error,
-    /// Missing all images required to boot system
-    MissingImage,
-    /// Functionality is not implemented
-    NotImplemented,
-    /// Some combination of parameters and global state prohibits the operation
-    OperationProhibited,
-    /// Internal error
-    Internal,
-    /// AvbOps were already borrowed. This would happen on second `load_and_verify_image()` call
-    /// unless `reuse()` is called before.
-    AvbOpsBusy,
-    /// Buffers overlap and can cause undefined behavior and data corruption.
-    BufferOverlap,
-    /// Input parameter is invalid.
-    InvalidInput,
-    /// Buffer is too small.
-    BufferTooSmall,
-    /// Buffer does not meet alignment requirement.
-    InvalidAlignment,
-}
-
-impl Display for Error {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Error::ArithmeticOverflow => write!(f, "Arithmetic Overflow"),
-            Error::BootFailed => write!(f, "Failed to boot"),
-            Error::Error => write!(f, "Generic error"),
-            Error::MissingImage => write!(f, "Missing image required to boot system"),
-            Error::NotImplemented => write!(f, "Functionality is not implemented"),
-            Error::OperationProhibited => write!(f, "Operation is prohibited"),
-            Error::Internal => write!(f, "Internal error"),
-            Error::AvbOpsBusy => write!(f, "AvbOps were already borrowed"),
-            Error::BufferOverlap => write!(f, "Buffers overlap"),
-            Error::InvalidInput => write!(f, "Invalid Input"),
-            Error::BufferTooSmall => write!(f, "Buffer is too small"),
-            Error::InvalidAlignment => write!(f, "Buffer does not meet alignment requirement"),
-        }
-    }
-}
 
 /// A helper macro for declaring a composite enum type that simply wraps other types as entries.
 /// It auto-generate `From<...>` implementation for each entry type. The type for each entry must
@@ -149,12 +96,10 @@ composite_enum! {
     pub enum IntegrationError {
         /// Failed to get descriptor from AvbMeta
         AvbDescriptorError(DescriptorError),
-        AvbIoError(avb::IoError),
+        AvbIoError(IoError),
         /// Avb slot verification failed.
         /// SlotVerifyError is used without verify data.
         AvbSlotVerifyError(SlotVerifyError<'static>),
-        FromBytesUntilNulError(FromBytesUntilNulError),
-        FromBytesWithNulError(FromBytesWithNulError),
         UnificationError(liberror::Error),
         ZbiError(zbi::ZbiError),
     }
@@ -165,3 +110,6 @@ impl Display for IntegrationError {
         write!(f, "{:?}", self)
     }
 }
+
+/// Helper type GBL functions will return.
+pub type Result<T> = core::result::Result<T, IntegrationError>;
