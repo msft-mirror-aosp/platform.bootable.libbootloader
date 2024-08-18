@@ -117,37 +117,7 @@ use safemath::SafeNum;
 mod algorithm;
 pub use algorithm::{read_async, write_async, AsyncAsSync, SyncAsAsync};
 
-use liberror::Error;
-
-/// The type of Result used in this library.
-pub type Result<T> = core::result::Result<T, Error>;
-
-/// Error code for this library.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum StorageError {
-    /// Failed to locate the block device.
-    BlockDeviceNotFound,
-    /// [AsBlockDevice::with] failed to execute the requested callback.
-    BlockIoNotProvided,
-    /// Failed to find a block device matching the requested criteria.
-    FailedGettingBlockDevices(Option<&'static str>),
-    /// I/O was aborted before completion.
-    IoAborted,
-    /// A function parameter was invalid.
-    InvalidInput,
-    /// Failed to find a valid GPT.
-    NoValidGpt,
-    /// The requested partition does not exist.
-    NotExist,
-    /// The block device is not ready.
-    NotReady,
-    /// Attempted to access outside the partition.
-    OutOfRange,
-    /// The requested partition matched multiple entries.
-    PartitionNotUnique,
-    /// The provided scratch buffer is too small.
-    ScratchTooSmall,
-}
+use liberror::{Error, Result};
 
 /// `BlockInfo` contains information for a block device.
 #[derive(Clone, Copy, Debug)]
@@ -169,14 +139,6 @@ impl BlockInfo {
     }
 }
 
-/// `BlockIoError` represents the error code for returned by implementation of `BlockIoSync` and
-/// `BlockIoAsync` interfaces.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum BlockIoError {
-    /// Custom error; contained value may provide a string error message.
-    Others(Option<&'static str>),
-}
-
 /// `BlockIoAsync` provides interfaces for asynchronous read and write.
 pub trait BlockIoAsync {
     /// Returns the `BlockInfo` for this block device.
@@ -194,11 +156,7 @@ pub trait BlockIoAsync {
     /// # Returns
     ///
     /// Returns true if exactly out.len() number of bytes are read. Otherwise false.
-    async fn read_blocks(
-        &mut self,
-        blk_offset: u64,
-        out: &mut [u8],
-    ) -> core::result::Result<(), Error>;
+    async fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> Result<()>;
 
     /// Write blocks of data to the block device
     ///
@@ -212,11 +170,7 @@ pub trait BlockIoAsync {
     /// # Returns
     ///
     /// Returns true if exactly data.len() number of bytes are written. Otherwise false.
-    async fn write_blocks(
-        &mut self,
-        blk_offset: u64,
-        data: &mut [u8],
-    ) -> core::result::Result<(), Error>;
+    async fn write_blocks(&mut self, blk_offset: u64, data: &mut [u8]) -> Result<()>;
 }
 
 impl<T: BlockIoAsync> BlockIoAsync for &mut T {
@@ -224,19 +178,11 @@ impl<T: BlockIoAsync> BlockIoAsync for &mut T {
         (*self).info()
     }
 
-    async fn read_blocks(
-        &mut self,
-        blk_offset: u64,
-        out: &mut [u8],
-    ) -> core::result::Result<(), Error> {
+    async fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> Result<()> {
         (*self).read_blocks(blk_offset, out).await
     }
 
-    async fn write_blocks(
-        &mut self,
-        blk_offset: u64,
-        data: &mut [u8],
-    ) -> core::result::Result<(), Error> {
+    async fn write_blocks(&mut self, blk_offset: u64, data: &mut [u8]) -> Result<()> {
         (*self).write_blocks(blk_offset, data).await
     }
 }
@@ -258,7 +204,7 @@ pub trait BlockIoSync {
     /// # Returns
     ///
     /// Returns true if exactly out.len() number of bytes are read. Otherwise false.
-    fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> core::result::Result<(), Error>;
+    fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> Result<()>;
 
     /// Write blocks of data to the block device
     ///
@@ -272,8 +218,7 @@ pub trait BlockIoSync {
     /// # Returns
     ///
     /// Returns true if exactly data.len() number of bytes are written. Otherwise false.
-    fn write_blocks(&mut self, blk_offset: u64, data: &mut [u8])
-        -> core::result::Result<(), Error>;
+    fn write_blocks(&mut self, blk_offset: u64, data: &mut [u8]) -> Result<()>;
 }
 
 impl BlockIoSync for &mut dyn BlockIoSync {
@@ -281,15 +226,11 @@ impl BlockIoSync for &mut dyn BlockIoSync {
         (*self).info()
     }
 
-    fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> core::result::Result<(), Error> {
+    fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> Result<()> {
         (*self).read_blocks(blk_offset, out)
     }
 
-    fn write_blocks(
-        &mut self,
-        blk_offset: u64,
-        data: &mut [u8],
-    ) -> core::result::Result<(), Error> {
+    fn write_blocks(&mut self, blk_offset: u64, data: &mut [u8]) -> Result<()> {
         (*self).write_blocks(blk_offset, data)
     }
 }
@@ -299,15 +240,11 @@ impl<T: BlockIoAsync> BlockIoSync for T {
         (*self).info()
     }
 
-    fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> core::result::Result<(), Error> {
+    fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> Result<()> {
         block_on((*self).read_blocks(blk_offset, out))
     }
 
-    fn write_blocks(
-        &mut self,
-        blk_offset: u64,
-        data: &mut [u8],
-    ) -> core::result::Result<(), Error> {
+    fn write_blocks(&mut self, blk_offset: u64, data: &mut [u8]) -> Result<()> {
         block_on((*self).write_blocks(blk_offset, data))
     }
 }
@@ -496,10 +433,10 @@ impl AsBlockDevice for BlockDevice<'_, '_> {
 }
 
 /// Iterates all partitions in a `AsBlockDevice`.
-pub fn for_each_partition<F: FnMut(&Partition) -> core::result::Result<(), E>, E>(
+pub fn for_each_partition<F: FnMut(&Partition) -> Result<()>>(
     dev: &mut dyn AsBlockDevice,
     mut f: F,
-) -> Result<core::result::Result<(), E>> {
+) -> Result<Result<()>> {
     with_partitioned_scratch(dev, |_, _, gpt_buffer, _| {
         for ele in GptCache::from_existing(gpt_buffer)?.partition_iter() {
             match f(&ele) {

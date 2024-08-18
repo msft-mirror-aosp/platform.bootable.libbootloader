@@ -18,7 +18,7 @@
 
 use core::{cmp::min, ffi::c_uint, fmt::Write, mem::size_of};
 
-use liberror::Error;
+use liberror::{Error, Result};
 
 const ABR_MAGIC: &[u8; 4] = b"\0AB0";
 const ABR_MAJOR_VERSION: u8 = 2;
@@ -40,23 +40,27 @@ pub const ABR_MAX_TRIES_REMAINING: u8 = 7;
 pub trait Ops {
     /// Reads exactly `out.len()` bytes into `out` from the persistent storage hosting the A/B/R
     /// metadata.
-    fn read_abr_metadata(&mut self, out: &mut [u8]) -> Result<(), Option<&'static str>>;
+    fn read_abr_metadata(&mut self, out: &mut [u8]) -> Result<()>;
 
     /// Writes exactly `data.len()` bytes from `data` to the persistent storage hosting the A/B/R
     /// metadata.
-    fn write_abr_metadata(&mut self, data: &mut [u8]) -> Result<(), Option<&'static str>>;
+    fn write_abr_metadata(&mut self, data: &mut [u8]) -> Result<()>;
 
     /// Returns an optional console writer for logging error messages.
     fn console(&mut self) -> Option<&mut dyn Write>;
 }
 
 impl Ops for [u8; ABR_DATA_SIZE] {
-    fn read_abr_metadata(&mut self, out: &mut [u8]) -> Result<(), Option<&'static str>> {
-        Ok(out.clone_from_slice(self.get(..out.len()).ok_or(Some("Out of range"))?))
+    fn read_abr_metadata(&mut self, out: &mut [u8]) -> Result<()> {
+        Ok(out
+            .clone_from_slice(self.get(..out.len()).ok_or(Error::BufferTooSmall(Some(out.len())))?))
     }
 
-    fn write_abr_metadata(&mut self, data: &mut [u8]) -> Result<(), Option<&'static str>> {
-        Ok(self.get_mut(..data.len()).ok_or(Some("Out of range"))?.clone_from_slice(data))
+    fn write_abr_metadata(&mut self, data: &mut [u8]) -> Result<()> {
+        Ok(self
+            .get_mut(..data.len())
+            .ok_or(Error::BufferTooSmall(Some(data.len())))?
+            .clone_from_slice(data))
     }
 
     fn console(&mut self) -> Option<&mut dyn Write> {
@@ -112,7 +116,7 @@ impl From<SlotIndex> for c_uint {
 impl TryFrom<c_uint> for SlotIndex {
     type Error = Error;
 
-    fn try_from(val: c_uint) -> core::result::Result<SlotIndex, Self::Error> {
+    fn try_from(val: c_uint) -> Result<SlotIndex> {
         match val {
             v if v == (SlotIndex::A).into() => Ok(SlotIndex::A),
             v if v == (SlotIndex::B).into() => Ok(SlotIndex::B),
@@ -140,9 +144,6 @@ pub struct SlotInfo {
     /// Whether this is currently the active slot.
     pub is_active: bool,
 }
-
-/// Error type for this library.
-pub type AbrResult<T> = Result<T, Error>;
 
 /// `AbrSlotData` is the wire format metadata for A/B slot.
 #[repr(C, packed)]
@@ -262,7 +263,7 @@ impl AbrData {
     }
 
     /// Reads, parses and checks metadata from persistent storage.
-    pub fn deserialize(abr_ops: &mut dyn Ops) -> AbrResult<Self> {
+    pub fn deserialize(abr_ops: &mut dyn Ops) -> Result<Self> {
         let mut bytes = [0u8; ABR_DATA_SIZE];
         abr_ops.read_abr_metadata(&mut bytes[..])?;
         // Usually, the parsing below should be done using the zerocopy crate. However, the Fuchsia
@@ -394,7 +395,7 @@ impl Default for AbrData {
 /// with save_metadata_if_changed().
 ///
 /// On success returns Ok((abr_data, abr_data_orig)). On failure an Error is returned.
-fn load_metadata(abr_ops: &mut dyn Ops) -> AbrResult<(AbrData, AbrData)> {
+fn load_metadata(abr_ops: &mut dyn Ops) -> Result<(AbrData, AbrData)> {
     let mut abr_data_orig = AbrData::null();
     let mut abr_data = match AbrData::deserialize(abr_ops) {
         Ok(v) => {
@@ -419,7 +420,7 @@ fn load_metadata(abr_ops: &mut dyn Ops) -> AbrResult<(AbrData, AbrData)> {
 }
 
 /// Serializes and saves metadata to persistent storage.
-fn save_metadata(abr_ops: &mut dyn Ops, abr_data: &mut AbrData) -> AbrResult<()> {
+fn save_metadata(abr_ops: &mut dyn Ops, abr_data: &mut AbrData) -> Result<()> {
     let mut bytes = abr_data.serialize();
     abr_ops.write_abr_metadata(&mut bytes)?;
     Ok(())
@@ -430,7 +431,7 @@ fn save_metadata_if_changed(
     abr_ops: &mut dyn Ops,
     abr_data: &mut AbrData,
     abr_data_orig: &AbrData,
-) -> AbrResult<()> {
+) -> Result<()> {
     match abr_data == abr_data_orig {
         true => Ok(()),
         _ => save_metadata(abr_ops, abr_data),
@@ -511,7 +512,7 @@ pub fn get_boot_slot(abr_ops: &mut dyn Ops, update_metadata: bool) -> (SlotIndex
 ///
 /// TODO(b/338243123): Detailed documentation is available in Fuchsia upstream header
 /// "src/firmware/lib/abr/include/lib/abr/abr.h", which will migrate to the GBL repo.
-pub fn mark_slot_active(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> AbrResult<()> {
+pub fn mark_slot_active(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> Result<()> {
     if slot_index == SlotIndex::R {
         avb_print!(abr_ops, "Invalid argument: Cannot mark slot R as active.\n");
         return Err(Error::InvalidInput);
@@ -534,7 +535,7 @@ pub fn mark_slot_active(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> AbrResu
 ///
 /// TODO(b/338243123): Detailed documentation is available in Fuchsia upstream header
 /// "src/firmware/lib/abr/include/lib/abr/abr.h", which will migrate to the GBL repo.
-pub fn get_slot_last_marked_active(abr_ops: &mut dyn Ops) -> AbrResult<SlotIndex> {
+pub fn get_slot_last_marked_active(abr_ops: &mut dyn Ops) -> Result<SlotIndex> {
     let (abr_data, _) = load_metadata(abr_ops)?;
     Ok(
         match abr_data.slot_data(SlotIndex::B).priority > abr_data.slot_data(SlotIndex::A).priority
@@ -549,7 +550,7 @@ pub fn get_slot_last_marked_active(abr_ops: &mut dyn Ops) -> AbrResult<SlotIndex
 ///
 /// TODO(b/338243123): Detailed documentation is available in Fuchsia upstream header
 /// "src/firmware/lib/abr/include/lib/abr/abr.h", which will migrate to the GBL repo.
-pub fn mark_slot_unbootable(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> AbrResult<()> {
+pub fn mark_slot_unbootable(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> Result<()> {
     if slot_index == SlotIndex::R {
         avb_print!(abr_ops, "Invalid argument: Cannot mark slot R as unbootable.\n");
         return Err(Error::InvalidInput);
@@ -563,7 +564,7 @@ pub fn mark_slot_unbootable(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> Abr
 ///
 /// TODO(b/338243123): Detailed documentation is available in Fuchsia upstream header
 /// "src/firmware/lib/abr/include/lib/abr/abr.h", which will migrate to the GBL repo.
-pub fn mark_slot_successful(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> AbrResult<()> {
+pub fn mark_slot_successful(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> Result<()> {
     if slot_index == SlotIndex::R {
         avb_print!(abr_ops, "Invalid argument: Cannot mark slot R as successful.\n");
         return Err(Error::InvalidInput);
@@ -597,7 +598,7 @@ pub fn mark_slot_successful(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> Abr
 ///
 /// TODO(b/338243123): Detailed documentation is available in Fuchsia upstream header
 /// "src/firmware/lib/abr/include/lib/abr/abr.h", which will migrate to the GBL repo.
-pub fn get_slot_info(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> AbrResult<SlotInfo> {
+pub fn get_slot_info(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> Result<SlotInfo> {
     let (abr_data, _) = load_metadata(abr_ops)?;
     Ok(match slot_index {
         // Assume that R slot is always OK.
@@ -621,7 +622,7 @@ pub fn get_slot_info(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> AbrResult<
 ///
 /// TODO(b/338243123): Detailed documentation is available in Fuchsia upstream header
 /// "src/firmware/lib/abr/include/lib/abr/abr.h", which will migrate to the GBL repo.
-pub fn set_one_shot_recovery(abr_ops: &mut dyn Ops, enable: bool) -> AbrResult<()> {
+pub fn set_one_shot_recovery(abr_ops: &mut dyn Ops, enable: bool) -> Result<()> {
     let (mut abr_data, abr_data_orig) = load_metadata(abr_ops)?;
     abr_data.set_one_shot_recovery(enable);
     save_metadata_if_changed(abr_ops, &mut abr_data, &abr_data_orig)
@@ -631,7 +632,7 @@ pub fn set_one_shot_recovery(abr_ops: &mut dyn Ops, enable: bool) -> AbrResult<(
 ///
 /// TODO(b/338243123): Detailed documentation is available in Fuchsia upstream header
 /// "src/firmware/lib/abr/include/lib/abr/abr.h", which will migrate to the GBL repo.
-pub fn set_one_shot_bootloader(abr_ops: &mut dyn Ops, enable: bool) -> AbrResult<()> {
+pub fn set_one_shot_bootloader(abr_ops: &mut dyn Ops, enable: bool) -> Result<()> {
     let (mut abr_data, abr_data_orig) = load_metadata(abr_ops)?;
     abr_data.set_one_shot_bootloader(enable);
     save_metadata_if_changed(abr_ops, &mut abr_data, &abr_data_orig)
@@ -641,7 +642,7 @@ pub fn set_one_shot_bootloader(abr_ops: &mut dyn Ops, enable: bool) -> AbrResult
 ///
 /// TODO(b/338243123): Detailed documentation is available in Fuchsia upstream header
 /// "src/firmware/lib/abr/include/lib/abr/abr.h", which will migrate to the GBL repo.
-pub fn get_and_clear_one_shot_flag(abr_ops: &mut dyn Ops) -> AbrResult<u8> {
+pub fn get_and_clear_one_shot_flag(abr_ops: &mut dyn Ops) -> Result<u8> {
     let (mut abr_data, abr_data_orig) = load_metadata(abr_ops)?;
     let res = abr_data.one_shot_flags;
     abr_data.one_shot_flags = 0;
