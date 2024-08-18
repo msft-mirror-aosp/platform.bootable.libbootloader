@@ -17,7 +17,7 @@
 use crate::{gbl_print, GblOps, Result as GblResult};
 pub use abr::{get_boot_slot, Ops as AbrOps, SlotIndex};
 use core::fmt::Write;
-use liberror::Error;
+use liberror::{Error, Result};
 use safemath::SafeNum;
 use zbi::{ZbiContainer, ZbiFlags, ZbiHeader, ZbiType};
 use zerocopy::AsBytes;
@@ -35,16 +35,12 @@ const DURABLE_BOOT_PARTITION: &str = "durable_boot";
 struct GblAbrOps<'a, T: GblOps>(&'a mut T);
 
 impl<'a, T: GblOps> AbrOps for GblAbrOps<'a, T> {
-    fn read_abr_metadata(&mut self, out: &mut [u8]) -> Result<(), Option<&'static str>> {
-        self.0
-            .read_from_partition_sync(DURABLE_BOOT_PARTITION, 0, out)
-            .map_err(|_| Some("Failed to read A/B/R metadata"))
+    fn read_abr_metadata(&mut self, out: &mut [u8]) -> Result<()> {
+        self.0.read_from_partition_sync(DURABLE_BOOT_PARTITION, 0, out)
     }
 
-    fn write_abr_metadata(&mut self, data: &mut [u8]) -> Result<(), Option<&'static str>> {
-        self.0
-            .write_to_partition_sync(DURABLE_BOOT_PARTITION, 0, data)
-            .map_err(|_| Some("Failed to write A/B/R metadatas"))
+    fn write_abr_metadata(&mut self, data: &mut [u8]) -> Result<()> {
+        self.0.write_to_partition_sync(DURABLE_BOOT_PARTITION, 0, data)
     }
 
     fn console(&mut self) -> Option<&mut dyn Write> {
@@ -53,13 +49,13 @@ impl<'a, T: GblOps> AbrOps for GblAbrOps<'a, T> {
 }
 
 /// A helper for getting the smallest offset in a slice with aligned address.
-fn aligned_offset(buffer: &[u8], alignment: usize) -> Result<usize, Error> {
+fn aligned_offset(buffer: &[u8], alignment: usize) -> Result<usize> {
     let addr = SafeNum::from(buffer.as_ptr() as usize);
     (addr.round_up(alignment) - addr).try_into().map_err(From::from)
 }
 
 /// A helper for getting a subslice with an aligned address.
-fn aligned_subslice(buffer: &mut [u8], alignment: usize) -> Result<&mut [u8], Error> {
+fn aligned_subslice(buffer: &mut [u8], alignment: usize) -> Result<&mut [u8]> {
     let aligned_offset = aligned_offset(buffer, alignment)?;
     let len = buffer.len();
     Ok(buffer.get_mut(aligned_offset..).ok_or(Error::BufferTooSmall(Some(aligned_offset)))?)
@@ -94,9 +90,7 @@ pub fn relocate_kernel(kernel: &[u8], dest: &mut [u8]) -> GblResult<()> {
         kernel_item.payload.as_bytes(),
     )?;
     let (_, reserved_memory_size) = relocated.get_kernel_entry_and_reserved_memory_size()?;
-    let buf_len = u64::try_from(zbi_split_unused_buffer(dest)?.1.len())
-        .map_err(safemath::Error::from)
-        .map_err(Error::from)?;
+    let buf_len = u64::try_from(zbi_split_unused_buffer(dest)?.1.len()).map_err(Error::from)?;
     match reserved_memory_size > buf_len {
         true => Err(Error::BufferTooSmall(None).into()),
         _ => Ok(()),
@@ -295,11 +289,11 @@ mod test {
             None
         }
 
-        fn should_stop_in_fastboot(&mut self) -> Result<bool, Error> {
+        fn should_stop_in_fastboot(&mut self) -> Result<bool> {
             unimplemented!();
         }
 
-        fn preboot(&mut self, boot_images: BootImages) -> Result<(), Error> {
+        fn preboot(&mut self, boot_images: BootImages) -> Result<()> {
             unimplemented!();
         }
 
@@ -308,7 +302,7 @@ mod test {
             part: &str,
             off: u64,
             out: &mut [u8],
-        ) -> Result<(), Error> {
+        ) -> Result<()> {
             match self.partitions.get_mut(part) {
                 Some(v) => Ok(out.clone_from_slice(&v[off.try_into().unwrap()..][..out.len()])),
                 _ => Err(Error::Other(Some("Test: No such partition"))),
@@ -320,21 +314,21 @@ mod test {
             part: &str,
             off: u64,
             data: &mut [u8],
-        ) -> Result<(), Error> {
+        ) -> Result<()> {
             match self.partitions.get_mut(part) {
                 Some(v) => Ok(v[off.try_into().unwrap()..][..data.len()].clone_from_slice(data)),
                 _ => Err(Error::Other(Some("Test: No such partition"))),
             }
         }
 
-        fn partition_size(&mut self, part: &str) -> Result<Option<u64>, Error> {
+        fn partition_size(&mut self, part: &str) -> Result<Option<u64>> {
             Ok(self.partitions.get_mut(part).map(|v| v.len().try_into().unwrap()))
         }
 
         fn zircon_add_device_zbi_items(
             &mut self,
             container: &mut ZbiContainer<&mut [u8]>,
-        ) -> Result<(), Error> {
+        ) -> Result<()> {
             container
                 .create_entry_with_payload(
                     ZbiType::CmdLine,
