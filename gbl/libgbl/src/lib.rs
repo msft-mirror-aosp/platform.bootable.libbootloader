@@ -45,6 +45,7 @@ pub mod fastboot;
 pub mod fuchsia_boot;
 pub mod ops;
 mod overlap;
+mod partition;
 
 /// The 'slots' module, containing types and traits for
 /// querying and modifying slotted boot behavior.
