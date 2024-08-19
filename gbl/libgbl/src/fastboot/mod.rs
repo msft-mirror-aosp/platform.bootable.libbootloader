@@ -32,7 +32,7 @@ use safemath::SafeNum;
 mod vars;
 use vars::{fb_vars_get, fb_vars_get_all};
 
-mod sparse;
+pub(crate) mod sparse;
 use sparse::{is_sparse_image, write_sparse_image};
 
 mod shared_resource;
