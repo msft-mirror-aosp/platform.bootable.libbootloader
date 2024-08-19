@@ -151,6 +151,12 @@ cc_library(
     )
 
     native.new_local_repository(
+        name = "libufdt_c",
+        path = "external/libufdt",
+        build_file = "@gbl//libfdt:BUILD.libufdt_c.bazel",
+    )
+
+    native.new_local_repository(
         name = "libdttable_c",
         path = "external/libufdt/utils/src",
         build_file = "@gbl//libdttable:BUILD.libdttable_c.bazel",
