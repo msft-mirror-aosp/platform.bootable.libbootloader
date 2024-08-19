@@ -12,139 +12,33 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use alloc::vec::Vec;
+use crate::error::Result;
 use core::ffi::CStr;
-
-use crate::error::{EfiAppError, Result};
 use efi::{
-    defs::{EfiGuid, EFI_TIMER_DELAY_TIMER_RELATIVE},
     protocol::{
-        block_io::BlockIoProtocol,
         device_path::{DevicePathProtocol, DevicePathText, DevicePathToTextProtocol},
         loaded_image::LoadedImageProtocol,
         simple_text_input::SimpleTextInputProtocol,
-        Protocol,
     },
-    DeviceHandle, EfiEntry, EventType,
+    utils::Timeout,
+    DeviceHandle, EfiEntry,
 };
+use efi_types::EfiGuid;
 use fdt::FdtHeader;
-use gbl_storage::{
-    required_scratch_size, AsBlockDevice, AsMultiBlockDevices, BlockInfo, BlockIo, BlockIoError,
-};
+use liberror::Error;
+use safemath::SafeNum;
 
 pub const EFI_DTB_TABLE_GUID: EfiGuid =
     EfiGuid::new(0xb1b621d5, 0xf19c, 0x41a5, [0x83, 0x0b, 0xd9, 0x15, 0x2c, 0x69, 0xaa, 0xe0]);
 
-/// Checks and converts an integer into usize
-pub fn to_usize<T: TryInto<usize>>(val: T) -> Result<usize> {
-    Ok(val.try_into().map_err(|_| EfiAppError::ArithmeticOverflow)?)
-}
-
-/// Rounds up a usize convertible number.
-pub fn usize_roundup<L: TryInto<usize>, R: TryInto<usize>>(lhs: L, rhs: R) -> Result<usize> {
-    // (lhs + rhs - 1) / rhs * rhs
-    let lhs = to_usize(lhs)?;
-    let rhs = to_usize(rhs)?;
-    let compute = || lhs.checked_add(rhs.checked_sub(1)?)?.checked_div(rhs)?.checked_mul(rhs);
-    Ok(compute().ok_or_else(|| EfiAppError::ArithmeticOverflow)?)
-}
-
-/// Adds two usize convertible numbers and checks overflow.
-pub fn usize_add<L: TryInto<usize>, R: TryInto<usize>>(lhs: L, rhs: R) -> Result<usize> {
-    Ok(to_usize(lhs)?.checked_add(to_usize(rhs)?).ok_or_else(|| EfiAppError::ArithmeticOverflow)?)
-}
-
 /// Gets a subslice of the given slice with aligned address according to `alignment`
-pub fn aligned_subslice(bytes: &mut [u8], alignment: usize) -> Result<&mut [u8]> {
+pub fn aligned_subslice(
+    bytes: &mut [u8],
+    alignment: usize,
+) -> core::result::Result<&mut [u8], Error> {
     let addr = bytes.as_ptr() as usize;
-    Ok(&mut bytes[usize_roundup(addr, alignment)? - addr..])
-}
-
-// Implement a block device on top of BlockIoProtocol
-pub struct EfiBlockIo<'a>(pub Protocol<'a, BlockIoProtocol>);
-
-impl BlockIo for EfiBlockIo<'_> {
-    fn info(&mut self) -> BlockInfo {
-        BlockInfo {
-            block_size: self.0.media().unwrap().block_size as u64,
-            num_blocks: (self.0.media().unwrap().last_block + 1) as u64,
-            alignment: core::cmp::max(1, self.0.media().unwrap().io_align as u64),
-        }
-    }
-
-    fn read_blocks(
-        &mut self,
-        blk_offset: u64,
-        out: &mut [u8],
-    ) -> core::result::Result<(), BlockIoError> {
-        self.0
-            .read_blocks(blk_offset, out)
-            .map_err(|_| BlockIoError::Others(Some("EFI BLOCK_IO protocol read error")))
-    }
-
-    fn write_blocks(
-        &mut self,
-        blk_offset: u64,
-        data: &mut [u8],
-    ) -> core::result::Result<(), BlockIoError> {
-        self.0
-            .write_blocks(blk_offset, data)
-            .map_err(|_| BlockIoError::Others(Some("EFI BLOCK_IO protocol write error")))
-    }
-}
-
-/// `EfiGptDevice` wraps a `EfiBlockIo` and implements `AsBlockDevice` interface.
-pub struct EfiGptDevice<'a> {
-    io: EfiBlockIo<'a>,
-    scratch: Vec<u8>,
-}
-
-const MAX_GPT_ENTRIES: u64 = 128;
-
-impl<'a> EfiGptDevice<'a> {
-    /// Initialize from a `BlockIoProtocol` EFI protocol
-    pub fn new(protocol: Protocol<'a, BlockIoProtocol>) -> Result<Self> {
-        let mut io = EfiBlockIo(protocol);
-        let scratch = vec![0u8; required_scratch_size(&mut io, MAX_GPT_ENTRIES)?];
-        Ok(Self { io, scratch })
-    }
-}
-
-impl AsBlockDevice for EfiGptDevice<'_> {
-    fn with(&mut self, f: &mut dyn FnMut(&mut dyn BlockIo, &mut [u8], u64)) {
-        f(&mut self.io, &mut self.scratch[..], MAX_GPT_ENTRIES)
-    }
-}
-
-pub struct EfiMultiBlockDevices<'a>(pub alloc::vec::Vec<EfiGptDevice<'a>>);
-
-impl AsMultiBlockDevices for EfiMultiBlockDevices<'_> {
-    fn for_each(
-        &mut self,
-        f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64),
-    ) -> core::result::Result<(), Option<&'static str>> {
-        for (idx, ele) in self.0.iter_mut().enumerate() {
-            f(ele, u64::try_from(idx).unwrap());
-        }
-        Ok(())
-    }
-}
-
-/// Finds and returns all block devices that have a valid GPT.
-pub fn find_gpt_devices(efi_entry: &EfiEntry) -> Result<EfiMultiBlockDevices> {
-    let bs = efi_entry.system_table().boot_services();
-    let block_dev_handles = bs.locate_handle_buffer_by_protocol::<BlockIoProtocol>()?;
-    let mut gpt_devices = Vec::<EfiGptDevice>::new();
-    for handle in block_dev_handles.handles() {
-        let mut gpt_dev = EfiGptDevice::new(bs.open_protocol::<BlockIoProtocol>(*handle)?)?;
-        match gpt_dev.sync_gpt() {
-            Ok(_) => {
-                gpt_devices.push(gpt_dev);
-            }
-            _ => {}
-        };
-    }
-    Ok(EfiMultiBlockDevices(gpt_devices))
+    let aligned_start = SafeNum::from(addr).round_up(alignment) - addr;
+    Ok(&mut bytes[aligned_start.try_into()?..])
 }
 
 /// Helper function to get the `DevicePathText` from a `DeviceHandle`.
@@ -186,36 +80,28 @@ pub fn get_efi_fdt<'a>(entry: &'a EfiEntry) -> Option<(&FdtHeader, &[u8])> {
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 pub fn efi_to_e820_mem_type(efi_mem_type: u32) -> u32 {
     match efi_mem_type {
-        efi::defs::EFI_MEMORY_TYPE_LOADER_CODE
-        | efi::defs::EFI_MEMORY_TYPE_LOADER_DATA
-        | efi::defs::EFI_MEMORY_TYPE_BOOT_SERVICES_CODE
-        | efi::defs::EFI_MEMORY_TYPE_BOOT_SERVICES_DATA
-        | efi::defs::EFI_MEMORY_TYPE_CONVENTIONAL_MEMORY => boot::x86::E820_ADDRESS_TYPE_RAM,
-        efi::defs::EFI_MEMORY_TYPE_RUNTIME_SERVICES_CODE
-        | efi::defs::EFI_MEMORY_TYPE_RUNTIME_SERVICES_DATA
-        | efi::defs::EFI_MEMORY_TYPE_MEMORY_MAPPED_IO
-        | efi::defs::EFI_MEMORY_TYPE_MEMORY_MAPPED_IOPORT_SPACE
-        | efi::defs::EFI_MEMORY_TYPE_PAL_CODE
-        | efi::defs::EFI_MEMORY_TYPE_RESERVED_MEMORY_TYPE => boot::x86::E820_ADDRESS_TYPE_RESERVED,
-        efi::defs::EFI_MEMORY_TYPE_UNUSABLE_MEMORY => boot::x86::E820_ADDRESS_TYPE_UNUSABLE,
-        efi::defs::EFI_MEMORY_TYPE_ACPIRECLAIM_MEMORY => boot::x86::E820_ADDRESS_TYPE_ACPI,
-        efi::defs::EFI_MEMORY_TYPE_ACPIMEMORY_NVS => boot::x86::E820_ADDRESS_TYPE_NVS,
-        efi::defs::EFI_MEMORY_TYPE_PERSISTENT_MEMORY => boot::x86::E820_ADDRESS_TYPE_PMEM,
+        efi_types::EFI_MEMORY_TYPE_LOADER_CODE
+        | efi_types::EFI_MEMORY_TYPE_LOADER_DATA
+        | efi_types::EFI_MEMORY_TYPE_BOOT_SERVICES_CODE
+        | efi_types::EFI_MEMORY_TYPE_BOOT_SERVICES_DATA
+        | efi_types::EFI_MEMORY_TYPE_CONVENTIONAL_MEMORY => boot::x86::E820_ADDRESS_TYPE_RAM,
+        efi_types::EFI_MEMORY_TYPE_RUNTIME_SERVICES_CODE
+        | efi_types::EFI_MEMORY_TYPE_RUNTIME_SERVICES_DATA
+        | efi_types::EFI_MEMORY_TYPE_MEMORY_MAPPED_IO
+        | efi_types::EFI_MEMORY_TYPE_MEMORY_MAPPED_IOPORT_SPACE
+        | efi_types::EFI_MEMORY_TYPE_PAL_CODE
+        | efi_types::EFI_MEMORY_TYPE_RESERVED_MEMORY_TYPE => boot::x86::E820_ADDRESS_TYPE_RESERVED,
+        efi_types::EFI_MEMORY_TYPE_UNUSABLE_MEMORY => boot::x86::E820_ADDRESS_TYPE_UNUSABLE,
+        efi_types::EFI_MEMORY_TYPE_ACPIRECLAIM_MEMORY => boot::x86::E820_ADDRESS_TYPE_ACPI,
+        efi_types::EFI_MEMORY_TYPE_ACPIMEMORY_NVS => boot::x86::E820_ADDRESS_TYPE_NVS,
+        efi_types::EFI_MEMORY_TYPE_PERSISTENT_MEMORY => boot::x86::E820_ADDRESS_TYPE_PMEM,
         v => panic!("Unmapped EFI memory type {v}"),
     }
 }
 
 /// A helper to convert a bytes slice containing a null-terminated string to `str`
-pub fn cstr_bytes_to_str(data: &[u8]) -> Result<&str> {
-    Ok(CStr::from_bytes_until_nul(data)
-        .map_err(|_| EfiAppError::InvalidString)?
-        .to_str()
-        .map_err(|_| EfiAppError::InvalidString)?)
-}
-
-/// Converts 1 ms to number of 100 nano seconds
-pub fn ms_to_100ns(ms: u64) -> Result<u64> {
-    Ok(ms.checked_mul(1000 * 10).ok_or(EfiAppError::ArithmeticOverflow)?)
+pub fn cstr_bytes_to_str(data: &[u8]) -> core::result::Result<&str, Error> {
+    Ok(CStr::from_bytes_until_nul(data)?.to_str()?)
 }
 
 /// Repetitively runs a closure until it signals completion or timeout.
@@ -228,17 +114,11 @@ pub fn loop_with_timeout<F, R>(efi_entry: &EfiEntry, timeout_ms: u64, mut f: F) 
 where
     F: FnMut() -> core::result::Result<R, bool>,
 {
-    let bs = efi_entry.system_table().boot_services();
-    let timer = bs.create_event(EventType::Timer, None)?;
-    bs.set_timer(&timer, EFI_TIMER_DELAY_TIMER_RELATIVE, ms_to_100ns(timeout_ms)?)?;
-    while !bs.check_event(&timer)? {
+    let timeout = Timeout::new(efi_entry, timeout_ms)?;
+    while !timeout.check()? {
         match f() {
-            Ok(v) => {
-                return Ok(Some(v));
-            }
-            Err(true) => {
-                bs.set_timer(&timer, EFI_TIMER_DELAY_TIMER_RELATIVE, ms_to_100ns(timeout_ms)?)?;
-            }
+            Ok(v) => return Ok(Some(v)),
+            Err(true) => timeout.reset(timeout_ms)?,
             _ => {}
         }
     }

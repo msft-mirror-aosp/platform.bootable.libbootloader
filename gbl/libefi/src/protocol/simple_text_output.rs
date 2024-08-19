@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::defs::{
-    char16_t, EfiGuid, EfiSimpleTextOutputProtocol, EFI_STATUS_NOT_FOUND, EFI_STATUS_UNSUPPORTED,
-};
+//! Rust wrapper for `EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL`.
+
+use crate::efi_call;
 use crate::protocol::{Protocol, ProtocolInfo};
-use crate::{efi_call, map_efi_err, EfiError, EfiResult};
 use core::fmt::Write;
+use efi_types::{char16_t, EfiGuid, EfiSimpleTextOutputProtocol};
+use liberror::Result;
 
 /// EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL
 pub struct SimpleTextOutputProtocol;
@@ -31,7 +32,7 @@ impl ProtocolInfo for SimpleTextOutputProtocol {
 
 impl Protocol<'_, SimpleTextOutputProtocol> {
     /// Wrapper of `EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL.OutputString()`
-    pub fn output_string(&self, msg: *mut char16_t) -> EfiResult<()> {
+    pub fn output_string(&self, msg: *mut char16_t) -> Result<()> {
         // SAFETY:
         // `self.interface()?` guarantees `self.interface` is non-null and points to a valid object
         // established by `Protocol::new()`.
@@ -56,13 +57,5 @@ impl Write for Protocol<'_, SimpleTextOutputProtocol> {
             self.output_string(char16_msg.as_mut_ptr()).map_err(|_| core::fmt::Error {})?;
         }
         Ok(())
-    }
-}
-
-// A convenient convert to forward error when using write!() on
-// Protocol<SimpleTextOutputProtocol>.
-impl From<core::fmt::Error> for EfiError {
-    fn from(_: core::fmt::Error) -> EfiError {
-        EFI_STATUS_UNSUPPORTED.into()
     }
 }

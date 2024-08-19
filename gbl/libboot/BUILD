@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_rust//bindgen:defs.bzl", "rust_bindgen")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 
@@ -71,8 +72,12 @@ rust_library(
     srcs = glob(["**/*.rs"]),
     crate_name = "boot",
     edition = "2021",
+    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         ":x86_bootparam_defs",
+        "@gbl//liberror",
+        "@gbl//libsafemath",
+        "@gbl//third_party/libzbi",
         "@zerocopy",
     ] + select({
         "@gbl//toolchain:gbl_rust_uefi_aarch64": [

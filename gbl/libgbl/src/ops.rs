@@ -17,42 +17,87 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-use crate::error::{Error, Result as GblResult};
+use crate::error::Result as GblResult;
 #[cfg(feature = "alloc")]
 use alloc::ffi::CString;
 use core::{
     fmt::{Debug, Write},
     result::Result,
 };
-use gbl_storage::{
-    required_scratch_size, AsBlockDevice, AsMultiBlockDevices, BlockDevice, BlockIo,
+use gbl_async::block_on;
+
+// Re-exports of types from other dependencies that appear in the APIs of this library.
+pub use avb::{
+    CertPermanentAttributes, IoError as AvbIoError, IoResult as AvbIoResult, SHA256_DIGEST_SIZE,
 };
-use safemath::SafeNum;
+use liberror::Error;
+pub use zbi::ZbiContainer;
 
 use super::slots;
 
 /// `AndroidBootImages` contains references to loaded images for booting Android.
 pub struct AndroidBootImages<'a> {
+    /// Kernel image.
     pub kernel: &'a mut [u8],
+    /// Ramdisk to pass to the kernel.
     pub ramdisk: &'a mut [u8],
+    /// FDT To pass to the kernel.
     pub fdt: &'a mut [u8],
 }
 
 /// `FuchsiaBootImages` contains references to loaded images for booting Zircon.
 pub struct FuchsiaBootImages<'a> {
+    /// Kernel image.
     pub zbi_kernel: &'a mut [u8],
+    /// ZBI container with items to pass to the kernel.
     pub zbi_items: &'a mut [u8],
 }
 
-/// `BootImages` contains images for booting Android/Zircon kernel.
+/// Images required to boot the supported kernels.
 pub enum BootImages<'a> {
+    /// Android boot images.
     Android(AndroidBootImages<'a>),
+    /// Fuchsia boot images.
     Fuchsia(FuchsiaBootImages<'a>),
 }
 
-/// `GblOpsError` is the error type returned by required methods in `GblOps`.
-#[derive(Default, Debug, PartialEq, Eq)]
-pub struct GblOpsError(Option<&'static str>);
+/// `GblAvbOps` contains libavb backend interfaces needed by GBL.
+///
+/// The trait is a selective subset of the interfaces in `avb::Ops` and `avb::CertOps`. The rest of
+/// the APIs are either not relevant to or are implemented and managed by GBL APIs.
+pub trait GblAvbOps {
+    /// Returns if device is in an unlocked state.
+    ///
+    /// The interface has the same requirement as `avb::Ops::read_is_device_unlocked`.
+    fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool>;
+
+    /// Reads the AVB rollback index at the given location
+    ///
+    /// The interface has the same requirement as `avb::Ops::read_rollback_index`.
+    fn avb_read_rollback_index(&mut self, _rollback_index_location: usize) -> AvbIoResult<u64>;
+
+    /// Writes the AVB rollback index at the given location.
+    ///
+    /// The interface has the same requirement as `avb::Ops::write_rollback_index`.
+    fn avb_write_rollback_index(
+        &mut self,
+        _rollback_index_location: usize,
+        _index: u64,
+    ) -> AvbIoResult<()>;
+
+    /// Reads AVB certificate extension permanent attributes.
+    ///
+    /// The interface has the same requirement as `avb::CertOps::read_permanent_attributes`.
+    fn avb_cert_read_permanent_attributes(
+        &mut self,
+        attributes: &mut CertPermanentAttributes,
+    ) -> AvbIoResult<()>;
+
+    /// Reads AVB certificate extension permanent attributes hash.
+    ///
+    /// The interface has the same requirement as `avb::CertOps::read_permanent_attributes_hash`.
+    fn avb_cert_read_permanent_attributes_hash(&mut self) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]>;
+}
 
 // https://stackoverflow.com/questions/41081240/idiomatic-callbacks-in-rust
 // should we use traits for this? or optional/box FnMut?
@@ -64,31 +109,60 @@ missing:
 */
 /// Trait that defines callbacks that can be provided to Gbl.
 pub trait GblOps {
-    /// Iterates block devices on the platform.
-    ///
-    /// For each block device, implementation should call `f` with its 1) `BlockIo` trait
-    /// implementation, 2) a unique u64 ID and 3) maximum number of gpt entries. If the maximum
-    /// entries is 0, it is considered that the block should not use GPT.
-    ///
-    /// The list of block devices and visit order should remain the same for the life time of the
-    /// object that implements this trait. If this can not be met due to media change, error should
-    /// be returned. Dynamic media change is not supported for now.
-    fn visit_block_devices(
-        &mut self,
-        f: &mut dyn FnMut(&mut dyn BlockIo, u64, u64),
-    ) -> Result<(), GblOpsError>;
-
-    /// Prints a ASCII character to the platform console.
-    fn console_put_char(&mut self, ch: u8) -> Result<(), GblOpsError>;
+    /// Gets a console for logging messages.
+    fn console_out(&mut self) -> Option<&mut dyn Write>;
 
     /// This method can be used to implement platform specific mechanism for deciding whether boot
     /// should abort and enter Fastboot mode.
-    fn should_stop_in_fastboot(&mut self) -> Result<bool, GblOpsError>;
+    fn should_stop_in_fastboot(&mut self) -> Result<bool, Error>;
 
-    /// Platform specific kernel boot implementation.
-    ///
-    /// Implementation is not expected to return on success.
-    fn boot(&mut self, boot_images: BootImages) -> Result<(), GblOpsError>;
+    /// Platform specific processing of boot images before booting.
+    fn preboot(&mut self, boot_images: BootImages) -> Result<(), Error>;
+
+    /// Reads data from a partition.
+    async fn read_from_partition(
+        &mut self,
+        part: &str,
+        off: u64,
+        out: &mut [u8],
+    ) -> Result<(), Error>;
+
+    /// Reads data from a partition synchronously.
+    fn read_from_partition_sync(
+        &mut self,
+        part: &str,
+        off: u64,
+        out: &mut [u8],
+    ) -> Result<(), Error> {
+        block_on(self.read_from_partition(part, off, out))
+    }
+
+    /// Writes data to a partition.
+    async fn write_to_partition(
+        &mut self,
+        part: &str,
+        off: u64,
+        data: &mut [u8],
+    ) -> Result<(), Error>;
+
+    /// Writes data to a partition synchronously.
+    fn write_to_partition_sync(
+        &mut self,
+        part: &str,
+        off: u64,
+        data: &mut [u8],
+    ) -> Result<(), Error> {
+        block_on(self.write_to_partition(part, off, data))
+    }
+
+    /// Returns the size of a partiiton. Returns Ok(None) if partition doesn't exist.
+    fn partition_size(&mut self, part: &str) -> Result<Option<u64>, Error>;
+
+    /// Adds device specific ZBI items to the given `container`
+    fn zircon_add_device_zbi_items(
+        &mut self,
+        container: &mut ZbiContainer<&mut [u8]>,
+    ) -> Result<(), Error>;
 
     // TODO(b/334962570): figure out how to plumb ops-provided hash implementations into
     // libavb. The tricky part is that libavb hashing APIs are global with no way to directly
@@ -102,93 +176,34 @@ pub trait GblOps {
     // Nevertype could be used here when it is stable https://github.com/serde-rs/serde/issues/812
     fn do_fastboot<B: gbl_storage::AsBlockDevice>(
         &self,
-        cursor: &mut slots::Cursor<B, impl slots::Manager>,
-    ) -> GblResult<()> {
-        Err(Error::NotImplemented.into())
-    }
+        cursor: &mut slots::Cursor<B>,
+    ) -> GblResult<()>;
 
     /// TODO: b/312607649 - placeholder interface for Gbl specific callbacks that uses alloc.
     #[cfg(feature = "alloc")]
     fn gbl_alloc_extra_action(&mut self, s: &str) -> GblResult<()> {
-        let _c_string = CString::new(s);
-        Err(Error::NotImplemented.into())
+        unimplemented!();
     }
 
     /// Load and initialize a slot manager and return a cursor over the manager on success.
-    fn load_slot_interface<'b, B: gbl_storage::AsBlockDevice, M: slots::Manager>(
-        &mut self,
-        block_device: &'b mut B,
+    fn load_slot_interface<'a, B: gbl_storage::AsBlockDevice>(
+        &'a mut self,
+        block_device: &'a mut B,
         boot_token: slots::BootToken,
-    ) -> GblResult<slots::Cursor<'b, B, M>> {
-        Err(Error::OperationProhibited.into())
-    }
+    ) -> GblResult<slots::Cursor<'a, B>>;
 
-    /// Computes the sum of required scratch size for all block devices.
-    fn required_scratch_size(&mut self) -> GblResult<usize> {
-        let mut total = SafeNum::ZERO;
-        let mut res = Ok(());
-        self.visit_block_devices(&mut |io, id, max_gpt_entries| {
-            res = (|| {
-                total += required_scratch_size(io, max_gpt_entries).unwrap();
-                Ok(())
-            })();
-        })?;
-
-        let total = usize::try_from(total).map_err(|e| e.into());
-        res.and(total)
-    }
+    /// Returns an implementation of `GblAvbOps`
+    ///
+    /// Users that don't need verified boot can return `avb_ops_none()`.
+    fn avb_ops(&mut self) -> Option<impl GblAvbOps>;
 }
 
-/// `GblUtils` takes a reference to `GblOps` and implements various traits.
-pub(crate) struct GblUtils<'a, 'b, T: GblOps> {
-    ops: &'a mut T,
-    scratch: &'b mut [u8],
-}
-
-impl<'a, 'b, T: GblOps> GblUtils<'a, 'b, T> {
-    /// Create a new instance with user provided scratch buffer.
-    ///
-    /// # Args
-    ///
-    /// * `ops`: A reference to a `GblOps`,
-    /// * `scratch`: A scratch buffer.
-    ///
-    /// # Returns
-    ///
-    /// Returns a new instance and the trailing unused part of the input scratch buffer.
-    pub fn new(ops: &'a mut T, scratch: &'b mut [u8]) -> GblResult<(Self, &'b mut [u8])> {
-        let total_scratch_size = ops.required_scratch_size()?;
-        let (scratch, remaining) = scratch.split_at_mut(total_scratch_size);
-        Ok((Self { ops: ops, scratch: scratch }, remaining))
-    }
-}
-
-impl<T: GblOps> AsMultiBlockDevices for GblUtils<'_, '_, T> {
-    fn for_each(
-        &mut self,
-        f: &mut dyn FnMut(&mut dyn AsBlockDevice, u64),
-    ) -> core::result::Result<(), Option<&'static str>> {
-        let mut scratch_offset = SafeNum::ZERO;
-        self.ops
-            .visit_block_devices(&mut |io, id, max_gpt_entries| {
-                // Not expected to fail as `Self::new()` should have checked any overflow.
-                let scratch_size: usize = required_scratch_size(io, max_gpt_entries).unwrap();
-                let scratch =
-                    &mut self.scratch[scratch_offset.try_into().unwrap()..][..scratch_size];
-                scratch_offset += scratch_size;
-                f(&mut BlockDevice::new(io, scratch, max_gpt_entries), id);
-            })
-            .map_err(|v| v.0)
-    }
-}
-
-impl<T: GblOps> Write for GblUtils<'_, '_, T> {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        for ch in s.as_bytes() {
-            self.ops.console_put_char(*ch).map_err(|_| core::fmt::Error {})?;
-        }
-        Ok(())
-    }
+/// Returns a `None` instance of `Option<impl GblAvbOps>`.
+///
+/// This can be used as the implementation of `GblOps::avb_ops()` if users don't need verified
+/// boot.
+pub fn avb_ops_none() -> Option<impl GblAvbOps> {
+    None::<GblAvbOpsNull>
 }
 
 /// Default [GblOps] implementation that returns errors and does nothing.
@@ -196,22 +211,110 @@ impl<T: GblOps> Write for GblUtils<'_, '_, T> {
 pub struct DefaultGblOps {}
 
 impl GblOps for DefaultGblOps {
-    fn visit_block_devices(
+    fn console_out(&mut self) -> Option<&mut dyn Write> {
+        unimplemented!();
+    }
+
+    fn should_stop_in_fastboot(&mut self) -> Result<bool, Error> {
+        unimplemented!();
+    }
+
+    fn preboot(&mut self, boot_images: BootImages) -> Result<(), Error> {
+        unimplemented!();
+    }
+
+    async fn read_from_partition(
         &mut self,
-        f: &mut dyn FnMut(&mut dyn BlockIo, u64, u64),
-    ) -> Result<(), GblOpsError> {
-        Err(GblOpsError(Some("unimplemented")))
+        part: &str,
+        off: u64,
+        out: &mut [u8],
+    ) -> Result<(), Error> {
+        unimplemented!();
     }
 
-    fn console_put_char(&mut self, ch: u8) -> Result<(), GblOpsError> {
-        Err(GblOpsError(Some("unimplemented")))
+    async fn write_to_partition(
+        &mut self,
+        part: &str,
+        off: u64,
+        data: &mut [u8],
+    ) -> Result<(), Error> {
+        unimplemented!();
     }
 
-    fn should_stop_in_fastboot(&mut self) -> Result<bool, GblOpsError> {
-        Err(GblOpsError(Some("unimplemented")))
+    fn partition_size(&mut self, part: &str) -> Result<Option<u64>, Error> {
+        unimplemented!();
     }
 
-    fn boot(&mut self, boot_images: BootImages) -> Result<(), GblOpsError> {
-        Err(GblOpsError(Some("unimplemented")))
+    fn zircon_add_device_zbi_items(
+        &mut self,
+        container: &mut ZbiContainer<&mut [u8]>,
+    ) -> Result<(), Error> {
+        unimplemented!();
+    }
+
+    fn do_fastboot<B: gbl_storage::AsBlockDevice>(
+        &self,
+        cursor: &mut slots::Cursor<B>,
+    ) -> GblResult<()> {
+        unimplemented!();
+    }
+
+    fn load_slot_interface<'a, B: gbl_storage::AsBlockDevice>(
+        &'a mut self,
+        block_device: &'a mut B,
+        boot_token: slots::BootToken,
+    ) -> GblResult<slots::Cursor<'a, B>> {
+        unimplemented!();
+    }
+
+    fn avb_ops(&mut self) -> Option<impl GblAvbOps> {
+        avb_ops_none()
+    }
+}
+
+/// Prints with `GblOps::console_out()`.
+#[macro_export]
+macro_rules! gbl_print {
+    ( $ops:expr, $( $x:expr ),* $(,)? ) => {
+        {
+            match $ops.console_out() {
+                Some(v) => write!(v, $($x,)*).unwrap(),
+                _ => {}
+            }
+        }
+    };
+}
+
+/// `GblAvbOpsNull` provides placeholder implementation for `GblAvbOps`. All methods are
+/// `unimplemented!()`. The type is for plugging in `None::<GblAvbOpsNull>` which the compiler
+/// requires for return by `avb_ops_none()`, .
+struct GblAvbOpsNull {}
+
+impl GblAvbOps for GblAvbOpsNull {
+    fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
+        unimplemented!();
+    }
+
+    fn avb_read_rollback_index(&mut self, _rollback_index_location: usize) -> AvbIoResult<u64> {
+        unimplemented!();
+    }
+
+    fn avb_write_rollback_index(
+        &mut self,
+        _rollback_index_location: usize,
+        _index: u64,
+    ) -> AvbIoResult<()> {
+        unimplemented!();
+    }
+
+    fn avb_cert_read_permanent_attributes(
+        &mut self,
+        attributes: &mut CertPermanentAttributes,
+    ) -> AvbIoResult<()> {
+        unimplemented!();
+    }
+
+    fn avb_cert_read_permanent_attributes_hash(&mut self) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
+        unimplemented!();
     }
 }

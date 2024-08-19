@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::cmp::{max, min};
-use core::mem::size_of;
+use core::{
+    cmp::{max, min},
+    mem::size_of,
+};
 use fastboot::CommandError;
-
 use static_assertions::const_assert;
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 
@@ -124,21 +125,27 @@ impl FillInfo {
 
 const_assert!(size_of::<FillInfo>() < size_of::<ChunkHeader>());
 
+/// `SparseRawWriter` defines an interface for writing to raw storage used by `write_sparse_image`.
+pub(crate) trait SparseRawWriter {
+    /// Writes bytes from `data` to the destination storage at offset `off`
+    async fn write(&mut self, off: u64, data: &mut [u8]) -> Result<(), CommandError>;
+}
+
 /// Write a sparse image in `sparse_img`.
 ///
 /// # Args
 //
 /// * `sparse_img`: The input buffer containing the sparse image. The API modifes input buffer for
 ///   internal optimization.
-/// * `write`: A closure as the writer. It takes an offset and a `&mut [u8]` as the write data.
+/// * `writer`: An implementation of `SparseRawWriter`.
 ///
 /// # Returns
 ///
 /// Returns the total number of bytes written, including don't care chunks.
-pub fn write_sparse_image<F>(sparse_img: &mut [u8], mut write: F) -> Result<u64, CommandError>
-where
-    F: FnMut(u64, &mut [u8]) -> Result<(), CommandError>,
-{
+pub async fn write_sparse_image(
+    sparse_img: &mut [u8],
+    writer: &mut impl SparseRawWriter,
+) -> Result<u64, CommandError> {
     let sparse_header: SparseHeader = is_sparse_image(sparse_img)?;
     let mut curr: usize = size_of::<SparseHeader>();
     let mut write_offset = 0u64;
@@ -151,7 +158,9 @@ where
         let payload_sz = u64_mul(header.chunk_sz, sparse_header.blk_sz)?;
         let mut fill = FillInfo::new_skip(header.chunk_sz);
         match header.chunk_type {
-            CHUNK_TYPE_RAW => write(write_offset, get_mut(payload, 0, to_usize(payload_sz)?)?)?,
+            CHUNK_TYPE_RAW => {
+                writer.write(write_offset, get_mut(payload, 0, to_usize(payload_sz)?)?).await?;
+            }
             CHUNK_TYPE_FILL if header.chunk_sz != 0 => {
                 let fill_val = u32::from_le_bytes(get_mut(payload, 0, 4)?.try_into().unwrap());
                 fill = FillInfo::new_fill(header.chunk_sz, fill_val);
@@ -184,7 +193,7 @@ where
                 let end = u64_add(write_offset, sz)?;
                 while write_offset < end {
                     let to_write = min(buffer_len, end - write_offset);
-                    write(write_offset, &mut buffer[..to_usize(to_write).unwrap()])?;
+                    writer.write(write_offset, &mut buffer[..to_usize(to_write).unwrap()]).await?;
                     write_offset += to_write;
                 }
             }
@@ -276,6 +285,14 @@ fn u64_mul<L: TryInto<u64>, R: TryInto<u64>>(lhs: L, rhs: R) -> Result<u64, Comm
 #[cfg(test)]
 mod test {
     use super::*;
+    use gbl_async::block_on;
+
+    impl SparseRawWriter for Vec<u8> {
+        async fn write(&mut self, off: u64, data: &mut [u8]) -> Result<(), CommandError> {
+            self[off.try_into().unwrap()..][..data.len()].clone_from_slice(data);
+            Ok(())
+        }
+    }
 
     #[test]
     fn test_sparse_write() {
@@ -284,11 +301,7 @@ mod test {
         // Gives a larger output buffer.
         let mut out = vec![0u8; 2 * raw.len()];
         assert_eq!(
-            write_sparse_image(&mut sparse.to_vec()[..], |off, data| {
-                out[off.try_into().unwrap()..][..data.len()].clone_from_slice(data);
-                Ok(())
-            })
-            .unwrap(),
+            block_on(write_sparse_image(&mut sparse.to_vec()[..], &mut out)).unwrap(),
             raw.len().try_into().unwrap()
         );
         assert_eq!(out[..raw.len()].to_vec(), raw);
@@ -301,11 +314,7 @@ mod test {
         // Gives a larger output buffer.
         let mut out = vec![0u8; 2 * raw.len()];
         assert_eq!(
-            write_sparse_image(&mut sparse.to_vec()[..], |off, data| {
-                out[off.try_into().unwrap()..][..data.len()].clone_from_slice(data);
-                Ok(())
-            })
-            .unwrap(),
+            block_on(write_sparse_image(&mut sparse.to_vec()[..], &mut out)).unwrap(),
             raw.len().try_into().unwrap()
         );
         assert_eq!(out[..raw.len()].to_vec(), raw);
@@ -322,7 +331,7 @@ mod test {
         let mut sparse_header: SparseHeader = copy_from(&sparse[..]).unwrap();
         sparse_header.magic = 0;
         copy_to(&sparse_header, &mut sparse[..]);
-        assert!(write_sparse_image(&mut sparse[..], |_, _| panic!()).is_err());
+        assert!(block_on(write_sparse_image(&mut sparse[..], &mut vec![])).is_err());
     }
 
     #[test]
@@ -331,7 +340,7 @@ mod test {
         let mut sparse_header: SparseHeader = copy_from(&sparse[..]).unwrap();
         sparse_header.major_version = SPARSE_HEADER_MAJOR_VER + 1;
         copy_to(&sparse_header, &mut sparse[..]);
-        assert!(write_sparse_image(&mut sparse[..], |_, _| panic!()).is_err());
+        assert!(block_on(write_sparse_image(&mut sparse[..], &mut vec![])).is_err());
     }
 
     #[test]
@@ -340,6 +349,6 @@ mod test {
         let mut sparse_header: SparseHeader = copy_from(&sparse[..]).unwrap();
         sparse_header.minor_version = SPARSE_HEADER_MINOR_VER + 1;
         copy_to(&sparse_header, &mut sparse[..]);
-        assert!(write_sparse_image(&mut sparse[..], |_, _| panic!()).is_err());
+        assert!(block_on(write_sparse_image(&mut sparse[..], &mut vec![])).is_err());
     }
 }
