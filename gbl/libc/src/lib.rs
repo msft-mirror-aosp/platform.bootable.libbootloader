@@ -20,14 +20,18 @@
 extern crate alloc;
 
 use alloc::alloc::{alloc, dealloc};
-
 use core::{
     alloc::Layout,
-    cmp::min,
-    ffi::{c_char, c_int, c_ulong, c_void, CStr},
+    ffi::{c_char, c_int, c_ulong, c_void},
     mem::size_of,
     ptr::{null_mut, NonNull},
 };
+
+pub use strcmp::{strcmp, strncmp};
+
+pub mod strchr;
+pub mod strcmp;
+pub mod strtoul;
 
 // Linking compiler built-in intrinsics to expose libc compatible implementations
 // https://cs.android.com/android/platform/superproject/main/+/2e15fc2eadcb7db07bf6656086c50153bbafe7b6:prebuilts/rust/linux-x86/1.78.0/lib/rustlib/src/rust/vendor/compiler_builtins/src/mem/mod.rs;l=22
@@ -44,9 +48,6 @@ extern "C" {
 
 /// Extended version of void *malloc(size_t size) with ptr alignment configuration support.
 /// Libraries may have a different alignment requirements.
-///
-/// TODO(353089385): optimize allocation/deallocation by using EFI allocator directly for
-/// some configurations
 ///
 /// # Safety
 ///
@@ -72,9 +73,6 @@ pub unsafe extern "C" fn gbl_malloc(size: usize, alignment: usize) -> *mut c_voi
 }
 
 /// Extended version of void free(void *ptr) with ptr alignment configuration support.
-///
-/// TODO(353089385): optimize allocation/deallocation by using EFI allocator directly for
-/// some configurations
 ///
 /// # Safety
 ///
@@ -124,26 +122,6 @@ pub unsafe extern "C" fn memchr(ptr: *const c_void, ch: c_int, count: c_ulong) -
     null_mut()
 }
 
-/// char *strrchr(const char *str, int c);
-///
-/// # Safety
-///
-/// * `str` needs to be a valid null-terminated C string.
-/// * Returns the pointer within `str`, or null if not found.
-#[no_mangle]
-pub unsafe extern "C" fn strrchr(ptr: *const c_char, ch: c_int) -> *mut c_char {
-    assert!(!ptr.is_null());
-    // SAFETY: `str` is a valid null terminated string.
-    let bytes = unsafe { CStr::from_ptr(ptr).to_bytes_with_nul() };
-    let target = (ch & 0xff) as u8;
-    for c in bytes.iter().rev() {
-        if *c == target {
-            return c as *const _ as *mut _;
-        }
-    }
-    null_mut()
-}
-
 /// size_t strnlen(const char *s, size_t maxlen);
 ///
 /// # Safety
@@ -155,229 +133,5 @@ pub unsafe extern "C" fn strnlen(s: *const c_char, maxlen: usize) -> usize {
     match unsafe { memchr(s as *const _, 0, maxlen.try_into().unwrap()) } {
         p if p.is_null() => maxlen,
         p => (p as usize) - (s as usize),
-    }
-}
-
-/// int strcmp(const char *s1, const char *s2);
-///
-/// # Safety
-///
-/// * `s1` and `s2` must be valid pointers to null terminated C strings.
-#[no_mangle]
-pub unsafe extern "C" fn strcmp(s1: *const c_char, s2: *const c_char) -> c_int {
-    // SAFETY: References are only used within function.
-    let (lhs, rhs) = unsafe { (CStr::from_ptr(s1 as *const _), CStr::from_ptr(s2 as *const _)) };
-    Ord::cmp(lhs, rhs) as i32
-}
-
-/// int strncmp(const char *s1, const char *s2, size_t n);
-///
-/// # Safety
-///
-/// * `s1` and `s2` must be valid pointers to null terminated C strings.
-#[no_mangle]
-pub unsafe extern "C" fn strncmp(s1: *const c_char, s2: *const c_char, n: usize) -> c_int {
-    // SAFETY: References are only used within function.
-    let (lhs, rhs) = unsafe { (CStr::from_ptr(s1 as *const _), CStr::from_ptr(s2 as *const _)) };
-
-    let lsize = min(lhs.to_bytes().len(), n);
-    let rsize = min(rhs.to_bytes().len(), n);
-    let prefix_size = min(lsize, rsize);
-
-    // compare by the prefix first, then compare by remain size
-    lhs.to_bytes()[..prefix_size].cmp(&rhs.to_bytes()[..prefix_size]).then(lsize.cmp(&rsize)) as i32
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    use std::ffi::CString;
-
-    fn to_cstr(s: &str) -> CString {
-        CString::new(s).unwrap()
-    }
-
-    // strcmp
-
-    #[test]
-    fn strcmp_same() {
-        let left = to_cstr("first");
-        let right = to_cstr("first");
-
-        let r = unsafe { strcmp(left.as_ptr(), right.as_ptr()) };
-        assert_eq!(r, 0);
-    }
-
-    #[test]
-    fn strcmp_same_special_characters() {
-        let left = to_cstr("!@#");
-        let right = to_cstr("!@#");
-
-        let r = unsafe { strcmp(left.as_ptr(), right.as_ptr()) };
-        assert_eq!(r, 0); // Both strings with special characters are equal
-    }
-
-    #[test]
-    fn strcmp_left_smaller() {
-        let left = to_cstr("first");
-        let right = to_cstr("second");
-
-        let r = unsafe { strcmp(left.as_ptr(), right.as_ptr()) };
-        assert!(r < 0); // "first" is lexicographically less than "second"
-    }
-
-    #[test]
-    fn strcmp_left_is_prefix_of_right() {
-        let left = to_cstr("first");
-        let right = to_cstr("firstly");
-
-        let r = unsafe { strcmp(left.as_ptr(), right.as_ptr()) };
-        assert!(r < 0); // "first" is a prefix of "firstly"
-    }
-
-    #[test]
-    fn strcmp_right_is_prefix_of_left() {
-        let left = to_cstr("firstly");
-        let right = to_cstr("first");
-
-        let r = unsafe { strcmp(left.as_ptr(), right.as_ptr()) };
-        assert!(r > 0); // "firstly" is lexicographically greater than "first"
-    }
-
-    #[test]
-    fn strcmp_empty() {
-        let left = to_cstr("");
-        let right = to_cstr("");
-
-        let r = unsafe { strcmp(left.as_ptr(), right.as_ptr()) };
-        assert_eq!(r, 0); // Both strings are empty, so they are equal
-    }
-
-    #[test]
-    fn strcmp_empty_vs_non_empty() {
-        let left = to_cstr("");
-        let right = to_cstr("nonempty");
-
-        let r = unsafe { strcmp(left.as_ptr(), right.as_ptr()) };
-        assert!(r < 0); // Empty string is less than any non-empty string
-    }
-
-    #[test]
-    fn strcmp_non_empty_vs_empty() {
-        let left = to_cstr("nonempty");
-        let right = to_cstr("");
-
-        let r = unsafe { strcmp(left.as_ptr(), right.as_ptr()) };
-        assert!(r > 0); // Any non-empty string is greater than an empty string
-    }
-
-    #[test]
-    fn strcmp_case_sensitivity() {
-        let left = to_cstr("First");
-        let right = to_cstr("first");
-
-        let r = unsafe { strcmp(left.as_ptr(), right.as_ptr()) };
-        assert!(r < 0); // 'F' (uppercase) is lexicographically less than 'f' (lowercase) in ASCII
-    }
-
-    // strncmp
-
-    #[test]
-    fn strncmp_same_exact_length() {
-        let left = to_cstr("hello");
-        let right = to_cstr("hello");
-
-        let r = unsafe { strncmp(left.as_ptr(), right.as_ptr(), 5) };
-        assert_eq!(r, 0);
-    }
-
-    #[test]
-    fn strncmp_equal_strings_partial_length() {
-        let left = to_cstr("hello");
-        let right = to_cstr("hello");
-
-        let r = unsafe { strncmp(left.as_ptr(), right.as_ptr(), 3) };
-        assert_eq!(r, 0);
-    }
-
-    #[test]
-    fn strncmp_same_special_characters() {
-        let left = to_cstr("!@#");
-        let right = to_cstr("!@#");
-
-        let r = unsafe { strncmp(left.as_ptr(), right.as_ptr(), 3) };
-        assert_eq!(r, 0); // Both strings with special characters are equal
-    }
-
-    #[test]
-    fn strncmp_different_strings_exact_length() {
-        let left = to_cstr("hello");
-        let right = to_cstr("world");
-
-        let r = unsafe { strncmp(left.as_ptr(), right.as_ptr(), 5) };
-        assert!(r < 0); // "hello" is lexicographically less than "world"
-    }
-
-    #[test]
-    fn strncmp_different_strings_partial_length() {
-        let left = to_cstr("hello");
-        let right = to_cstr("world");
-
-        let r = unsafe { strncmp(left.as_ptr(), right.as_ptr(), 3) };
-        assert!(r < 0); // Comparing "hel" vs "wor"
-    }
-
-    #[test]
-    fn strncmp_left_is_prefix_of_right() {
-        let left = to_cstr("abc");
-        let right = to_cstr("abcdef");
-
-        let r = unsafe { strncmp(left.as_ptr(), right.as_ptr(), 6) };
-        assert!(r < 0); // "abc" is lexicographically less than "abcdef"
-    }
-
-    #[test]
-    fn strncmp_right_is_prefix_of_left() {
-        let left = to_cstr("abcdef");
-        let right = to_cstr("abc");
-
-        let r = unsafe { strncmp(left.as_ptr(), right.as_ptr(), 6) };
-        assert!(r > 0); // "abcdef" is lexicographically greater than "abc"
-    }
-
-    #[test]
-    fn strncmp_empty_strings() {
-        let left = to_cstr("");
-        let right = to_cstr("");
-
-        let r = unsafe { strncmp(left.as_ptr(), right.as_ptr(), 5) };
-        assert_eq!(r, 0); // Both strings are empty, so they are equal
-    }
-
-    #[test]
-    fn strncmp_empty_vs_non_empty() {
-        let left = to_cstr("");
-        let right = to_cstr("hello");
-
-        let r = unsafe { strncmp(left.as_ptr(), right.as_ptr(), 5) };
-        assert!(r < 0); // Empty string is less than any non-empty string
-    }
-
-    #[test]
-    fn strncmp_non_empty_vs_empty() {
-        let left = to_cstr("hello");
-        let right = to_cstr("");
-
-        let r = unsafe { strncmp(left.as_ptr(), right.as_ptr(), 5) };
-        assert!(r > 0); // Any non-empty string is greater than an empty string
-    }
-
-    #[test]
-    fn strncmp_case_sensitivity() {
-        let left = to_cstr("Hello");
-        let right = to_cstr("hello");
-
-        let r = unsafe { strncmp(left.as_ptr(), right.as_ptr(), 5) };
-        assert!(r < 0); // 'H' (uppercase) is less than 'h' (lowercase) in ASCII
     }
 }
