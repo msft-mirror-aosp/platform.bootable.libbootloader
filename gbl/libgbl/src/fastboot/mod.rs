@@ -301,16 +301,14 @@ impl<'b, T: TasksExecutor<'b>, B: BlockIoAsync> FastbootImplementation
         // Waits until the block device and a download buffer is ready.
         let mut blk = self.sync_block(blk_id).await?;
         let buffer = self.ensure_download_buffer().await;
-        let buffer_len = u64::try_from(buffer.len())
-            .map_err::<fastboot::CommandError, _>(|_| "buffer size overflow".into())?;
-        let end = add(offset, size)?;
+        let end = u64::try_from(SafeNum::from(offset) + size)?;
         let mut curr = offset;
         let mut uploader = upload_builder.start(size).await?;
         while curr < end {
-            let to_send = min(end - curr, buffer_len);
-            read_fb_partition(&mut blk, part, curr, &mut buffer[..to_usize(to_send)?]).await?;
-            uploader.upload(&mut buffer[..to_usize(to_send)?]).await?;
-            curr += to_send;
+            let to_send = min(usize::try_from(end - curr)?, buffer.len());
+            read_fb_partition(&mut blk, part, curr, &mut buffer[..to_send]).await?;
+            uploader.upload(&mut buffer[..to_send]).await?;
+            curr += u64::try_from(to_send)?;
         }
         Ok(())
     }
@@ -334,21 +332,6 @@ impl<'b, T: TasksExecutor<'b>, B: BlockIoAsync> FastbootImplementation
             _ => Err("Unknown oem command".into()),
         }
     }
-}
-
-/// Check and convert u64 into usize
-fn to_usize(val: u64) -> CommandResult<usize> {
-    val.try_into().map_err(|_| "Overflow".into())
-}
-
-/// Add two u64 integers and check overflow
-fn add(lhs: u64, rhs: u64) -> CommandResult<u64> {
-    lhs.checked_add(rhs).ok_or("Overflow".into())
-}
-
-/// Subtracts two u64 integers and check overflow
-fn sub(lhs: u64, rhs: u64) -> CommandResult<u64> {
-    lhs.checked_sub(rhs).ok_or("Overflow".into())
 }
 
 #[cfg(test)]
