@@ -19,7 +19,8 @@ u-boot-mainline branch.
 
 load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
 load("@gbl//toolchain:gbl_workspace_util.bzl", "android_rust_prebuilts", "gbl_llvm_prebuilts")
-load("@kernel_toolchain_info//:dict.bzl", "CLANG_VERSION")
+
+_CLANG_VERSION = "r530567"
 
 def rust_crate_build_file(
         name,
@@ -97,7 +98,7 @@ def define_gbl_workspace(name = None):
 
     native.new_local_repository(
         name = "llvm_linux_x86_64_prebuilts",
-        path = "prebuilts/clang/host/linux-x86/clang-{}".format(CLANG_VERSION),
+        path = "prebuilts/clang/host/linux-x86/clang-{}".format(_CLANG_VERSION),
         build_file_content = "",
     )
 
