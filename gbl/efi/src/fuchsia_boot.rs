@@ -14,7 +14,6 @@
 
 use crate::{
     efi_blocks::find_block_devices,
-    error::Result,
     utils::{aligned_subslice, get_efi_fdt},
 };
 use core::fmt::Write;
@@ -22,6 +21,7 @@ use core::mem::size_of;
 use efi::{efi_print, efi_println, EfiEntry};
 use fdt::Fdt;
 use liberror::Error;
+use libgbl::Result;
 use safemath::SafeNum;
 use zbi::{ZbiContainer, ZbiFlags, ZbiHeader, ZbiType, ZBI_ALIGNMENT_USIZE};
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
