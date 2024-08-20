@@ -21,13 +21,13 @@ use bootimg::{BootImage, VendorImageHeader};
 use efi::{efi_print, efi_println, exit_boot_services, EfiEntry};
 use fdt::Fdt;
 use liberror::Error;
+use libgbl::{IntegrationError, Result};
 use misc::{AndroidBootMode, BootloaderMessage};
 use safemath::SafeNum;
 use zerocopy::{AsBytes, ByteSlice};
 
 use crate::{
     efi_blocks::{find_block_devices, EfiMultiBlockDevices},
-    error::{GblEfiError, Result},
     utils::{aligned_subslice, cstr_bytes_to_str, get_efi_fdt},
 };
 
@@ -69,7 +69,7 @@ fn avb_verify_slot<'a, 'b, 'c>(
         // For demo, we use the same setting as Cuttlefish u-boot.
         HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_RESTART_AND_INVALIDATE,
     )
-    .map_err(|e| Into::<GblEfiError>::into(e.without_verify_data()))?;
+    .map_err(|e| IntegrationError::from(e.without_verify_data()))?;
 
     // Append avb generated bootconfig.
     for cmdline_arg in res.cmdline().to_str().unwrap().split(' ') {
