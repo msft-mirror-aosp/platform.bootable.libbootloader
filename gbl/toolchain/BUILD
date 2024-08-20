@@ -53,6 +53,11 @@ constraint_value(
     constraint_setting = ":firmware_image_type",
 )
 
+host_x86_64_constraint_values = [
+    "@platforms//os:linux",
+    "@platforms//cpu:x86_64",
+]
+
 uefi_x86_64_constraint_values = [
     ":uefi",
     "@platforms//os:none",
@@ -76,6 +81,11 @@ elf_riscv64_constraint_values = [
     "@platforms//os:none",
     "@platforms//cpu:riscv64",
 ]
+
+config_setting(
+    name = "gbl_rust_host_x86_64",
+    constraint_values = host_x86_64_constraint_values,
+)
 
 config_setting(
     name = "gbl_rust_uefi_x86_64",
@@ -298,10 +308,7 @@ rust_toolchain(
 toolchain(
     name = "x86_64_unknown_linux_gnu_toolchain",
     exec_compatible_with = ["@platforms//os:linux"],
-    target_compatible_with = [
-        "@platforms//os:linux",
-        "@platforms//cpu:x86_64",
-    ],
+    target_settings = [":gbl_rust_host_x86_64"],
     toolchain = ":x86_64_unknown_linux_gnu",
     toolchain_type = "@rules_rust//rust:toolchain",
 )
