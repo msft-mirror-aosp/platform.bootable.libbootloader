@@ -13,10 +13,13 @@
 // limitations under the License.
 
 use crate::{aligned_subslice, read_async, write_async, BlockIoAsync, Result};
-use core::convert::TryFrom;
-use core::default::Default;
-use core::mem::{align_of, size_of};
-use core::num::NonZeroU64;
+use core::{
+    convert::TryFrom,
+    default::Default,
+    mem::{align_of, size_of},
+    num::NonZeroU64,
+    str::from_utf8,
+};
 use crc32fast::Hasher;
 use safemath::SafeNum;
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
@@ -26,6 +29,7 @@ use liberror::Error;
 const GPT_GUID_LEN: usize = 16;
 /// The maximum number of UTF-16 characters in a GPT partition name, including termination.
 pub const GPT_NAME_LEN_U16: usize = 36;
+const GPT_NAME_LEN_U8: usize = 2 * GPT_GUID_LEN;
 
 /// The top-level GPT header.
 #[repr(C, packed)]
@@ -155,12 +159,24 @@ enum HeaderType {
 pub struct Partition {
     entry: GptEntry,
     block_size: u64,
+    decoded_name: Option<([u8; GPT_NAME_LEN_U8], usize)>,
 }
 
 impl Partition {
     /// Creates a new instance.
     fn new(entry: GptEntry, block_size: u64) -> Self {
-        Self { entry, block_size }
+        let mut buf = [0u8; GPT_NAME_LEN_U8];
+        let decoded_name = match entry.name_to_str(&mut buf[..]).ok().map(|v| v.len()) {
+            Some(len) => Some((buf, len)),
+            _ => None,
+        };
+        Self { entry, block_size, decoded_name }
+    }
+
+    /// Gets the decoded partition name.
+    pub fn name(&self) -> Option<&str> {
+        // Correct by construction. `from_utf8` should not fail.
+        self.decoded_name.as_ref().map(|(buf, sz)| from_utf8(&buf[..*sz]).unwrap())
     }
 
     /// Returns the partition size in bytes.
