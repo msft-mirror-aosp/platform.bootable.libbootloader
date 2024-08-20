@@ -12,27 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use avb::{IoError, SlotVerifyError};
-use efi::EfiError;
 use liberror::Error;
-use libgbl::composite_enum;
 use smoltcp::socket::tcp::{ListenError, RecvError, SendError};
-use zbi::ZbiError;
 
-composite_enum! {
-    /// A top level error type that consolidates errors from different libraries.
-    #[derive(Debug)]
-    pub enum GblEfiError {
-        AvbIoError(IoError),
-        EfiError(EfiError),
-        ListenError(ListenError),
-        RecvError(RecvError),
-        SendError(SendError),
-        SlotVerifyError(SlotVerifyError<'static>),
-        UnifiedError(Error),
-        ZbiError(ZbiError),
+pub fn recv_to_unified(err: RecvError) -> Error {
+    match err {
+        RecvError::InvalidState => Error::InvalidState,
+        RecvError::Finished => Error::Finished,
     }
 }
 
-/// Top level error type.
-pub type Result<T> = core::result::Result<T, GblEfiError>;
+pub fn send_to_unified(err: SendError) -> Error {
+    match err {
+        SendError::InvalidState => Error::InvalidState,
+    }
+}
+
+pub fn listen_to_unified(err: ListenError) -> Error {
+    match err {
+        ListenError::InvalidState => Error::InvalidState,
+        ListenError::Unaddressable => Error::Unaddressable,
+    }
+}

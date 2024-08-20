@@ -14,12 +14,11 @@
 
 //! Rust wrapper for `EFI_DEVICE_PATH_PROTOCOL`.
 
-use crate::defs::{
-    EfiDevicePathProtocol, EfiDevicePathToTextProtocol, EfiGuid, EFI_STATUS_NOT_FOUND,
-};
 use crate::protocol::{Protocol, ProtocolInfo};
-use crate::{EfiEntry, EfiError, EfiResult};
+use crate::EfiEntry;
 use core::fmt::Display;
+use efi_types::{EfiDevicePathProtocol, EfiDevicePathToTextProtocol, EfiGuid};
+use liberror::{Error, Result};
 
 /// `EFI_DEVICE_PATH_PROTOCOL`
 pub struct DevicePathProtocol;
@@ -48,12 +47,8 @@ impl<'a> Protocol<'a, DevicePathToTextProtocol> {
         device_path: &Protocol<DevicePathProtocol>,
         display_only: bool,
         allow_shortcuts: bool,
-    ) -> EfiResult<DevicePathText<'a>> {
-        let f = self
-            .interface()?
-            .convert_device_path_to_text
-            .as_ref()
-            .ok_or_else::<EfiError, _>(|| EFI_STATUS_NOT_FOUND.into())?;
+    ) -> Result<DevicePathText<'a>> {
+        let f = self.interface()?.convert_device_path_to_text.as_ref().ok_or(Error::NotFound)?;
         // SAFETY:
         // `self.interface()?` guarantees `self.interface` is non-null and points to a valid object
         // established by `Protocol::new()`.

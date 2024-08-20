@@ -25,14 +25,13 @@
 extern crate alloc;
 use core::fmt::Write;
 
-use efi::defs::EfiSystemTable;
 use efi::{efi_print, efi_println, initialize, panic};
-use libgbl::GblOps;
+use efi_types::EfiSystemTable;
+use libgbl::{GblOps, Result};
 
 #[macro_use]
 mod utils;
 use core::panic::PanicInfo;
-use error::Result;
 use utils::loaded_image_path;
 
 #[cfg(target_arch = "riscv64")]
