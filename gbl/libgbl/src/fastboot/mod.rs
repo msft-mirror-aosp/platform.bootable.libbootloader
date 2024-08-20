@@ -22,7 +22,7 @@ use core::{
     str::{from_utf8, Split},
 };
 use fastboot::{
-    next_arg, next_arg_u64, snprintf, CommandError, FastbootImplementation, FastbootUtils,
+    next_arg, next_arg_u64, snprintf, CommandResult, FastbootImplementation, FastbootUtils,
     FormattedBytes, UploadBuilder, Uploader, VarSender,
 };
 use gbl_async::yield_now;
@@ -32,7 +32,7 @@ use safemath::SafeNum;
 mod vars;
 use vars::{fb_vars_get, fb_vars_get_all};
 
-mod sparse;
+pub(crate) mod sparse;
 use sparse::{is_sparse_image, write_sparse_image};
 
 mod shared_resource;
@@ -57,7 +57,7 @@ impl GblFbPartition {
     }
 
     /// Checks a given subrange and returns the absolute offset.
-    fn get_subrange_offset(&self, off: u64, size: usize) -> Result<u64, CommandError> {
+    fn get_subrange_offset(&self, off: u64, size: usize) -> CommandResult<u64> {
         let off = SafeNum::from(off);
         match u64::try_from(off + size)? > self.window_size {
             true => Err("Out of range".into()),
@@ -72,7 +72,7 @@ async fn write_fb_partition<T: BlockIoAsync>(
     part: GblFbPartition,
     off: u64,
     data: &mut [u8],
-) -> Result<(), CommandError> {
+) -> CommandResult<()> {
     Ok(blk.write(part.get_subrange_offset(off, data.len())?, data).await?)
 }
 
@@ -82,14 +82,14 @@ async fn read_fb_partition<T: BlockIoAsync>(
     part: GblFbPartition,
     off: u64,
     out: &mut [u8],
-) -> Result<(), CommandError> {
+) -> CommandResult<()> {
     Ok(blk.read(part.get_subrange_offset(off, out.len())?, out).await?)
 }
 
 /// `TasksExecutor` provides interfaces for spawning and scheduling async tasks.
 pub trait TasksExecutor<'a> {
     /// Spawns a new task.
-    fn spawn_task(&self, task: impl Future<Output = ()> + 'a) -> Result<(), CommandError>;
+    fn spawn_task(&self, task: impl Future<Output = ()> + 'a) -> CommandResult<()>;
 }
 
 /// `GblFastboot` implements fastboot commands in the GBL context.
@@ -128,7 +128,7 @@ impl<'a, 'b, T: TasksExecutor<'b>, B: BlockIoAsync> GblFastboot<'a, 'b, T, B> {
     pub(crate) fn parse_partition(
         &mut self,
         mut args: Split<char>,
-    ) -> Result<(usize, GblFbPartition), CommandError> {
+    ) -> CommandResult<(usize, GblFbPartition)> {
         let part = next_arg(&mut args, Ok(""))?;
         // Parses block device ID.
         let blk_id = next_arg_u64(&mut args, Err("".into())).ok();
@@ -173,10 +173,7 @@ impl<'a, 'b, T: TasksExecutor<'b>, B: BlockIoAsync> GblFastboot<'a, 'b, T, B> {
     }
 
     /// Waits until a block device is ready and taken.
-    async fn sync_block(
-        &self,
-        blk_idx: usize,
-    ) -> Result<ScopedGblFbBlockDevice<'b, 'b, B>, CommandError> {
+    async fn sync_block(&self, blk_idx: usize) -> CommandResult<ScopedGblFbBlockDevice<'b, 'b, B>> {
         loop {
             match self.shared_resource.blk_take(blk_idx)? {
                 None => yield_now().await,
@@ -197,7 +194,7 @@ impl<'a, 'b, T: TasksExecutor<'b>, B: BlockIoAsync> GblFastboot<'a, 'b, T, B> {
         &self,
         utils: &mut impl FastbootUtils,
         res: &'c mut [u8],
-    ) -> Result<&'c [u8], CommandError> {
+    ) -> CommandResult<&'c [u8]> {
         self.sync_all_blocks().await;
         // Checks error.
         let mut has_error = false;
@@ -226,7 +223,7 @@ impl<'b, T: TasksExecutor<'b>, B: BlockIoAsync> FastbootImplementation
         args: Split<'_, char>,
         out: &mut [u8],
         _utils: &mut impl FastbootUtils,
-    ) -> Result<usize, CommandError> {
+    ) -> CommandResult<usize> {
         Ok(fb_vars_get(self, var, args, out).await?.ok_or("No such variable")?)
     }
 
@@ -234,7 +231,7 @@ impl<'b, T: TasksExecutor<'b>, B: BlockIoAsync> FastbootImplementation
         &mut self,
         var_logger: &mut impl VarSender,
         _utils: &mut impl FastbootUtils,
-    ) -> Result<(), CommandError> {
+    ) -> CommandResult<()> {
         fb_vars_get_all(self, var_logger).await
     }
 
@@ -242,16 +239,12 @@ impl<'b, T: TasksExecutor<'b>, B: BlockIoAsync> FastbootImplementation
         self.ensure_download_buffer().await
     }
 
-    async fn download_complete(&mut self, download_size: usize) -> Result<(), CommandError> {
+    async fn download_complete(&mut self, download_size: usize) -> CommandResult<()> {
         self.current_download_size = download_size;
         Ok(())
     }
 
-    async fn flash(
-        &mut self,
-        part: &str,
-        utils: &mut impl FastbootUtils,
-    ) -> Result<(), CommandError> {
+    async fn flash(&mut self, part: &str, utils: &mut impl FastbootUtils) -> CommandResult<()> {
         let (blk_idx, part) = self.parse_partition(part.split(':'))?;
         let mut blk = self.sync_block(blk_idx).await?;
         let mut download_buffer = self.current_download_buffer.take().ok_or("No download")?;
@@ -292,7 +285,7 @@ impl<'b, T: TasksExecutor<'b>, B: BlockIoAsync> FastbootImplementation
         &mut self,
         _: impl UploadBuilder,
         _: &mut impl FastbootUtils,
-    ) -> Result<(), CommandError> {
+    ) -> CommandResult<()> {
         Err("Unimplemented".into())
     }
 
@@ -303,21 +296,19 @@ impl<'b, T: TasksExecutor<'b>, B: BlockIoAsync> FastbootImplementation
         size: u64,
         upload_builder: impl UploadBuilder,
         utils: &mut impl FastbootUtils,
-    ) -> Result<(), CommandError> {
+    ) -> CommandResult<()> {
         let (blk_id, part) = self.parse_partition(part.split(':'))?;
         // Waits until the block device and a download buffer is ready.
         let mut blk = self.sync_block(blk_id).await?;
         let buffer = self.ensure_download_buffer().await;
-        let buffer_len = u64::try_from(buffer.len())
-            .map_err::<CommandError, _>(|_| "buffer size overflow".into())?;
-        let end = add(offset, size)?;
+        let end = u64::try_from(SafeNum::from(offset) + size)?;
         let mut curr = offset;
         let mut uploader = upload_builder.start(size).await?;
         while curr < end {
-            let to_send = min(end - curr, buffer_len);
-            read_fb_partition(&mut blk, part, curr, &mut buffer[..to_usize(to_send)?]).await?;
-            uploader.upload(&mut buffer[..to_usize(to_send)?]).await?;
-            curr += to_send;
+            let to_send = min(usize::try_from(end - curr)?, buffer.len());
+            read_fb_partition(&mut blk, part, curr, &mut buffer[..to_send]).await?;
+            uploader.upload(&mut buffer[..to_send]).await?;
+            curr += u64::try_from(to_send)?;
         }
         Ok(())
     }
@@ -327,7 +318,7 @@ impl<'b, T: TasksExecutor<'b>, B: BlockIoAsync> FastbootImplementation
         cmd: &str,
         utils: &mut impl FastbootUtils,
         res: &'a mut [u8],
-    ) -> Result<&'a [u8], CommandError> {
+    ) -> CommandResult<&'a [u8]> {
         match cmd {
             "gbl-sync-blocks" => self.oem_sync_blocks(utils, res).await,
             "gbl-enable-async-block-io" => {
@@ -343,32 +334,17 @@ impl<'b, T: TasksExecutor<'b>, B: BlockIoAsync> FastbootImplementation
     }
 }
 
-/// Check and convert u64 into usize
-fn to_usize(val: u64) -> Result<usize, CommandError> {
-    val.try_into().map_err(|_| "Overflow".into())
-}
-
-/// Add two u64 integers and check overflow
-fn add(lhs: u64, rhs: u64) -> Result<u64, CommandError> {
-    lhs.checked_add(rhs).ok_or("Overflow".into())
-}
-
-/// Subtracts two u64 integers and check overflow
-fn sub(lhs: u64, rhs: u64) -> Result<u64, CommandError> {
-    lhs.checked_sub(rhs).ok_or("Overflow".into())
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
     use core::{cmp::max, pin::pin};
-    use fastboot::{test_utils::TestUploadBuilder, TransportError, MAX_RESPONSE_SIZE};
+    use fastboot::{test_utils::TestUploadBuilder, MAX_RESPONSE_SIZE};
     use gbl_async::{block_on, poll};
     use gbl_cyclic_executor::CyclicExecutor;
     use gbl_storage_testlib::{
-        AsyncGptDevice, BackingStore, BlockIoError, TestBlockDeviceBuilder, TestBlockIo,
-        TestMultiBlockDevices,
+        AsyncGptDevice, BackingStore, TestBlockDeviceBuilder, TestBlockIo, TestMultiBlockDevices,
     };
+    use liberror::Result;
     use std::{string::String, sync::Mutex};
     use Vec;
 
@@ -378,12 +354,12 @@ mod test {
 
     impl FastbootUtils for TestFastbootUtils {
         /// Sends a Fastboot "INFO<`msg`>" packet.
-        async fn send_info(&mut self, _: &str) -> Result<(), CommandError> {
+        async fn send_info(&mut self, _: &str) -> CommandResult<()> {
             Ok(())
         }
 
         /// Returns transport errors if there are any.
-        fn transport_error(&self) -> Result<(), TransportError> {
+        fn transport_error(&self) -> Result<()> {
             Ok(())
         }
     }
@@ -429,7 +405,7 @@ mod test {
     struct TestGblFbExecutor<'a>(Mutex<CyclicExecutor<'a>>);
 
     impl<'a> TasksExecutor<'a> for TestGblFbExecutor<'a> {
-        fn spawn_task(&self, task: impl Future<Output = ()> + 'a) -> Result<(), CommandError> {
+        fn spawn_task(&self, task: impl Future<Output = ()> + 'a) -> CommandResult<()> {
             Ok(self.0.try_lock().unwrap().spawn_task(task))
         }
     }
@@ -478,7 +454,7 @@ mod test {
     struct TestVarSender(Vec<String>);
 
     impl VarSender for TestVarSender {
-        async fn send(&mut self, name: &str, args: &[&str], val: &str) -> Result<(), CommandError> {
+        async fn send(&mut self, name: &str, args: &[&str], val: &str) -> CommandResult<()> {
             self.0.push(format!("{}:{}: {}", name, args.join(":"), val));
             Ok(())
         }
@@ -530,7 +506,7 @@ mod test {
         part: String,
         off: u64,
         size: u64,
-    ) -> Result<Vec<u8>, CommandError> {
+    ) -> CommandResult<Vec<u8>> {
         // Forces upload in two batches for testing.
         let download_buffer = vec![0u8; max(1, usize::try_from(size).unwrap() / 2usize)];
         let mut utils: TestFastbootUtils = Default::default();
@@ -740,7 +716,7 @@ mod test {
         fb: &mut TestGblFastboot<'_, '_>,
         oem_cmd: &str,
         utils: &mut impl FastbootUtils,
-    ) -> Result<String, CommandError> {
+    ) -> CommandResult<String> {
         let mut res = [0u8; MAX_RESPONSE_SIZE];
         fb.oem(oem_cmd, utils, &mut res[..]).await?;
         Ok(from_utf8(&mut res[..]).unwrap().into())
@@ -879,7 +855,7 @@ mod test {
         let mut devs = devs.as_gpt_devs();
         sync_gpt_all(&mut devs[..]);
         // Injects an error.
-        devs[0].blk().io().errors = [BlockIoError::Others(None)].into();
+        devs[0].blk().io().errors = [liberror::Error::Other(None)].into();
 
         let mut dl_buffers = vec![vec![0u8; 128 * 1024]; 2];
         let (mut blks, mut dl_buffers) = create_shared_resource(devs, &mut dl_buffers);

@@ -15,19 +15,23 @@
 //! This library provides implementation for a few libc functions for building third party C
 //! libraries.
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
 
 use alloc::alloc::{alloc, dealloc};
-
 use core::{
     alloc::Layout,
-    cmp::min,
-    ffi::{c_char, c_int, c_ulong, c_void, CStr},
+    ffi::{c_char, c_int, c_ulong, c_void},
     mem::size_of,
     ptr::{null_mut, NonNull},
 };
+
+pub use strcmp::{strcmp, strncmp};
+
+pub mod strchr;
+pub mod strcmp;
+pub mod strtoul;
 
 // Linking compiler built-in intrinsics to expose libc compatible implementations
 // https://cs.android.com/android/platform/superproject/main/+/2e15fc2eadcb7db07bf6656086c50153bbafe7b6:prebuilts/rust/linux-x86/1.78.0/lib/rustlib/src/rust/vendor/compiler_builtins/src/mem/mod.rs;l=22
@@ -44,9 +48,6 @@ extern "C" {
 
 /// Extended version of void *malloc(size_t size) with ptr alignment configuration support.
 /// Libraries may have a different alignment requirements.
-///
-/// TODO(353089385): optimize allocation/deallocation by using EFI allocator directly for
-/// some configurations
 ///
 /// # Safety
 ///
@@ -72,9 +73,6 @@ pub unsafe extern "C" fn gbl_malloc(size: usize, alignment: usize) -> *mut c_voi
 }
 
 /// Extended version of void free(void *ptr) with ptr alignment configuration support.
-///
-/// TODO(353089385): optimize allocation/deallocation by using EFI allocator directly for
-/// some configurations
 ///
 /// # Safety
 ///
@@ -124,26 +122,6 @@ pub unsafe extern "C" fn memchr(ptr: *const c_void, ch: c_int, count: c_ulong) -
     null_mut()
 }
 
-/// char *strrchr(const char *str, int c);
-///
-/// # Safety
-///
-/// * `str` needs to be a valid null-terminated C string.
-/// * Returns the pointer within `str`, or null if not found.
-#[no_mangle]
-pub unsafe extern "C" fn strrchr(ptr: *const c_char, ch: c_int) -> *mut c_char {
-    assert!(!ptr.is_null());
-    // SAFETY: `str` is a valid null terminated string.
-    let bytes = unsafe { CStr::from_ptr(ptr).to_bytes_with_nul() };
-    let target = (ch & 0xff) as u8;
-    for c in bytes.iter().rev() {
-        if *c == target {
-            return c as *const _ as *mut _;
-        }
-    }
-    null_mut()
-}
-
 /// size_t strnlen(const char *s, size_t maxlen);
 ///
 /// # Safety
@@ -156,29 +134,4 @@ pub unsafe extern "C" fn strnlen(s: *const c_char, maxlen: usize) -> usize {
         p if p.is_null() => maxlen,
         p => (p as usize) - (s as usize),
     }
-}
-
-/// int strcmp(const char *s1, const char *s2);
-///
-/// # Safety
-///
-/// * `s1` and `s2` must be valid pointers to null terminated C strings.
-#[no_mangle]
-pub unsafe extern "C" fn strcmp(s1: *const c_char, s2: *const c_char) -> c_int {
-    // SAFETY: References are only used within function.
-    let (lhs, rhs) = unsafe { (CStr::from_ptr(s1 as *const _), CStr::from_ptr(s2 as *const _)) };
-    Ord::cmp(lhs, rhs) as i32
-}
-
-/// int strncmp(const char *s1, const char *s2, size_t n);
-///
-/// # Safety
-///
-/// * `s1` and `s2` must be valid pointers to null terminated C strings.
-#[no_mangle]
-pub unsafe extern "C" fn strncmp(s1: *const c_char, s2: *const c_char, n: usize) -> c_int {
-    // SAFETY: References are only used within function.
-    let (lhs, rhs) = unsafe { (CStr::from_ptr(s1 as *const _), CStr::from_ptr(s2 as *const _)) };
-    let cmp_size = min(min(lhs.to_bytes().len(), rhs.to_bytes().len()), n);
-    Ord::cmp(&lhs.to_bytes()[..cmp_size], &rhs.to_bytes()[..cmp_size]) as i32
 }

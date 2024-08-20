@@ -22,6 +22,8 @@ package(
     default_visibility = ["//visibility:public"],
 )
 
+exports_files(glob(["**/*"]))
+
 rust_bindgen(
     name = "libfdt_c_bindgen",
     bindgen_flags = [
@@ -71,6 +73,20 @@ rust_library(
 )
 
 rust_library(
+    name = "libfdt_sysdeps",
+    srcs = ["deps/lib.rs"],
+    rustc_flags = ANDROID_RUST_LINTS,
+    deps = [
+        "@gbl//libc",
+    ],
+)
+
+link_static_cc_library(
+    name = "libfdt_sysdeps_static",
+    cc_library = ":libfdt_sysdeps",
+)
+
+rust_library(
     name = "libfdt",
     srcs = ["src/lib.rs"],
     crate_name = "fdt",
@@ -79,7 +95,11 @@ rust_library(
     deps = [
         ":libfdt_c_def",
         ":libfdt_c_static",
+        ":libfdt_sysdeps_static",
+        ":libufdt_c_static",
         "@gbl//libc",
+        "@gbl//liberror",
+        "@gbl//libsafemath",
         "@zerocopy",
     ],
 )
@@ -94,4 +114,9 @@ rust_test(
 link_static_cc_library(
     name = "libfdt_c_static",
     cc_library = "@libfdt_c",
+)
+
+link_static_cc_library(
+    name = "libufdt_c_static",
+    cc_library = "@libufdt_c",
 )
