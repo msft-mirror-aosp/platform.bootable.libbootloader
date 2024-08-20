@@ -125,6 +125,11 @@ impl TestBlockDevice {
         )
         .unwrap()
     }
+
+    /// Creates an instance of `AsyncBlockDevice`
+    pub fn as_blk_dev(&mut self) -> AsyncBlockDevice<'_, &mut TestBlockIo> {
+        self.as_gpt_dev().into_blk_and_gpt().0
+    }
 }
 
 /// A description of the backing data store for a block device or partition.
