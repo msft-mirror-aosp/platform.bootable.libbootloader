@@ -302,7 +302,8 @@ pub fn fastboot(efi_entry: &EfiEntry) -> Result<()> {
     let mut gbl_fb_download_buffers =
         download_buffers.iter_mut().map(|v| v.as_mut_slice()).collect::<Vec<_>>();
     let mut blks = find_block_devices(efi_entry)?;
-    let mut gbl_fb_devs = blks.0.iter_mut().map(|v| v.as_gpt_dev().into()).collect::<Vec<_>>();
+    let mut gbl_fb_devs =
+        blks.0.iter_mut().filter_map(|v| v.as_gpt_dev().ok()).map(|v| v.into()).collect::<Vec<_>>();
     let shared_state = GblFbResource::new(&mut gbl_fb_devs[..], &mut gbl_fb_download_buffers[..]);
     let blk_io_executor: EfiFbTaskExecutor = Default::default();
     let gbl_fb = &mut GblFastboot::new(&blk_io_executor, &shared_state);
