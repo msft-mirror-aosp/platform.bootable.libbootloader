@@ -179,13 +179,13 @@ _start:
   // Behave like a function call.
   addi sp, sp, -8*3
   sd ra, 0(sp)
-  sd t0, 8(sp)
-  sd t1, 16(sp)
+  sd s0, 8(sp)
+  sd s1, 16(sp)
 
   // Save the EFI image handle from a0
-  mv t0, a0
+  mv s0, a0
   // Save the EFI system table from a1
-  mv t1, a1
+  mv s1, a1
 
   // Get the program load address (same as dos_header), and .dynamic section address.
   lla a0, dos_header
@@ -194,13 +194,13 @@ _start:
   call ApplyRelocationHangIfFail
 
   // Now call efi_main.
-  mv a0, t0
-  mv a1, t1
+  mv a0, s0
+  mv a1, s1
   call efi_main
 
   // Prepare to return.
   ld ra, 0(sp)
-  ld t0, 8(sp)
-  ld t1, 16(sp)
+  ld s0, 8(sp)
+  ld s1, 16(sp)
   add sp, sp, 8*3
   ret
