@@ -176,6 +176,8 @@ cc_flags_common = [
     "-fno-common",
     "-fno-exceptions",
     "-fno-rtti",
+    # Enable optimization otherwise software AVB hash will be too slow.
+    "-O3",
 ]
 
 # x86_64 UEFI targets
