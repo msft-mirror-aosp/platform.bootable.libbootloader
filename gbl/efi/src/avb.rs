@@ -115,9 +115,9 @@ impl<'b> Ops<'b> for GblEfiAvbOps<'_, 'b> {
     }
 
     fn get_unique_guid_for_partition(&mut self, partition: &CStr) -> IoResult<Uuid> {
-        let part_str = cstr_to_str(partition, IoError::NoSuchPartition)?;
-        let ptn = self.gpt_dev.find_partition(part_str).map_err(|_| IoError::NoSuchPartition)?;
-        Ok(Uuid::from_bytes(ptn.gpt_entry().guid))
+        // The ops is only used to check that a partition exists. GUID is not used.
+        self.partition_size(cstr_to_str(partition, IoError::NoSuchPartition)?)?;
+        Ok(Uuid::nil())
     }
 
     fn get_size_of_partition(&mut self, partition: &CStr) -> IoResult<u64> {

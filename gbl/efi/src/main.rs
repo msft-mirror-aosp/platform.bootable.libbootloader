@@ -55,7 +55,7 @@ fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -
     // SAFETY: Called only once here upon EFI app entry.
     let entry = unsafe { initialize(image_handle, systab_ptr)? };
 
-    let mut ops = ops::Ops { efi_entry: &entry };
+    let mut ops = ops::Ops { efi_entry: &entry, partitions: &[] };
 
     efi_println!(entry, "****Rust EFI Application****");
     if let Ok(v) = loaded_image_path(&entry) {
