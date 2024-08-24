@@ -145,7 +145,7 @@ impl FdtHeader {
 pub struct Fdt<T>(T);
 
 /// Read only APIs.
-impl<T: AsRef<[u8]>> Fdt<T> {
+impl<'a, T: AsRef<[u8]> + 'a> Fdt<T> {
     /// Creates a new [Fdt] wrapping the contents of `init`.
     pub fn new(init: T) -> Result<Self> {
         fdt_check_header(init.as_ref())?;
@@ -163,7 +163,7 @@ impl<T: AsRef<[u8]>> Fdt<T> {
     }
 
     /// Get a property from an existing node.
-    pub fn get_property<'a>(&'a self, path: &str, name: &CStr) -> Result<&'a [u8]> {
+    pub fn get_property(&self, path: &str, name: &CStr) -> Result<&'a [u8]> {
         let node = self.find_node(path)?;
         let mut len: core::ffi::c_int = 0;
         // SAFETY: API from libfdt_c.

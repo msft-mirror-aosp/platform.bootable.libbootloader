@@ -64,7 +64,7 @@ cc_library(
         ".",
         "libavb/sha/",
     ],
-    deps = ["@gbl//libavb:gbl_deps"],
+    deps = ["@gbl//libc:headers"],
 )
 
 cc_library(
@@ -107,7 +107,6 @@ cc_library(
     ],
     deps = [
         ":headers",
-        "@gbl//libavb:gbl_deps",
     ],
 )
 
@@ -125,7 +124,6 @@ cc_library(
     copts = ["-DAVB_COMPILATION"],
     deps = [
         ":headers",
-        "@gbl//libavb:gbl_deps",
     ],
 )
 
