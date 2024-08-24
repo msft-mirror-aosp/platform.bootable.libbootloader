@@ -25,7 +25,7 @@
 extern crate alloc;
 use core::fmt::Write;
 
-use efi::{efi_print, efi_println, initialize, panic};
+use efi::{efi_print, efi_println, initialize, panic, EfiEntry};
 use efi_types::EfiSystemTable;
 use libgbl::{GblOps, Result};
 
@@ -51,11 +51,31 @@ fn handle_panic(p_info: &PanicInfo) -> ! {
     panic(p_info)
 }
 
+enum TargetOs {
+    Android,
+    Fuchsia,
+}
+
+fn get_target_os(entry: &EfiEntry) -> TargetOs {
+    let mut buf = [0u8; 1];
+    if fuchsia_boot::is_fuchsia_gpt(&entry).is_ok()
+        || entry
+            .system_table()
+            .runtime_services()
+            .get_variable(&efi::GBL_EFI_VENDOR_GUID, efi::GBL_EFI_OS_BOOT_TARGET_VARNAME, &mut buf)
+            .is_ok()
+    {
+        TargetOs::Fuchsia
+    } else {
+        TargetOs::Android
+    }
+}
+
 fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -> Result<()> {
     // SAFETY: Called only once here upon EFI app entry.
     let entry = unsafe { initialize(image_handle, systab_ptr)? };
 
-    let mut ops = ops::Ops { efi_entry: &entry };
+    let mut ops = ops::Ops { efi_entry: &entry, partitions: &[] };
 
     efi_println!(entry, "****Rust EFI Application****");
     if let Ok(v) = loaded_image_path(&entry) {
@@ -73,11 +93,9 @@ fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -
         }
     }
 
-    // For simplicity, we pick bootflow based on GPT layout.
-    if fuchsia_boot::is_fuchsia_gpt(&entry).is_ok() {
-        fuchsia_boot::fuchsia_boot_demo(entry)?;
-    } else {
-        android_boot::android_boot_demo(entry)?;
+    match get_target_os(&entry) {
+        TargetOs::Fuchsia => fuchsia_boot::fuchsia_boot_demo(entry)?,
+        TargetOs::Android => android_boot::android_boot_demo(entry)?,
     }
 
     Ok(())
