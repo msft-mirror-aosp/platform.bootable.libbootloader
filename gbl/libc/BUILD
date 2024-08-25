@@ -21,9 +21,12 @@ package(
 
 rust_library(
     name = "libc",
-    srcs = ["src/lib.rs"],
+    srcs = glob(["src/*.rs"]),
     edition = "2021",
     rustc_flags = ANDROID_RUST_LINTS,
+    deps = [
+        "@gbl//libsafemath",
+    ],
 )
 
 rust_test(
@@ -35,8 +38,12 @@ rust_test(
 cc_library(
     name = "headers",
     hdrs = [
+        "include/debug.h",
+        "include/inttypes.h",
+        "include/stdio.h",
         "include/stdlib.h",
         "include/string.h",
+        "include/sys/types.h",
     ],
     includes = ["include"],
 )

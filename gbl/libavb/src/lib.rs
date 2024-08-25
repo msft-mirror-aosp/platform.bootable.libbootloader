@@ -22,8 +22,7 @@
 use core::ffi::{c_char, c_int, c_void};
 use libc::{gbl_free, gbl_malloc, memcmp, memcpy, memset, strcmp, strlen, strncmp};
 
-/// `avb_malloc_()` requires allocation to be word aligned.
-const AVB_MALLOC_ALIGNMENT: usize = 2;
+const AVB_MALLOC_ALIGNMENT: usize = avb_bindgen::AVB_ALIGNMENT_SIZE as usize;
 
 #[no_mangle]
 pub extern "C" fn avb_abort() -> ! {
