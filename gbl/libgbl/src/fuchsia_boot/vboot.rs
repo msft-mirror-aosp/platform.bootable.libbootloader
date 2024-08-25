@@ -253,6 +253,14 @@ pub(crate) fn zircon_verify_kernel<G: GblOps>(
                 gbl_print!(avb_ops.gbl_ops, "Verification failed. Device is unlocked. Ignore.\r\n");
                 v
             }
+            Err(_) if unlocked => {
+                gbl_print!(
+                    avb_ops.gbl_ops,
+                    "Verification failed. No valid verify metadata. \
+                    Device is unlocked. Ignore.\r\n"
+                );
+                return Ok(());
+            }
             Err(e) => {
                 gbl_print!(avb_ops.gbl_ops, "Verification failed {:?}.\r\n", e);
                 return Err(e.without_verify_data().into());
@@ -402,6 +410,25 @@ mod test {
     }
 
     #[test]
+    fn test_verify_failed_on_corrupted_vbmetadata() {
+        let mut ops = TestZirconBootGblOps::default();
+        let expect_rollback = ops.rollback_index.clone();
+        let zbi = &read_test_data(ZIRCON_A_ZBI_FILE);
+        // Adds extra bytes for device ZBI items.
+        let mut load = AlignedBuffer::new(zbi.len() + 1024, ZIRCON_KERNEL_ALIGN);
+        load[..zbi.len()].clone_from_slice(zbi);
+        let epxect_load = load.to_vec();
+        // Corrupts vbmetadata
+        let val = &mut ops.partitions.get_mut(&"vbmeta_a").unwrap()[64];
+        *val = !*val;
+        assert!(zircon_verify_kernel(&mut ops, Some(SlotIndex::A), true, &mut load).is_err());
+        // Failed while device is locked. ZBI items should not be appended.
+        assert_eq!(epxect_load, &load[..]);
+        // Rollback index should not be updated on verification failure.
+        assert_eq!(expect_rollback, ops.rollback_index);
+    }
+
+    #[test]
     fn test_verify_failed_on_rollback_protection() {
         let mut ops = TestZirconBootGblOps::default();
         let zbi = &read_test_data(ZIRCON_A_ZBI_FILE);
@@ -441,6 +468,26 @@ mod test {
         append_cmd_line(&mut expected_zbi_items, b"vb_prop_1=val\0");
         assert_eq!(normalize_zbi(&load_buffer), normalize_zbi(&expected_zbi_items));
         // Rollback index should not be updated in any failure cases, even when unlocked.
+        assert_eq!(expect_rollback, ops.rollback_index);
+    }
+
+    #[test]
+    fn test_verify_failure_by_corrupted_vbmetadata_unlocked() {
+        let mut ops = TestZirconBootGblOps::default();
+        ops.avb_unlocked = true;
+        let expect_rollback = ops.rollback_index.clone();
+        let zbi = &read_test_data(ZIRCON_A_ZBI_FILE);
+        // Adds extra bytes for device ZBI items.
+        let mut load_buffer = AlignedBuffer::new(zbi.len() + 1024, ZIRCON_KERNEL_ALIGN);
+        load_buffer[..zbi.len()].clone_from_slice(zbi);
+        let epxect_load = load_buffer.to_vec();
+        // Corrupts vbmetadata
+        let val = &mut ops.partitions.get_mut(&"vbmeta_a").unwrap()[64];
+        *val = !*val;
+        zircon_verify_kernel(&mut ops, Some(SlotIndex::A), true, &mut load_buffer).unwrap();
+        // Unlocked but vbmetadata is invalid so no ZBI items should be appended.
+        assert_eq!(epxect_load, &load_buffer[..]);
+        // Rollback index should not be updated on verification failure.
         assert_eq!(expect_rollback, ops.rollback_index);
     }
 }
