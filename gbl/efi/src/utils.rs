@@ -12,10 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::error::Result;
 use core::ffi::CStr;
 use efi::{
-    defs::EfiGuid,
     protocol::{
         device_path::{DevicePathProtocol, DevicePathText, DevicePathToTextProtocol},
         loaded_image::LoadedImageProtocol,
@@ -24,8 +22,10 @@ use efi::{
     utils::Timeout,
     DeviceHandle, EfiEntry,
 };
+use efi_types::EfiGuid;
 use fdt::FdtHeader;
 use liberror::Error;
+use libgbl::Result;
 use safemath::SafeNum;
 
 pub const EFI_DTB_TABLE_GUID: EfiGuid =
@@ -80,21 +80,21 @@ pub fn get_efi_fdt<'a>(entry: &'a EfiEntry) -> Option<(&FdtHeader, &[u8])> {
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 pub fn efi_to_e820_mem_type(efi_mem_type: u32) -> u32 {
     match efi_mem_type {
-        efi::defs::EFI_MEMORY_TYPE_LOADER_CODE
-        | efi::defs::EFI_MEMORY_TYPE_LOADER_DATA
-        | efi::defs::EFI_MEMORY_TYPE_BOOT_SERVICES_CODE
-        | efi::defs::EFI_MEMORY_TYPE_BOOT_SERVICES_DATA
-        | efi::defs::EFI_MEMORY_TYPE_CONVENTIONAL_MEMORY => boot::x86::E820_ADDRESS_TYPE_RAM,
-        efi::defs::EFI_MEMORY_TYPE_RUNTIME_SERVICES_CODE
-        | efi::defs::EFI_MEMORY_TYPE_RUNTIME_SERVICES_DATA
-        | efi::defs::EFI_MEMORY_TYPE_MEMORY_MAPPED_IO
-        | efi::defs::EFI_MEMORY_TYPE_MEMORY_MAPPED_IOPORT_SPACE
-        | efi::defs::EFI_MEMORY_TYPE_PAL_CODE
-        | efi::defs::EFI_MEMORY_TYPE_RESERVED_MEMORY_TYPE => boot::x86::E820_ADDRESS_TYPE_RESERVED,
-        efi::defs::EFI_MEMORY_TYPE_UNUSABLE_MEMORY => boot::x86::E820_ADDRESS_TYPE_UNUSABLE,
-        efi::defs::EFI_MEMORY_TYPE_ACPIRECLAIM_MEMORY => boot::x86::E820_ADDRESS_TYPE_ACPI,
-        efi::defs::EFI_MEMORY_TYPE_ACPIMEMORY_NVS => boot::x86::E820_ADDRESS_TYPE_NVS,
-        efi::defs::EFI_MEMORY_TYPE_PERSISTENT_MEMORY => boot::x86::E820_ADDRESS_TYPE_PMEM,
+        efi_types::EFI_MEMORY_TYPE_LOADER_CODE
+        | efi_types::EFI_MEMORY_TYPE_LOADER_DATA
+        | efi_types::EFI_MEMORY_TYPE_BOOT_SERVICES_CODE
+        | efi_types::EFI_MEMORY_TYPE_BOOT_SERVICES_DATA
+        | efi_types::EFI_MEMORY_TYPE_CONVENTIONAL_MEMORY => boot::x86::E820_ADDRESS_TYPE_RAM,
+        efi_types::EFI_MEMORY_TYPE_RUNTIME_SERVICES_CODE
+        | efi_types::EFI_MEMORY_TYPE_RUNTIME_SERVICES_DATA
+        | efi_types::EFI_MEMORY_TYPE_MEMORY_MAPPED_IO
+        | efi_types::EFI_MEMORY_TYPE_MEMORY_MAPPED_IOPORT_SPACE
+        | efi_types::EFI_MEMORY_TYPE_PAL_CODE
+        | efi_types::EFI_MEMORY_TYPE_RESERVED_MEMORY_TYPE => boot::x86::E820_ADDRESS_TYPE_RESERVED,
+        efi_types::EFI_MEMORY_TYPE_UNUSABLE_MEMORY => boot::x86::E820_ADDRESS_TYPE_UNUSABLE,
+        efi_types::EFI_MEMORY_TYPE_ACPIRECLAIM_MEMORY => boot::x86::E820_ADDRESS_TYPE_ACPI,
+        efi_types::EFI_MEMORY_TYPE_ACPIMEMORY_NVS => boot::x86::E820_ADDRESS_TYPE_NVS,
+        efi_types::EFI_MEMORY_TYPE_PERSISTENT_MEMORY => boot::x86::E820_ADDRESS_TYPE_PMEM,
         v => panic!("Unmapped EFI memory type {v}"),
     }
 }

@@ -27,6 +27,8 @@ readme_test(
         "@gbl//libbootimg",
         "@gbl//libc",
         "@gbl//libefi",
+        "@gbl//libefi_types",
+        "@gbl//liberror",
         "@gbl//libfastboot",
         "@gbl//libfdt",
         "@gbl//libgbl",
