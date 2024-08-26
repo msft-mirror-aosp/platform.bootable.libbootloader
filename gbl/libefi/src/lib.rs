@@ -64,7 +64,7 @@ use zerocopy::Ref;
 mod allocation;
 
 #[cfg(not(test))]
-pub use allocation::{efi_free, efi_malloc};
+pub use allocation::{efi_free, efi_malloc, EfiAllocator};
 
 /// The Android EFI protocol implementation of an A/B slot manager.
 pub mod ab_slots;

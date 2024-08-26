@@ -16,6 +16,7 @@ test_suite(
     name = "tests",
     tests = [
         "@gbl//:readme_test",
+        "@gbl//efi:test",
         "@gbl//libabr:libabr_tests",
         "@gbl//libasync:cyclic_executor_test",
         "@gbl//libasync:libasync_test",
