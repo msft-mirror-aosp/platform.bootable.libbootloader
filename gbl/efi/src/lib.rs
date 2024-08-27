@@ -18,24 +18,18 @@
 //! supported/unsupported features at the moment.
 
 #![no_std]
-#![no_main]
 
 // For the `vec!` macro
 #[macro_use]
 extern crate alloc;
 use core::fmt::Write;
 
-use efi::{efi_print, efi_println, initialize, panic};
-use efi_types::EfiSystemTable;
+use efi::{efi_print, efi_println, EfiEntry};
 use libgbl::{GblOps, Result};
 
 #[macro_use]
 mod utils;
-use core::panic::PanicInfo;
 use utils::loaded_image_path;
-
-#[cfg(target_arch = "riscv64")]
-mod riscv64;
 
 mod android_boot;
 mod avb;
@@ -46,16 +40,29 @@ mod fuchsia_boot;
 mod net;
 mod ops;
 
-#[panic_handler]
-fn handle_panic(p_info: &PanicInfo) -> ! {
-    panic(p_info)
+enum TargetOs {
+    Android,
+    Fuchsia,
 }
 
-fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -> Result<()> {
-    // SAFETY: Called only once here upon EFI app entry.
-    let entry = unsafe { initialize(image_handle, systab_ptr)? };
+fn get_target_os(entry: &EfiEntry) -> TargetOs {
+    let mut buf = [0u8; 1];
+    if fuchsia_boot::is_fuchsia_gpt(&entry).is_ok()
+        || entry
+            .system_table()
+            .runtime_services()
+            .get_variable(&efi::GBL_EFI_VENDOR_GUID, efi::GBL_EFI_OS_BOOT_TARGET_VARNAME, &mut buf)
+            .is_ok()
+    {
+        TargetOs::Fuchsia
+    } else {
+        TargetOs::Android
+    }
+}
 
-    let mut ops = ops::Ops { efi_entry: &entry };
+/// GBL EFI application logic entry point.
+pub fn app_main(entry: EfiEntry) -> Result<()> {
+    let mut ops = ops::Ops { efi_entry: &entry, partitions: &[] };
 
     efi_println!(entry, "****Rust EFI Application****");
     if let Ok(v) = loaded_image_path(&entry) {
@@ -73,19 +80,10 @@ fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -
         }
     }
 
-    // For simplicity, we pick bootflow based on GPT layout.
-    if fuchsia_boot::is_fuchsia_gpt(&entry).is_ok() {
-        fuchsia_boot::fuchsia_boot_demo(entry)?;
-    } else {
-        android_boot::android_boot_demo(entry)?;
+    match get_target_os(&entry) {
+        TargetOs::Fuchsia => fuchsia_boot::fuchsia_boot_demo(entry)?,
+        TargetOs::Android => android_boot::android_boot_demo(entry)?,
     }
 
     Ok(())
-}
-
-/// EFI application entry point. Does not return.
-#[no_mangle]
-pub extern "C" fn efi_main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) {
-    main(image_handle, systab_ptr).unwrap();
-    loop {}
 }

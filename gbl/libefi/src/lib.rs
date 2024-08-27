@@ -64,7 +64,7 @@ use zerocopy::Ref;
 mod allocation;
 
 #[cfg(not(test))]
-pub use allocation::{efi_free, efi_malloc};
+pub use allocation::{efi_free, efi_malloc, EfiAllocator};
 
 /// The Android EFI protocol implementation of an A/B slot manager.
 pub mod ab_slots;
@@ -107,8 +107,11 @@ impl EfiEntry {
 pub const GBL_EFI_VENDOR_GUID: EfiGuid =
     EfiGuid::new(0x5a6d92f3, 0xa2d0, 0x4083, [0x91, 0xa1, 0xa5, 0x0f, 0x6c, 0x3d, 0x98, 0x30]);
 
-/// The name of the UEFI variable that GBL defines to determine the target OS.
-pub const GBL_EFI_OS_BOOT_TARGET_VARNAME: &str = "gbl_os_boot_target";
+/// The name of the UEFI variable that GBL defines to determine whether to boot Fuchsia.
+/// The value of the variable is ignored: if the variable is present,
+/// it indicates that the bootloader should attempt to boot a Fuchsia target.
+/// This may include reinitializing GPT partitions and partition contents.
+pub const GBL_EFI_OS_BOOT_TARGET_VARNAME: &str = "gbl_os_boot_fuchsia";
 
 /// Creates an `EfiEntry` and initialize EFI global allocator.
 ///
@@ -456,18 +459,37 @@ impl<'a> RuntimeServices<'a> {
         // SAFETY:
         // * `&mut size` and `&mut out` are input/output params only and will not be retained
         // * `&mut size` and `&mut out` are valid pointers and outlive the call
-        match unsafe {
+        unsafe {
             efi_call!(
+                @bufsize size,
                 self.runtime_services.get_variable,
                 name_utf16.as_ptr(),
                 guid,
                 null_mut(),
                 &mut size,
                 out.as_mut_ptr() as *mut core::ffi::c_void
+            )?;
+        }
+        Ok(size)
+    }
+
+    /// Wrapper of `EFI_RUNTIME_SERVICES.SetVariable()`.
+    pub fn set_variable(&self, guid: &EfiGuid, name: &str, data: &[u8]) -> Result<()> {
+        let mut name_utf16: Vec<u16> = name.encode_utf16().collect();
+        name_utf16.push(0); // null-terminator
+
+        // SAFETY:
+        // * `data.as_mut_ptr()` and `name_utf16.as_ptr()` are valid pointers,
+        // * outlive the call, and are not retained.
+        unsafe {
+            efi_call!(
+                self.runtime_services.set_variable,
+                name_utf16.as_ptr(),
+                guid,
+                0,
+                data.len(),
+                data.as_ptr() as *const core::ffi::c_void
             )
-        } {
-            Ok(()) => Ok(size),
-            Err(e) => Err(e),
         }
     }
 }
