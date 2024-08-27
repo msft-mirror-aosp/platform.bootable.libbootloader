@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! This file implements storage and partition logic for libgbl.
+
 use crate::fastboot::sparse::{is_sparse_image, write_sparse_image, SparseRawWriter};
 use core::mem::swap;
 use fastboot::CommandError;
@@ -22,19 +24,21 @@ use spin::mutex::{Mutex, MutexGuard};
 
 /// Represents a GBL partition.
 pub enum Partition<'a> {
+    /// Raw storage partition.
     Raw(&'a str, u64),
+    /// Gpt Partition.
     Gpt(GptPartition),
 }
 
 impl Partition<'_> {
     /// Returns the size.
-    pub(crate) fn size(&self) -> Result<u64, Error> {
+    pub fn size(&self) -> Result<u64, Error> {
         let (start, end) = self.absolute_range()?;
         Ok((SafeNum::from(end) - start).try_into()?)
     }
 
     /// Returns the name.
-    pub(crate) fn name(&self) -> Result<&str, Error> {
+    pub fn name(&self) -> Result<&str, Error> {
         Ok(match self {
             Partition::Gpt(gpt) => gpt.name().ok_or(Error::InvalidInput)?,
             Partition::Raw(name, _) => name,
@@ -42,7 +46,7 @@ impl Partition<'_> {
     }
 
     /// Computes the absolute start and end offset for the partition in the whole block device.
-    pub(crate) fn absolute_range(&self) -> Result<(u64, u64), Error> {
+    pub fn absolute_range(&self) -> Result<(u64, u64), Error> {
         Ok(match self {
             Partition::Gpt(gpt) => gpt.absolute_range()?,
             Partition::Raw(_, size) => (0, *size),
@@ -220,6 +224,54 @@ impl<B: BlockIoAsync> SparseRawWriter for (u64, &mut AsyncBlockDevice<'_, B>) {
     async fn write(&mut self, off: u64, data: &mut [u8]) -> Result<(), CommandError> {
         Ok(self.1.write((SafeNum::from(off) + self.0).try_into()?, data).await?)
     }
+}
+
+/// Checks that a partition is unique.
+///
+/// Returns a pair `(<block device index>, `Partition`)` if the partition exists and is unique.
+pub fn check_part_unique<'a>(
+    devs: &[PartitionBlockDevice<'a, impl BlockIoAsync>],
+    part: &str,
+) -> Result<(usize, Partition<'a>), Error> {
+    let mut filtered = devs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, v)| v.find_partition(Some(part)).ok().map(|v| (i, v)));
+    match (filtered.next(), filtered.next()) {
+        (Some(v), None) => Ok(v),
+        (Some(_), Some(_)) => Err(Error::NotUnique),
+        _ => Err(Error::NotFound),
+    }
+}
+
+/// Checks that a partition is unique among all block devices and reads from it.
+pub async fn read_unique_partition(
+    devs: &'_ [PartitionBlockDevice<'_, impl BlockIoAsync>],
+    part: &str,
+    off: u64,
+    out: &mut [u8],
+) -> Result<(), Error> {
+    devs[check_part_unique(devs, part)?.0].partition_io(Some(part))?.read(off, out).await
+}
+
+/// Checks that a partition is unique among all block devices and writes to it.
+pub async fn write_unique_partition(
+    devs: &'_ [PartitionBlockDevice<'_, impl BlockIoAsync>],
+    part: &str,
+    off: u64,
+    data: &mut [u8],
+) -> Result<(), Error> {
+    devs[check_part_unique(devs, part)?.0].partition_io(Some(part))?.write(off, data).await
+}
+
+/// Syncs all GPT type partition devices.
+pub async fn sync_gpt(
+    devs: &'_ mut [PartitionBlockDevice<'_, impl BlockIoAsync>],
+) -> Result<(), Error> {
+    for ele in &mut devs[..] {
+        ele.sync_gpt().await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -508,5 +560,115 @@ mod test {
         // Taking error should reset it.
         assert!(raw.partition_io(None).unwrap().take_err().is_err());
         assert!(raw.partition_io(None).unwrap().last_err().is_ok());
+    }
+
+    /// A test helper for `read_unique_partition`
+    /// It verifies that data read from partition `part` at offset `off` is the same as
+    /// `part_content[off..off+sz]`.
+    fn check_read_partition(
+        devs: &[PartitionBlockDevice<impl BlockIoAsync>],
+        part: &str,
+        part_content: &[u8],
+        off: u64,
+        sz: u64,
+    ) {
+        let mut out = vec![0u8; to_usize(sz)];
+        block_on(read_unique_partition(devs, part, off, &mut out)).unwrap();
+        assert_eq!(out, part_content[to_usize(off)..][..out.len()]);
+    }
+
+    #[test]
+    fn test_read_unique_partition() {
+        let mut gpt_0 = (&include_bytes!("../../libstorage/test/gpt_test_1.bin")[..]).into();
+        let mut gpt_1 = (&include_bytes!("../../libstorage/test/gpt_test_2.bin")[..]).into();
+        let mut raw_0 = [0xaau8; 4 * 1024].as_slice().into();
+        let mut raw_1 = [0x55u8; 4 * 1024].as_slice().into();
+        let mut devs = vec![
+            as_gpt_part(&mut gpt_0),
+            as_gpt_part(&mut gpt_1),
+            as_raw_part(&mut raw_0, "raw_0"),
+            as_raw_part(&mut raw_1, "raw_1"),
+        ];
+        block_on(sync_gpt(&mut devs)).unwrap();
+
+        let boot_a = include_bytes!("../../libstorage/test/boot_a.bin");
+        let boot_b = include_bytes!("../../libstorage/test/boot_b.bin");
+
+        let off = 512u64;
+        let sz = 1024u64;
+        check_read_partition(&mut devs, "boot_a", boot_a, off, sz);
+        check_read_partition(&mut devs, "boot_b", boot_b, off, sz);
+
+        let vendor_boot_a = include_bytes!("../../libstorage/test/vendor_boot_a.bin");
+        let vendor_boot_b = include_bytes!("../../libstorage/test/vendor_boot_b.bin");
+
+        check_read_partition(&mut devs, "vendor_boot_a", vendor_boot_a, off, sz);
+        check_read_partition(&mut devs, "vendor_boot_b", vendor_boot_b, off, sz);
+
+        check_read_partition(&mut devs, "raw_0", &[0xaau8; 4 * 1024][..], off, sz);
+        check_read_partition(&mut devs, "raw_1", &[0x55u8; 4 * 1024][..], off, sz);
+    }
+
+    /// A test helper for `write_unique_partition`
+    fn check_write_partition(
+        devs: &[PartitionBlockDevice<impl BlockIoAsync>],
+        part: &str,
+        off: u64,
+        sz: u64,
+    ) {
+        // Reads the current partition content
+        let (_, p) = check_part_unique(devs, part).unwrap();
+        let mut part_content = vec![0u8; to_usize(p.size().unwrap())];
+        block_on(read_unique_partition(devs, part, 0, &mut part_content)).unwrap();
+
+        // Flips all the bits in the target range and writes back.
+        let seg = &mut part_content[to_usize(off)..][..to_usize(sz)];
+        seg.iter_mut().for_each(|v| *v = !(*v));
+        block_on(write_unique_partition(devs, part, off, seg)).unwrap();
+        // Checks that data is written.
+        check_read_partition(devs, part, &part_content, off, sz);
+    }
+
+    #[test]
+    fn test_write_unique_partition() {
+        let mut gpt_0 = (&include_bytes!("../../libstorage/test/gpt_test_1.bin")[..]).into();
+        let mut gpt_1 = (&include_bytes!("../../libstorage/test/gpt_test_2.bin")[..]).into();
+        let mut raw_0 = [0xaau8; 4 * 1024].as_slice().into();
+        let mut raw_1 = [0x55u8; 4 * 1024].as_slice().into();
+        let mut devs = vec![
+            as_gpt_part(&mut gpt_0),
+            as_gpt_part(&mut gpt_1),
+            as_raw_part(&mut raw_0, "raw_0"),
+            as_raw_part(&mut raw_1, "raw_1"),
+        ];
+        block_on(sync_gpt(&mut devs)).unwrap();
+
+        let off = 512u64;
+        let sz = 1024u64;
+        check_write_partition(&mut devs, "boot_a", off, sz);
+        check_write_partition(&mut devs, "boot_b", off, sz);
+        check_write_partition(&mut devs, "vendor_boot_a", off, sz);
+        check_write_partition(&mut devs, "vendor_boot_b", off, sz);
+        check_write_partition(&mut devs, "raw_0", off, sz);
+        check_write_partition(&mut devs, "raw_1", off, sz);
+    }
+
+    #[test]
+    fn test_rw_fail_with_non_unique_partition() {
+        let mut gpt_0 = (&include_bytes!("../../libstorage/test/gpt_test_1.bin")[..]).into();
+        let mut gpt_1 = (&include_bytes!("../../libstorage/test/gpt_test_1.bin")[..]).into();
+        let mut raw_0 = [0xaau8; 4 * 1024].as_slice().into();
+        let mut raw_1 = [0x55u8; 4 * 1024].as_slice().into();
+        let mut devs = vec![
+            as_gpt_part(&mut gpt_0),
+            as_gpt_part(&mut gpt_1),
+            as_raw_part(&mut raw_0, "raw"),
+            as_raw_part(&mut raw_1, "raw"),
+        ];
+        block_on(sync_gpt(&mut devs)).unwrap();
+        assert!(block_on(read_unique_partition(&devs, "boot_a", 0, &mut [],)).is_err());
+        assert!(block_on(write_unique_partition(&devs, "boot_a", 0, &mut [],)).is_err());
+        assert!(block_on(read_unique_partition(&devs, "raw", 0, &mut [],)).is_err());
+        assert!(block_on(write_unique_partition(&devs, "raw", 0, &mut [],)).is_err());
     }
 }
