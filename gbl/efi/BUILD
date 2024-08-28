@@ -56,7 +56,18 @@ rust_library(
 rust_test(
     name = "test",
     crate = ":libgbl_efi",
-    rustc_flags = ANDROID_RUST_LINTS,
+    # TODO(b/355436086): mock out the rest of the libefi APIs and
+    # remove dead-code; for now it would require a lot of invasive
+    # code changes to selectively disable things on tests so this
+    # is worth it to keep things more readable.
+    rustc_flags = ANDROID_RUST_LINTS + [
+        "-A",
+        "dead-code",
+    ],
+    deps = [
+        "@gbl//libefi:mocks",
+        "@mockall",
+    ],
 )
 
 # The UEFI application target.
