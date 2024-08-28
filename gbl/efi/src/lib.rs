@@ -18,24 +18,18 @@
 //! supported/unsupported features at the moment.
 
 #![no_std]
-#![no_main]
 
 // For the `vec!` macro
 #[macro_use]
 extern crate alloc;
 use core::fmt::Write;
 
-use efi::{efi_print, efi_println, initialize, panic, EfiEntry};
-use efi_types::EfiSystemTable;
+use efi::{efi_print, efi_println, EfiEntry};
 use libgbl::{GblOps, Result};
 
 #[macro_use]
 mod utils;
-use core::panic::PanicInfo;
 use utils::loaded_image_path;
-
-#[cfg(target_arch = "riscv64")]
-mod riscv64;
 
 mod android_boot;
 mod avb;
@@ -45,11 +39,6 @@ mod fastboot;
 mod fuchsia_boot;
 mod net;
 mod ops;
-
-#[panic_handler]
-fn handle_panic(p_info: &PanicInfo) -> ! {
-    panic(p_info)
-}
 
 enum TargetOs {
     Android,
@@ -71,10 +60,8 @@ fn get_target_os(entry: &EfiEntry) -> TargetOs {
     }
 }
 
-fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -> Result<()> {
-    // SAFETY: Called only once here upon EFI app entry.
-    let entry = unsafe { initialize(image_handle, systab_ptr)? };
-
+/// GBL EFI application logic entry point.
+pub fn app_main(entry: EfiEntry) -> Result<()> {
     let mut ops = ops::Ops { efi_entry: &entry, partitions: &[] };
 
     efi_println!(entry, "****Rust EFI Application****");
@@ -99,11 +86,4 @@ fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -
     }
 
     Ok(())
-}
-
-/// EFI application entry point. Does not return.
-#[no_mangle]
-pub extern "C" fn efi_main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) {
-    main(image_handle, systab_ptr).unwrap();
-    loop {}
 }
