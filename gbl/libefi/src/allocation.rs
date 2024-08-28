@@ -19,15 +19,33 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
 use liberror::{Error, Result};
 
-/// Implement a global allocator using `EFI_BOOT_SERVICES.AllocatePool()/FreePool()`
+/// Implements a global allocator using `EFI_BOOT_SERVICES.AllocatePool()/FreePool()`
+///
+/// To use, add this exact declaration to the application code:
+///
+/// ```
+/// #[no_mangle]
+/// #[global_allocator]
+/// static mut EFI_GLOBAL_ALLOCATOR: EfiAllocator = EfiAllocator::Uninitialized;
+/// ```
+///
+/// This is only useful for real UEFI applications; attempting to install the `EFI_GLOBAL_ALLOCATOR`
+/// for host-side unit tests will cause the test to panic immediately.
 pub enum EfiAllocator {
+    /// Initial state, no UEFI entry point has been set, global hooks will not work.
     Uninitialized,
+    /// [EfiEntry] is registered, global hooks are active.
     Initialized(EfiEntry),
+    /// ExitBootServices has been called, global hooks will not work.
     Exited,
 }
 
-#[global_allocator]
-static mut EFI_GLOBAL_ALLOCATOR: EfiAllocator = EfiAllocator::Uninitialized;
+// This is a bit ugly, but we only expect this library to be used by our EFI application so it
+// doesn't need to be super clean or scalable. The user has to declare the global variable
+// exactly as written in the [EfiAllocator] docs for this to link properly.
+extern "Rust" {
+    static mut EFI_GLOBAL_ALLOCATOR: EfiAllocator;
+}
 
 /// An internal API to obtain library internal global EfiEntry.
 pub(crate) fn internal_efi_entry() -> Option<&'static EfiEntry> {
