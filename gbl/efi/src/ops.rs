@@ -173,3 +173,12 @@ impl GblAvbOps for &mut Ops<'_, '_> {
         Ok(hash.try_into().map_err(|_| AvbIoError::Io)?)
     }
 }
+
+#[cfg(test)]
+mod test {
+    #[test]
+    fn test() {
+        // TODO: add real tests. For now this no-op test ensures that we can run host-side tests
+        // without dragging in the UEFI-specific global hooks.
+    }
+}
