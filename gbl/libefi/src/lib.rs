@@ -53,13 +53,6 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use core::ptr::null_mut;
-use core::slice::from_raw_parts;
-#[cfg(not(test))]
-use core::{fmt::Write, panic::PanicInfo};
-
-use zerocopy::Ref;
-
 #[cfg(not(test))]
 mod allocation;
 
@@ -71,6 +64,10 @@ pub mod ab_slots;
 pub mod protocol;
 pub mod utils;
 
+#[cfg(not(test))]
+use core::{fmt::Write, panic::PanicInfo};
+
+use core::{marker::PhantomData, ptr::null_mut, slice::from_raw_parts};
 use efi_types::{
     EfiBootService, EfiConfigurationTable, EfiEvent, EfiEventNotify, EfiGuid, EfiHandle,
     EfiMemoryDescriptor, EfiMemoryType, EfiRuntimeService, EfiSystemTable, EfiTimerDelay, EfiTpl,
@@ -80,8 +77,11 @@ use efi_types::{
     EFI_OPEN_PROTOCOL_ATTRIBUTE_BY_HANDLE_PROTOCOL,
 };
 use liberror::{Error, Result};
-use protocol::simple_text_output::SimpleTextOutputProtocol;
-use protocol::{Protocol, ProtocolInfo};
+use protocol::{
+    simple_text_output::SimpleTextOutputProtocol,
+    {Protocol, ProtocolInfo},
+};
+use zerocopy::Ref;
 
 /// `EfiEntry` stores the EFI system table pointer and image handle passed from the entry point.
 /// It's the root data structure that derives all other wrapper APIs and structures.
@@ -403,11 +403,7 @@ impl<'a> BootServices<'a> {
                 &mut efi_event
             )?;
         }
-        Ok(Event::new(
-            Some(self.efi_entry),
-            efi_event,
-            cb.map::<&'n mut dyn FnMut(EfiEvent), _>(|v| v.cb),
-        ))
+        Ok(Event::new(self.efi_entry, efi_event, cb.map::<EventNotifyCallback<'n>, _>(|v| v.cb)))
     }
 
     /// Wrapper of `EFI_BOOT_SERVICE.CloseEvent()`.
@@ -522,45 +518,63 @@ pub enum Tpl {
     HighLevel = 31,
 }
 
+/// Event notification callback function.
+///
+/// The callback function itself takes the [EfiEvent] as an argument and has no return value.
+/// This type is a mutable borrow of a closure to ensure that it will outlive the [EfiEvent] and
+/// that the callback has exclusive access to it.
+///
+/// Additionally, the function must be [Sync] because it will be run concurrently to the main app
+/// code at a higher interrupt level. One consequence of this is that we cannot capture an
+/// [EfiEntry] or any related object in the closure, as they are not [Sync]. This is intentional;
+/// in general UEFI APIs are not reentrant except in very limited ways, and we could trigger
+/// undefined behavior if we try to call into UEFI while the main application code is also in the
+/// middle of a UEFI call. Instead, the notification should signal the main app code to make any
+/// necessary UEFI calls once it regains control.
+pub type EventNotifyCallback<'a> = &'a mut (dyn FnMut(EfiEvent) + Sync);
+
 /// `EventNotify` contains the task level priority setting and a mutable reference to a
 /// closure for the callback. It is passed as the context pointer to low level EFI event
 /// notification function entry (`unsafe extern "C" fn efi_event_cb(...)`).
 pub struct EventNotify<'e> {
     tpl: Tpl,
-    cb: &'e mut dyn FnMut(EfiEvent),
+    cb: EventNotifyCallback<'e>,
 }
 
 impl<'e> EventNotify<'e> {
     /// Creates a new [EventNotify].
-    pub fn new(tpl: Tpl, cb: &'e mut dyn FnMut(EfiEvent)) -> Self {
+    pub fn new(tpl: Tpl, cb: EventNotifyCallback<'e>) -> Self {
         Self { tpl, cb }
     }
 }
 
 /// `Event` wraps the raw `EfiEvent` handle and internally enforces a borrow of the registered
-/// callback for the given life time `e. The event is automatically closed when going out of scope.
+/// callback for the given life time `'n`. The event is automatically closed when going out of
+/// scope.
 pub struct Event<'a, 'n> {
     // If `efi_entry` is None, it represents an unowned Event and won't get closed on drop.
     efi_entry: Option<&'a EfiEntry>,
     efi_event: EfiEvent,
-    _cb: Option<&'n mut dyn FnMut(EfiEvent)>,
+    // The actual callback has been passed into UEFI via raw pointer in [create_event], so we
+    // use [PhantomData] to ensure the callback will outlive the event.
+    cb: PhantomData<Option<EventNotifyCallback<'n>>>,
 }
 
 impl<'a, 'n> Event<'a, 'n> {
     /// Creates an instance of owned `Event`. The `Event` is closed when going out of scope.
     fn new(
-        efi_entry: Option<&'a EfiEntry>,
+        efi_entry: &'a EfiEntry,
         efi_event: EfiEvent,
-        _cb: Option<&'n mut dyn FnMut(EfiEvent)>,
+        _cb: Option<EventNotifyCallback<'n>>,
     ) -> Self {
-        Self { efi_entry, efi_event, _cb }
+        Self { efi_entry: Some(efi_entry), efi_event, cb: PhantomData }
     }
 
     /// Creates an  unowned `Event`. The `Event` is not closed when going out of scope.
     // TODO allow unused?
     #[allow(dead_code)]
     fn new_unowned(efi_event: EfiEvent) -> Self {
-        Self { efi_entry: None, efi_event: efi_event, _cb: None }
+        Self { efi_entry: None, efi_event: efi_event, cb: PhantomData }
     }
 }
 
