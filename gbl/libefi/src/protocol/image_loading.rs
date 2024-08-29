@@ -33,7 +33,7 @@ impl ProtocolInfo for GblImageLoadingProtocol {
     type InterfaceType = EfiImageLoadingProtocol;
 
     const GUID: EfiGuid =
-        EfiGuid::new(0x26f4418b, 0x6cf1, 0x4543, [0x90, 0xbb, 0x55, 0xdd, 0x2c, 0x17, 0x57, 0x9c]);
+        EfiGuid::new(0xdb84b4fa, 0x53bd, 0x4436, [0x98, 0xa7, 0x4e, 0x02, 0x71, 0x42, 0x8b, 0xa8]);
 }
 
 /// Max length of partition name in UTF8 in bytes.
@@ -48,6 +48,7 @@ static RETURNED_BUFFERS: Mutex<ArrayVec<usize, MAX_ARRAY_SIZE>> = Mutex::new(Arr
 #[derive(Debug, PartialEq)]
 pub struct ImageBuffer<'a> {
     buffer: &'a mut [u8],
+    used_bytes: usize,
 }
 
 impl ImageBuffer<'_> {
@@ -80,7 +81,55 @@ impl ImageBuffer<'_> {
             buffer: unsafe {
                 core::slice::from_raw_parts_mut(gbl_buffer.Memory as *mut u8, gbl_buffer.SizeBytes)
             },
+            used_bytes: 0,
         })
+    }
+
+    /// Total buffer capacity.
+    pub fn capacity(&self) -> usize {
+        self.buffer.len()
+    }
+
+    /// Set length of the used part of the buffer.
+    pub fn set_used(&mut self, len: usize) -> Result<()> {
+        if len > self.capacity() {
+            return Err(Error::BufferTooSmall(Some(len)));
+        }
+        self.used_bytes = len;
+        Ok(())
+    }
+
+    /// Increase used part of the buffer by `len`
+    pub fn add_used(&mut self, len: usize) -> Result<()> {
+        let Some(new_len) = self.used_bytes.checked_add(len) else {
+            return Err(Error::Other(Some("Used bytes overflow")));
+        };
+        if new_len > self.buffer.len() {
+            return Err(Error::BufferTooSmall(Some(new_len)));
+        }
+        self.used_bytes = new_len;
+        Ok(())
+    }
+
+    /// Return used and tail parts of the buffer
+    pub fn get_split(&mut self) -> (&mut [u8], &mut [u8]) {
+        self.buffer.split_at_mut(self.used_bytes)
+    }
+
+    /// Slice of the buffer that is used
+    pub fn used(&mut self) -> &mut [u8] {
+        &mut self.buffer[..self.used_bytes]
+    }
+
+    /// Return part of the buffer that is not used
+    pub fn tail(&mut self) -> &mut [u8] {
+        &mut self.buffer[self.used_bytes..]
+    }
+}
+
+impl<'a> From<&'a mut [u8]> for ImageBuffer<'a> {
+    fn from(buffer: &'a mut [u8]) -> ImageBuffer<'a> {
+        ImageBuffer { buffer, used_bytes: 0 }
     }
 }
 
@@ -118,7 +167,7 @@ impl Protocol<'_, GblImageLoadingProtocol> {
     /// Err(Error::EFI_STATUS_INVALID_PARAMETER) if received buffer is NULL
     /// Err(Error::EFI_STATUS_ALREADY_STARTED) buffer was already returned and is still in use.
     /// Err(err) if `err` occurred
-    pub fn get_buffer(&self, gbl_image_info: &GblImageInfo) -> Result<ImageBuffer> {
+    pub fn get_buffer(&self, gbl_image_info: &GblImageInfo) -> Result<ImageBuffer<'static>> {
         let mut gbl_buffer: GblImageBuffer = Default::default();
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
@@ -976,5 +1025,59 @@ mod test {
                 keep_alive.push(protocol.get_buffer(&gbl_image_info).unwrap());
             }
         });
+    }
+
+    #[test]
+    fn test_image_buffer_capacity() {
+        assert_eq!(ImageBuffer::from(vec![0u8; 0].as_mut_slice()).capacity(), 0);
+        assert_eq!(ImageBuffer::from(vec![0u8; 1].as_mut_slice()).capacity(), 1);
+        assert_eq!(ImageBuffer::from(vec![0u8; 100].as_mut_slice()).capacity(), 100);
+        assert_eq!(
+            ImageBuffer::from(vec![0u8; 128 * 1024 * 1024].as_mut_slice()).capacity(),
+            128 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn test_image_buffer_used() {
+        let mut buf = vec![0u8; 100];
+        let mut img_buf = ImageBuffer::from(buf.as_mut_slice());
+        assert_eq!(img_buf.used().len(), 0);
+        img_buf.add_used(1).unwrap();
+        assert_eq!(img_buf.used().len(), 1);
+        img_buf.add_used(3).unwrap();
+        assert_eq!(img_buf.used().len(), 4);
+        assert_eq!(img_buf.add_used(1024), Err(Error::BufferTooSmall(Some(1028))));
+        assert_eq!(img_buf.used().len(), 4);
+    }
+
+    #[test]
+    fn test_image_buffer_set_used() {
+        let mut buf = vec![0u8; 100];
+        let mut img_buf = ImageBuffer::from(buf.as_mut_slice());
+        img_buf.set_used(2).unwrap();
+        assert_eq!(img_buf.used().len(), 2);
+        img_buf.set_used(6).unwrap();
+        assert_eq!(img_buf.used().len(), 6);
+        assert_eq!(img_buf.set_used(101), Err(Error::BufferTooSmall(Some(101))));
+        img_buf.set_used(100).unwrap();
+        assert_eq!(img_buf.used().len(), 100);
+    }
+
+    #[test]
+    fn test_image_buffer_get_split() {
+        let mut buf = vec![0u8, 1, 2, 3];
+        let mut img_buf = ImageBuffer::from(buf.as_mut_slice());
+        assert_eq!(img_buf.used(), [].as_mut_slice());
+        assert_eq!(img_buf.tail(), ([0, 1, 2, 3].as_mut_slice()));
+        assert_eq!(img_buf.get_split(), ([].as_mut_slice(), [0, 1, 2, 3].as_mut_slice()));
+        img_buf.set_used(2).unwrap();
+        assert_eq!(img_buf.used(), [0, 1].as_mut_slice());
+        assert_eq!(img_buf.tail(), [2, 3].as_mut_slice());
+        assert_eq!(img_buf.get_split(), ([0, 1].as_mut_slice(), [2, 3].as_mut_slice()));
+        img_buf.set_used(4).unwrap();
+        assert_eq!(img_buf.used(), [0, 1, 2, 3].as_mut_slice());
+        assert_eq!(img_buf.tail(), [].as_mut_slice());
+        assert_eq!(img_buf.get_split(), ([0, 1, 2, 3].as_mut_slice(), [].as_mut_slice()));
     }
 }
