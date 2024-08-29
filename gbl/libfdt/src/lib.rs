@@ -1,4 +1,4 @@
-// Copyright 2023, The Android Open Source Project
+// Copyright 2023-2024, The Android Open Source Project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,35 +16,49 @@
 
 #![cfg_attr(not(test), no_std)]
 
+extern crate alloc;
 extern crate libc;
 
-use core::ffi::CStr;
+use alloc::vec::Vec;
+use core::ffi::{c_int, CStr};
 use core::mem::size_of;
 use core::slice::{from_raw_parts, from_raw_parts_mut};
 
-use libfdt_c_def::{
-    fdt_add_subnode_namelen, fdt_del_node, fdt_header, fdt_setprop, fdt_setprop_placeholder,
-    fdt_strerror, fdt_subnode_offset_namelen,
+use libfdt_bindgen::{
+    fdt_add_subnode_namelen, fdt_del_node, fdt_get_property, fdt_header, fdt_move, fdt_setprop,
+    fdt_setprop_placeholder, fdt_strerror, fdt_subnode_offset_namelen,
 };
+use libufdt_bindgen::ufdt_apply_multioverlay;
 
 use liberror::{Error, Result};
 
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 
 /// Convert libfdt_c error code to Result
-fn map_result(code: core::ffi::c_int) -> Result<core::ffi::c_int> {
+fn map_result(code: c_int) -> Result<c_int> {
     match code {
         // SAFETY: Static null terminated string returned from libfdt_c API.
-        v if v < 0 => Err(Error::Other(Some(unsafe {
-            core::ffi::CStr::from_ptr(fdt_strerror(v)).to_str().unwrap()
-        }))),
+        v if v < 0 => {
+            Err(Error::Other(Some(unsafe { CStr::from_ptr(fdt_strerror(v)).to_str().unwrap() })))
+        }
+        v => Ok(v),
+    }
+}
+
+/// Convert libufdt_c error code to Result
+fn map_result_libufdt(code: c_int) -> Result<c_int> {
+    match code {
+        v if v < 0 => Err(Error::Other(Some("Failed to execute libufdt call"))),
         v => Ok(v),
     }
 }
 
 /// Check header and verified that totalsize does not exceed buffer size.
 fn fdt_check_header(fdt: &[u8]) -> Result<()> {
-    map_result(unsafe { libfdt_c_def::fdt_check_header(fdt.as_ptr() as *const _) })?;
+    // SAFETY:
+    // `fdt_check_header` is only access the memory pointed to by `fdt` during this call and
+    // not store the pointer for later use. `fdt` remains valid for the duration of this call.
+    map_result(unsafe { libfdt_bindgen::fdt_check_header(fdt.as_ptr() as *const _) })?;
     match FdtHeader::from_bytes_ref(fdt)?.totalsize() <= fdt.len() {
         true => Ok(()),
         _ => Err(Error::InvalidInput),
@@ -52,11 +66,7 @@ fn fdt_check_header(fdt: &[u8]) -> Result<()> {
 }
 
 /// Wrapper of fdt_add_subnode_namelen()
-fn fdt_add_subnode(
-    fdt: &mut [u8],
-    parent: core::ffi::c_int,
-    name: &str,
-) -> Result<core::ffi::c_int> {
+fn fdt_add_subnode(fdt: &mut [u8], parent: c_int, name: &str) -> Result<c_int> {
     // SAFETY: API from libfdt_c.
     map_result(unsafe {
         fdt_add_subnode_namelen(
@@ -69,11 +79,7 @@ fn fdt_add_subnode(
 }
 
 /// Wrapper of fdt_subnode_offset_namelen()
-fn fdt_subnode_offset(
-    fdt: &[u8],
-    parent: core::ffi::c_int,
-    name: &str,
-) -> Result<core::ffi::c_int> {
+fn fdt_subnode_offset(fdt: &[u8], parent: c_int, name: &str) -> Result<c_int> {
     // SAFETY: API from libfdt_c.
     map_result(unsafe {
         fdt_subnode_offset_namelen(
@@ -133,7 +139,7 @@ impl FdtHeader {
         // SAFETY: By safety requirement of this function, `ptr` points to a valid FDT and remains
         // valid when in use.
         unsafe {
-            map_result(libfdt_c_def::fdt_check_header(ptr as *const _))?;
+            map_result(libfdt_bindgen::fdt_check_header(ptr as *const _))?;
             let header_bytes = from_raw_parts(ptr, size_of::<FdtHeader>());
             let header = Self::from_bytes_ref(header_bytes)?;
             Ok((header, from_raw_parts(ptr, header.totalsize())))
@@ -165,10 +171,10 @@ impl<T: AsRef<[u8]>> Fdt<T> {
     /// Get a property from an existing node.
     pub fn get_property<'a>(&'a self, path: &str, name: &CStr) -> Result<&'a [u8]> {
         let node = self.find_node(path)?;
-        let mut len: core::ffi::c_int = 0;
+        let mut len: c_int = 0;
         // SAFETY: API from libfdt_c.
         let ptr = unsafe {
-            libfdt_c_def::fdt_get_property(
+            fdt_get_property(
                 self.0.as_ref().as_ptr() as *const _,
                 node,
                 name.to_bytes_with_nul().as_ptr() as *const _,
@@ -189,8 +195,8 @@ impl<T: AsRef<[u8]>> Fdt<T> {
     }
 
     /// Find the offset of a node by a given node path.
-    fn find_node(&self, path: &str) -> Result<core::ffi::c_int> {
-        let mut curr: core::ffi::c_int = 0;
+    fn find_node(&self, path: &str) -> Result<c_int> {
+        let mut curr: c_int = 0;
         for name in path.split('/') {
             if name.len() == 0 {
                 continue;
@@ -208,7 +214,7 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
         fdt_check_header(init)?;
         // SAFETY: API from libfdt_c.
         map_result(unsafe {
-            libfdt_c_def::fdt_move(
+            fdt_move(
                 init.as_ptr() as *const _,
                 fdt.as_mut().as_ptr() as *mut _,
                 fdt.as_mut().len().try_into().or(Err(Error::Other(None)))?,
@@ -287,9 +293,32 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
         Ok(unsafe { from_raw_parts_mut(out_ptr, len) })
     }
 
+    /// Wrapper/equivalent of ufdt_apply_multioverlay.
+    /// It extend current FDT buffer by applying passed overlays.
+    pub fn multioverlay_apply(&mut self, overlays: &[&[u8]]) -> Result<()> {
+        self.shrink_to_fit()?;
+
+        // Have to allocate vector to convert input fat references into the raw pointers
+        let pointers: Vec<_> = overlays.iter().map(|&slice| slice.as_ptr()).collect();
+
+        // SAFETY: The `ufdt_apply_multioverlay` function guarantees that `self.0` is accessed
+        // within the specified length boundaries. The `pointers` are non-null and are accessed
+        // by indexes only within the provided length.
+        map_result_libufdt(unsafe {
+            ufdt_apply_multioverlay(
+                self.0.as_mut().as_mut_ptr() as *mut _,
+                self.0.as_ref().len(),
+                pointers.as_ptr().cast(),
+                overlays.len(),
+            )
+        })?;
+
+        Ok(())
+    }
+
     /// Find the offset of a node by a given node path. Add if node does not exist.
-    fn find_or_add_node(&mut self, path: &str) -> Result<core::ffi::c_int> {
-        let mut curr: core::ffi::c_int = 0;
+    fn find_or_add_node(&mut self, path: &str) -> Result<c_int> {
+        let mut curr: c_int = 0;
         for name in path.split('/') {
             if name.len() == 0 {
                 continue;
@@ -306,15 +335,67 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::ffi::CString;
 
-    fn to_cstr(s: &str) -> CString {
-        CString::new(s).unwrap()
+    /// Checks to verify `overlay_*_by_path`/`overlay_*_by_reference` are successfully applied
+    fn check_overlays_are_applied(fdt: &[u8]) {
+        let fdt = Fdt::new(fdt).unwrap();
+
+        assert_eq!(
+            CStr::from_bytes_with_nul(
+                fdt.get_property("/dev-2/dev-2.2/dev-2.2.1", c"property-1").unwrap()
+            )
+            .unwrap()
+            .to_str()
+            .unwrap(),
+            "overlay1-property-1-value",
+            "overlay_modify: failed to modify \"property-1\" in \"/dev-2/dev-2.2/dev-2.2.1\""
+        );
+        assert_eq!(
+            CStr::from_bytes_with_nul(
+                fdt.get_property("/dev-1/overlay1-new-node", c"overlay1-new-node-property")
+                    .unwrap()
+            )
+            .unwrap()
+            .to_str()
+            .unwrap(),
+            "overlay1-new-node-property-value",
+            "overlay_modify: failed to add \"overlay1-new-node\" to \"/dev-1\""
+        );
+        assert_eq!(
+            CStr::from_bytes_with_nul(
+                fdt.get_property("/dev-4", c"overlay1-root-node-property").unwrap()
+            )
+            .unwrap()
+            .to_str()
+            .unwrap(),
+            "overlay1-root-node-property-value",
+            "overlay_modify: failed to add \"/dev-4/overlay1-root-node-property\""
+        );
+        assert_eq!(
+            CStr::from_bytes_with_nul(
+                fdt.get_property("/dev-2/dev-2.2/dev-2.2.1", c"overlay1-new-property").unwrap()
+            )
+            .unwrap()
+            .to_str()
+            .unwrap(),
+            "overlay2-new-property-value",
+            "overlay_modify2: failed to modify \"overlay1-new-property\" in \"/dev-2/dev-2.2/dev-2.2.1\""
+        );
+        assert_eq!(
+            CStr::from_bytes_with_nul(
+                fdt.get_property("/dev-4", c"overlay2-root-node-property").unwrap()
+            )
+            .unwrap()
+            .to_str()
+            .unwrap(),
+            "overlay2-root-node-property-value",
+            "overlay_modify2: failed to add \"overlay2-root-node-property\" to \"/dev-4\""
+        );
     }
 
     #[test]
     fn test_new_from_invalid_fdt() {
-        let mut init = include_bytes!("../test/test.dtb").to_vec();
+        let mut init = include_bytes!("../test/data/base.dtb").to_vec();
         let mut fdt_buf = vec![0u8; init.len()];
         // Invalid total size
         assert!(Fdt::new_from_init(&mut fdt_buf[..], &init[..init.len() - 1]).is_err());
@@ -325,12 +406,12 @@ mod test {
 
     #[test]
     fn test_get_property() {
-        let init = include_bytes!("../test/test.dtb").to_vec();
+        let init = include_bytes!("../test/data/base.dtb").to_vec();
         let mut fdt_buf = vec![0u8; init.len()];
         let fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
 
         assert_eq!(
-            CStr::from_bytes_with_nul(fdt.get_property("/", &to_cstr("info")).unwrap())
+            CStr::from_bytes_with_nul(fdt.get_property("/", c"info").unwrap())
                 .unwrap()
                 .to_str()
                 .unwrap(),
@@ -338,7 +419,7 @@ mod test {
         );
         assert_eq!(
             CStr::from_bytes_with_nul(
-                fdt.get_property("/dev-2/dev-2.2/dev-2.2.1", &to_cstr("property-1")).unwrap()
+                fdt.get_property("/dev-2/dev-2.2/dev-2.2.1", c"property-1").unwrap()
             )
             .unwrap()
             .to_str()
@@ -347,28 +428,28 @@ mod test {
         );
 
         // Non eixsts
-        assert!(fdt.get_property("/", &to_cstr("non-exist")).is_err());
+        assert!(fdt.get_property("/", c"non-existent").is_err());
     }
 
     #[test]
     fn test_set_property() {
-        let init = include_bytes!("../test/test.dtb").to_vec();
+        let init = include_bytes!("../test/data/base.dtb").to_vec();
         let mut fdt_buf = vec![0u8; init.len() + 512];
         let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
         let data = vec![0x11u8, 0x22u8, 0x33u8];
-        fdt.set_property("/new-node", &to_cstr("custom"), &data).unwrap();
-        assert_eq!(fdt.get_property("/new-node", &to_cstr("custom")).unwrap().to_vec(), data);
+        fdt.set_property("/new-node", c"custom", &data).unwrap();
+        assert_eq!(fdt.get_property("/new-node", c"custom").unwrap().to_vec(), data);
     }
 
     #[test]
     fn test_delete_node() {
-        let init = include_bytes!("../test/test.dtb").to_vec();
+        let init = include_bytes!("../test/data/base.dtb").to_vec();
         let mut fdt_buf = vec![0u8; init.len()];
         let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
 
         assert_eq!(
             CStr::from_bytes_with_nul(
-                fdt.get_property("/dev-2/dev-2.2/dev-2.2.1", &to_cstr("property-1")).unwrap()
+                fdt.get_property("/dev-2/dev-2.2/dev-2.2.1", c"property-1").unwrap()
             )
             .unwrap()
             .to_str()
@@ -379,14 +460,14 @@ mod test {
         fdt.delete_node("dev-2").unwrap();
 
         assert!(
-            fdt.get_property("/dev-2/dev-2.2/dev-2.2.1", &to_cstr("property-1")).is_err(),
+            fdt.get_property("/dev-2/dev-2.2/dev-2.2.1", c"property-1").is_err(),
             "dev-2.2.1-property-1 expected to be deleted"
         );
     }
 
     #[test]
     fn test_delete_nost_existed_node_is_failed() {
-        let init = include_bytes!("../test/test.dtb").to_vec();
+        let init = include_bytes!("../test/data/base.dtb").to_vec();
         let mut fdt_buf = vec![0u8; init.len()];
         let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
 
@@ -398,19 +479,18 @@ mod test {
 
     #[test]
     fn test_set_property_placeholder() {
-        let init = include_bytes!("../test/test.dtb").to_vec();
+        let init = include_bytes!("../test/data/base.dtb").to_vec();
         let mut fdt_buf = vec![0u8; init.len() + 512];
         let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
         let data = vec![0x11u8, 0x22u8, 0x33u8, 0x44u8, 0x55u8];
-        let payload =
-            fdt.set_property_placeholder("/new-node", &to_cstr("custom"), data.len()).unwrap();
+        let payload = fdt.set_property_placeholder("/new-node", c"custom", data.len()).unwrap();
         payload.clone_from_slice(&data[..]);
-        assert_eq!(fdt.get_property("/new-node", &to_cstr("custom")).unwrap().to_vec(), data);
+        assert_eq!(fdt.get_property("/new-node", c"custom").unwrap().to_vec(), data);
     }
 
     #[test]
     fn test_header_from_raw() {
-        let init = include_bytes!("../test/test.dtb").to_vec();
+        let init = include_bytes!("../test/data/base.dtb").to_vec();
         // Pointer points to `init`
         let (header, bytes) = unsafe { FdtHeader::from_raw(init.as_ptr()).unwrap() };
         assert_eq!(header.totalsize(), init.len());
@@ -419,7 +499,7 @@ mod test {
 
     #[test]
     fn test_header_from_raw_invalid() {
-        let mut init = include_bytes!("../test/test.dtb").to_vec();
+        let mut init = include_bytes!("../test/data/base.dtb").to_vec();
         init[..4].fill(0);
         // Pointer points to `init`
         assert!(unsafe { FdtHeader::from_raw(init.as_ptr()).is_err() });
@@ -427,12 +507,127 @@ mod test {
 
     #[test]
     fn test_fdt_shrink_to_fit() {
-        let init = include_bytes!("../test/test.dtb").to_vec();
+        let init = include_bytes!("../test/data/base.dtb").to_vec();
         let mut fdt_buf = vec![0u8; init.len() + 512];
         let fdt_buf_len = fdt_buf.len();
         let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
         assert_eq!(fdt.size().unwrap(), fdt_buf_len);
         fdt.shrink_to_fit().unwrap();
         assert_eq!(fdt.size().unwrap(), init.len());
+    }
+
+    #[test]
+    fn test_fdt_multioverlay_apply_by_path() {
+        let base = include_bytes!("../test/data/base.dtb").to_vec();
+        let overlay_modify = include_bytes!("../test/data/overlay_by_path.dtbo").to_vec();
+        let overlay_modify2 = include_bytes!("../test/data/overlay_2_by_path.dtbo").to_vec();
+
+        let mut fdt_buf = vec![0u8; base.len() + overlay_modify.len() + overlay_modify2.len()];
+        let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &base[..]).unwrap();
+
+        fdt.multioverlay_apply(&[&overlay_modify[..] as _, &overlay_modify2[..] as _]).unwrap();
+        fdt.shrink_to_fit().unwrap();
+
+        check_overlays_are_applied(fdt.0);
+    }
+
+    #[test]
+    fn test_fdt_multioverlay_apply_by_path_separately() {
+        let base = include_bytes!("../test/data/base.dtb").to_vec();
+        let overlay_modify = include_bytes!("../test/data/overlay_by_path.dtbo").to_vec();
+        let overlay_modify2 = include_bytes!("../test/data/overlay_2_by_path.dtbo").to_vec();
+
+        let mut fdt_buf = vec![0u8; base.len() + overlay_modify.len() + overlay_modify2.len()];
+        let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &base[..]).unwrap();
+
+        fdt.multioverlay_apply(&[&overlay_modify[..] as _]).unwrap();
+        fdt.multioverlay_apply(&[&overlay_modify2[..] as _]).unwrap();
+        fdt.shrink_to_fit().unwrap();
+
+        check_overlays_are_applied(fdt.0);
+    }
+
+    // TODO(b/362486327): symbols from overlay are not added to the result tree
+    // so cannot refer to them.
+    #[ignore]
+    #[test]
+    fn test_fdt_multioverlay_apply_by_reference() {
+        let base = include_bytes!("../test/data/base.dtb").to_vec();
+        let overlay_modify = include_bytes!("../test/data/overlay_by_reference.dtbo").to_vec();
+        let overlay_modify2 = include_bytes!("../test/data/overlay_2_by_reference.dtbo").to_vec();
+
+        let mut fdt_buf = vec![0u8; base.len() + overlay_modify.len() + overlay_modify2.len()];
+        let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &base[..]).unwrap();
+
+        fdt.multioverlay_apply(&[&overlay_modify[..] as _, &overlay_modify2[..] as _]).unwrap();
+        fdt.shrink_to_fit().unwrap();
+
+        check_overlays_are_applied(fdt.0);
+    }
+
+    // TODO(b/362486327): symbols from overlay are not added to the result tree
+    // so cannot refer to them.
+    #[ignore]
+    #[test]
+    fn test_fdt_multioverlay_apply_by_reference_separately() {
+        let base = include_bytes!("../test/data/base.dtb").to_vec();
+        let overlay_modify = include_bytes!("../test/data/overlay_by_reference.dtbo").to_vec();
+        let overlay_modify2 = include_bytes!("../test/data/overlay_2_by_reference.dtbo").to_vec();
+
+        let mut fdt_buf = vec![0u8; base.len() + overlay_modify.len() + overlay_modify2.len()];
+        let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &base[..]).unwrap();
+
+        fdt.multioverlay_apply(&[&overlay_modify[..] as _]).unwrap();
+        fdt.multioverlay_apply(&[&overlay_modify2[..] as _]).unwrap();
+        fdt.shrink_to_fit().unwrap();
+
+        check_overlays_are_applied(fdt.0);
+    }
+
+    #[test]
+    fn test_fdt_multioverlay_apply_not_enough_space() {
+        let init = include_bytes!("../test/data/base.dtb").to_vec();
+        let overlay_basic = include_bytes!("../test/data/overlay_by_path.dtbo").to_vec();
+
+        let mut fdt_buf = vec![0u8; init.len()];
+        let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
+
+        assert!(
+            fdt.multioverlay_apply(&[&overlay_basic[..]]).is_err(),
+            "expected the problem is catched when not enough space in the main fdt buffer"
+        );
+    }
+
+    #[test]
+    fn test_fdt_multioverlay_apply_corrupted() {
+        let init = include_bytes!("../test/data/base.dtb").to_vec();
+        let overlay_corrupted: Vec<u8> = include_bytes!("../test/data/overlay_by_path.dtbo")
+            .to_vec()
+            .iter()
+            .copied()
+            .rev()
+            .collect();
+
+        let mut fdt_buf = vec![0u8; init.len() + overlay_corrupted.len()];
+        let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
+
+        assert!(
+            fdt.multioverlay_apply(&[&overlay_corrupted[..]]).is_err(),
+            "expected the problem is catched when applying corrupted overlay"
+        );
+    }
+
+    #[test]
+    fn test_fdt_multioverlay_apply_with_wrong_target_path() {
+        let init = include_bytes!("../test/data/base.dtb").to_vec();
+        let overlay_wrong_path = include_bytes!("../test/data/overlay_wrong_path.dtbo").to_vec();
+
+        let mut fdt_buf = vec![0u8; init.len()];
+        let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
+
+        assert!(
+            fdt.multioverlay_apply(&[&overlay_wrong_path[..]]).is_err(),
+            "expected the problem is catched when applying overlay with wrong target path"
+        );
     }
 }

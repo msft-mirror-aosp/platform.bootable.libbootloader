@@ -77,7 +77,7 @@ pub unsafe extern "C" fn gbl_malloc(size: usize, alignment: usize) -> *mut c_voi
 /// # Safety
 ///
 /// * `ptr` must be allocated by `gbl_malloc` and guarantee enough memory for a preceding
-///   `usize` value and payload.
+///   `usize` value and payload or null.
 /// * `gbl_free` must be called with the same `alignment` as the corresponding `gbl_malloc` call.
 #[no_mangle]
 pub unsafe extern "C" fn gbl_free(ptr: *mut c_void, alignment: usize) {
