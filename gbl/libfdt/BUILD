@@ -58,18 +58,42 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes};
     header = "@libfdt_c//:libfdt.h",
 )
 
-genrule(
-    name = "bindgen_source",
-    srcs = [":libfdt_c_bindgen"],
-    outs = ["src/libfdt_c_Def.rs"],
-    cmd = "cp $(SRCS) $(OUTS)",
+rust_bindgen(
+    name = "libufdt_c_bindgen",
+    bindgen_flags = [
+        "--ctypes-prefix",
+        "core::ffi",
+        "--use-core",
+        "--opaque-type",
+        "fdt_header",
+        "--allowlist-function",
+        "ufdt_apply_multioverlay",
+        "--raw-line",
+        """
+# ![cfg_attr(not(test), no_std)]
+""",
+    ],
+    cc_lib = "@libufdt_c",
+    # For x86_32, we need to explicitly specify 32bit architecture.
+    clang_flags = select({
+        "@gbl//toolchain:gbl_rust_uefi_x86_32": ["-m32"],
+        "//conditions:default": ["-m64"],
+    }) + [
+        "-I{}".format(LLVM_PREBUILTS_C_INCLUDE),
+        "-nostdinc",
+    ],
+    header = "@libufdt_c//:include/ufdt_overlay.h",
 )
 
 rust_library(
-    name = "libfdt_c_def",
-    srcs = [":bindgen_source"],
-    crate_root = ":bindgen_source",
+    name = "libfdt_bindgen",
+    srcs = [":libfdt_c_bindgen"],
     deps = ["@zerocopy"],
+)
+
+rust_library(
+    name = "libufdt_bindgen",
+    srcs = [":libufdt_c_bindgen"],
 )
 
 rust_library(
@@ -93,9 +117,10 @@ rust_library(
     edition = "2021",
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
-        ":libfdt_c_def",
+        ":libfdt_bindgen",
         ":libfdt_c_static",
         ":libfdt_sysdeps_static",
+        ":libufdt_bindgen",
         ":libufdt_c_static",
         "@gbl//libc",
         "@gbl//liberror",
@@ -106,7 +131,9 @@ rust_library(
 
 rust_test(
     name = "libfdt_test",
-    compile_data = ["@gbl//libfdt/test:test.dtb"],
+    compile_data = [
+        "@gbl//libfdt/test/data:all",
+    ],
     crate = ":libfdt",
     rustc_flags = ANDROID_RUST_LINTS,
 )

@@ -17,5 +17,14 @@
 set -e
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+readonly DATA_DIR="${SCRIPT_DIR}/data/"
 
-dtc -I dts -O dtb -o ${SCRIPT_DIR}/test.dtb ${SCRIPT_DIR}/test.dts
+dtc -@ -I dts -O dtb -o ${DATA_DIR}/base.dtb ${SCRIPT_DIR}/base.dts
+
+dtc -@ -I dts -O dtb -o ${DATA_DIR}/overlay_by_path.dtbo ${SCRIPT_DIR}/overlay_by_path.dts
+dtc -@ -I dts -O dtb -o ${DATA_DIR}/overlay_2_by_path.dtbo ${SCRIPT_DIR}/overlay_2_by_path.dts
+
+dtc -@ -I dts -O dtb -o ${DATA_DIR}/overlay_by_reference.dtbo ${SCRIPT_DIR}/overlay_by_reference.dts
+dtc -@ -I dts -O dtb -o ${DATA_DIR}/overlay_2_by_reference.dtbo ${SCRIPT_DIR}/overlay_2_by_reference.dts
+
+dtc -@ -I dts -O dtb -o ${DATA_DIR}/overlay_wrong_path.dtbo ${SCRIPT_DIR}/overlay_wrong_path.dts
