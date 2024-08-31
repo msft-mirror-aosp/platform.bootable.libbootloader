@@ -16,18 +16,38 @@ use crate::EfiEntry;
 use efi_types::EFI_MEMORY_TYPE_LOADER_DATA;
 
 use core::alloc::{GlobalAlloc, Layout};
+use core::mem::size_of_val;
 use core::ptr::null_mut;
 use liberror::{Error, Result};
+use safemath::SafeNum;
 
-/// Implement a global allocator using `EFI_BOOT_SERVICES.AllocatePool()/FreePool()`
+/// Implements a global allocator using `EFI_BOOT_SERVICES.AllocatePool()/FreePool()`
+///
+/// To use, add this exact declaration to the application code:
+///
+/// ```
+/// #[no_mangle]
+/// #[global_allocator]
+/// static mut EFI_GLOBAL_ALLOCATOR: EfiAllocator = EfiAllocator::Uninitialized;
+/// ```
+///
+/// This is only useful for real UEFI applications; attempting to install the `EFI_GLOBAL_ALLOCATOR`
+/// for host-side unit tests will cause the test to panic immediately.
 pub enum EfiAllocator {
+    /// Initial state, no UEFI entry point has been set, global hooks will not work.
     Uninitialized,
+    /// [EfiEntry] is registered, global hooks are active.
     Initialized(EfiEntry),
+    /// ExitBootServices has been called, global hooks will not work.
     Exited,
 }
 
-#[global_allocator]
-static mut EFI_GLOBAL_ALLOCATOR: EfiAllocator = EfiAllocator::Uninitialized;
+// This is a bit ugly, but we only expect this library to be used by our EFI application so it
+// doesn't need to be super clean or scalable. The user has to declare the global variable
+// exactly as written in the [EfiAllocator] docs for this to link properly.
+extern "Rust" {
+    static mut EFI_GLOBAL_ALLOCATOR: EfiAllocator;
+}
 
 /// An internal API to obtain library internal global EfiEntry.
 pub(crate) fn internal_efi_entry() -> Option<&'static EfiEntry> {
@@ -110,20 +130,73 @@ impl EfiAllocator {
     }
 }
 
+// Alignment guaranteed by EFI AllocatePoll()
+const EFI_ALLOCATE_POOL_ALIGNMENT: usize = 8;
+
 unsafe impl GlobalAlloc for EfiAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let size = layout.size();
-        let align = layout.align();
-        // TODO(300168989): `EFI_BOOT_SERVICES.AllocatePool()` is only 8-byte aligned. Add support
-        // for arbitrary alignment.
-        // `AllocatePool()` can be slow for allocating large buffers. In this case,
-        // `AllocatePages()` is recommended.
-        assert_eq!(8usize.checked_rem(align).unwrap(), 0);
-        self.allocate(size)
+        (|| -> Result<*mut u8> {
+            let align = layout.align();
+
+            // EFI AllocatePoll() must be at 8-bytes aligned so we can just use returned pointer.
+            if align <= EFI_ALLOCATE_POOL_ALIGNMENT {
+                let ptr = self.allocate(layout.size());
+                assert_eq!(ptr as usize % EFI_ALLOCATE_POOL_ALIGNMENT, 0);
+                return Ok(ptr);
+            }
+
+            // If requested alignment is > EFI_ALLOCATE_POOL_ALIGNMENT then make sure to allocate
+            // bigger buffer and adjust ptr to be aligned.
+            let mut offset: usize = 0usize;
+            let extra_size = SafeNum::from(align) + size_of_val(&offset);
+            let size = SafeNum::from(layout.size()) + extra_size;
+
+            // TODO(300168989):
+            // `AllocatePool()` can be slow for allocating large buffers. In this case,
+            // `AllocatePages()` is recommended.
+            let unaligned_ptr = self.allocate(size.try_into()?);
+            if unaligned_ptr.is_null() {
+                return Err(Error::Other(Some("Allocation failed")));
+            }
+            offset = align - (unaligned_ptr as usize % align);
+
+            // SAFETY:
+            // - `unaligned_ptr` is guaranteed to point to buffer big enough to contain offset+size
+            // bytes since this is the size passed to `allocate`
+            // - ptr+layout.size() is also pointing to valid buffer since actual allocate size takes
+            // into account additional suffix for usize variable
+            unsafe {
+                let ptr = unaligned_ptr.add(offset);
+                core::slice::from_raw_parts_mut(ptr.add(layout.size()), size_of_val(&offset))
+                    .copy_from_slice(&offset.to_ne_bytes());
+                Ok(ptr)
+            }
+        })()
+        .unwrap_or(null_mut()) as _
     }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
-        self.deallocate(ptr);
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // If alignment is EFI_ALLOCATE_POOL_ALIGNMENT or less, then we can just used ptr directly
+        if layout.align() <= EFI_ALLOCATE_POOL_ALIGNMENT {
+            self.deallocate(ptr);
+            return;
+        }
+
+        let mut offset: usize = 0usize;
+        offset = usize::from_ne_bytes(
+            // SAFETY:
+            // * `ptr` is allocated by `alloc` and has enough padding after `ptr`+size to hold
+            // suffix `offset: usize`.
+            // * Alignment of `ptr` is 1 for &[u8]
+            unsafe { core::slice::from_raw_parts(ptr.add(layout.size()), size_of_val(&offset)) }
+                .try_into()
+                .unwrap(),
+        );
+
+        // SAFETY:
+        // (`ptr` - `offset`) must be valid unaligned pointer to buffer allocated by `alloc`
+        let real_start_ptr = unsafe { ptr.sub(offset) };
+        self.deallocate(real_start_ptr);
     }
 }
 

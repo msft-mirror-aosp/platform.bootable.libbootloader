@@ -1,0 +1,22 @@
+/dts-v1/;
+/plugin/;
+
+// re-generate and push test artifacts using ./gen_test_dtb.sh after change in this file
+/ {
+    // change the value of a property added by a previous overlay
+    fragment@1 {
+        target = <&dev221>;
+        __overlay__ {
+            overlay1-new-property = "overlay2-new-property-value";
+        };
+    };
+
+    // add a new property to the node added by a previous overlay
+    fragment@2 {
+        // TODO(b/362486327): failed to refer dev4 added by previous overlay
+        target = <&dev4>;
+        __overlay__ {
+            overlay2-root-node-property = "overlay2-root-node-property-value";
+        };
+    };
+};
