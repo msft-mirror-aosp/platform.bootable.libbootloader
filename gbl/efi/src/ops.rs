@@ -15,10 +15,10 @@
 //! Implements [Gbl::Ops] for the EFI environment.
 
 use crate::{
+    efi,
     efi_blocks::EfiBlockDeviceIo,
     utils::{get_efi_fdt, wait_key_stroke},
 };
-
 use core::{ffi::CStr, fmt::Write};
 use efi::{efi_print, efi_println, EfiEntry};
 use fdt::Fdt;
@@ -171,5 +171,24 @@ impl GblAvbOps for &mut Ops<'_, '_> {
             .get_efi_fdt_prop("gbl", c"avb-cert-permanent-attributes-hash")
             .ok_or(AvbIoError::NotImplemented)?;
         Ok(hash.try_into().map_err(|_| AvbIoError::Io)?)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use efi_mocks::MockEfi;
+    use mockall::predicate::eq;
+
+    #[test]
+    fn ops_write_trait() {
+        let mut mock_efi = MockEfi::new();
+
+        mock_efi.con_out.expect_write_str().with(eq("foo bar")).return_const(Ok(()));
+        let installed = mock_efi.install();
+
+        let mut ops = Ops { efi_entry: installed.entry(), partitions: &[] };
+
+        assert!(write!(&mut ops, "{} {}", "foo", "bar").is_ok());
     }
 }

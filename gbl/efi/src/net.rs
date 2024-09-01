@@ -451,7 +451,9 @@ where
         NETWORK_TIMESTAMP.fetch_add(NETWORK_TIMESTAMP_UPDATE_PERIOD, Ordering::Relaxed);
     };
     let mut notify = EventNotify::new(Tpl::Callback, &mut notify_fn);
-    let timer = bs.create_event(EventType::TimerNotifySignal, Some(&mut notify))?;
+    // SAFETY: the notification callback never allocates, deallocates, or panics.
+    let timer =
+        unsafe { bs.create_event_with_notification(EventType::TimerNotifySignal, &mut notify) }?;
     bs.set_timer(
         &timer,
         EFI_TIMER_DELAY_TIMER_PERIODIC,
