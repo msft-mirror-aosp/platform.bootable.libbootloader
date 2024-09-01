@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! This file implements storage and partition logic for libgbl.
+
 use crate::fastboot::sparse::{is_sparse_image, write_sparse_image, SparseRawWriter};
 use core::mem::swap;
 use fastboot::CommandError;
@@ -22,7 +24,9 @@ use spin::mutex::{Mutex, MutexGuard};
 
 /// Represents a GBL partition.
 pub enum Partition<'a> {
+    /// Raw storage partition.
     Raw(&'a str, u64),
+    /// Gpt Partition.
     Gpt(GptPartition),
 }
 
@@ -226,7 +230,7 @@ impl<B: BlockIoAsync> SparseRawWriter for (u64, &mut AsyncBlockDevice<'_, B>) {
 ///
 /// Returns a pair `(<block device index>, `Partition`)` if the partition exists and is unique.
 pub fn check_part_unique<'a>(
-    devs: &'a [PartitionBlockDevice<'_, impl BlockIoAsync>],
+    devs: &[PartitionBlockDevice<'a, impl BlockIoAsync>],
     part: &str,
 ) -> Result<(usize, Partition<'a>), Error> {
     let mut filtered = devs

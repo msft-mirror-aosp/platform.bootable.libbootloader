@@ -16,6 +16,7 @@ test_suite(
     name = "tests",
     tests = [
         "@gbl//:readme_test",
+        "@gbl//efi:test",
         "@gbl//libabr:libabr_tests",
         "@gbl//libasync:cyclic_executor_test",
         "@gbl//libasync:libasync_test",
@@ -24,6 +25,7 @@ test_suite(
         "@gbl//libc:libc_test",
         "@gbl//libdttable:libdttable_test",
         "@gbl//libefi:libefi_test",
+        "@gbl//libefi:mocks_test",
         "@gbl//libefi_types:libefi_types_test",
         "@gbl//liberror:liberror_test",
         "@gbl//libfastboot:libfastboot_test",
