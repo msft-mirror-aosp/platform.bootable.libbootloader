@@ -23,9 +23,10 @@ use alloc::alloc::{alloc, dealloc};
 use core::{
     alloc::Layout,
     ffi::{c_char, c_int, c_ulong, c_void},
-    mem::size_of,
+    mem::size_of_val,
     ptr::{null_mut, NonNull},
 };
+use safemath::SafeNum;
 
 pub use strcmp::{strcmp, strncmp};
 
@@ -54,19 +55,53 @@ extern "C" {
 /// * Returns a valid pointer to a memory block of `size` bytes, aligned to `alignment`, or null
 ///   on failure.
 #[no_mangle]
-pub unsafe extern "C" fn gbl_malloc(size: usize, alignment: usize) -> *mut c_void {
+pub unsafe extern "C" fn gbl_malloc(request_size: usize, alignment: usize) -> *mut c_void {
     (|| {
-        // Allocate extra to store the size value.
-        let size = size_of::<usize>().checked_add(size)?;
+        // Prefix data:
+        let mut size = 0usize;
+        let mut offset = 0usize;
+
+        // Determine prefix size necessary to store data required for [gbl_free]: size, offset
+        let prefix_size: usize = size_of_val(&size) + size_of_val(&offset);
+
+        // Determine padding necessary to guarantee alignment. Padding includes prefix data.
+        let pad: usize = (SafeNum::from(alignment) + prefix_size).try_into().ok()?;
+
+        // Actual size to allocate. It includes padding to guarantee alignment.
+        size = (SafeNum::from(request_size) + pad).try_into().ok()?;
+
         // SAFETY:
         // *  On success, `alloc` guarantees to allocate enough memory.
-        // * `size.to_le_bytes().as_ptr()` is guaranteed valid memory.
-        // * Alignment is 1 for bytes copy.
+        let ptr = unsafe {
+            // Due to manual aligning, there is no need for specific layout alignment.
+            NonNull::new(alloc(Layout::from_size_align(size, 1).ok()?))?.as_ptr()
+        };
+
+        // Calculate the aligned address to return the caller.
+        let ret_address = (SafeNum::from(ptr as usize) + prefix_size).round_up(alignment);
+
+        // Calculate the offsets from the allocation start.
+        let ret_offset = ret_address - (ptr as usize);
+        let align_offset: usize = (ret_offset - size_of_val(&size)).try_into().ok()?;
+        let size_offset: usize = (align_offset - size_of_val(&offset)).try_into().ok()?;
+        offset = usize::try_from(ret_offset).ok()?;
+
+        // SAFETY:
+        // 'ptr' is guarantied to be valid:
+        // - not NULL; Checked with `NonNull`
+        // - it points to single block of memory big enough to hold size+offset (allocated this
+        // way)
+        // - memory is 1-byte aligned for [u8] slice
+        // - ptr+offset is guarantied to point to the buffer of size 'size' as per allocation that
+        // takes into account padding and prefix.
         unsafe {
-            let ptr = NonNull::new(alloc(Layout::from_size_align(size, alignment).ok()?))?;
-            ptr.as_ptr().copy_from(size.to_le_bytes().as_ptr(), size_of::<usize>());
-            let ptr = ptr.as_ptr().add(size_of::<usize>());
-            Some(ptr)
+            // Write metadata and return the caller's pointer.
+            core::slice::from_raw_parts_mut(ptr.add(size_offset), size_of_val(&size))
+                .copy_from_slice(&size.to_ne_bytes());
+            core::slice::from_raw_parts_mut(ptr.add(align_offset), size_of_val(&offset))
+                .copy_from_slice(&offset.to_ne_bytes());
+
+            Some(ptr.add(offset))
         }
     })()
     .unwrap_or(null_mut()) as _
@@ -77,7 +112,7 @@ pub unsafe extern "C" fn gbl_malloc(size: usize, alignment: usize) -> *mut c_voi
 /// # Safety
 ///
 /// * `ptr` must be allocated by `gbl_malloc` and guarantee enough memory for a preceding
-///   `usize` value and payload.
+///   `usize` value and payload or null.
 /// * `gbl_free` must be called with the same `alignment` as the corresponding `gbl_malloc` call.
 #[no_mangle]
 pub unsafe extern "C" fn gbl_free(ptr: *mut c_void, alignment: usize) {
@@ -86,18 +121,47 @@ pub unsafe extern "C" fn gbl_free(ptr: *mut c_void, alignment: usize) {
         return;
     }
     let mut ptr = ptr as *mut u8;
-    let mut size_bytes = [0u8; size_of::<usize>()];
+
+    let mut offset = 0usize;
+    let mut size = 0usize;
+
+    // Calculate offsets for size of align data
+    let align_offset: usize = size_of_val(&size);
+    let size_offset: usize = align_offset + size_of_val(&size);
+
+    // Read size used in allocation from prefix data.
+    offset = usize::from_ne_bytes(
+        // SAFETY:
+        // * `ptr` is allocated by `gbl_malloc` and has enough padding before `ptr` to hold
+        // prefix data. Which consists of align and size values.
+        // * Alignment is 1 for &[u8]
+        unsafe { core::slice::from_raw_parts(ptr.sub(align_offset), size_of_val(&offset)) }
+            .try_into()
+            .unwrap(),
+    );
+
+    // Read offset for unaligned pointer from prefix data.
+    size = usize::from_ne_bytes(
+        // SAFETY:
+        // * `ptr` is allocated by `gbl_malloc` and has enough padding before `ptr` to hold
+        // prefix data. Which consists of align and size values.
+        // * Alignment is 1 for &[u8]
+        unsafe { core::slice::from_raw_parts(ptr.sub(size_offset), size_of_val(&size)) }
+            .try_into()
+            .unwrap(),
+    );
+
     // SAFETY:
-    // * `ptr` is allocated by `gbl_malloc`
-    // * `size_bytes.as_mut_ptr()` is a valid memory location.
-    // * Alignment is 1 for bytes copy.
+    // * `ptr` is allocated by `gbl_malloc` and has enough padding before `ptr` to hold
+    // prefix data. ptr - offset must point to unaligned pointer to buffer, which was returned by
+    // `alloc`, and must be passed to `dealloc`
     unsafe {
-        ptr = ptr.sub(size_of::<usize>());
-        ptr.copy_to(size_bytes.as_mut_ptr(), size_of::<usize>());
+        // Calculate unaligned pointer returned by [alloc], which must be used in [dealloc]
+        ptr = ptr.sub(offset);
+
+        // Call to global allocator.
+        dealloc(ptr, Layout::from_size_align(size, alignment).unwrap());
     };
-    let size = usize::from_le_bytes(size_bytes);
-    // SAFETY: Call to global allocator.
-    unsafe { dealloc(ptr, Layout::from_size_align(size, alignment).unwrap()) };
 }
 
 /// void *memchr(const void *ptr, int ch, size_t count);

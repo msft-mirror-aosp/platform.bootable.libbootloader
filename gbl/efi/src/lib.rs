@@ -17,45 +17,55 @@
 //! `android_boot:android_boot_demo()` and `fuchsia_boot:fuchsia_boot_demo()` for
 //! supported/unsupported features at the moment.
 
-#![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_std)]
 
 // For the `vec!` macro
 #[macro_use]
 extern crate alloc;
-use core::fmt::Write;
 
-use efi::{efi_print, efi_println, initialize, panic, EfiEntry};
-use efi_types::EfiSystemTable;
-use libgbl::{GblOps, Result};
-
-#[macro_use]
-mod utils;
-use core::panic::PanicInfo;
-use utils::loaded_image_path;
-
-#[cfg(target_arch = "riscv64")]
-mod riscv64;
-
-mod android_boot;
-mod avb;
 mod efi_blocks;
 mod error;
-mod fastboot;
-mod fuchsia_boot;
-mod net;
 mod ops;
+#[macro_use]
+mod utils;
 
-#[panic_handler]
-fn handle_panic(p_info: &PanicInfo) -> ! {
-    panic(p_info)
-}
+// Currently un-testable modules.
+//
+// The libefi API surface is large and complex; rather than trying to mock it all out at once, we
+// will selectively enable modules for test as they become mockable.
+#[cfg(not(test))]
+mod android_boot;
+#[cfg(not(test))]
+mod avb;
+#[cfg(not(test))]
+mod fastboot;
+#[cfg(not(test))]
+mod fuchsia_boot;
+#[cfg(not(test))]
+mod net;
 
+// In tests, map the `efi_mocks` module as `efi`. This allows other modules to `use crate::efi`
+// and automatically pick up the correct one.
+#[cfg(not(test))]
+pub(crate) use efi;
+#[cfg(test)]
+pub(crate) use efi_mocks as efi;
+
+#[cfg(not(test))]
+use {
+    core::fmt::Write,
+    efi::{efi_print, efi_println, EfiEntry},
+    libgbl::{GblOps, Result},
+    utils::loaded_image_path,
+};
+
+#[cfg(not(test))]
 enum TargetOs {
     Android,
     Fuchsia,
 }
 
+#[cfg(not(test))]
 fn get_target_os(entry: &EfiEntry) -> TargetOs {
     let mut buf = [0u8; 1];
     if fuchsia_boot::is_fuchsia_gpt(&entry).is_ok()
@@ -71,10 +81,9 @@ fn get_target_os(entry: &EfiEntry) -> TargetOs {
     }
 }
 
-fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -> Result<()> {
-    // SAFETY: Called only once here upon EFI app entry.
-    let entry = unsafe { initialize(image_handle, systab_ptr)? };
-
+/// GBL EFI application logic entry point.
+#[cfg(not(test))]
+pub fn app_main(entry: EfiEntry) -> Result<()> {
     let mut ops = ops::Ops { efi_entry: &entry, partitions: &[] };
 
     efi_println!(entry, "****Rust EFI Application****");
@@ -99,11 +108,4 @@ fn main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) -
     }
 
     Ok(())
-}
-
-/// EFI application entry point. Does not return.
-#[no_mangle]
-pub extern "C" fn efi_main(image_handle: *mut core::ffi::c_void, systab_ptr: *mut EfiSystemTable) {
-    main(image_handle, systab_ptr).unwrap();
-    loop {}
 }
