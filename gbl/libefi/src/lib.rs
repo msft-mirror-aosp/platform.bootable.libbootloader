@@ -69,12 +69,11 @@ use core::{fmt::Write, panic::PanicInfo};
 
 use core::{marker::PhantomData, ptr::null_mut, slice::from_raw_parts};
 use efi_types::{
-    EfiBootService, EfiConfigurationTable, EfiEvent, EfiEventNotify, EfiGuid, EfiHandle,
-    EfiMemoryDescriptor, EfiMemoryType, EfiRuntimeService, EfiSystemTable, EfiTimerDelay, EfiTpl,
-    EFI_EVENT_TYPE_NOTIFY_SIGNAL, EFI_EVENT_TYPE_NOTIFY_WAIT, EFI_EVENT_TYPE_RUNTIME,
-    EFI_EVENT_TYPE_SIGNAL_EXIT_BOOT_SERVICES, EFI_EVENT_TYPE_SIGNAL_VIRTUAL_ADDRESS_CHANGE,
-    EFI_EVENT_TYPE_TIMER, EFI_LOCATE_HANDLE_SEARCH_TYPE_BY_PROTOCOL,
-    EFI_OPEN_PROTOCOL_ATTRIBUTE_BY_HANDLE_PROTOCOL,
+    EfiBootService, EfiConfigurationTable, EfiEvent, EfiGuid, EfiHandle, EfiMemoryDescriptor,
+    EfiMemoryType, EfiRuntimeService, EfiSystemTable, EfiTimerDelay, EFI_EVENT_TYPE_NOTIFY_SIGNAL,
+    EFI_EVENT_TYPE_NOTIFY_WAIT, EFI_EVENT_TYPE_RUNTIME, EFI_EVENT_TYPE_SIGNAL_EXIT_BOOT_SERVICES,
+    EFI_EVENT_TYPE_SIGNAL_VIRTUAL_ADDRESS_CHANGE, EFI_EVENT_TYPE_TIMER,
+    EFI_LOCATE_HANDLE_SEARCH_TYPE_BY_PROTOCOL, EFI_OPEN_PROTOCOL_ATTRIBUTE_BY_HANDLE_PROTOCOL,
 };
 use liberror::{Error, Result};
 use protocol::{
@@ -368,25 +367,71 @@ impl<'a> BootServices<'a> {
         unsafe { efi_call!(self.boot_services.stall, micro) }
     }
 
-    /// Wrapper of `EFI_BOOT_SERVICE.CreateEvent()`.
+    /// Wraps `EFI_BOOT_SERVICE.CreateEvent()`.
     ///
-    /// Args:
+    /// This function creates an event without a notification callback function; to create an event
+    /// with a notification, see [create_event_with_notification].
     ///
-    ///  * `event_type`: The EFI event type.
-    ///  * `cb`: An optional `&'e mut EventNotify`, which implements the event
-    ///          notification function and provides the task level priority setting.
-    pub fn create_event<'n, 'e: 'n>(
+    /// # Arguments
+    /// * `event_type`: The EFI event type.
+    pub fn create_event(&self, event_type: EventType) -> Result<Event<'a, 'static>> {
+        let mut efi_event: EfiEvent = null_mut();
+        // SAFETY:
+        // * all parameters obey the `CreateEvent()` spec
+        // * on success we take ownership of the provided `efi_event`
+        unsafe {
+            efi_call!(
+                self.boot_services.create_event,
+                event_type as u32,
+                0,
+                None,
+                null_mut(),
+                &mut efi_event
+            )?;
+        }
+        Ok(Event::new(self.efi_entry, efi_event, None))
+    }
+
+    /// Wraps `EFI_BOOT_SERVICE.CreateEvent()`.
+    ///
+    /// This function creates an event with a notification callback function.
+    ///
+    /// Unlike [create_event], this function is unsafe because the callback will be executed
+    /// concurrently with the main application code at a higher interrupt level, and there are
+    /// a few cases where this can lead to races.
+    ///
+    /// # Arguments
+    /// * `event_type`: The EFI event type.
+    /// * `cb`: An [EventNotify] which implements the event notification function and provides the
+    ///         task level priority setting.
+    ///
+    /// # Safety
+    /// Most of the safety conditions are enforced at compile-time by the [Sync] requirement on
+    /// [EventNotifyCallback] - this ensures that e.g. callers cannot capture their raw [EfiEntry]
+    /// in a callback, but will need to wrap it in a [Sync] type which will ensure safe sharing
+    /// between the main application and the callback.
+    ///
+    /// The exception is the global allocation and panic hooks, which use a separate global
+    /// [EfiEntry] that is not synchronized outside the main application. The caller must ensure
+    /// that the main application code is not using its [EfiEntry] while a notification callback
+    /// is trying to concurrently use the global [EfiEntry].
+    ///
+    /// The easiest way to accomplish this is to write notifications callbacks that:
+    /// * do not allocate or deallocate heap memory
+    /// * do not panic
+    /// Callbacks following these guidelines are safe as they do not use the global [EfiEntry].
+    ///
+    /// If that is not possible, then the caller must ensure that nothing else makes any calls into
+    /// UEFI while the returned [Event] is alive; the callback function must have exclusive access
+    /// to the UEFI APIs so it can use the globals without triggering UEFI reentry.
+    ///
+    /// In unittests there is no global [EfiEntry] so this is always safe.
+    pub unsafe fn create_event_with_notification<'e>(
         &self,
         event_type: EventType,
-        mut cb: Option<&'n mut EventNotify<'e>>,
-    ) -> Result<Event<'a, 'n>> {
+        notify: &'e mut EventNotify,
+    ) -> Result<Event<'a, 'e>> {
         let mut efi_event: EfiEvent = null_mut();
-        let (tpl, c_callback, cookie): (EfiTpl, EfiEventNotify, *mut core::ffi::c_void) = match cb {
-            Some(ref mut event_notify) => {
-                (event_notify.tpl as _, Some(efi_event_cb), *event_notify as *mut _ as _)
-            }
-            None => (0, None, null_mut()),
-        };
         // SAFETY:
         // Pointers passed are output/callback context pointers which will not be retained by the
         // callback (`fn efi_event_cb()`).
@@ -397,13 +442,13 @@ impl<'a> BootServices<'a> {
             efi_call!(
                 self.boot_services.create_event,
                 event_type as u32,
-                tpl as usize,
-                c_callback,
-                cookie,
+                notify.tpl as usize,
+                Some(efi_event_cb),
+                notify as *mut _ as *mut _,
                 &mut efi_event
             )?;
         }
-        Ok(Event::new(self.efi_entry, efi_event, cb.map::<EventNotifyCallback<'n>, _>(|v| v.cb)))
+        Ok(Event::new(self.efi_entry, efi_event, Some(notify.cb)))
     }
 
     /// Wrapper of `EFI_BOOT_SERVICE.CloseEvent()`.
@@ -757,15 +802,11 @@ mod test {
     use super::*;
     use crate::protocol::block_io::BlockIoProtocol;
     use efi_types::{
-        EfiBlockIoProtocol, EfiLocateHandleSearchType, EfiStatus, EFI_MEMORY_TYPE_LOADER_CODE,
-        EFI_MEMORY_TYPE_LOADER_DATA, EFI_STATUS_NOT_FOUND, EFI_STATUS_NOT_READY,
-        EFI_STATUS_SUCCESS, EFI_STATUS_UNSUPPORTED,
+        EfiBlockIoProtocol, EfiEventNotify, EfiLocateHandleSearchType, EfiStatus, EfiTpl,
+        EFI_MEMORY_TYPE_LOADER_CODE, EFI_MEMORY_TYPE_LOADER_DATA, EFI_STATUS_NOT_FOUND,
+        EFI_STATUS_NOT_READY, EFI_STATUS_SUCCESS, EFI_STATUS_UNSUPPORTED,
     };
-    use std::cell::RefCell;
-    use std::collections::VecDeque;
-    use std::mem::size_of;
-    use std::slice::from_raw_parts_mut;
-
+    use std::{cell::RefCell, collections::VecDeque, mem::size_of, slice::from_raw_parts_mut};
     use zerocopy::AsBytes;
 
     /// A structure to store the traces of arguments/outputs for EFI methods.
@@ -1380,11 +1421,14 @@ mod test {
                 traces.borrow_mut().create_event_trace.outputs.push_back(event);
             });
             {
-                let _ = efi_entry
-                    .system_table()
-                    .boot_services()
-                    .create_event(EventType::Timer, Some(&mut cb))
-                    .unwrap();
+                // SAFETY: event notifications are always safe in unittests.
+                let _ = unsafe {
+                    efi_entry
+                        .system_table()
+                        .boot_services()
+                        .create_event_with_notification(EventType::Timer, &mut cb)
+                }
+                .unwrap();
             }
             let efi_cb: EfiEventNotify = Some(efi_event_cb);
             EFI_CALL_TRACES.with(|traces| {
@@ -1416,7 +1460,7 @@ mod test {
                 let _ = efi_entry
                     .system_table()
                     .boot_services()
-                    .create_event(EventType::Timer, None)
+                    .create_event(EventType::Timer)
                     .unwrap();
             }
             EFI_CALL_TRACES.with(|traces| {
@@ -1439,11 +1483,8 @@ mod test {
                 traces.borrow_mut().check_event_trace.outputs.push_back(EFI_STATUS_NOT_READY);
                 traces.borrow_mut().check_event_trace.outputs.push_back(EFI_STATUS_UNSUPPORTED);
             });
-            let res = efi_entry
-                .system_table()
-                .boot_services()
-                .create_event(EventType::Timer, None)
-                .unwrap();
+            let res =
+                efi_entry.system_table().boot_services().create_event(EventType::Timer).unwrap();
             assert_eq!(efi_entry.system_table().boot_services().check_event(&res), Ok(true));
             assert_eq!(efi_entry.system_table().boot_services().check_event(&res), Ok(false));
             assert!(efi_entry.system_table().boot_services().check_event(&res).is_err());
