@@ -14,16 +14,16 @@
 
 //! This file provides some utilities built on EFI APIs.
 
-use crate::{
-    defs::{EFI_STATUS_INVALID_PARAMETER, EFI_TIMER_DELAY_TIMER_RELATIVE},
-    EfiEntry, EfiResult, Event, EventType,
-};
+use crate::{EfiEntry, Event, EventType};
 use core::future::Future;
+use efi_types::EFI_TIMER_DELAY_TIMER_RELATIVE;
 use gbl_async::{select, yield_now};
+use liberror::Result;
+use safemath::SafeNum;
 
 /// Converts 1 ms to number of 100 nano seconds
-pub fn ms_to_100ns(ms: u64) -> EfiResult<u64> {
-    Ok(ms.checked_mul(1000 * 10).ok_or(EFI_STATUS_INVALID_PARAMETER)?)
+pub fn ms_to_100ns(ms: u64) -> Result<u64> {
+    Ok((SafeNum::from(ms) * 10 * 1000).try_into()?)
 }
 
 /// `Timeout` provide APIs for checking timeout.
@@ -34,20 +34,20 @@ pub struct Timeout<'a> {
 
 impl<'a> Timeout<'a> {
     /// Creates a new instance and starts the timeout timer.
-    pub fn new(efi_entry: &'a EfiEntry, timeout_ms: u64) -> EfiResult<Self> {
+    pub fn new(efi_entry: &'a EfiEntry, timeout_ms: u64) -> Result<Self> {
         let bs = efi_entry.system_table().boot_services();
-        let timer = bs.create_event(EventType::Timer, None)?;
+        let timer = bs.create_event(EventType::Timer)?;
         bs.set_timer(&timer, EFI_TIMER_DELAY_TIMER_RELATIVE, ms_to_100ns(timeout_ms)?)?;
         Ok(Self { efi_entry, timer })
     }
 
     /// Checks if it has timeout.
-    pub fn check(&self) -> EfiResult<bool> {
+    pub fn check(&self) -> Result<bool> {
         Ok(self.efi_entry.system_table().boot_services().check_event(&self.timer)?)
     }
 
     /// Resets the timeout.
-    pub fn reset(&self, timeout_ms: u64) -> EfiResult<()> {
+    pub fn reset(&self, timeout_ms: u64) -> Result<()> {
         let bs = self.efi_entry.system_table().boot_services();
         bs.set_timer(&self.timer, EFI_TIMER_DELAY_TIMER_RELATIVE, ms_to_100ns(timeout_ms)?)?;
         Ok(())
@@ -55,7 +55,7 @@ impl<'a> Timeout<'a> {
 }
 
 /// Waits for a given amount of time.
-pub async fn wait(efi_entry: &EfiEntry, duration_ms: u64) -> EfiResult<()> {
+pub async fn wait(efi_entry: &EfiEntry, duration_ms: u64) -> Result<()> {
     // EFI boot service has a `stall` API. But it's not async.
     let timeout = Timeout::new(efi_entry, duration_ms)?;
     while !timeout.check()? {
@@ -75,7 +75,7 @@ pub async fn with_timeout<F: Future<Output = R>, R>(
     efi_entry: &EfiEntry,
     fut: F,
     timeout_ms: u64,
-) -> EfiResult<Option<R>> {
+) -> Result<Option<R>> {
     let (timeout_res, res) = select(wait(efi_entry, timeout_ms), fut).await;
     match timeout_res {
         Some(Err(e)) => return Err(e),

@@ -19,13 +19,14 @@
 use abr::{
     get_and_clear_one_shot_flag, get_boot_slot, get_slot_info, get_slot_last_marked_active,
     mark_slot_active, mark_slot_successful, mark_slot_unbootable, set_one_shot_bootloader,
-    set_one_shot_recovery, AbrData, AbrResult, AbrSlotData, Error, Ops, SlotIndex,
-    SlotInfo as AbrSlotInfo, SlotState, ABR_DATA_SIZE,
+    set_one_shot_recovery, AbrData, AbrSlotData, Ops, SlotIndex, SlotInfo as AbrSlotInfo,
+    SlotState, ABR_DATA_SIZE,
 };
 use core::{
     ffi::{c_char, c_uint, c_void},
     fmt::Write,
 };
+use liberror::{Error, Result};
 
 pub mod utils;
 
@@ -139,7 +140,7 @@ impl<'a> AbrOpsSafe<'a> {
 type AbrSlotIndex = c_uint;
 
 impl Ops for AbrOpsSafe<'_> {
-    fn read_abr_metadata(&mut self, out: &mut [u8]) -> Result<(), Option<&'static str>> {
+    fn read_abr_metadata(&mut self, out: &mut [u8]) -> Result<()> {
         if let Some(f) = self.ops.read_abr_metadata.as_ref() {
             // SAFETY:
             // * By safety requirement of `AbrOpsSafe::new()`, `self.ops.context` is either unused,
@@ -148,7 +149,7 @@ impl Ops for AbrOpsSafe<'_> {
             // * `out` is a valid buffer
             // * `out` is for reading data only and will not be retained by the function.
             match unsafe { f(self.ops.context, out.len(), out.as_mut_ptr() as _) } {
-                false => Err(Some("read_abr_metadata() failed")),
+                false => Err(Error::Other(Some("read_abr_metadata() failed"))),
                 _ => Ok(()),
             }
         } else if let Some(f) = self.ops.read_abr_metadata_custom.as_ref() {
@@ -168,15 +169,15 @@ impl Ops for AbrOpsSafe<'_> {
                     &mut data.one_shot_flags,
                 )
             } {
-                false => Err(Some("read_abr_metadata_custom() failed")),
+                false => Err(Error::Other(Some("read_abr_metadata_custom() failed"))),
                 _ => Ok(out[..ABR_DATA_SIZE].clone_from_slice(&data.serialize())),
             }
         } else {
-            Err(Some("No valid read methods"))
+            Err(Error::NotImplemented)
         }
     }
 
-    fn write_abr_metadata(&mut self, data: &mut [u8]) -> Result<(), Option<&'static str>> {
+    fn write_abr_metadata(&mut self, data: &mut [u8]) -> Result<()> {
         if let Some(f) = self.ops.write_abr_metadata.as_ref() {
             // SAFETY:
             // * By safety requirement of `AbrOpsSafe::new()`, `self.ops.context` is either unused,
@@ -185,12 +186,14 @@ impl Ops for AbrOpsSafe<'_> {
             // * `data` is a valid buffer.
             // * `data` is for input only and will not be retained by the function.
             match unsafe { f(self.ops.context, data.as_ptr() as _, data.len()) } {
-                false => Err(Some("write_abr_metadata() failed")),
+                false => Err(Error::Other(Some("write_abr_metadata() failed"))),
                 _ => Ok(()),
             }
         } else if let Some(f) = self.ops.write_abr_metadata_custom.as_ref() {
             let mut abr_data = [0u8; ABR_DATA_SIZE];
-            abr_data.clone_from_slice(data.get(..ABR_DATA_SIZE).ok_or(Some("Invalid data"))?);
+            abr_data.clone_from_slice(
+                data.get(..ABR_DATA_SIZE).ok_or(Error::BufferTooSmall(Some(ABR_DATA_SIZE)))?,
+            );
             let abr_data = AbrData::deserialize(&mut abr_data).unwrap();
             // SAFETY:
             // * By safety requirement of `AbrOpsSafe::new()`, `self.ops.context` is either unused,
@@ -206,11 +209,11 @@ impl Ops for AbrOpsSafe<'_> {
                     abr_data.one_shot_flags,
                 )
             } {
-                false => Err(Some("read_abr_metadata_custom() failed")),
+                false => Err(Error::Other(Some("read_abr_metadata_custom() failed"))),
                 _ => Ok(()),
             }
         } else {
-            Err(Some("No valid write methods"))
+            Err(Error::NotImplemented)
         }
     }
 
@@ -220,14 +223,14 @@ impl Ops for AbrOpsSafe<'_> {
 }
 
 /// A helper that extracts the return value and maps the result to an integer A/B/R result code.
-fn unpack_result<T: Into<O>, O>(res: AbrResult<T>, val: &mut O) -> c_uint {
+fn unpack_result<T: Into<O>, O>(res: Result<T>, val: &mut O) -> c_uint {
     match res {
         Err(e) => match e {
-            Error::BadMagic | Error::BadChecksum | Error::InvalidData => {
+            Error::BadMagic | Error::BadChecksum | Error::InvalidInput => {
                 ABR_RESULT_ERR_INVALID_DATA
             }
             Error::UnsupportedVersion => ABR_RESULT_ERR_UNSUPPORTED_VERSION,
-            Error::OpsError(_) => ABR_RESULT_ERR_IO,
+            _ => ABR_RESULT_ERR_IO,
         },
         Ok(v) => {
             *val = v.into();

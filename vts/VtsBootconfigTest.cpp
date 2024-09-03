@@ -26,8 +26,10 @@ TEST_F(VtsBootconfigTest, ProcCmdlineAndroidbootTest) {
   // required by Android T because Android still needs to support
   // Android S devices that launched with 4.19 for as long as it supports
   // Android S.
-  if (android::base::GetIntProperty("ro.vendor.api_level", 0)
-      < __ANDROID_API_T__) {
+  int first_api_level = android::base::GetIntProperty(
+        "ro.board.first_api_level",
+        android::base::GetIntProperty("ro.vendor.api_level", 1000000));
+  if (first_api_level < __ANDROID_API_T__) {
     GTEST_SKIP() << "Bootconfig requirements do not apply";
   }
 
