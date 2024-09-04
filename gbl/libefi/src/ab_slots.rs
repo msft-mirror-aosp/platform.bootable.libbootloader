@@ -174,7 +174,8 @@ mod test {
         GBL_EFI_BOOT_REASON_GBL_EFI_WATCHDOG as REASON_WATCHDOG,
     };
     use gbl::{
-        ops::{avb_ops_none, GblAvbOps},
+        ops::{AvbIoResult, CertPermanentAttributes, SHA256_DIGEST_SIZE},
+        partition::PartitionBlockDevice,
         slots::{Bootability, Cursor, RecoveryTarget, UnbootableReason},
         BootImages, Gbl, GblOps, Result as GblResult,
     };
@@ -242,7 +243,10 @@ mod test {
         }
     }
 
-    impl<'b> GblOps for TestGblOps<'b> {
+    impl<'a> GblOps<'a> for TestGblOps<'_>
+    where
+        Self: 'a,
+    {
         fn console_out(&mut self) -> Option<&mut dyn Write> {
             unimplemented!();
         }
@@ -255,15 +259,7 @@ mod test {
             unimplemented!();
         }
 
-        async fn read_from_partition(&mut self, _: &str, _: u64, _: &mut [u8]) -> Result<()> {
-            unimplemented!();
-        }
-
-        async fn write_to_partition(&mut self, _: &str, _: u64, _: &mut [u8]) -> Result<()> {
-            unimplemented!();
-        }
-
-        fn partition_size(&mut self, _: &str) -> Result<Option<u64>> {
+        fn partitions(&self) -> Result<&'a [PartitionBlockDevice<'a, Self::PartitionBlockIo>]> {
             unimplemented!();
         }
 
@@ -275,17 +271,42 @@ mod test {
             unimplemented!();
         }
 
-        fn load_slot_interface<'a, B: gbl_storage::AsBlockDevice>(
-            &'a mut self,
-            block_dev: &'a mut B,
+        fn load_slot_interface<'b, B: gbl_storage::AsBlockDevice>(
+            &'b mut self,
+            block_dev: &'b mut B,
             boot_token: BootToken,
-        ) -> GblResult<Cursor<'a, B>> {
+        ) -> GblResult<Cursor<'b, B>> {
             self.manager.boot_token = Some(boot_token);
             Ok(Cursor { ctx: &mut self.manager, block_dev })
         }
 
-        fn avb_ops(&mut self) -> Option<impl GblAvbOps> {
-            avb_ops_none()
+        fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
+            unimplemented!();
+        }
+
+        fn avb_read_rollback_index(&mut self, _rollback_index_location: usize) -> AvbIoResult<u64> {
+            unimplemented!();
+        }
+
+        fn avb_write_rollback_index(
+            &mut self,
+            _rollback_index_location: usize,
+            _index: u64,
+        ) -> AvbIoResult<()> {
+            unimplemented!();
+        }
+
+        fn avb_cert_read_permanent_attributes(
+            &mut self,
+            _attributes: &mut CertPermanentAttributes,
+        ) -> AvbIoResult<()> {
+            unimplemented!();
+        }
+
+        fn avb_cert_read_permanent_attributes_hash(
+            &mut self,
+        ) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
+            unimplemented!();
         }
     }
 

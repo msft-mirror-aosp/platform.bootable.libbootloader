@@ -12,23 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::str::from_utf8;
 use core::ffi::CStr;
 use core::fmt::Write;
+use core::str::from_utf8;
 
 use bootconfig::BootConfigBuilder;
+use bootimg::{BootImage, VendorImageHeader};
+use efi::{efi_print, efi_println, exit_boot_services, EfiEntry};
 use fdt::Fdt;
 use liberror::Error;
-use safemath::SafeNum;
-use efi::{efi_print, efi_println, exit_boot_services, EfiEntry};
-use bootimg::{BootImage, VendorImageHeader};
 use libgbl::{IntegrationError, Result};
 use misc::{AndroidBootMode, BootloaderMessage};
+use safemath::SafeNum;
 use zerocopy::{AsBytes, ByteSlice};
 
 use crate::{
-    utils::{aligned_subslice, cstr_bytes_to_str, get_efi_fdt},
     efi_blocks::{find_block_devices, EfiMultiBlockDevices},
+    utils::{aligned_subslice, cstr_bytes_to_str, get_efi_fdt},
 };
 
 use crate::avb::GblEfiAvbOps;
