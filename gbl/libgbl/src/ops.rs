@@ -25,7 +25,13 @@ use core::{
     result::Result,
 };
 use gbl_async::block_on;
-use zbi::ZbiContainer;
+
+// Re-exports of types from other dependencies that appear in the APIs of this library.
+pub use avb::{
+    CertPermanentAttributes, IoError as AvbIoError, IoResult as AvbIoResult, SHA256_DIGEST_SIZE,
+};
+use liberror::Error;
+pub use zbi::ZbiContainer;
 
 use super::slots;
 
@@ -55,14 +61,42 @@ pub enum BootImages<'a> {
     Fuchsia(FuchsiaBootImages<'a>),
 }
 
-/// `GblOpsError` is the error type returned by required methods in `GblOps`.
-#[derive(Default, Debug, PartialEq, Eq, Copy, Clone)]
-pub struct GblOpsError(pub Option<&'static str>);
+/// `GblAvbOps` contains libavb backend interfaces needed by GBL.
+///
+/// The trait is a selective subset of the interfaces in `avb::Ops` and `avb::CertOps`. The rest of
+/// the APIs are either not relevant to or are implemented and managed by GBL APIs.
+pub trait GblAvbOps {
+    /// Returns if device is in an unlocked state.
+    ///
+    /// The interface has the same requirement as `avb::Ops::read_is_device_unlocked`.
+    fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool>;
 
-impl From<&'static str> for GblOpsError {
-    fn from(val: &'static str) -> Self {
-        Self(Some(val))
-    }
+    /// Reads the AVB rollback index at the given location
+    ///
+    /// The interface has the same requirement as `avb::Ops::read_rollback_index`.
+    fn avb_read_rollback_index(&mut self, _rollback_index_location: usize) -> AvbIoResult<u64>;
+
+    /// Writes the AVB rollback index at the given location.
+    ///
+    /// The interface has the same requirement as `avb::Ops::write_rollback_index`.
+    fn avb_write_rollback_index(
+        &mut self,
+        _rollback_index_location: usize,
+        _index: u64,
+    ) -> AvbIoResult<()>;
+
+    /// Reads AVB certificate extension permanent attributes.
+    ///
+    /// The interface has the same requirement as `avb::CertOps::read_permanent_attributes`.
+    fn avb_cert_read_permanent_attributes(
+        &mut self,
+        attributes: &mut CertPermanentAttributes,
+    ) -> AvbIoResult<()>;
+
+    /// Reads AVB certificate extension permanent attributes hash.
+    ///
+    /// The interface has the same requirement as `avb::CertOps::read_permanent_attributes_hash`.
+    fn avb_cert_read_permanent_attributes_hash(&mut self) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]>;
 }
 
 // https://stackoverflow.com/questions/41081240/idiomatic-callbacks-in-rust
@@ -80,10 +114,10 @@ pub trait GblOps {
 
     /// This method can be used to implement platform specific mechanism for deciding whether boot
     /// should abort and enter Fastboot mode.
-    fn should_stop_in_fastboot(&mut self) -> Result<bool, GblOpsError>;
+    fn should_stop_in_fastboot(&mut self) -> Result<bool, Error>;
 
     /// Platform specific processing of boot images before booting.
-    fn preboot(&mut self, boot_images: BootImages) -> Result<(), GblOpsError>;
+    fn preboot(&mut self, boot_images: BootImages) -> Result<(), Error>;
 
     /// Reads data from a partition.
     async fn read_from_partition(
@@ -91,7 +125,7 @@ pub trait GblOps {
         part: &str,
         off: u64,
         out: &mut [u8],
-    ) -> Result<(), GblOpsError>;
+    ) -> Result<(), Error>;
 
     /// Reads data from a partition synchronously.
     fn read_from_partition_sync(
@@ -99,7 +133,7 @@ pub trait GblOps {
         part: &str,
         off: u64,
         out: &mut [u8],
-    ) -> Result<(), GblOpsError> {
+    ) -> Result<(), Error> {
         block_on(self.read_from_partition(part, off, out))
     }
 
@@ -109,7 +143,7 @@ pub trait GblOps {
         part: &str,
         off: u64,
         data: &mut [u8],
-    ) -> Result<(), GblOpsError>;
+    ) -> Result<(), Error>;
 
     /// Writes data to a partition synchronously.
     fn write_to_partition_sync(
@@ -117,18 +151,18 @@ pub trait GblOps {
         part: &str,
         off: u64,
         data: &mut [u8],
-    ) -> Result<(), GblOpsError> {
+    ) -> Result<(), Error> {
         block_on(self.write_to_partition(part, off, data))
     }
 
     /// Returns the size of a partiiton. Returns Ok(None) if partition doesn't exist.
-    fn partition_size(&mut self, part: &str) -> Result<Option<u64>, GblOpsError>;
+    fn partition_size(&mut self, part: &str) -> Result<Option<u64>, Error>;
 
     /// Adds device specific ZBI items to the given `container`
     fn zircon_add_device_zbi_items(
         &mut self,
         container: &mut ZbiContainer<&mut [u8]>,
-    ) -> Result<(), GblOpsError>;
+    ) -> Result<(), Error>;
 
     // TODO(b/334962570): figure out how to plumb ops-provided hash implementations into
     // libavb. The tricky part is that libavb hashing APIs are global with no way to directly
@@ -157,6 +191,19 @@ pub trait GblOps {
         block_device: &'a mut B,
         boot_token: slots::BootToken,
     ) -> GblResult<slots::Cursor<'a, B>>;
+
+    /// Returns an implementation of `GblAvbOps`
+    ///
+    /// Users that don't need verified boot can return `avb_ops_none()`.
+    fn avb_ops(&mut self) -> Option<impl GblAvbOps>;
+}
+
+/// Returns a `None` instance of `Option<impl GblAvbOps>`.
+///
+/// This can be used as the implementation of `GblOps::avb_ops()` if users don't need verified
+/// boot.
+pub fn avb_ops_none() -> Option<impl GblAvbOps> {
+    None::<GblAvbOpsNull>
 }
 
 /// Default [GblOps] implementation that returns errors and does nothing.
@@ -168,11 +215,11 @@ impl GblOps for DefaultGblOps {
         unimplemented!();
     }
 
-    fn should_stop_in_fastboot(&mut self) -> Result<bool, GblOpsError> {
+    fn should_stop_in_fastboot(&mut self) -> Result<bool, Error> {
         unimplemented!();
     }
 
-    fn preboot(&mut self, boot_images: BootImages) -> Result<(), GblOpsError> {
+    fn preboot(&mut self, boot_images: BootImages) -> Result<(), Error> {
         unimplemented!();
     }
 
@@ -181,7 +228,7 @@ impl GblOps for DefaultGblOps {
         part: &str,
         off: u64,
         out: &mut [u8],
-    ) -> Result<(), GblOpsError> {
+    ) -> Result<(), Error> {
         unimplemented!();
     }
 
@@ -190,18 +237,18 @@ impl GblOps for DefaultGblOps {
         part: &str,
         off: u64,
         data: &mut [u8],
-    ) -> Result<(), GblOpsError> {
+    ) -> Result<(), Error> {
         unimplemented!();
     }
 
-    fn partition_size(&mut self, part: &str) -> Result<Option<u64>, GblOpsError> {
+    fn partition_size(&mut self, part: &str) -> Result<Option<u64>, Error> {
         unimplemented!();
     }
 
     fn zircon_add_device_zbi_items(
         &mut self,
         container: &mut ZbiContainer<&mut [u8]>,
-    ) -> Result<(), GblOpsError> {
+    ) -> Result<(), Error> {
         unimplemented!();
     }
 
@@ -217,6 +264,57 @@ impl GblOps for DefaultGblOps {
         block_device: &'a mut B,
         boot_token: slots::BootToken,
     ) -> GblResult<slots::Cursor<'a, B>> {
+        unimplemented!();
+    }
+
+    fn avb_ops(&mut self) -> Option<impl GblAvbOps> {
+        avb_ops_none()
+    }
+}
+
+/// Prints with `GblOps::console_out()`.
+#[macro_export]
+macro_rules! gbl_print {
+    ( $ops:expr, $( $x:expr ),* $(,)? ) => {
+        {
+            match $ops.console_out() {
+                Some(v) => write!(v, $($x,)*).unwrap(),
+                _ => {}
+            }
+        }
+    };
+}
+
+/// `GblAvbOpsNull` provides placeholder implementation for `GblAvbOps`. All methods are
+/// `unimplemented!()`. The type is for plugging in `None::<GblAvbOpsNull>` which the compiler
+/// requires for return by `avb_ops_none()`, .
+struct GblAvbOpsNull {}
+
+impl GblAvbOps for GblAvbOpsNull {
+    fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
+        unimplemented!();
+    }
+
+    fn avb_read_rollback_index(&mut self, _rollback_index_location: usize) -> AvbIoResult<u64> {
+        unimplemented!();
+    }
+
+    fn avb_write_rollback_index(
+        &mut self,
+        _rollback_index_location: usize,
+        _index: u64,
+    ) -> AvbIoResult<()> {
+        unimplemented!();
+    }
+
+    fn avb_cert_read_permanent_attributes(
+        &mut self,
+        attributes: &mut CertPermanentAttributes,
+    ) -> AvbIoResult<()> {
+        unimplemented!();
+    }
+
+    fn avb_cert_read_permanent_attributes_hash(&mut self) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
         unimplemented!();
     }
 }

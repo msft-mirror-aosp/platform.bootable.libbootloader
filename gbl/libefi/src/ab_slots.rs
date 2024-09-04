@@ -16,18 +16,19 @@ extern crate gbl_storage;
 extern crate libgbl as gbl;
 
 use core::convert::TryInto;
-
-pub use gbl::slots::Error;
 use gbl::slots::{
     BootTarget, BootToken, Manager, OneShot, RecoveryTarget, Slot, SlotIterator, Suffix, Tries,
     UnbootableReason,
 };
+use liberror::{Error, Result};
 
-use crate::defs::{
-    EFI_BOOT_REASON_BOOTLOADER, EFI_BOOT_REASON_EMPTY_EFI_BOOT_REASON, EFI_BOOT_REASON_RECOVERY,
+use efi_types::{
+    GBL_EFI_BOOT_REASON_GBL_EFI_BOOTLOADER as REASON_BOOTLOADER,
+    GBL_EFI_BOOT_REASON_GBL_EFI_EMPTY_BOOT_REASON as REASON_EMPTY,
+    GBL_EFI_BOOT_REASON_GBL_EFI_RECOVERY as REASON_RECOVERY,
 };
-use crate::protocol::{ab_slot, Protocol};
-use crate::ErrorTypes;
+
+use crate::protocol::{gbl_efi_ab_slot as ab_slot, Protocol};
 
 const SUBREASON_BUF_LEN: usize = 64;
 
@@ -46,25 +47,22 @@ impl<'a> ABManager<'a> {
 }
 
 impl gbl::slots::private::SlotGet for ABManager<'_> {
-    fn get_slot_by_number(&self, number: usize) -> Result<Slot, Error> {
-        let idx = u8::try_from(number).or(Err(Error::BadSlotIndex(number)))?;
-        let info = self.protocol.get_slot_info(idx).map_err(|e| match e.err() {
-            ErrorTypes::Unknown => Error::Other,
-            _ => Error::BadSlotIndex(number),
-        })?;
+    fn get_slot_by_number(&self, number: usize) -> Result<Slot> {
+        let idx = u8::try_from(number).or(Err(Error::BadIndex(number)))?;
+        let info = self.protocol.get_slot_info(idx).or(Err(Error::BadIndex(number)))?;
         info.try_into()
     }
 }
 
 impl Manager for ABManager<'_> {
-    fn get_boot_target(&self) -> Result<BootTarget, Error> {
+    fn get_boot_target(&self) -> Result<BootTarget> {
         let slot = self.get_slot_last_set_active()?;
         let mut subreason = [0u8; SUBREASON_BUF_LEN];
         let (reason, _) = self.protocol.get_boot_reason(subreason.as_mut_slice())?;
         // Don't currently care about the subreason
         // CStr::from_bytes_until_nul(&subreason[..strlen])?
         let target = match reason {
-            EFI_BOOT_REASON_RECOVERY => BootTarget::Recovery(RecoveryTarget::Slotted(slot)),
+            REASON_RECOVERY => BootTarget::Recovery(RecoveryTarget::Slotted(slot)),
             _ => BootTarget::NormalBoot(slot),
         };
         Ok(target)
@@ -74,7 +72,7 @@ impl Manager for ABManager<'_> {
         SlotIterator::new(self)
     }
 
-    fn get_slot_last_set_active(&self) -> Result<Slot, Error> {
+    fn get_slot_last_set_active(&self) -> Result<Slot> {
         use gbl::slots::private::SlotGet;
 
         if let Some(idx) = self.last_set_active_idx {
@@ -84,43 +82,39 @@ impl Manager for ABManager<'_> {
         }
     }
 
-    fn mark_boot_attempt(&mut self) -> Result<BootToken, Error> {
+    fn mark_boot_attempt(&mut self) -> Result<BootToken> {
         self.protocol.mark_boot_attempt().or(Err(Error::OperationProhibited))?;
         self.boot_token.take().ok_or(Error::OperationProhibited)
     }
 
-    fn set_active_slot(&mut self, slot_suffix: Suffix) -> Result<(), Error> {
+    fn set_active_slot(&mut self, slot_suffix: Suffix) -> Result<()> {
         let idx: u8 = self
             .slots_iter()
             .position(|s| s.suffix == slot_suffix)
-            .ok_or(Error::NoSuchSlot(slot_suffix))?
+            .ok_or(Error::InvalidInput)?
             .try_into()
             // This 'or' is technically unreachable because the protocol
             // can't give us an index larger than a u8.
-            .or(Err(Error::Other))?;
-        self.protocol.set_active_slot(idx).or(Err(Error::Other)).and_then(|_| {
+            .or(Err(Error::Other(None)))?;
+        self.protocol.set_active_slot(idx).or(Err(Error::Other(None))).and_then(|_| {
             self.last_set_active_idx = Some(idx);
             Ok(())
         })
     }
 
-    fn set_slot_unbootable(
-        &mut self,
-        slot_suffix: Suffix,
-        reason: UnbootableReason,
-    ) -> Result<(), Error> {
+    fn set_slot_unbootable(&mut self, slot_suffix: Suffix, reason: UnbootableReason) -> Result<()> {
         let idx: u8 = self
             .slots_iter()
             .position(|s| s.suffix == slot_suffix)
-            .ok_or(Error::NoSuchSlot(slot_suffix))?
+            .ok_or(Error::InvalidInput)?
             .try_into()
             // This 'or' is technically unreachable because the protocol
             // can't give us an index larger than a u8.
-            .or(Err(Error::Other))?;
-        self.protocol.set_slot_unbootable(idx, u8::from(reason).into()).or(Err(Error::Other))
+            .or(Err(Error::Other(None)))?;
+        self.protocol.set_slot_unbootable(idx, u8::from(reason).into())
     }
 
-    fn get_max_retries(&self) -> Result<Tries, Error> {
+    fn get_max_retries(&self) -> Result<Tries> {
         Ok(self.protocol.load_boot_data()?.max_retries.into())
     }
 
@@ -130,17 +124,17 @@ impl Manager for ABManager<'_> {
         // Currently we only care if the primary boot reason is BOOTLOADER.
         // CStr::from_bytes_until_nul(&subreason[..strlen]).ok()?
         match reason {
-            EFI_BOOT_REASON_BOOTLOADER => Some(OneShot::Bootloader),
+            REASON_BOOTLOADER => Some(OneShot::Bootloader),
             _ => None,
         }
     }
 
-    fn set_oneshot_status(&mut self, os: OneShot) -> Result<(), Error> {
+    fn set_oneshot_status(&mut self, os: OneShot) -> Result<()> {
         // Android doesn't have a concept of OneShot to recovery,
         // and the subreason shouldn't matter.
         match os {
             OneShot::Bootloader => {
-                self.protocol.set_boot_reason(EFI_BOOT_REASON_BOOTLOADER, &[]).or(Err(Error::Other))
+                self.protocol.set_boot_reason(REASON_BOOTLOADER, &[]).or(Err(Error::Other(None)))
             }
             _ => Err(Error::OperationProhibited),
         }
@@ -150,10 +144,9 @@ impl Manager for ABManager<'_> {
         let mut subreason = [0u8; SUBREASON_BUF_LEN];
         // Only clear if the boot reason is the one we care about.
         // CStr::from_bytes_until_nul(&subreason[..strlen]).or(Err(Error::Other))?
-        if let Ok((EFI_BOOT_REASON_BOOTLOADER, _)) =
-            self.protocol.get_boot_reason(subreason.as_mut_slice())
+        if let Ok((REASON_BOOTLOADER, _)) = self.protocol.get_boot_reason(subreason.as_mut_slice())
         {
-            let _ = self.protocol.set_boot_reason(EFI_BOOT_REASON_EMPTY_EFI_BOOT_REASON, &[]);
+            let _ = self.protocol.set_boot_reason(REASON_EMPTY, &[]);
         }
     }
 
@@ -169,18 +162,21 @@ mod test {
     extern crate avb_sysdeps;
 
     use super::*;
-    use crate::defs::{
-        EfiGblSlotInfo, EfiGblSlotMetadataBlock, EfiGblSlotProtocol, EfiStatus,
-        EFI_BOOT_REASON_EMPTY_EFI_BOOT_REASON, EFI_BOOT_REASON_RECOVERY, EFI_BOOT_REASON_WATCHDOG,
-        EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_SUCCESS,
-    };
     use crate::protocol::{Protocol, ProtocolInfo};
     use crate::test::*;
     use crate::{DeviceHandle, EfiEntry};
     use core::ptr::null_mut;
+    use efi_types::{
+        EfiStatus, GblEfiSlotInfo, GblEfiSlotMetadataBlock, GblEfiSlotProtocol,
+        EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_SUCCESS,
+        GBL_EFI_BOOT_REASON_GBL_EFI_EMPTY_BOOT_REASON as REASON_EMPTY,
+        GBL_EFI_BOOT_REASON_GBL_EFI_RECOVERY as REASON_RECOVERY,
+        GBL_EFI_BOOT_REASON_GBL_EFI_WATCHDOG as REASON_WATCHDOG,
+    };
     use gbl::{
+        ops::{avb_ops_none, GblAvbOps},
         slots::{Bootability, Cursor, RecoveryTarget, UnbootableReason},
-        BootImages, Gbl, GblOps, GblOpsError, Result as GblResult,
+        BootImages, Gbl, GblOps, Result as GblResult,
     };
     use gbl_storage_testlib::TestBlockDevice;
     // TODO(b/350526796): use ptr.is_aligned() when Rust 1.79 is in Android
@@ -202,21 +198,21 @@ mod test {
     }
 
     thread_local! {
-        static BOOT_REASON: AtomicU32 = AtomicU32::new(EFI_BOOT_REASON_EMPTY_EFI_BOOT_REASON);
+        static BOOT_REASON: AtomicU32 = AtomicU32::new(REASON_EMPTY);
     }
 
     // This provides reasonable defaults for all tests that need to get slot info.
     //
     // SAFETY: checks that `info` is properly aligned and not null.
-    // Caller must make sure `info` points to a valid EfiGblSlotInfo struct.
+    // Caller must make sure `info` points to a valid GblEfiSlotInfo struct.
     unsafe extern "C" fn get_info(
-        _: *mut EfiGblSlotProtocol,
+        _: *mut GblEfiSlotProtocol,
         idx: u8,
-        info: *mut EfiGblSlotInfo,
+        info: *mut GblEfiSlotInfo,
     ) -> EfiStatus {
         // TODO(b/350526796): use ptr.is_aligned() when Rust 1.79 is in Android
-        if !info.is_null() && (info as usize) % align_of::<EfiGblSlotInfo>() == 0 && idx < 3 {
-            let slot_info = EfiGblSlotInfo {
+        if !info.is_null() && (info as usize) % align_of::<GblEfiSlotInfo>() == 0 && idx < 3 {
+            let slot_info = GblEfiSlotInfo {
                 suffix: ('a' as u8 + idx).into(),
                 unbootable_reason: 0,
                 priority: idx + 1,
@@ -231,7 +227,7 @@ mod test {
         }
     }
 
-    extern "C" fn flush(_: *mut EfiGblSlotProtocol) -> EfiStatus {
+    extern "C" fn flush(_: *mut GblEfiSlotProtocol) -> EfiStatus {
         ATOMIC.with(|a| a.store(true, Ordering::Relaxed));
         EFI_STATUS_SUCCESS
     }
@@ -251,40 +247,27 @@ mod test {
             unimplemented!();
         }
 
-        fn should_stop_in_fastboot(&mut self) -> Result<bool, GblOpsError> {
+        fn should_stop_in_fastboot(&mut self) -> Result<bool> {
             unimplemented!();
         }
 
-        fn preboot(&mut self, _: BootImages) -> Result<(), GblOpsError> {
+        fn preboot(&mut self, _: BootImages) -> Result<()> {
             unimplemented!();
         }
 
-        async fn read_from_partition(
-            &mut self,
-            _: &str,
-            _: u64,
-            _: &mut [u8],
-        ) -> Result<(), GblOpsError> {
+        async fn read_from_partition(&mut self, _: &str, _: u64, _: &mut [u8]) -> Result<()> {
             unimplemented!();
         }
 
-        async fn write_to_partition(
-            &mut self,
-            _: &str,
-            _: u64,
-            _: &mut [u8],
-        ) -> Result<(), GblOpsError> {
+        async fn write_to_partition(&mut self, _: &str, _: u64, _: &mut [u8]) -> Result<()> {
             unimplemented!();
         }
 
-        fn partition_size(&mut self, _: &str) -> Result<Option<u64>, GblOpsError> {
+        fn partition_size(&mut self, _: &str) -> Result<Option<u64>> {
             unimplemented!();
         }
 
-        fn zircon_add_device_zbi_items(
-            &mut self,
-            _: &mut ZbiContainer<&mut [u8]>,
-        ) -> Result<(), GblOpsError> {
+        fn zircon_add_device_zbi_items(&mut self, _: &mut ZbiContainer<&mut [u8]>) -> Result<()> {
             unimplemented!();
         }
 
@@ -300,6 +283,10 @@ mod test {
             self.manager.boot_token = Some(boot_token);
             Ok(Cursor { ctx: &mut self.manager, block_dev })
         }
+
+        fn avb_ops(&mut self) -> Option<impl GblAvbOps> {
+            avb_ops_none()
+        }
     }
 
     fn generate_protocol<'a, P: ProtocolInfo>(
@@ -314,7 +301,7 @@ mod test {
     fn test_manager_flush_on_close() {
         ATOMIC.with(|a| a.store(false, Ordering::Relaxed));
         run_test(|image_handle, systab_ptr| {
-            let mut ab = EfiGblSlotProtocol { flush: Some(flush), ..Default::default() };
+            let mut ab = GblEfiSlotProtocol { flush: Some(flush), ..Default::default() };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
             let protocol = generate_protocol::<ab_slot::GblSlotProtocol>(&efi_entry, &mut ab);
 
@@ -331,7 +318,7 @@ mod test {
     #[test]
     fn test_iterator() {
         run_test(|image_handle, systab_ptr| {
-            let mut ab = EfiGblSlotProtocol {
+            let mut ab = GblEfiSlotProtocol {
                 get_slot_info: Some(get_info),
                 flush: Some(flush),
                 ..Default::default()
@@ -371,16 +358,16 @@ mod test {
     fn test_active_slot() {
         // SAFETY: verfies that `info` properly aligned and not null.
         // It is the callers responsibility to make sure
-        // that `info` points to a valid EfiGblSlotInfo.
+        // that `info` points to a valid GblEfiSlotInfo.
         unsafe extern "C" fn get_current_slot(
-            _: *mut EfiGblSlotProtocol,
-            info: *mut EfiGblSlotInfo,
+            _: *mut GblEfiSlotProtocol,
+            info: *mut GblEfiSlotInfo,
         ) -> EfiStatus {
             // TODO(b/350526796): use ptr.is_aligned() when Rust 1.79 is in Android
-            if info.is_null() || (info as usize) % align_of::<EfiGblSlotInfo>() != 0 {
+            if info.is_null() || (info as usize) % align_of::<GblEfiSlotInfo>() != 0 {
                 return EFI_STATUS_INVALID_PARAMETER;
             }
-            let slot_info = EfiGblSlotInfo {
+            let slot_info = GblEfiSlotInfo {
                 suffix: 'a' as u32,
                 unbootable_reason: 0,
                 priority: 7,
@@ -397,7 +384,7 @@ mod test {
         // It is the caller's responsibility to make sure that `reason`
         // and `subreason_size` point to valid output parameters.
         unsafe extern "C" fn get_boot_reason(
-            _: *mut EfiGblSlotProtocol,
+            _: *mut GblEfiSlotProtocol,
             reason: *mut u32,
             subreason_size: *mut usize,
             _subreason: *mut u8,
@@ -418,9 +405,9 @@ mod test {
             EFI_STATUS_SUCCESS
         }
 
-        BOOT_REASON.with(|r| r.store(EFI_BOOT_REASON_EMPTY_EFI_BOOT_REASON, Ordering::Relaxed));
+        BOOT_REASON.with(|r| r.store(REASON_EMPTY, Ordering::Relaxed));
         run_test(|image_handle, systab_ptr| {
-            let mut ab = EfiGblSlotProtocol {
+            let mut ab = GblEfiSlotProtocol {
                 get_current_slot: Some(get_current_slot),
                 get_boot_reason: Some(get_boot_reason),
                 flush: Some(flush),
@@ -441,7 +428,7 @@ mod test {
             assert_eq!(cursor.ctx.get_boot_target().unwrap(), BootTarget::NormalBoot(slot));
             assert_eq!(cursor.ctx.get_slot_last_set_active().unwrap(), slot);
 
-            BOOT_REASON.with(|r| r.store(EFI_BOOT_REASON_RECOVERY, Ordering::Relaxed));
+            BOOT_REASON.with(|r| r.store(REASON_RECOVERY, Ordering::Relaxed));
 
             assert_eq!(
                 cursor.ctx.get_boot_target().unwrap(),
@@ -452,14 +439,14 @@ mod test {
 
     #[test]
     fn test_mark_boot_attempt() {
-        extern "C" fn mark_boot_attempt(_: *mut EfiGblSlotProtocol) -> EfiStatus {
+        extern "C" fn mark_boot_attempt(_: *mut GblEfiSlotProtocol) -> EfiStatus {
             ATOMIC.with(|a| a.store(true, Ordering::Relaxed));
             EFI_STATUS_SUCCESS
         }
 
         ATOMIC.with(|a| a.store(false, Ordering::Relaxed));
         run_test(|image_handle, systab_ptr| {
-            let mut ab = EfiGblSlotProtocol {
+            let mut ab = GblEfiSlotProtocol {
                 mark_boot_attempt: Some(mark_boot_attempt),
                 flush: Some(flush),
                 ..Default::default()
@@ -473,7 +460,7 @@ mod test {
             assert!(cursor.ctx.mark_boot_attempt().is_ok());
             assert!(ATOMIC.with(|a| a.load(Ordering::Relaxed)));
 
-            assert_eq!(cursor.ctx.mark_boot_attempt(), Err(gbl::slots::Error::OperationProhibited));
+            assert_eq!(cursor.ctx.mark_boot_attempt(), Err(Error::OperationProhibited));
         });
     }
 
@@ -481,17 +468,17 @@ mod test {
     fn test_get_max_retries() {
         // SAFETY: verifies that `meta` is properly aligned and not null.
         // It is the caller's responsibility to make sure that `meta` points to
-        // a valid EfiGblSlotMetadataBlock.
+        // a valid GblEfiSlotMetadataBlock.
         unsafe extern "C" fn load_boot_data(
-            _: *mut EfiGblSlotProtocol,
-            meta: *mut EfiGblSlotMetadataBlock,
+            _: *mut GblEfiSlotProtocol,
+            meta: *mut GblEfiSlotMetadataBlock,
         ) -> EfiStatus {
             // TODO(b/350526796): use ptr.is_aligned() when Rust 1.79 is in Android
-            if meta.is_null() || (meta as usize) % align_of::<EfiGblSlotMetadataBlock>() != 0 {
+            if meta.is_null() || (meta as usize) % align_of::<GblEfiSlotMetadataBlock>() != 0 {
                 return EFI_STATUS_INVALID_PARAMETER;
             }
 
-            let meta_block = EfiGblSlotMetadataBlock {
+            let meta_block = GblEfiSlotMetadataBlock {
                 unbootable_metadata: 1,
                 max_retries: 66,
                 slot_count: 32, // why not?
@@ -502,7 +489,7 @@ mod test {
         }
 
         run_test(|image_handle, systab_ptr| {
-            let mut ab = EfiGblSlotProtocol {
+            let mut ab = GblEfiSlotProtocol {
                 load_boot_data: Some(load_boot_data),
                 flush: Some(flush),
                 ..Default::default()
@@ -519,7 +506,7 @@ mod test {
 
     #[test]
     fn test_set_active_slot() {
-        extern "C" fn set_active_slot(_: *mut EfiGblSlotProtocol, idx: u8) -> EfiStatus {
+        extern "C" fn set_active_slot(_: *mut GblEfiSlotProtocol, idx: u8) -> EfiStatus {
             // This is deliberate: we want to make sure that other logic catches
             // 'no such slot' first but we also want to verify that errors propagate.
             if idx != 2 {
@@ -530,7 +517,7 @@ mod test {
         }
 
         run_test(|image_handle, systab_ptr| {
-            let mut ab = EfiGblSlotProtocol {
+            let mut ab = GblEfiSlotProtocol {
                 get_slot_info: Some(get_info),
                 set_active_slot: Some(set_active_slot),
                 flush: Some(flush),
@@ -544,17 +531,17 @@ mod test {
             let cursor = gbl.load_slot_interface(&mut block_device).unwrap();
 
             assert_eq!(cursor.ctx.set_active_slot('b'.into()), Ok(()));
-            assert_eq!(cursor.ctx.set_active_slot('c'.into()), Err(Error::Other));
+            assert_eq!(cursor.ctx.set_active_slot('c'.into()), Err(Error::Other(None)));
 
             let bad_suffix = '$'.into();
-            assert_eq!(cursor.ctx.set_active_slot(bad_suffix), Err(Error::NoSuchSlot(bad_suffix)));
+            assert_eq!(cursor.ctx.set_active_slot(bad_suffix), Err(Error::InvalidInput));
         });
     }
 
     #[test]
     fn test_set_slot_unbootable() {
         extern "C" fn set_slot_unbootable(
-            _: *mut EfiGblSlotProtocol,
+            _: *mut GblEfiSlotProtocol,
             idx: u8,
             _: u32,
         ) -> EfiStatus {
@@ -570,7 +557,7 @@ mod test {
         }
 
         run_test(|image_handle, systab_ptr| {
-            let mut ab = EfiGblSlotProtocol {
+            let mut ab = GblEfiSlotProtocol {
                 get_slot_info: Some(get_info),
                 set_slot_unbootable: Some(set_slot_unbootable),
                 flush: Some(flush),
@@ -590,13 +577,7 @@ mod test {
 
             assert_eq!(
                 cursor.ctx.set_slot_unbootable('b'.into(), UnbootableReason::UserRequested),
-                Err(Error::Other)
-            );
-
-            let bad_suffix = '$'.into();
-            assert_eq!(
-                cursor.ctx.set_slot_unbootable(bad_suffix, UnbootableReason::NoMoreTries),
-                Err(Error::NoSuchSlot(bad_suffix))
+                Err(Error::InvalidInput)
             );
         });
     }
@@ -606,7 +587,7 @@ mod test {
         // SAFETY: checks that `reason` is not null and is properly aligned.
         // Caller must make sure reason points to a valid u32.
         unsafe extern "C" fn get_boot_reason(
-            _: *mut EfiGblSlotProtocol,
+            _: *mut GblEfiSlotProtocol,
             reason: *mut u32,
             _: *mut usize,
             _: *mut u8,
@@ -622,7 +603,7 @@ mod test {
         }
 
         extern "C" fn set_boot_reason(
-            _: *mut EfiGblSlotProtocol,
+            _: *mut GblEfiSlotProtocol,
             reason: u32,
             _: usize,
             _: *const u8,
@@ -631,9 +612,9 @@ mod test {
             EFI_STATUS_SUCCESS
         }
 
-        BOOT_REASON.with(|r| r.store(EFI_BOOT_REASON_EMPTY_EFI_BOOT_REASON, Ordering::Relaxed));
+        BOOT_REASON.with(|r| r.store(REASON_EMPTY, Ordering::Relaxed));
         run_test(|image_handle, systab_ptr| {
-            let mut ab = EfiGblSlotProtocol {
+            let mut ab = GblEfiSlotProtocol {
                 get_boot_reason: Some(get_boot_reason),
                 set_boot_reason: Some(set_boot_reason),
                 flush: Some(flush),
@@ -649,7 +630,7 @@ mod test {
             assert_eq!(cursor.ctx.get_oneshot_status(), None);
             assert_eq!(
                 cursor.ctx.set_oneshot_status(OneShot::Continue(RecoveryTarget::Dedicated)),
-                Err(gbl::slots::Error::OperationProhibited)
+                Err(Error::OperationProhibited)
             );
             assert_eq!(cursor.ctx.set_oneshot_status(OneShot::Bootloader), Ok(()));
             assert_eq!(cursor.ctx.get_oneshot_status(), Some(OneShot::Bootloader));
@@ -657,10 +638,10 @@ mod test {
             cursor.ctx.clear_oneshot_status();
             assert_eq!(cursor.ctx.get_oneshot_status(), None);
 
-            BOOT_REASON.with(|r| r.store(EFI_BOOT_REASON_WATCHDOG, Ordering::Relaxed));
+            BOOT_REASON.with(|r| r.store(REASON_WATCHDOG, Ordering::Relaxed));
             assert_eq!(cursor.ctx.get_oneshot_status(), None);
             cursor.ctx.clear_oneshot_status();
-            assert_eq!(BOOT_REASON.with(|r| r.load(Ordering::Relaxed)), EFI_BOOT_REASON_WATCHDOG);
+            assert_eq!(BOOT_REASON.with(|r| r.load(Ordering::Relaxed)), REASON_WATCHDOG);
         });
     }
 }

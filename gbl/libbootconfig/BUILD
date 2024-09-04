@@ -25,6 +25,9 @@ rust_library(
     crate_name = "bootconfig",
     edition = "2021",
     rustc_flags = ANDROID_RUST_LINTS,
+    deps = [
+        "@gbl//liberror",
+    ],
 )
 
 rust_test(
