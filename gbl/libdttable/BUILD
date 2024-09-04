@@ -70,6 +70,7 @@ rust_library(
     deps = [
         ":libdttable_bindgen",
         ":libdttable_c_static",
+        "@gbl//liberror",
         "@gbl//libsafemath",
         "@zerocopy",
     ],

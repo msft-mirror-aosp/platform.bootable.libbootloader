@@ -22,6 +22,7 @@ pub mod android;
 pub mod partition;
 
 use core::mem::size_of;
+use liberror::Error;
 
 /// A type safe container for describing the number of retries a slot has left
 /// before it becomes unbootable.
@@ -85,7 +86,7 @@ impl TryFrom<usize> for Suffix {
     type Error = Error;
 
     fn try_from(value: usize) -> Result<Self, Self::Error> {
-        u32::try_from(value).ok().and_then(char::from_u32).ok_or(Error::Other).map(Self)
+        u32::try_from(value).ok().and_then(char::from_u32).ok_or(Error::InvalidInput).map(Self)
     }
 }
 
@@ -93,7 +94,7 @@ impl TryFrom<u32> for Suffix {
     type Error = Error;
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
-        char::from_u32(value).ok_or(Error::Other).map(Self)
+        char::from_u32(value).ok_or(Error::InvalidInput).map(Self)
     }
 }
 
@@ -274,19 +275,6 @@ pub mod private {
     }
 }
 
-/// Custom error type.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Error {
-    /// An API method has attempted an operation on a slot that does not exist.
-    NoSuchSlot(Suffix),
-    /// The backend policy has denied permission for the given operation.
-    OperationProhibited,
-    /// Similar to NoSuchSlot but used when index is used for lookup internally.
-    BadSlotIndex(usize),
-    /// Unspecified error.
-    Other,
-}
-
 /// A helper structure for iterating over slots.
 pub struct SlotIterator<'a> {
     count: usize,
@@ -345,7 +333,9 @@ pub trait Manager: private::SlotGet {
     /// Note that this is different from get_boot_target in that
     /// the slot last set active cannot be Recovery.
     fn get_slot_last_set_active(&self) -> Result<Slot, Error> {
-        self.slots_iter().max_by_key(|slot| (slot.priority, slot.suffix.rank())).ok_or(Error::Other)
+        self.slots_iter()
+            .max_by_key(|slot| (slot.priority, slot.suffix.rank()))
+            .ok_or(Error::Other(Some("Couldn't get slot last set active")))
     }
 
     /// Updates internal metadata (usually the retry count)
