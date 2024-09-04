@@ -75,6 +75,8 @@ rust_library(
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         ":x86_bootparam_defs",
+        "@gbl//liberror",
+        "@gbl//libsafemath",
         "@gbl//third_party/libzbi",
         "@zerocopy",
     ] + select({
