@@ -46,6 +46,13 @@ pub struct SparseHeader {
     pub image_checksum: u32,
 }
 
+impl SparseHeader {
+    /// Returns the total size in bytes for the data after unsparsified.
+    pub fn data_size(&self) -> u64 {
+        (self.total_blks as u64) * (self.blk_sz as u64)
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
 pub struct ChunkHeader {

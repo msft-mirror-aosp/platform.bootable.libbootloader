@@ -21,18 +21,21 @@ use bootimg::{BootImage, VendorImageHeader};
 use efi::{efi_print, efi_println, exit_boot_services, EfiEntry};
 use fdt::Fdt;
 use liberror::Error;
+use libgbl::{IntegrationError, Result};
 use misc::{AndroidBootMode, BootloaderMessage};
 use safemath::SafeNum;
 use zerocopy::{AsBytes, ByteSlice};
 
 use crate::{
     efi_blocks::{find_block_devices, EfiMultiBlockDevices},
-    error::{GblEfiError, Result},
     utils::{aligned_subslice, cstr_bytes_to_str, get_efi_fdt},
 };
 
 use crate::avb::GblEfiAvbOps;
 use avb::{slot_verify, HashtreeErrorMode, Ops, SlotVerifyFlags};
+
+#[cfg(target_arch = "aarch64")]
+use gbl_efi_aarch64::decompress_kernel;
 
 // Linux kernel requires 2MB alignment.
 const KERNEL_ALIGNMENT: usize = 2 * 1024 * 1024;
@@ -69,7 +72,7 @@ fn avb_verify_slot<'a, 'b, 'c>(
         // For demo, we use the same setting as Cuttlefish u-boot.
         HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_RESTART_AND_INVALIDATE,
     )
-    .map_err(|e| Into::<GblEfiError>::into(e.without_verify_data()))?;
+    .map_err(|e| IntegrationError::from(e.without_verify_data()))?;
 
     // Append avb generated bootconfig.
     for cmdline_arg in res.cmdline().to_str().unwrap().split(' ') {
@@ -137,11 +140,16 @@ pub fn load_android_simple<'a>(
     let (boot_header_buffer, load) = load.split_at_mut(PAGE_SIZE);
     gpt_devices.read_gpt_partition_sync("boot_a", 0, boot_header_buffer)?;
     let boot_header = BootImage::parse(boot_header_buffer).map_err(Error::from)?;
-    let (kernel_size, cmdline, kernel_hdr_size) = match boot_header {
-        BootImage::V3(ref hdr) => (hdr.kernel_size as usize, &hdr.cmdline[..], PAGE_SIZE),
-        BootImage::V4(ref hdr) => {
-            (hdr._base.kernel_size as usize, &hdr._base.cmdline[..], PAGE_SIZE)
+    let (kernel_size, cmdline, kernel_hdr_size, boot_ramdisk_size) = match boot_header {
+        BootImage::V3(ref hdr) => {
+            (hdr.kernel_size as usize, &hdr.cmdline[..], PAGE_SIZE, hdr.ramdisk_size as usize)
         }
+        BootImage::V4(ref hdr) => (
+            hdr._base.kernel_size as usize,
+            &hdr._base.cmdline[..],
+            PAGE_SIZE,
+            hdr._base.ramdisk_size as usize,
+        ),
         _ => {
             efi_println!(efi_entry, "V0/V1/V2 images are not supported");
             return Err(Error::UnsupportedVersion.into());
@@ -149,6 +157,7 @@ pub fn load_android_simple<'a>(
     };
     efi_println!(efi_entry, "boot image size: {}", kernel_size);
     efi_println!(efi_entry, "boot image cmdline: \"{}\"", from_utf8(cmdline).unwrap());
+    efi_println!(efi_entry, "boot ramdisk size: {}", boot_ramdisk_size);
 
     // Parse vendor boot header.
     let (vendor_boot_header_buffer, load) = load.split_at_mut(PAGE_SIZE);
@@ -190,17 +199,17 @@ pub fn load_android_simple<'a>(
     // memory overlapping with ramdisk. We place kernel after ramdisk. We first load it to the tail
     // of the buffer and move it forward as much as possible after ramdisk and fdt are loaded,
     // fixed-up and finalized.
-    let kernel_load_offset: usize = {
-        let off = SafeNum::from(load.len()) - kernel_size;
+    let boot_img_load_offset: usize = {
+        let off = SafeNum::from(load.len()) - kernel_size - boot_ramdisk_size;
         let off_idx: usize = off.try_into().map_err(Error::from)?;
         let aligned_off = off - (&load[off_idx] as *const _ as usize % KERNEL_ALIGNMENT);
         aligned_off.try_into().map_err(Error::from)?
     };
-    let (load, kernel_tail_buffer) = load.split_at_mut(kernel_load_offset);
+    let (load, boot_img_buffer) = load.split_at_mut(boot_img_load_offset);
     gpt_devices.read_gpt_partition_sync(
         "boot_a",
         kernel_hdr_size.try_into().unwrap(),
-        &mut kernel_tail_buffer[..kernel_size],
+        &mut boot_img_buffer[..kernel_size + boot_ramdisk_size],
     )?;
 
     // Load vendor ramdisk
@@ -222,19 +231,37 @@ pub fn load_android_simple<'a>(
         ramdisk_load_curr += generic_ramdisk_size;
     }
 
+    // Load ramdisk from boot image
+    if boot_ramdisk_size > 0 {
+        load[ramdisk_load_curr.try_into().map_err(Error::from)?..][..boot_ramdisk_size]
+            .copy_from_slice(&boot_img_buffer[kernel_size..][..boot_ramdisk_size]);
+        ramdisk_load_curr += boot_ramdisk_size;
+    }
+
     // Prepare partition data for avb verification
     let (vendor_boot_load_buffer, remains) = load.split_at_mut(vendor_ramdisk_size);
     let (init_boot_load_buffer, remains) = remains.split_at_mut(generic_ramdisk_size);
+    let (_boot_ramdisk_load_buffer, remains) = remains.split_at_mut(boot_ramdisk_size);
     // Prepare a BootConfigBuilder to add avb generated bootconfig.
     let mut bootconfig_builder = BootConfigBuilder::new(remains)?;
     // Perform avb verification.
     avb_verify_slot(
         &mut gpt_devices,
-        kernel_tail_buffer,
+        boot_img_buffer,
         vendor_boot_load_buffer,
         init_boot_load_buffer,
         &mut bootconfig_builder,
     )?;
+
+    // Move kernel to end of the boot image buffer
+    let (_boot_img_buffer, kernel_tail_buffer) = {
+        let off = SafeNum::from(boot_img_buffer.len()) - kernel_size;
+        let off_idx: usize = off.try_into().map_err(Error::from)?;
+        let aligned_off = off - (&boot_img_buffer[off_idx] as *const _ as usize % KERNEL_ALIGNMENT);
+        let aligned_off_idx = aligned_off.try_into().map_err(Error::from)?;
+        boot_img_buffer.copy_within(0..kernel_size, aligned_off_idx);
+        boot_img_buffer.split_at_mut(aligned_off_idx)
+    };
 
     // Add slot index
     bootconfig_builder.add("androidboot.slot_suffix=_a\n")?;
@@ -288,6 +315,17 @@ pub fn load_android_simple<'a>(
     efi_println!(efi_entry, "final bootconfig: \"{}\"", bootconfig_builder);
 
     ramdisk_load_curr += bootconfig_builder.config_bytes().len();
+
+    // On ARM, we may need to decompress the kernel and re-split the buffer to the new kernel size.
+    #[cfg(target_arch = "aarch64")]
+    let (load, kernel_size, kernel_tail_buffer) = {
+        let kernel_size = kernel_tail_buffer.len();
+        let compressed_kernel_offset = images_buffer.len() - kernel_size;
+        let decompressed_kernel_offset =
+            decompress_kernel(efi_entry, images_buffer, compressed_kernel_offset)?;
+        let (load, kernel_tail_buffer) = images_buffer.split_at_mut(decompressed_kernel_offset);
+        (load, kernel_tail_buffer.len(), kernel_tail_buffer)
+    };
 
     // Prepare FDT.
 
