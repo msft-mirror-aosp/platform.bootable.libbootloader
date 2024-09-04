@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::partition::{MetadataBytes, MetadataParseError, SlotBlock};
+use super::partition::{MetadataBytes, SlotBlock};
 use super::{
-    BootTarget, BootToken, Bootability, Error, Manager, OneShot, RecoveryTarget, Slot,
-    SlotIterator, Suffix, UnbootableReason,
+    BootTarget, BootToken, Bootability, Manager, OneShot, RecoveryTarget, Slot, SlotIterator,
+    Suffix, UnbootableReason,
 };
 
 use core::convert::TryInto;
@@ -23,6 +23,7 @@ use core::iter::zip;
 use core::mem::size_of;
 use core::ops::{BitAnd, BitOr, Not, Shl, Shr};
 use crc32fast::Hasher;
+use liberror::Error;
 use zerocopy::byteorder::little_endian::U32 as LittleEndianU32;
 use zerocopy::{AsBytes, ByteSlice, FromBytes, FromZeroes, Ref};
 
@@ -237,18 +238,19 @@ impl Default for BootloaderControl {
 }
 
 impl MetadataBytes for BootloaderControl {
-    fn validate<B: ByteSlice>(buffer: B) -> Result<Ref<B, Self>, MetadataParseError> {
-        let boot_control_data =
-            Ref::<B, Self>::new_from_prefix(buffer).ok_or(MetadataParseError::BufferTooSmall)?.0;
+    fn validate<B: ByteSlice>(buffer: B) -> Result<Ref<B, Self>, Error> {
+        let boot_control_data = Ref::<B, Self>::new_from_prefix(buffer)
+            .ok_or(Error::BufferTooSmall(Some(size_of::<BootloaderControl>())))?
+            .0;
 
         if boot_control_data.magic != BOOT_CTRL_MAGIC {
-            return Err(MetadataParseError::BadMagic);
+            return Err(Error::BadMagic);
         }
         if boot_control_data.version > BOOT_CTRL_VERSION {
-            return Err(MetadataParseError::BadVersion);
+            return Err(Error::UnsupportedVersion);
         }
         if boot_control_data.crc32.get() != boot_control_data.calculate_crc32() {
-            return Err(MetadataParseError::BadChecksum);
+            return Err(Error::BadChecksum);
         }
 
         Ok(boot_control_data)
@@ -267,7 +269,7 @@ impl super::private::SlotGet for SlotBlock<'_, BootloaderControl> {
             // Note: there may be fewer slots than the maximum possible
             .take(control.control_bits.nb_slots().into())
             .nth(number)
-            .ok_or_else(|| Suffix::try_from(number).map_or(Error::Other, Error::NoSuchSlot))?;
+            .ok_or(Error::BadIndex(number))?;
 
         let bootability = match (slot_data.successful(), slot_data.tries()) {
             (true, _) => Bootability::Successful,
@@ -305,7 +307,7 @@ impl Manager for SlotBlock<'_, BootloaderControl> {
             .slots_iter()
             .enumerate()
             .find(|(_, slot)| slot.suffix == slot_suffix)
-            .ok_or(Error::NoSuchSlot(slot_suffix))?;
+            .ok_or(Error::InvalidInput)?;
         if slot.bootability == Bootability::Unbootable(reason) {
             return Ok(());
         }
@@ -322,9 +324,7 @@ impl Manager for SlotBlock<'_, BootloaderControl> {
             BootTarget::NormalBoot(slot) => slot,
             BootTarget::Recovery(RecoveryTarget::Dedicated) => Err(Error::OperationProhibited)?,
             BootTarget::Recovery(RecoveryTarget::Slotted(slot)) => {
-                self.slots_iter()
-                    .find(|s| s.suffix == slot.suffix)
-                    .ok_or(Error::NoSuchSlot(slot.suffix))?;
+                self.slots_iter().find(|s| s.suffix == slot.suffix).ok_or(Error::InvalidInput)?;
                 return self.take_boot_token().ok_or(Error::OperationProhibited);
             }
         };
@@ -333,7 +333,7 @@ impl Manager for SlotBlock<'_, BootloaderControl> {
             .slots_iter()
             .enumerate()
             .find(|(_, slot)| slot.suffix == target_slot.suffix)
-            .ok_or(Error::NoSuchSlot(target_slot.suffix))?;
+            .ok_or(Error::InvalidInput)?;
         match slot.bootability {
             Bootability::Unbootable(_) => Err(Error::OperationProhibited),
             Bootability::Retriable(_) => {
@@ -350,10 +350,8 @@ impl Manager for SlotBlock<'_, BootloaderControl> {
     }
 
     fn set_active_slot(&mut self, slot_suffix: Suffix) -> Result<(), Error> {
-        let idx = self
-            .slots_iter()
-            .position(|s| s.suffix == slot_suffix)
-            .ok_or(Error::NoSuchSlot(slot_suffix))?;
+        let idx =
+            self.slots_iter().position(|s| s.suffix == slot_suffix).ok_or(Error::InvalidInput)?;
 
         let data = self.get_mut_data();
         for (i, slot) in data.slot_metadata.iter_mut().enumerate() {
@@ -447,7 +445,7 @@ mod test {
         let buffer: [u8; 0] = Default::default();
         assert_eq!(
             BootloaderControl::validate(buffer.as_slice()),
-            Err(MetadataParseError::BufferTooSmall)
+            Err(Error::BufferTooSmall(Some(size_of::<BootloaderControl>())))
         );
     }
 
@@ -455,10 +453,7 @@ mod test {
     fn test_slot_block_parse_bad_magic() {
         let mut boot_ctrl: BootloaderControl = Default::default();
         boot_ctrl.magic += 1;
-        assert_eq!(
-            BootloaderControl::validate(boot_ctrl.as_bytes()),
-            Err(MetadataParseError::BadMagic)
-        );
+        assert_eq!(BootloaderControl::validate(boot_ctrl.as_bytes()), Err(Error::BadMagic));
     }
 
     #[test]
@@ -467,7 +462,7 @@ mod test {
         boot_ctrl.version = 15;
         assert_eq!(
             BootloaderControl::validate(boot_ctrl.as_bytes()),
-            Err(MetadataParseError::BadVersion)
+            Err(Error::UnsupportedVersion)
         );
     }
 
@@ -476,10 +471,7 @@ mod test {
         let mut boot_ctrl: BootloaderControl = Default::default();
         let bad_crc = boot_ctrl.crc32.get() ^ LittleEndianU32::MAX_VALUE.get();
         boot_ctrl.crc32 = bad_crc.into();
-        assert_eq!(
-            BootloaderControl::validate(boot_ctrl.as_bytes()),
-            Err(MetadataParseError::BadChecksum)
-        );
+        assert_eq!(BootloaderControl::validate(boot_ctrl.as_bytes()), Err(Error::BadChecksum));
     }
 
     #[test]
