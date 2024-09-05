@@ -18,7 +18,6 @@ use crate::efi_call;
 use crate::protocol::{Protocol, ProtocolInfo};
 use arrayvec::ArrayVec;
 use core::mem::size_of;
-use core::ptr::null_mut;
 use efi_types::{
     EfiGuid, EfiImageLoadingProtocol, GblImageBuffer, GblImageInfo, GblPartitionName,
     PARTITION_NAME_LEN_U16,
@@ -199,43 +198,11 @@ impl Protocol<'_, GblImageLoadingProtocol> {
         Ok(image_buffer)
     }
 
-    /// Wrapper of `GBL_IMAGE_LOADING_PROTOCOL.get_verify_partitions()` special case to get
-    /// partition_names expected in [get_verify_partitions] call.
-    ///
-    /// It is a helper function that indicates expected GblPartitionName slice size for
-    /// [get_verify_partitions] call.
-    ///
-    /// # Result
-    /// Err(err) - if error occurred.
-    /// Ok(len) - will return maximum number of `GblPartitionName`s that will copied in
-    /// [get_verify_partitions]. Indicating expected GblPartitionName slice size.
-    pub fn get_verify_partitions_count(&self) -> Result<usize> {
-        let mut partition_count = 0usize;
-
-        // SAFETY:
-        // `self.interface()?` guarantees self.interface is non-null and points to a valid object
-        // established by `Protocol::new()`.
-        // `self.interface` is input parameter, outlives the call, and will not be retained.
-        // `partition_count` must be set to valid length of `partition_names` array after the call.
-        // `partition_names` must be valid array of length `partition_count` after the call.
-        unsafe {
-            efi_call!(
-                @bufsize partition_count,
-                self.interface()?.get_verify_partitions,
-                self.interface,
-                &mut partition_count,
-                null_mut(),
-            )?;
-        }
-
-        Ok(partition_count)
-    }
-
     /// Wrapper of `GBL_IMAGE_LOADING_PROTOCOL.get_verify_partitions()`
     ///
-    /// [get_verify_partitions_count] can be used to get expected length for partition_names.
-    ///
     /// # Result
+    /// Err(BufferTooSmall(Some(size))) - when provided `partition_names` is less than expected
+    /// `size`
     /// Err(err) - if error occurred.
     /// Ok(len) - will return number of `GblPartitionName`s copied to `partition_names` slice.
     pub fn get_verify_partitions(&self, partition_names: &mut [GblPartitionName]) -> Result<usize> {
@@ -268,7 +235,8 @@ mod test {
     use crate::{protocol::image_loading, test::run_test, DeviceHandle, EfiEntry};
     use core::{ffi::c_void, iter::zip, ptr::null_mut};
     use efi_types::{
-        EfiStatus, EFI_STATUS_BAD_BUFFER_SIZE, EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_SUCCESS,
+        EfiStatus, EFI_STATUS_BAD_BUFFER_SIZE, EFI_STATUS_BUFFER_TOO_SMALL,
+        EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_SUCCESS,
     };
 
     const UCS2_STR: [u16; 8] = [0x2603, 0x0073, 0x006e, 0x006f, 0x0077, 0x006d, 0x0061, 0x006e];
@@ -343,6 +311,7 @@ mod test {
 
     #[test]
     fn test_proto_get_partitions_count() {
+        const EXPECTED_PARTITIONS_NUM: usize = 2;
         unsafe extern "C" fn get_verify_partitions(
             _: *mut EfiImageLoadingProtocol,
             number_of_partitions: *mut usize,
@@ -353,9 +322,8 @@ mod test {
             // `number_of_partitions` must be valid pointer to usize
             let number_of_partitions = unsafe { number_of_partitions.as_mut() }.unwrap();
 
-            *number_of_partitions = 1;
-
-            EFI_STATUS_SUCCESS
+            *number_of_partitions = EXPECTED_PARTITIONS_NUM;
+            EFI_STATUS_BUFFER_TOO_SMALL
         }
 
         run_test(|image_handle, systab_ptr| {
@@ -369,8 +337,11 @@ mod test {
                 &mut image_loading,
             );
 
-            let partitions_count = protocol.get_verify_partitions_count().unwrap();
-            assert_eq!(partitions_count, 1);
+            let mut partitions: [GblPartitionName; 0] = Default::default();
+            assert_eq!(
+                protocol.get_verify_partitions(&mut partitions).unwrap_err(),
+                Error::BufferTooSmall(Some(EXPECTED_PARTITIONS_NUM))
+            );
         });
     }
 
@@ -395,12 +366,17 @@ mod test {
                 &mut image_loading,
             );
 
-            assert!(protocol.get_verify_partitions_count().is_err());
+            let mut partitions: [GblPartitionName; 0] = Default::default();
+            assert_eq!(
+                protocol.get_verify_partitions(&mut partitions).unwrap_err(),
+                Error::InvalidInput
+            );
         });
     }
 
     #[test]
     fn test_proto_get_partitions_len_and_value() {
+        const EXPECTED_PARTITIONS_NUM: usize = 1;
         unsafe extern "C" fn get_verify_partitions(
             _: *mut EfiImageLoadingProtocol,
             number_of_partitions: *mut usize,
@@ -411,19 +387,21 @@ mod test {
             let number_of_partitions = unsafe { number_of_partitions.as_mut() }.unwrap();
 
             match *number_of_partitions {
-                0 => *number_of_partitions = 1,
+                n if n < EXPECTED_PARTITIONS_NUM => {
+                    *number_of_partitions = EXPECTED_PARTITIONS_NUM;
+                    EFI_STATUS_BUFFER_TOO_SMALL
+                }
                 _ => {
                     // SAFETY
                     // `partitions` must be valid array of size `number_of_partitions`
                     let partitions = unsafe {
                         core::slice::from_raw_parts_mut(partitions, *number_of_partitions)
                     };
-                    *number_of_partitions = 1;
+                    *number_of_partitions = EXPECTED_PARTITIONS_NUM;
                     partitions[0].StrUtf16[..UCS2_STR.len()].copy_from_slice(&UCS2_STR);
+                    EFI_STATUS_SUCCESS
                 }
             }
-
-            EFI_STATUS_SUCCESS
         }
 
         run_test(|image_handle, systab_ptr| {
@@ -439,15 +417,19 @@ mod test {
             );
             let mut partitions: [GblPartitionName; 2] = Default::default();
 
-            let verify_partitions_len = protocol.get_verify_partitions_count().unwrap();
-            assert_eq!(verify_partitions_len, 1);
+            assert_eq!(
+                protocol.get_verify_partitions(&mut partitions[..0]).unwrap_err(),
+                Error::BufferTooSmall(Some(EXPECTED_PARTITIONS_NUM))
+            );
             let verify_partitions_len = protocol.get_verify_partitions(&mut partitions).unwrap();
             assert_eq!(verify_partitions_len, 1);
             assert_eq!(partitions[0].get_str(&mut buffer_utf8[0]), Ok(UTF8_STR));
         });
     }
+
     #[test]
     fn test_proto_get_partitions_zero_len() {
+        const EXPECTED_PARTITIONS_NUM: usize = 1;
         unsafe extern "C" fn get_verify_partitions(
             _: *mut EfiImageLoadingProtocol,
             number_of_partitions: *mut usize,
@@ -457,8 +439,8 @@ mod test {
             // `number_of_partitions` must be valid pointer to usize
             let number_of_partitions = unsafe { number_of_partitions.as_mut() }.unwrap();
             assert_eq!(*number_of_partitions, 0);
-            *number_of_partitions = 1;
-            EFI_STATUS_SUCCESS
+            *number_of_partitions = EXPECTED_PARTITIONS_NUM;
+            EFI_STATUS_BUFFER_TOO_SMALL
         }
 
         run_test(|image_handle, systab_ptr| {
@@ -473,29 +455,35 @@ mod test {
             );
             let mut partitions: [GblPartitionName; 0] = Default::default();
 
-            let verify_partitions_len = protocol.get_verify_partitions(&mut partitions).unwrap();
-            assert_eq!(verify_partitions_len, 1);
+            let verify_partitions_res = protocol.get_verify_partitions(&mut partitions);
+            assert_eq!(
+                verify_partitions_res.unwrap_err(),
+                Error::BufferTooSmall(Some(EXPECTED_PARTITIONS_NUM))
+            );
         });
     }
 
     #[test]
     fn test_proto_get_partitions_less_than_buffer() {
+        const EXPECTED_PARTITIONS_NUM: usize = 1;
         unsafe extern "C" fn get_verify_partitions(
             _: *mut EfiImageLoadingProtocol,
             number_of_partitions: *mut usize,
             partitions: *mut GblPartitionName,
         ) -> EfiStatus {
-            assert!(!partitions.is_null());
             // SAFETY
             // `number_of_partitions` must be valid pointer to usize
             let number_of_partitions = unsafe { number_of_partitions.as_mut() }.unwrap();
+
+            assert!(!partitions.is_null());
             assert!(*number_of_partitions > 0);
+
             // SAFETY
             // `partitions` must be valid array of size `number_of_partitions`
             let partitions =
                 unsafe { core::slice::from_raw_parts_mut(partitions, *number_of_partitions) };
             partitions[0].StrUtf16[..UCS2_STR.len()].copy_from_slice(&UCS2_STR);
-            *number_of_partitions = 1;
+            *number_of_partitions = EXPECTED_PARTITIONS_NUM;
             EFI_STATUS_SUCCESS
         }
 
@@ -513,7 +501,7 @@ mod test {
             let mut partitions: [GblPartitionName; 2] = Default::default();
 
             let verify_partitions_len = protocol.get_verify_partitions(&mut partitions).unwrap();
-            assert_eq!(verify_partitions_len, 1);
+            assert_eq!(verify_partitions_len, EXPECTED_PARTITIONS_NUM);
             assert_eq!(partitions[0].get_str(&mut buffer_utf8[0]), Ok(UTF8_STR));
         });
     }
@@ -526,11 +514,13 @@ mod test {
             partitions: *mut GblPartitionName,
         ) -> EfiStatus {
             let printable_utf16 = get_printable_utf16();
-            assert!(!partitions.is_null());
             // SAFETY
             // `number_of_partitions` must be valid pointer to usize
             let number_of_partitions = unsafe { number_of_partitions.as_mut() }.unwrap();
+
+            assert!(!partitions.is_null());
             assert!(*number_of_partitions > 0);
+
             // SAFETY
             // `partitions` must be valid array of size `number_of_partitions`
             let partitions =
@@ -582,23 +572,26 @@ mod test {
 
     #[test]
     fn test_proto_get_partitions() {
+        const EXPECTED_PARTITIONS_NUM: usize = 2;
         unsafe extern "C" fn get_verify_partitions(
             _: *mut EfiImageLoadingProtocol,
             number_of_partitions: *mut usize,
             partitions: *mut GblPartitionName,
         ) -> EfiStatus {
-            assert!(!partitions.is_null());
             // SAFETY
             // `number_of_partitions` must be valid pointer to usize
             let number_of_partitions = unsafe { number_of_partitions.as_mut() }.unwrap();
+
+            assert!(!partitions.is_null());
             assert!(*number_of_partitions > 0);
+
             // SAFETY
             // `partitions` must be valid array of size `number_of_partitions`
             let partitions =
                 unsafe { core::slice::from_raw_parts_mut(partitions, *number_of_partitions) };
             partitions[0].StrUtf16[..UCS2_STR.len()].copy_from_slice(&UCS2_STR);
             partitions[1].StrUtf16[..UCS2_STR.len() - 1].copy_from_slice(&UCS2_STR[1..]);
-            *number_of_partitions = 2;
+            *number_of_partitions = EXPECTED_PARTITIONS_NUM;
             EFI_STATUS_SUCCESS
         }
 
@@ -613,10 +606,10 @@ mod test {
                 &efi_entry,
                 &mut image_loading,
             );
-            let mut partitions: [GblPartitionName; 2] = Default::default();
+            let mut partitions: [GblPartitionName; EXPECTED_PARTITIONS_NUM] = Default::default();
 
             let verify_partitions_len = protocol.get_verify_partitions(&mut partitions).unwrap();
-            assert_eq!(verify_partitions_len, 2);
+            assert_eq!(verify_partitions_len, EXPECTED_PARTITIONS_NUM);
 
             let mut char_idx = UTF8_STR.char_indices();
             char_idx.next();
@@ -629,17 +622,17 @@ mod test {
 
     #[test]
     fn test_proto_get_partitions_empty() {
+        const EXPECTED_PARTITIONS_NUM: usize = 0;
         unsafe extern "C" fn get_verify_partitions(
             _: *mut EfiImageLoadingProtocol,
             number_of_partitions: *mut usize,
             partitions: *mut GblPartitionName,
         ) -> EfiStatus {
-            assert!(!partitions.is_null());
             // SAFETY
             // `number_of_partitions` must be valid pointer to usize
             let number_of_partitions = unsafe { number_of_partitions.as_mut() }.unwrap();
-            assert!(*number_of_partitions > 0);
-            *number_of_partitions = 0;
+            assert!(!partitions.is_null());
+            *number_of_partitions = EXPECTED_PARTITIONS_NUM;
             EFI_STATUS_SUCCESS
         }
 
@@ -656,7 +649,7 @@ mod test {
             let mut partitions: [GblPartitionName; 2] = Default::default();
 
             let verify_partitions_len = protocol.get_verify_partitions(&mut partitions).unwrap();
-            assert_eq!(verify_partitions_len, 0);
+            assert_eq!(verify_partitions_len, EXPECTED_PARTITIONS_NUM);
         });
     }
 
