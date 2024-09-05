@@ -162,10 +162,9 @@ mod test {
     extern crate avb_sysdeps;
 
     use super::*;
-    use crate::protocol::{Protocol, ProtocolInfo};
+    use crate::protocol::Protocol;
     use crate::test::*;
-    use crate::{DeviceHandle, EfiEntry};
-    use core::ptr::null_mut;
+    use crate::EfiEntry;
     use efi_types::{
         EfiStatus, GblEfiSlotInfo, GblEfiSlotMetadataBlock, GblEfiSlotProtocol,
         EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_SUCCESS,
@@ -308,14 +307,6 @@ mod test {
         ) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
             unimplemented!();
         }
-    }
-
-    fn generate_protocol<'a, P: ProtocolInfo>(
-        efi_entry: &'a EfiEntry,
-        proto: &'a mut P::InterfaceType,
-    ) -> Protocol<'a, P> {
-        // SAFETY: proto is a valid pointer and lasts at least as long as efi_entry.
-        unsafe { Protocol::<'a, P>::new(DeviceHandle::new(null_mut()), proto, efi_entry) }
     }
 
     #[test]
