@@ -19,7 +19,7 @@
 
 use crate::{DeviceHandle, MOCK_EFI};
 use core::fmt::Write;
-use efi::protocol::image_loading::ImageBuffer;
+use efi::protocol::image_loading::EfiImageBuffer;
 use efi_types::{EfiInputKey, GblImageInfo, GblPartitionName};
 use liberror::Result;
 use mockall::mock;
@@ -130,8 +130,8 @@ pub mod image_loading {
     mock! {
         /// Mock [efi::ImageLoadingProtocol].
         pub GblImageLoadingProtocol {
-            /// Returns [ImageBuffer] matching `gbl_image_info`
-            pub fn get_buffer<'a>(&self, gbl_image_info: &GblImageInfo) -> Result<ImageBuffer<'a>>;
+            /// Returns [EfiImageBuffer] matching `gbl_image_info`
+            pub fn get_buffer(&self, gbl_image_info: &GblImageInfo) -> Result<EfiImageBuffer>;
 
             /// Returns number of partitions to be provided via `get_verify_partitions()`, and thus
             /// expected size of `partition_name` slice.

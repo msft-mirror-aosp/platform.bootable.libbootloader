@@ -179,10 +179,12 @@ mod test {
         BootImages, Gbl, GblOps, Result as GblResult,
     };
     use gbl_storage_testlib::TestBlockDevice;
+    use libgbl::ops::ImageBuffer;
     // TODO(b/350526796): use ptr.is_aligned() when Rust 1.79 is in Android
     use std::{
         fmt::Write,
         mem::align_of,
+        num::NonZeroUsize,
         sync::atomic::{AtomicBool, AtomicU32, Ordering},
     };
     use zbi::ZbiContainer;
@@ -305,6 +307,14 @@ mod test {
         fn avb_cert_read_permanent_attributes_hash(
             &mut self,
         ) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
+            unimplemented!();
+        }
+
+        fn get_image_buffer<'c>(
+            &mut self,
+            _image_name: &str,
+            _size: NonZeroUsize,
+        ) -> GblResult<ImageBuffer<'c>> {
             unimplemented!();
         }
     }

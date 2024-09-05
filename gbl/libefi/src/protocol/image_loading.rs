@@ -17,7 +17,7 @@
 use crate::efi_call;
 use crate::protocol::{Protocol, ProtocolInfo};
 use arrayvec::ArrayVec;
-use core::mem::size_of;
+use core::mem::{size_of, MaybeUninit};
 use efi_types::{
     EfiGuid, EfiImageLoadingProtocol, GblImageBuffer, GblImageInfo, GblPartitionName,
     PARTITION_NAME_LEN_U16,
@@ -44,23 +44,21 @@ static RETURNED_BUFFERS: Mutex<ArrayVec<usize, MAX_ARRAY_SIZE>> = Mutex::new(Arr
 /// Wrapper class for buffer received with [get_buffer] function.
 ///
 /// Helps to keep track of allocated memory and avoid getting same buffer more than once.
-#[derive(Debug, PartialEq)]
-pub struct ImageBuffer<'a> {
-    buffer: &'a mut [u8],
-    used_bytes: usize,
+#[derive(Debug)]
+pub struct EfiImageBuffer {
+    buffer: Option<&'static mut [MaybeUninit<u8>]>,
 }
 
-impl ImageBuffer<'_> {
+impl EfiImageBuffer {
     // SAFETY:
     // `gbl_buffer` must represent valid buffer.
-    // If `gbl_buffer.Memory` is NULL function will return None.
     //
     // # Return
     // Err(EFI_STATUS_INVALID_PARAMETER) - If `gbl_buffer.Memory` == NULL
     // Err(EFI_STATUS_ALREADY_STARTED) - Requested buffer was already returned and is still in use.
     // Err(err) - on error
     // Ok(_) - on success
-    unsafe fn new(gbl_buffer: GblImageBuffer) -> Result<ImageBuffer<'static>> {
+    unsafe fn new(gbl_buffer: GblImageBuffer) -> Result<EfiImageBuffer> {
         if gbl_buffer.Memory.is_null() {
             return Err(Error::InvalidInput);
         }
@@ -76,79 +74,32 @@ impl ImageBuffer<'_> {
         // `gbl_buffer.Memory` is guarantied to be not null
         // This code is relying on EFI protocol implementation to provide valid buffer pointer
         // to memory region of size `gbl_buffer.SizeBytes`.
-        Ok(ImageBuffer {
-            buffer: unsafe {
-                core::slice::from_raw_parts_mut(gbl_buffer.Memory as *mut u8, gbl_buffer.SizeBytes)
-            },
-            used_bytes: 0,
+        Ok(EfiImageBuffer {
+            buffer: Some(unsafe {
+                core::slice::from_raw_parts_mut(
+                    gbl_buffer.Memory as *mut MaybeUninit<u8>,
+                    gbl_buffer.SizeBytes,
+                )
+            }),
         })
     }
 
-    /// Total buffer capacity.
-    pub fn capacity(&self) -> usize {
-        self.buffer.len()
-    }
-
-    /// Set length of the used part of the buffer.
-    pub fn set_used(&mut self, len: usize) -> Result<()> {
-        if len > self.capacity() {
-            return Err(Error::BufferTooSmall(Some(len)));
-        }
-        self.used_bytes = len;
-        Ok(())
-    }
-
-    /// Increase used part of the buffer by `len`
-    pub fn add_used(&mut self, len: usize) -> Result<()> {
-        let Some(new_len) = self.used_bytes.checked_add(len) else {
-            return Err(Error::Other(Some("Used bytes overflow")));
-        };
-        if new_len > self.buffer.len() {
-            return Err(Error::BufferTooSmall(Some(new_len)));
-        }
-        self.used_bytes = new_len;
-        Ok(())
-    }
-
-    /// Return used and tail parts of the buffer
-    pub fn get_split(&mut self) -> (&mut [u8], &mut [u8]) {
-        self.buffer.split_at_mut(self.used_bytes)
-    }
-
-    /// Slice of the buffer that is used
-    pub fn used(&mut self) -> &mut [u8] {
-        &mut self.buffer[..self.used_bytes]
-    }
-
-    /// Return part of the buffer that is not used
-    pub fn tail(&mut self) -> &mut [u8] {
-        &mut self.buffer[self.used_bytes..]
+    /// Move buffer ownership out of EfiImageBuffer, and consume it.
+    pub fn take(mut self) -> &'static mut [MaybeUninit<u8>] {
+        self.buffer.take().unwrap()
     }
 }
 
-impl<'a> From<&'a mut [u8]> for ImageBuffer<'a> {
-    fn from(buffer: &'a mut [u8]) -> ImageBuffer<'a> {
-        ImageBuffer { buffer, used_bytes: 0 }
-    }
-}
-
-impl AsRef<[u8]> for ImageBuffer<'_> {
-    fn as_ref(&self) -> &[u8] {
-        &self.buffer
-    }
-}
-
-impl AsMut<[u8]> for ImageBuffer<'_> {
-    fn as_mut(&mut self) -> &mut [u8] {
-        &mut self.buffer
-    }
-}
-
-impl Drop for ImageBuffer<'_> {
+impl Drop for EfiImageBuffer {
     fn drop(&mut self) {
+        if self.buffer.is_none() {
+            return;
+        }
+
         let mut returned_buffers = RETURNED_BUFFERS.lock();
-        if let Some(pos) =
-            returned_buffers.iter().position(|&val| val == self.buffer.as_ptr() as usize)
+        if let Some(pos) = returned_buffers
+            .iter()
+            .position(|&val| val == (*self.buffer.as_ref().unwrap()).as_ptr() as usize)
         {
             returned_buffers.swap_remove(pos);
         }
@@ -160,20 +111,21 @@ impl Protocol<'_, GblImageLoadingProtocol> {
     /// Wrapper of `GBL_IMAGE_LOADING_PROTOCOL.get_buffer()`
     ///
     /// # Return
-    /// Ok(Some(ImageBuffer)) if buffer was successfully provided,
+    /// Ok(Some(EfiImageBuffer)) if buffer was successfully provided,
     /// Ok(None) if buffer was not provided
     /// Err(Error::EFI_STATUS_BUFFER_TOO_SMALL) if provided buffer is too small
     /// Err(Error::EFI_STATUS_INVALID_PARAMETER) if received buffer is NULL
     /// Err(Error::EFI_STATUS_ALREADY_STARTED) buffer was already returned and is still in use.
     /// Err(err) if `err` occurred
-    pub fn get_buffer(&self, gbl_image_info: &GblImageInfo) -> Result<ImageBuffer<'static>> {
+    pub fn get_buffer(&self, gbl_image_info: &GblImageInfo) -> Result<EfiImageBuffer> {
         let mut gbl_buffer: GblImageBuffer = Default::default();
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
         // established by `Protocol::new()`.
         // `self.interface` and `gbl_buffer` are input/output parameters, outlive the call and
         // will not be retained.
-        // `gbl_buffer` returned by this call must not overlap, and will be checked by `ImageBuffer`
+        // `gbl_buffer` returned by this call must not overlap, and will be checked by
+        // `EfiImageBuffer`
         unsafe {
             efi_call!(
                 @bufsize gbl_image_info.SizeBytes,
@@ -193,7 +145,7 @@ impl Protocol<'_, GblImageLoadingProtocol> {
         // `gbl_buffer.Size` must be valid size of the buffer.
         // This protocol is relying on EFI protocol implementation to provide valid buffer pointer
         // to memory region of size `gbl_buffer.SizeBytes`.
-        let image_buffer = unsafe { ImageBuffer::new(gbl_buffer)? };
+        let image_buffer = unsafe { EfiImageBuffer::new(gbl_buffer)? };
 
         Ok(image_buffer)
     }
@@ -397,7 +349,7 @@ mod test {
                     let partitions = unsafe {
                         core::slice::from_raw_parts_mut(partitions, *number_of_partitions)
                     };
-                    *number_of_partitions = EXPECTED_PARTITIONS_NUM;
+                    *number_of_partitions = 1;
                     partitions[0].StrUtf16[..UCS2_STR.len()].copy_from_slice(&UCS2_STR);
                     EFI_STATUS_SUCCESS
                 }
@@ -735,8 +687,8 @@ mod test {
                 &mut image_loading,
             );
 
-            let buffer_res = protocol.get_buffer(&gbl_image_info);
-            assert_eq!(buffer_res, Err(Error::InvalidInput));
+            let res = protocol.get_buffer(&gbl_image_info);
+            assert_eq!(res.unwrap_err(), Error::InvalidInput);
         });
     }
 
@@ -774,8 +726,8 @@ mod test {
             );
 
             let _guard = GET_BUFFER_MUTEX.lock();
-            let buffer = protocol.get_buffer(&gbl_image_info).unwrap();
-            assert!(buffer.as_ref().is_empty());
+            let res = protocol.get_buffer(&gbl_image_info).unwrap();
+            assert!(res.buffer.as_ref().unwrap().is_empty());
         });
     }
 
@@ -814,7 +766,7 @@ mod test {
 
             let _guard = GET_BUFFER_MUTEX.lock();
             let res = protocol.get_buffer(&gbl_image_info);
-            assert_eq!(res, Err(Error::BufferTooSmall(Some(10))));
+            assert_eq!(res.unwrap_err(), Error::BufferTooSmall(Some(10)));
         });
     }
 
@@ -851,8 +803,8 @@ mod test {
 
             let _guard = GET_BUFFER_MUTEX.lock();
             let buf = protocol.get_buffer(&gbl_image_info).unwrap();
-            assert_ne!(buf.as_ref().as_ptr(), null_mut());
-            assert_eq!(buf.as_ref().len(), 100);
+            assert_ne!(buf.buffer.as_ref().unwrap().as_ptr(), null_mut());
+            assert_eq!(buf.buffer.as_ref().unwrap().len(), 100);
         });
     }
 
@@ -938,7 +890,7 @@ mod test {
 
             let _guard = GET_BUFFER_MUTEX.lock();
             let _buf = protocol.get_buffer(&gbl_image_info).unwrap();
-            assert_eq!(protocol.get_buffer(&gbl_image_info), Err(Error::AlreadyStarted));
+            assert_eq!(protocol.get_buffer(&gbl_image_info).unwrap_err(), Error::AlreadyStarted);
         });
     }
 
@@ -1013,7 +965,7 @@ mod test {
             );
 
             let _guard = GET_BUFFER_MUTEX.lock();
-            let mut keep_alive: Vec<ImageBuffer> = vec![];
+            let mut keep_alive: Vec<EfiImageBuffer> = vec![];
             for _ in 1..=MAX_ARRAY_SIZE + 1 {
                 keep_alive.push(protocol.get_buffer(&gbl_image_info).unwrap());
             }
@@ -1021,56 +973,84 @@ mod test {
     }
 
     #[test]
-    fn test_image_buffer_capacity() {
-        assert_eq!(ImageBuffer::from(vec![0u8; 0].as_mut_slice()).capacity(), 0);
-        assert_eq!(ImageBuffer::from(vec![0u8; 1].as_mut_slice()).capacity(), 1);
-        assert_eq!(ImageBuffer::from(vec![0u8; 100].as_mut_slice()).capacity(), 100);
-        assert_eq!(
-            ImageBuffer::from(vec![0u8; 128 * 1024 * 1024].as_mut_slice()).capacity(),
-            128 * 1024 * 1024
-        );
+    fn test_efi_image_buffer() {
+        let mut v = vec![0u8; 1];
+        let gbl_buffer =
+            GblImageBuffer { Memory: v.as_mut_ptr() as *mut c_void, SizeBytes: v.len() };
+
+        let _guard = GET_BUFFER_MUTEX.lock();
+        // SAFETY:
+        // 'gbl_buffer` represents valid buffer created by vector.
+        let res = unsafe { EfiImageBuffer::new(gbl_buffer) };
+        assert!(res.is_ok());
     }
 
     #[test]
-    fn test_image_buffer_used() {
-        let mut buf = vec![0u8; 100];
-        let mut img_buf = ImageBuffer::from(buf.as_mut_slice());
-        assert_eq!(img_buf.used().len(), 0);
-        img_buf.add_used(1).unwrap();
-        assert_eq!(img_buf.used().len(), 1);
-        img_buf.add_used(3).unwrap();
-        assert_eq!(img_buf.used().len(), 4);
-        assert_eq!(img_buf.add_used(1024), Err(Error::BufferTooSmall(Some(1028))));
-        assert_eq!(img_buf.used().len(), 4);
+    fn test_efi_image_buffer_null() {
+        let gbl_buffer = GblImageBuffer { Memory: null_mut(), SizeBytes: 1 };
+
+        let _guard = GET_BUFFER_MUTEX.lock();
+        // SAFETY:
+        // 'gbl_buffer` contains Memory == NULL, which is valid input value. And we expect Error as
+        // a result
+        let res = unsafe { EfiImageBuffer::new(gbl_buffer) };
+        assert_eq!(res.unwrap_err(), Error::InvalidInput);
     }
 
     #[test]
-    fn test_image_buffer_set_used() {
-        let mut buf = vec![0u8; 100];
-        let mut img_buf = ImageBuffer::from(buf.as_mut_slice());
-        img_buf.set_used(2).unwrap();
-        assert_eq!(img_buf.used().len(), 2);
-        img_buf.set_used(6).unwrap();
-        assert_eq!(img_buf.used().len(), 6);
-        assert_eq!(img_buf.set_used(101), Err(Error::BufferTooSmall(Some(101))));
-        img_buf.set_used(100).unwrap();
-        assert_eq!(img_buf.used().len(), 100);
+    fn test_efi_image_buffer_same_buffer() {
+        let mut v = vec![0u8; 1];
+        let gbl_buffer =
+            GblImageBuffer { Memory: v.as_mut_ptr() as *mut c_void, SizeBytes: v.len() };
+
+        let _guard = GET_BUFFER_MUTEX.lock();
+        // SAFETY:
+        // 'gbl_buffer` represents valid buffer created by vector.
+        let res1 = unsafe { EfiImageBuffer::new(gbl_buffer) };
+        assert!(res1.is_ok());
+
+        // Since we keep `res1`, second return of same buffer should fail
+        // SAFETY:
+        // 'gbl_buffer` represents valid buffer created by vector.
+        let res2 = unsafe { EfiImageBuffer::new(gbl_buffer) };
+        assert_eq!(res2.unwrap_err(), Error::AlreadyStarted);
     }
 
     #[test]
-    fn test_image_buffer_get_split() {
-        let mut buf = vec![0u8, 1, 2, 3];
-        let mut img_buf = ImageBuffer::from(buf.as_mut_slice());
-        assert_eq!(img_buf.used(), [].as_mut_slice());
-        assert_eq!(img_buf.tail(), ([0, 1, 2, 3].as_mut_slice()));
-        assert_eq!(img_buf.get_split(), ([].as_mut_slice(), [0, 1, 2, 3].as_mut_slice()));
-        img_buf.set_used(2).unwrap();
-        assert_eq!(img_buf.used(), [0, 1].as_mut_slice());
-        assert_eq!(img_buf.tail(), [2, 3].as_mut_slice());
-        assert_eq!(img_buf.get_split(), ([0, 1].as_mut_slice(), [2, 3].as_mut_slice()));
-        img_buf.set_used(4).unwrap();
-        assert_eq!(img_buf.used(), [0, 1, 2, 3].as_mut_slice());
-        assert_eq!(img_buf.tail(), [].as_mut_slice());
-        assert_eq!(img_buf.get_split(), ([0, 1, 2, 3].as_mut_slice(), [].as_mut_slice()));
+    fn test_efi_image_buffer_same_buffer_after_drop() {
+        let mut v = vec![0u8; 1];
+        let gbl_buffer =
+            GblImageBuffer { Memory: v.as_mut_ptr() as *mut c_void, SizeBytes: v.len() };
+
+        let _guard = GET_BUFFER_MUTEX.lock();
+        // SAFETY:
+        // 'gbl_buffer` represents valid buffer created by vector.
+        let res1 = unsafe { EfiImageBuffer::new(gbl_buffer) };
+        drop(res1);
+
+        // Since `res1` was dropped same buffer can be returned.
+        // SAFETY:
+        // 'gbl_buffer` represents valid buffer created by vector.
+        let res2 = unsafe { EfiImageBuffer::new(gbl_buffer) };
+        assert!(res2.is_ok());
+    }
+
+    #[test]
+    fn test_efi_image_buffer_take() {
+        let mut v = vec![0u8; 1];
+        let gbl_buffer =
+            GblImageBuffer { Memory: v.as_mut_ptr() as *mut c_void, SizeBytes: v.len() };
+
+        let _guard = GET_BUFFER_MUTEX.lock();
+        // SAFETY:
+        // 'gbl_buffer` represents valid buffer created by vector.
+        let res1 = unsafe { EfiImageBuffer::new(gbl_buffer) }.unwrap();
+        let _tmp = res1.take();
+
+        // Since `res1` was taken, we can't reuse same buffer.
+        // SAFETY:
+        // 'gbl_buffer` represents valid buffer created by vector.
+        let res2 = unsafe { EfiImageBuffer::new(gbl_buffer) };
+        assert_eq!(res2.unwrap_err(), Error::AlreadyStarted);
     }
 }
