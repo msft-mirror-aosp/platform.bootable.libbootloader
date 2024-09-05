@@ -14,25 +14,55 @@
 
 //! Implements [Gbl::Ops] for the EFI environment.
 
-use crate::utils::wait_key_stroke;
-
-use core::fmt::Write;
+use crate::{
+    efi,
+    efi_blocks::EfiBlockDeviceIo,
+    utils::{get_efi_fdt, wait_key_stroke},
+};
+use core::{ffi::CStr, fmt::Write};
 use efi::{efi_print, efi_println, EfiEntry};
+use fdt::Fdt;
 use liberror::Error;
 use libgbl::{
-    ops::avb_ops_none,
+    ops::{AvbIoError, AvbIoResult, CertPermanentAttributes, SHA256_DIGEST_SIZE},
+    partition::PartitionBlockDevice,
     slots::{BootToken, Cursor},
-    BootImages, GblAvbOps, GblOps, Result as GblResult,
+    BootImages, GblOps, Result as GblResult,
 };
 use zbi::ZbiContainer;
+use zerocopy::AsBytes;
 
-pub struct Ops<'a> {
+pub struct Ops<'a, 'b> {
     pub efi_entry: &'a EfiEntry,
+    pub partitions: &'b [PartitionBlockDevice<'b, &'b mut EfiBlockDeviceIo<'a>>],
 }
 
-impl GblOps for Ops<'_> {
+impl<'a> Ops<'a, '_> {
+    /// Gets the property of an FDT node from EFI FDT.
+    ///
+    /// Returns `None` if fail to get the node
+    fn get_efi_fdt_prop(&self, path: &str, prop: &CStr) -> Option<&'a [u8]> {
+        let (_, fdt_bytes) = get_efi_fdt(&self.efi_entry)?;
+        let fdt = Fdt::new(fdt_bytes).ok()?;
+        fdt.get_property(path, prop).ok()
+    }
+}
+
+impl Write for Ops<'_, '_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        efi_print!(self.efi_entry, "{}", s);
+        Ok(())
+    }
+}
+
+impl<'a, 'b> GblOps<'b> for Ops<'a, 'b>
+where
+    Self: 'b,
+{
+    type PartitionBlockIo = &'b mut EfiBlockDeviceIo<'a>;
+
     fn console_out(&mut self) -> Option<&mut dyn Write> {
-        unimplemented!();
+        Some(self)
     }
 
     fn should_stop_in_fastboot(&mut self) -> Result<bool, Error> {
@@ -51,38 +81,89 @@ impl GblOps for Ops<'_> {
         unimplemented!();
     }
 
-    async fn read_from_partition(&mut self, _: &str, _: u64, _: &mut [u8]) -> Result<(), Error> {
-        unimplemented!();
-    }
-
-    async fn write_to_partition(&mut self, _: &str, _: u64, _: &mut [u8]) -> Result<(), Error> {
-        unimplemented!();
-    }
-
-    fn partition_size(&mut self, _: &str) -> Result<Option<u64>, Error> {
-        unimplemented!();
+    fn partitions(&self) -> Result<&'b [PartitionBlockDevice<'b, Self::PartitionBlockIo>], Error> {
+        Ok(self.partitions)
     }
 
     fn zircon_add_device_zbi_items(
         &mut self,
-        _: &mut ZbiContainer<&mut [u8]>,
+        container: &mut ZbiContainer<&mut [u8]>,
     ) -> Result<(), Error> {
-        unimplemented!();
+        // TODO(b/353272981): Switch to use OS configuration protocol once it is implemented on
+        // existing platforms such as VIM3.
+        Ok(match self.get_efi_fdt_prop("zircon", c"zbi-blob") {
+            Some(blob) => container.extend_unaligned(blob).map_err(|_| "Failed to append ZBI")?,
+            _ => efi_println!(self.efi_entry, "No device ZBI items.\r\n"),
+        })
     }
 
     fn do_fastboot<B: gbl_storage::AsBlockDevice>(&self, _: &mut Cursor<B>) -> GblResult<()> {
         unimplemented!();
     }
 
-    fn load_slot_interface<'a, B: gbl_storage::AsBlockDevice>(
-        &'a mut self,
-        _: &'a mut B,
+    fn load_slot_interface<'c, B: gbl_storage::AsBlockDevice>(
+        &'c mut self,
+        _: &'c mut B,
         _: BootToken,
-    ) -> GblResult<Cursor<'a, B>> {
+    ) -> GblResult<Cursor<'c, B>> {
         unimplemented!();
     }
 
-    fn avb_ops(&mut self) -> Option<impl GblAvbOps> {
-        avb_ops_none()
+    fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
+        // TODO(b/337846185): Switch to use GBL Verified Boot EFI protocol when available.
+        Ok(true)
+    }
+
+    fn avb_read_rollback_index(&mut self, _rollback_index_location: usize) -> AvbIoResult<u64> {
+        // TODO(b/337846185): Switch to use GBL Verified Boot EFI protocol when available.
+        Ok(0)
+    }
+
+    fn avb_write_rollback_index(
+        &mut self,
+        _rollback_index_location: usize,
+        _index: u64,
+    ) -> AvbIoResult<()> {
+        // TODO(b/337846185): Switch to use GBL Verified Boot EFI protocol when available.
+        Ok(())
+    }
+
+    fn avb_cert_read_permanent_attributes(
+        &mut self,
+        attributes: &mut CertPermanentAttributes,
+    ) -> AvbIoResult<()> {
+        // TODO(b/337846185): Switch to use GBL Verified Boot EFI protocol when available.
+        let perm_attr = self
+            .get_efi_fdt_prop("gbl", c"avb-cert-permanent-attributes")
+            .ok_or(AvbIoError::NotImplemented)?;
+        attributes.as_bytes_mut().clone_from_slice(perm_attr);
+        Ok(())
+    }
+
+    fn avb_cert_read_permanent_attributes_hash(&mut self) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
+        // TODO(b/337846185): Switch to use GBL Verified Boot EFI protocol when available.
+        let hash = self
+            .get_efi_fdt_prop("gbl", c"avb-cert-permanent-attributes-hash")
+            .ok_or(AvbIoError::NotImplemented)?;
+        Ok(hash.try_into().map_err(|_| AvbIoError::Io)?)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use efi_mocks::MockEfi;
+    use mockall::predicate::eq;
+
+    #[test]
+    fn ops_write_trait() {
+        let mut mock_efi = MockEfi::new();
+
+        mock_efi.con_out.expect_write_str().with(eq("foo bar")).return_const(Ok(()));
+        let installed = mock_efi.install();
+
+        let mut ops = Ops { efi_entry: installed.entry(), partitions: &[] };
+
+        assert!(write!(&mut ops, "{} {}", "foo", "bar").is_ok());
     }
 }

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::error::Result;
+use crate::efi;
 use core::ffi::CStr;
 use efi::{
     protocol::{
@@ -26,6 +26,7 @@ use efi::{
 use efi_types::EfiGuid;
 use fdt::FdtHeader;
 use liberror::Error;
+use libgbl::Result;
 use safemath::SafeNum;
 
 pub const EFI_DTB_TABLE_GUID: EfiGuid =
