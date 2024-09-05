@@ -25,11 +25,9 @@ use fdt::Fdt;
 use liberror::Error;
 use libgbl::{
     ops::{AvbIoError, AvbIoResult, CertPermanentAttributes, SHA256_DIGEST_SIZE},
-    partition::{
-        check_part_unique, read_unique_partition, write_unique_partition, PartitionBlockDevice,
-    },
+    partition::PartitionBlockDevice,
     slots::{BootToken, Cursor},
-    BootImages, GblAvbOps, GblOps, Result as GblResult,
+    BootImages, GblOps, Result as GblResult,
 };
 use zbi::ZbiContainer;
 use zerocopy::AsBytes;
@@ -57,7 +55,12 @@ impl Write for Ops<'_, '_> {
     }
 }
 
-impl GblOps for Ops<'_, '_> {
+impl<'a, 'b> GblOps<'b> for Ops<'a, 'b>
+where
+    Self: 'b,
+{
+    type PartitionBlockIo = &'b mut EfiBlockDeviceIo<'a>;
+
     fn console_out(&mut self) -> Option<&mut dyn Write> {
         Some(self)
     }
@@ -78,30 +81,8 @@ impl GblOps for Ops<'_, '_> {
         unimplemented!();
     }
 
-    async fn read_from_partition(
-        &mut self,
-        part: &str,
-        off: u64,
-        out: &mut [u8],
-    ) -> Result<(), Error> {
-        read_unique_partition(self.partitions, part, off, out).await
-    }
-
-    async fn write_to_partition(
-        &mut self,
-        part: &str,
-        off: u64,
-        data: &mut [u8],
-    ) -> Result<(), Error> {
-        write_unique_partition(self.partitions, part, off, data).await
-    }
-
-    fn partition_size(&mut self, part: &str) -> Result<Option<u64>, Error> {
-        match check_part_unique(self.partitions, part) {
-            Ok((_, p)) => Ok(Some(p.size()?)),
-            Err(Error::NotFound) => Ok(None),
-            Err(e) => Err(e),
-        }
+    fn partitions(&self) -> Result<&'b [PartitionBlockDevice<'b, Self::PartitionBlockIo>], Error> {
+        Ok(self.partitions)
     }
 
     fn zircon_add_device_zbi_items(
@@ -120,20 +101,14 @@ impl GblOps for Ops<'_, '_> {
         unimplemented!();
     }
 
-    fn load_slot_interface<'a, B: gbl_storage::AsBlockDevice>(
-        &'a mut self,
-        _: &'a mut B,
+    fn load_slot_interface<'c, B: gbl_storage::AsBlockDevice>(
+        &'c mut self,
+        _: &'c mut B,
         _: BootToken,
-    ) -> GblResult<Cursor<'a, B>> {
+    ) -> GblResult<Cursor<'c, B>> {
         unimplemented!();
     }
 
-    fn avb_ops(&mut self) -> Option<impl GblAvbOps> {
-        Some(self)
-    }
-}
-
-impl GblAvbOps for &mut Ops<'_, '_> {
     fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
         // TODO(b/337846185): Switch to use GBL Verified Boot EFI protocol when available.
         Ok(true)
