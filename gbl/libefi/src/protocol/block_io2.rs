@@ -60,7 +60,9 @@ impl Protocol<'_, BlockIo2Protocol> {
         // UEFI spec requires that NOTIFY_WAIT event be always created with a callback.
         let mut notify_fn = &mut |_| ();
         let mut notify = EventNotify::new(Tpl::Callback, &mut notify_fn);
-        let event = bs.create_event(EventType::NotifyWait, Some(&mut notify))?;
+        // SAFETY: the notification callback never allocates, deallocates, or panics.
+        let event =
+            unsafe { bs.create_event_with_notification(EventType::NotifyWait, &mut notify) }?;
         let mut token =
             EfiBlockIo2Token { event: event.efi_event, transaction_status: EFI_STATUS_NOT_READY };
         // SAFETY:
@@ -91,7 +93,9 @@ impl Protocol<'_, BlockIo2Protocol> {
         let bs = self.efi_entry().system_table().boot_services();
         let mut notify_fn = &mut |_| ();
         let mut notify = EventNotify::new(Tpl::Callback, &mut notify_fn);
-        let event = bs.create_event(EventType::NotifyWait, Some(&mut notify))?;
+        // SAFETY: the notification callback never allocates, deallocates, or panics.
+        let event =
+            unsafe { bs.create_event_with_notification(EventType::NotifyWait, &mut notify) }?;
         let mut token =
             EfiBlockIo2Token { event: event.efi_event, transaction_status: EFI_STATUS_NOT_READY };
         // SAFETY: See safety comment for `Self::read_blocks_ex()`.
@@ -115,7 +119,9 @@ impl Protocol<'_, BlockIo2Protocol> {
         let bs = self.efi_entry().system_table().boot_services();
         let mut notify_fn = &mut |_| ();
         let mut notify = EventNotify::new(Tpl::Callback, &mut notify_fn);
-        let event = bs.create_event(EventType::NotifyWait, Some(&mut notify))?;
+        // SAFETY: the notification callback never allocates, deallocates, or panics.
+        let event =
+            unsafe { bs.create_event_with_notification(EventType::NotifyWait, &mut notify) }?;
         let mut token =
             EfiBlockIo2Token { event: event.efi_event, transaction_status: EFI_STATUS_NOT_READY };
         // SAFETY: See safety comment for `Self::read_blocks_ex()`.

@@ -14,25 +14,157 @@
 
 //! Implements [Gbl::Ops] for the EFI environment.
 
-use crate::utils::wait_key_stroke;
-
-use core::fmt::Write;
-use efi::{efi_print, efi_println, EfiEntry};
+use crate::{
+    efi,
+    efi_blocks::EfiBlockDeviceIo,
+    utils::{get_efi_fdt, wait_key_stroke},
+};
+use alloc::alloc::{alloc, handle_alloc_error, Layout};
+use core::{ffi::CStr, fmt::Write, mem::MaybeUninit, num::NonZeroUsize, slice::from_raw_parts_mut};
+use efi::{efi_print, efi_println, protocol::image_loading::GblImageLoadingProtocol, EfiEntry};
+use efi_types::{GblImageInfo, PARTITION_NAME_LEN_U16};
+use fdt::Fdt;
 use liberror::Error;
 use libgbl::{
-    ops::avb_ops_none,
+    ops::{AvbIoError, AvbIoResult, CertPermanentAttributes, ImageBuffer, SHA256_DIGEST_SIZE},
+    partition::PartitionBlockDevice,
     slots::{BootToken, Cursor},
-    BootImages, GblAvbOps, GblOps, Result as GblResult,
+    BootImages, GblOps, Result as GblResult,
 };
+use safemath::SafeNum;
 use zbi::ZbiContainer;
+use zerocopy::AsBytes;
 
-pub struct Ops<'a> {
+pub struct Ops<'a, 'b> {
     pub efi_entry: &'a EfiEntry,
+    pub partitions: &'b [PartitionBlockDevice<'b, &'b mut EfiBlockDeviceIo<'a>>],
 }
 
-impl GblOps for Ops<'_> {
+impl<'a> Ops<'a, '_> {
+    /// Gets the property of an FDT node from EFI FDT.
+    ///
+    /// Returns `None` if fail to get the node
+    fn get_efi_fdt_prop(&self, path: &str, prop: &CStr) -> Option<&'a [u8]> {
+        let (_, fdt_bytes) = get_efi_fdt(&self.efi_entry)?;
+        let fdt = Fdt::new(fdt_bytes).ok()?;
+        fdt.get_property(path, prop).ok()
+    }
+
+    /// Get buffer for partition loading and verification.
+    /// Uses GBL EFI ImageLoading protocol.
+    ///
+    /// # Arguments
+    /// * `image_name` - image name to differentiate the buffer properties. Processing is limited
+    /// to first [PARTITION_NAME_LEN_U16] symbols, and the remaining will be ignored.
+    /// * `size` - requested buffer size
+    ///
+    /// # Return
+    /// * Ok(ImageBuffer) - Return buffer for partition loading and verification.
+    /// * Err(_) - on error
+    fn get_buffer_image_loading(
+        &mut self,
+        image_name: &str,
+        size: NonZeroUsize,
+    ) -> GblResult<ImageBuffer<'static>> {
+        let mut image_type = [0u16; PARTITION_NAME_LEN_U16];
+        image_type.iter_mut().zip(image_name.encode_utf16()).for_each(|(dst, src)| {
+            *dst = src;
+        });
+        let image_info = GblImageInfo { ImageType: image_type, SizeBytes: size.get() };
+        let efi_image_buffer = self
+            .efi_entry
+            .system_table()
+            .boot_services()
+            .find_first_and_open::<GblImageLoadingProtocol>()?
+            .get_buffer(&image_info)?;
+
+        // EfiImageBuffer -> ImageBuffer
+        // Make sure not to drop efi_image_buffer since we transferred ownership to ImageBuffer
+        let buffer = efi_image_buffer.take();
+        Ok(ImageBuffer::new(buffer))
+    }
+
+    /// Get buffer for partition loading and verification.
+    /// Uses provided allocator.
+    ///
+    /// # Arguments
+    /// * `efi_entry` - EFI entry
+    /// * `image_name` - image name to differentiate the buffer properties
+    /// * `size` - requested buffer size
+    ///
+    /// # Return
+    /// * Ok(ImageBuffer) - Return buffer for partition loading and verification.
+    /// * Err(_) - on error
+    // SAFETY:
+    // Allocated buffer is leaked intentionally. ImageBuffer is assumed to reference static memory.
+    // ImageBuffer is not expected to be released, and is allocated to hold data necessary for next
+    // boot stage (kernel boot). All allocated buffers are expected to be used by kernel.
+    fn allocate_image_buffer(
+        image_name: &str,
+        size: NonZeroUsize,
+    ) -> liberror::Result<ImageBuffer<'static>> {
+        const KERNEL_ALIGNMENT: usize = 2 * 1024 * 1024;
+        const FDT_ALIGNMENT: usize = 8;
+        const BOOTCMD_SIZE: usize = 16 * 1024;
+        let size = match image_name {
+            "boot" => size.get(),
+            "ramdisk" => (SafeNum::from(size.get()) + BOOTCMD_SIZE).try_into()?,
+            _ => size.get(),
+        };
+        // Check for `from_raw_parts_mut()` safety requirements.
+        assert!(size < isize::MAX.try_into().unwrap());
+        let align = match image_name {
+            "boot" => KERNEL_ALIGNMENT,
+            "fdt" => FDT_ALIGNMENT,
+            _ => 1,
+        };
+
+        if size == 0 {
+            return Err(Error::Other(Some("allocate_image_buffer() expects non zero size")));
+        }
+
+        let layout = Layout::from_size_align(size, align).or(Err(Error::InvalidAlignment))?;
+        // SAFETY:
+        // `layout.size()` is checked to be not zero.
+        let ptr = unsafe { alloc(layout) } as *mut MaybeUninit<u8>;
+        if ptr.is_null() {
+            handle_alloc_error(layout);
+        }
+
+        // SAFETY:
+        // `ptr` is checked to be not Null.
+        // `ptr` is a valid pointer to start of a single memory region of `size`-bytes because it
+        // was just returned by alloc. Buffer alignment requirement for u8 is 1-byte which is
+        // always the case.
+        // `alloc()` makes sure there is no other allocation of the same memory region until
+        // current one is released.
+        // `size` is a valid size of the memory region since `alloc()` succeeded.
+        //
+        // Total size of buffer is not greater than `isize::MAX` since it is checked at the
+        // beginning of the function.
+        //
+        // `ptr + size` doesn't wrap since it is returned from alloc and it didn't fail.
+        let buf = unsafe { from_raw_parts_mut(ptr, size) };
+
+        Ok(ImageBuffer::new(buf))
+    }
+}
+
+impl Write for Ops<'_, '_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        efi_print!(self.efi_entry, "{}", s);
+        Ok(())
+    }
+}
+
+impl<'a, 'b> GblOps<'b> for Ops<'a, 'b>
+where
+    Self: 'b,
+{
+    type PartitionBlockIo = &'b mut EfiBlockDeviceIo<'a>;
+
     fn console_out(&mut self) -> Option<&mut dyn Write> {
-        unimplemented!();
+        Some(self)
     }
 
     fn should_stop_in_fastboot(&mut self) -> Result<bool, Error> {
@@ -51,38 +183,99 @@ impl GblOps for Ops<'_> {
         unimplemented!();
     }
 
-    async fn read_from_partition(&mut self, _: &str, _: u64, _: &mut [u8]) -> Result<(), Error> {
-        unimplemented!();
-    }
-
-    async fn write_to_partition(&mut self, _: &str, _: u64, _: &mut [u8]) -> Result<(), Error> {
-        unimplemented!();
-    }
-
-    fn partition_size(&mut self, _: &str) -> Result<Option<u64>, Error> {
-        unimplemented!();
+    fn partitions(&self) -> Result<&'b [PartitionBlockDevice<'b, Self::PartitionBlockIo>], Error> {
+        Ok(self.partitions)
     }
 
     fn zircon_add_device_zbi_items(
         &mut self,
-        _: &mut ZbiContainer<&mut [u8]>,
+        container: &mut ZbiContainer<&mut [u8]>,
     ) -> Result<(), Error> {
-        unimplemented!();
+        // TODO(b/353272981): Switch to use OS configuration protocol once it is implemented on
+        // existing platforms such as VIM3.
+        Ok(match self.get_efi_fdt_prop("zircon", c"zbi-blob") {
+            Some(blob) => container.extend_unaligned(blob).map_err(|_| "Failed to append ZBI")?,
+            _ => efi_println!(self.efi_entry, "No device ZBI items.\r\n"),
+        })
     }
 
     fn do_fastboot<B: gbl_storage::AsBlockDevice>(&self, _: &mut Cursor<B>) -> GblResult<()> {
         unimplemented!();
     }
 
-    fn load_slot_interface<'a, B: gbl_storage::AsBlockDevice>(
-        &'a mut self,
-        _: &'a mut B,
+    fn load_slot_interface<'c, B: gbl_storage::AsBlockDevice>(
+        &'c mut self,
+        _: &'c mut B,
         _: BootToken,
-    ) -> GblResult<Cursor<'a, B>> {
+    ) -> GblResult<Cursor<'c, B>> {
         unimplemented!();
     }
 
-    fn avb_ops(&mut self) -> Option<impl GblAvbOps> {
-        avb_ops_none()
+    fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
+        // TODO(b/337846185): Switch to use GBL Verified Boot EFI protocol when available.
+        Ok(true)
+    }
+
+    fn avb_read_rollback_index(&mut self, _rollback_index_location: usize) -> AvbIoResult<u64> {
+        // TODO(b/337846185): Switch to use GBL Verified Boot EFI protocol when available.
+        Ok(0)
+    }
+
+    fn avb_write_rollback_index(
+        &mut self,
+        _rollback_index_location: usize,
+        _index: u64,
+    ) -> AvbIoResult<()> {
+        // TODO(b/337846185): Switch to use GBL Verified Boot EFI protocol when available.
+        Ok(())
+    }
+
+    fn avb_cert_read_permanent_attributes(
+        &mut self,
+        attributes: &mut CertPermanentAttributes,
+    ) -> AvbIoResult<()> {
+        // TODO(b/337846185): Switch to use GBL Verified Boot EFI protocol when available.
+        let perm_attr = self
+            .get_efi_fdt_prop("gbl", c"avb-cert-permanent-attributes")
+            .ok_or(AvbIoError::NotImplemented)?;
+        attributes.as_bytes_mut().clone_from_slice(perm_attr);
+        Ok(())
+    }
+
+    fn avb_cert_read_permanent_attributes_hash(&mut self) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
+        // TODO(b/337846185): Switch to use GBL Verified Boot EFI protocol when available.
+        let hash = self
+            .get_efi_fdt_prop("gbl", c"avb-cert-permanent-attributes-hash")
+            .ok_or(AvbIoError::NotImplemented)?;
+        Ok(hash.try_into().map_err(|_| AvbIoError::Io)?)
+    }
+
+    fn get_image_buffer<'c>(
+        &mut self,
+        image_name: &str,
+        size: NonZeroUsize,
+    ) -> GblResult<ImageBuffer<'c>> {
+        self.get_buffer_image_loading(image_name, size)
+            .or(Self::allocate_image_buffer(image_name, size)
+                .map_err(|e| libgbl::IntegrationError::UnificationError(e)))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use efi_mocks::MockEfi;
+    use mockall::predicate::eq;
+
+    #[test]
+    fn ops_write_trait() {
+        let mut mock_efi = MockEfi::new();
+
+        mock_efi.con_out.expect_write_str().with(eq("foo bar")).return_const(Ok(()));
+        let installed = mock_efi.install();
+
+        let mut ops = Ops { efi_entry: installed.entry(), partitions: &[] };
+
+        assert!(write!(&mut ops, "{} {}", "foo", "bar").is_ok());
     }
 }
