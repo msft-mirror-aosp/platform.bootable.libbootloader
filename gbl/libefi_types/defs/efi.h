@@ -28,6 +28,7 @@
 #include "protocols/block_io_protocol.h"
 #include "protocols/device_path_protocol.h"
 #include "protocols/gbl_efi_ab_slot_protocol.h"
+#include "protocols/gbl_efi_fastboot_protocol.h"
 #include "protocols/gbl_efi_fastboot_usb.h"
 #include "protocols/gbl_efi_os_configuration_protocol.h"
 #include "protocols/image_loading_protocol.h"
