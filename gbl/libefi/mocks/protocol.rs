@@ -17,12 +17,12 @@
 //! The structure of these sub-modules must match the libefi structure so that the code can refer
 //! to either one using the same path.
 
+use crate::{DeviceHandle, MOCK_EFI};
 use core::fmt::Write;
-use efi_types::EfiInputKey;
+use efi::protocol::image_loading::EfiImageBuffer;
+use efi_types::{EfiInputKey, GblImageInfo, GblPartitionName};
 use liberror::Result;
 use mockall::mock;
-
-use crate::{DeviceHandle, MOCK_EFI};
 
 /// Mock device_path module.
 pub mod device_path {
@@ -121,4 +121,30 @@ pub mod simple_text_output {
     /// While this mock itself isn't necessarily thread-local, passing through to the thread-local
     /// state is our primary use case, so we just disallow [Send] entirely.
     impl !Send for MockSimpleTextOutputProtocol {}
+}
+
+/// Mock image_loading protocol.
+pub mod image_loading {
+    use super::*;
+
+    mock! {
+        /// Mock [efi::ImageLoadingProtocol].
+        pub GblImageLoadingProtocol {
+            /// Returns [EfiImageBuffer] matching `gbl_image_info`
+            pub fn get_buffer(&self, gbl_image_info: &GblImageInfo) -> Result<EfiImageBuffer>;
+
+            /// Returns number of partitions to be provided via `get_verify_partitions()`, and thus
+            /// expected size of `partition_name` slice.
+            pub fn get_verify_partitions_count(&self) -> Result<usize>;
+
+            /// Returns number of partition names written to `partition_name` slice.
+            pub fn get_verify_partitions(
+                &self,
+                partition_names: &mut [GblPartitionName]
+            ) -> Result<usize>;
+        }
+    }
+
+    /// Map to the libefi name so code under test can just use one name.
+    pub type GblImageLoadingProtocol = MockGblImageLoadingProtocol;
 }
