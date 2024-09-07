@@ -219,7 +219,7 @@ pub fn zircon_load_verify_abr<'a, 'b>(
 mod test {
     use super::*;
     use crate::{
-        ops::{AvbIoResult, CertPermanentAttributes, SHA256_DIGEST_SIZE},
+        ops::{AvbIoResult, CertPermanentAttributes, ImageBuffer, SHA256_DIGEST_SIZE},
         partition::PartitionBlockDevice,
         slots, BootImages,
     };
@@ -229,6 +229,7 @@ mod test {
         collections::{BTreeSet, HashMap},
         fmt::Write,
         fs,
+        num::NonZeroUsize,
         ops::{Deref, DerefMut},
         path::Path,
     };
@@ -362,8 +363,8 @@ mod test {
             unimplemented!();
         }
 
-        // `avb::test_op:TestOps` provides a more comprehensive a set of mocks. Consider using it
-        // when we add more mocks.
+        // `avb::test_op:TestOps` provides a more comprehensive a set of mocks. Consider using it when
+        // we add more mocks.
 
         fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
             Ok(self.avb_unlocked)
@@ -394,6 +395,14 @@ mod test {
             &mut self,
         ) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
             Ok(read_test_data("cert_permanent_attributes.hash").try_into().unwrap())
+        }
+
+        fn get_image_buffer<'c>(
+            &mut self,
+            image_name: &str,
+            size: NonZeroUsize,
+        ) -> GblResult<ImageBuffer<'c>> {
+            unimplemented!();
         }
     }
 
