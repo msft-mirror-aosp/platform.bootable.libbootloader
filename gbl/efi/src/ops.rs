@@ -21,8 +21,10 @@ use crate::{
 };
 use alloc::alloc::{alloc, handle_alloc_error, Layout};
 use core::{ffi::CStr, fmt::Write, mem::MaybeUninit, num::NonZeroUsize, slice::from_raw_parts_mut};
-use efi::{efi_print, efi_println, protocol::image_loading::GblImageLoadingProtocol, EfiEntry};
-use efi_types::{GblImageInfo, PARTITION_NAME_LEN_U16};
+use efi::{
+    efi_print, efi_println, protocol::gbl_efi_image_loading::GblImageLoadingProtocol, EfiEntry,
+};
+use efi_types::{GblEfiImageInfo, PARTITION_NAME_LEN_U16};
 use fdt::Fdt;
 use liberror::Error;
 use libgbl::{
@@ -70,7 +72,7 @@ impl<'a> Ops<'a, '_> {
         image_type.iter_mut().zip(image_name.encode_utf16()).for_each(|(dst, src)| {
             *dst = src;
         });
-        let image_info = GblImageInfo { ImageType: image_type, SizeBytes: size.get() };
+        let image_info = GblEfiImageInfo { ImageType: image_type, SizeBytes: size.get() };
         let efi_image_buffer = self
             .efi_entry
             .system_table()
