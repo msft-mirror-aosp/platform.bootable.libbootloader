@@ -38,7 +38,7 @@ pub unsafe extern "C" fn dto_malloc(size: usize) -> *mut c_void {
 ///
 /// # Safety:
 ///
-/// * `ptr` must be a non-null pointer allocated by `dto_malloc`
+/// * `ptr` must be a pointer allocated by `dto_malloc` or null
 #[no_mangle]
 pub unsafe extern "C" fn dto_free(ptr: *mut c_void) {
     // SAFETY: libufdt calls are compatible with libc counterparts, alignment the same as

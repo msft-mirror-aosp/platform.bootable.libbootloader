@@ -36,7 +36,7 @@ impl<'a> Timeout<'a> {
     /// Creates a new instance and starts the timeout timer.
     pub fn new(efi_entry: &'a EfiEntry, timeout_ms: u64) -> Result<Self> {
         let bs = efi_entry.system_table().boot_services();
-        let timer = bs.create_event(EventType::Timer, None)?;
+        let timer = bs.create_event(EventType::Timer)?;
         bs.set_timer(&timer, EFI_TIMER_DELAY_TIMER_RELATIVE, ms_to_100ns(timeout_ms)?)?;
         Ok(Self { efi_entry, timer })
     }

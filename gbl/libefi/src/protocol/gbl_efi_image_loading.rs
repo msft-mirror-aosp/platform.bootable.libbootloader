@@ -17,10 +17,9 @@
 use crate::efi_call;
 use crate::protocol::{Protocol, ProtocolInfo};
 use arrayvec::ArrayVec;
-use core::mem::size_of;
-use core::ptr::null_mut;
+use core::mem::{size_of, MaybeUninit};
 use efi_types::{
-    EfiGuid, EfiImageLoadingProtocol, GblImageBuffer, GblImageInfo, GblPartitionName,
+    EfiGuid, GblEfiImageBuffer, GblEfiImageInfo, GblEfiImageLoadingProtocol, GblEfiPartitionName,
     PARTITION_NAME_LEN_U16,
 };
 use liberror::{Error, Result};
@@ -30,10 +29,10 @@ use spin::Mutex;
 pub struct GblImageLoadingProtocol;
 
 impl ProtocolInfo for GblImageLoadingProtocol {
-    type InterfaceType = EfiImageLoadingProtocol;
+    type InterfaceType = GblEfiImageLoadingProtocol;
 
     const GUID: EfiGuid =
-        EfiGuid::new(0x26f4418b, 0x6cf1, 0x4543, [0x90, 0xbb, 0x55, 0xdd, 0x2c, 0x17, 0x57, 0x9c]);
+        EfiGuid::new(0xdb84b4fa, 0x53bd, 0x4436, [0x98, 0xa7, 0x4e, 0x02, 0x71, 0x42, 0x8b, 0xa8]);
 }
 
 /// Max length of partition name in UTF8 in bytes.
@@ -45,22 +44,21 @@ static RETURNED_BUFFERS: Mutex<ArrayVec<usize, MAX_ARRAY_SIZE>> = Mutex::new(Arr
 /// Wrapper class for buffer received with [get_buffer] function.
 ///
 /// Helps to keep track of allocated memory and avoid getting same buffer more than once.
-#[derive(Debug, PartialEq)]
-pub struct ImageBuffer<'a> {
-    buffer: &'a mut [u8],
+#[derive(Debug)]
+pub struct EfiImageBuffer {
+    buffer: Option<&'static mut [MaybeUninit<u8>]>,
 }
 
-impl ImageBuffer<'_> {
+impl EfiImageBuffer {
     // SAFETY:
     // `gbl_buffer` must represent valid buffer.
-    // If `gbl_buffer.Memory` is NULL function will return None.
     //
     // # Return
     // Err(EFI_STATUS_INVALID_PARAMETER) - If `gbl_buffer.Memory` == NULL
     // Err(EFI_STATUS_ALREADY_STARTED) - Requested buffer was already returned and is still in use.
     // Err(err) - on error
     // Ok(_) - on success
-    unsafe fn new(gbl_buffer: GblImageBuffer) -> Result<ImageBuffer<'static>> {
+    unsafe fn new(gbl_buffer: GblEfiImageBuffer) -> Result<EfiImageBuffer> {
         if gbl_buffer.Memory.is_null() {
             return Err(Error::InvalidInput);
         }
@@ -76,31 +74,32 @@ impl ImageBuffer<'_> {
         // `gbl_buffer.Memory` is guarantied to be not null
         // This code is relying on EFI protocol implementation to provide valid buffer pointer
         // to memory region of size `gbl_buffer.SizeBytes`.
-        Ok(ImageBuffer {
-            buffer: unsafe {
-                core::slice::from_raw_parts_mut(gbl_buffer.Memory as *mut u8, gbl_buffer.SizeBytes)
-            },
+        Ok(EfiImageBuffer {
+            buffer: Some(unsafe {
+                core::slice::from_raw_parts_mut(
+                    gbl_buffer.Memory as *mut MaybeUninit<u8>,
+                    gbl_buffer.SizeBytes,
+                )
+            }),
         })
     }
-}
 
-impl AsRef<[u8]> for ImageBuffer<'_> {
-    fn as_ref(&self) -> &[u8] {
-        &self.buffer
+    /// Move buffer ownership out of EfiImageBuffer, and consume it.
+    pub fn take(mut self) -> &'static mut [MaybeUninit<u8>] {
+        self.buffer.take().unwrap()
     }
 }
 
-impl AsMut<[u8]> for ImageBuffer<'_> {
-    fn as_mut(&mut self) -> &mut [u8] {
-        &mut self.buffer
-    }
-}
-
-impl Drop for ImageBuffer<'_> {
+impl Drop for EfiImageBuffer {
     fn drop(&mut self) {
+        if self.buffer.is_none() {
+            return;
+        }
+
         let mut returned_buffers = RETURNED_BUFFERS.lock();
-        if let Some(pos) =
-            returned_buffers.iter().position(|&val| val == self.buffer.as_ptr() as usize)
+        if let Some(pos) = returned_buffers
+            .iter()
+            .position(|&val| val == (*self.buffer.as_ref().unwrap()).as_ptr() as usize)
         {
             returned_buffers.swap_remove(pos);
         }
@@ -112,20 +111,21 @@ impl Protocol<'_, GblImageLoadingProtocol> {
     /// Wrapper of `GBL_IMAGE_LOADING_PROTOCOL.get_buffer()`
     ///
     /// # Return
-    /// Ok(Some(ImageBuffer)) if buffer was successfully provided,
+    /// Ok(Some(EfiImageBuffer)) if buffer was successfully provided,
     /// Ok(None) if buffer was not provided
     /// Err(Error::EFI_STATUS_BUFFER_TOO_SMALL) if provided buffer is too small
     /// Err(Error::EFI_STATUS_INVALID_PARAMETER) if received buffer is NULL
     /// Err(Error::EFI_STATUS_ALREADY_STARTED) buffer was already returned and is still in use.
     /// Err(err) if `err` occurred
-    pub fn get_buffer(&self, gbl_image_info: &GblImageInfo) -> Result<ImageBuffer> {
-        let mut gbl_buffer: GblImageBuffer = Default::default();
+    pub fn get_buffer(&self, gbl_image_info: &GblEfiImageInfo) -> Result<EfiImageBuffer> {
+        let mut gbl_buffer: GblEfiImageBuffer = Default::default();
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
         // established by `Protocol::new()`.
         // `self.interface` and `gbl_buffer` are input/output parameters, outlive the call and
         // will not be retained.
-        // `gbl_buffer` returned by this call must not overlap, and will be checked by `ImageBuffer`
+        // `gbl_buffer` returned by this call must not overlap, and will be checked by
+        // `EfiImageBuffer`
         unsafe {
             efi_call!(
                 @bufsize gbl_image_info.SizeBytes,
@@ -145,51 +145,22 @@ impl Protocol<'_, GblImageLoadingProtocol> {
         // `gbl_buffer.Size` must be valid size of the buffer.
         // This protocol is relying on EFI protocol implementation to provide valid buffer pointer
         // to memory region of size `gbl_buffer.SizeBytes`.
-        let image_buffer = unsafe { ImageBuffer::new(gbl_buffer)? };
+        let image_buffer = unsafe { EfiImageBuffer::new(gbl_buffer)? };
 
         Ok(image_buffer)
     }
 
-    /// Wrapper of `GBL_IMAGE_LOADING_PROTOCOL.get_verify_partitions()` special case to get
-    /// partition_names expected in [get_verify_partitions] call.
-    ///
-    /// It is a helper function that indicates expected GblPartitionName slice size for
-    /// [get_verify_partitions] call.
-    ///
-    /// # Result
-    /// Err(err) - if error occurred.
-    /// Ok(len) - will return maximum number of `GblPartitionName`s that will copied in
-    /// [get_verify_partitions]. Indicating expected GblPartitionName slice size.
-    pub fn get_verify_partitions_count(&self) -> Result<usize> {
-        let mut partition_count = 0usize;
-
-        // SAFETY:
-        // `self.interface()?` guarantees self.interface is non-null and points to a valid object
-        // established by `Protocol::new()`.
-        // `self.interface` is input parameter, outlives the call, and will not be retained.
-        // `partition_count` must be set to valid length of `partition_names` array after the call.
-        // `partition_names` must be valid array of length `partition_count` after the call.
-        unsafe {
-            efi_call!(
-                @bufsize partition_count,
-                self.interface()?.get_verify_partitions,
-                self.interface,
-                &mut partition_count,
-                null_mut(),
-            )?;
-        }
-
-        Ok(partition_count)
-    }
-
     /// Wrapper of `GBL_IMAGE_LOADING_PROTOCOL.get_verify_partitions()`
     ///
-    /// [get_verify_partitions_count] can be used to get expected length for partition_names.
-    ///
     /// # Result
+    /// Err(BufferTooSmall(Some(size))) - when provided `partition_names` is less than expected
+    /// `size`
     /// Err(err) - if error occurred.
-    /// Ok(len) - will return number of `GblPartitionName`s copied to `partition_names` slice.
-    pub fn get_verify_partitions(&self, partition_names: &mut [GblPartitionName]) -> Result<usize> {
+    /// Ok(len) - will return number of `GblEfiPartitionName`s copied to `partition_names` slice.
+    pub fn get_verify_partitions(
+        &self,
+        partition_names: &mut [GblEfiPartitionName],
+    ) -> Result<usize> {
         let partition_count_in: usize = partition_names.len();
         let mut partition_count: usize = partition_count_in;
 
@@ -216,10 +187,14 @@ impl Protocol<'_, GblImageLoadingProtocol> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{protocol::image_loading, test::run_test, DeviceHandle, EfiEntry};
+    use crate::{
+        protocol::gbl_efi_image_loading::GblImageLoadingProtocol, test::run_test, DeviceHandle,
+        EfiEntry,
+    };
     use core::{ffi::c_void, iter::zip, ptr::null_mut};
     use efi_types::{
-        EfiStatus, EFI_STATUS_BAD_BUFFER_SIZE, EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_SUCCESS,
+        EfiStatus, EFI_STATUS_BAD_BUFFER_SIZE, EFI_STATUS_BUFFER_TOO_SMALL,
+        EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_SUCCESS,
     };
 
     const UCS2_STR: [u16; 8] = [0x2603, 0x0073, 0x006e, 0x006f, 0x0077, 0x006d, 0x0061, 0x006e];
@@ -242,35 +217,35 @@ mod test {
     fn test_partition_name_get_str() {
         let mut buffer = [0u8; 100];
         // empty string
-        assert_eq!(GblPartitionName::from([0u16]).get_str(&mut buffer).unwrap(), "");
-        assert_eq!(GblPartitionName::from([0u16]).get_str(&mut buffer).unwrap(), "");
-        assert_eq!(GblPartitionName::from([0x0000]).get_str(&mut buffer[..0]).unwrap(), "");
+        assert_eq!(GblEfiPartitionName::from([0u16]).get_str(&mut buffer).unwrap(), "");
+        assert_eq!(GblEfiPartitionName::from([0u16]).get_str(&mut buffer).unwrap(), "");
+        assert_eq!(GblEfiPartitionName::from([0x0000]).get_str(&mut buffer[..0]).unwrap(), "");
 
         // Special characters
-        assert_eq!(GblPartitionName::from(UCS2_STR).get_str(&mut buffer).unwrap(), UTF8_STR);
+        assert_eq!(GblEfiPartitionName::from(UCS2_STR).get_str(&mut buffer).unwrap(), UTF8_STR);
 
         // Null character in the middle
         assert_eq!(
-            GblPartitionName::from([0x006d, 0x0075, 0x0000, 0x0073, 0x0069, 0x0063])
+            GblEfiPartitionName::from([0x006d, 0x0075, 0x0000, 0x0073, 0x0069, 0x0063])
                 .get_str(&mut buffer),
             Ok("mu")
         );
 
         // Null character at the end
         assert_eq!(
-            GblPartitionName::from([0x006d, 0x0075, 0x0073, 0x0069, 0x0063, 0x0000])
+            GblEfiPartitionName::from([0x006d, 0x0075, 0x0073, 0x0069, 0x0063, 0x0000])
                 .get_str(&mut buffer),
             Ok("music")
         );
 
         // exact buffer size
         assert_eq!(
-            GblPartitionName::from([0x006d, 0x0075, 0x0073, 0x0069, 0x0063])
+            GblEfiPartitionName::from([0x006d, 0x0075, 0x0073, 0x0069, 0x0063])
                 .get_str(&mut buffer[..5]),
             Ok("music")
         );
         assert_eq!(
-            GblPartitionName::from([0x006d, 0x0075, 0x0000, 0x0073, 0x0069, 0x0063])
+            GblEfiPartitionName::from([0x006d, 0x0075, 0x0000, 0x0073, 0x0069, 0x0063])
                 .get_str(&mut buffer[..2]),
             Ok("mu")
         );
@@ -279,7 +254,7 @@ mod test {
     #[test]
     fn test_partition_name_get_str_small_buffer() {
         let mut buffer = [0u8; 8];
-        let partition_name: GblPartitionName = UCS2_STR.into();
+        let partition_name: GblEfiPartitionName = UCS2_STR.into();
         assert_eq!(partition_name.get_str(&mut buffer), Err(10usize));
     }
 
@@ -294,75 +269,82 @@ mod test {
 
     #[test]
     fn test_proto_get_partitions_count() {
+        const EXPECTED_PARTITIONS_NUM: usize = 2;
         unsafe extern "C" fn get_verify_partitions(
-            _: *mut EfiImageLoadingProtocol,
+            _: *mut GblEfiImageLoadingProtocol,
             number_of_partitions: *mut usize,
-            _: *mut GblPartitionName,
+            _: *mut GblEfiPartitionName,
         ) -> EfiStatus {
             assert!(!number_of_partitions.is_null());
             // SAFETY
             // `number_of_partitions` must be valid pointer to usize
             let number_of_partitions = unsafe { number_of_partitions.as_mut() }.unwrap();
 
-            *number_of_partitions = 1;
-
-            EFI_STATUS_SUCCESS
+            *number_of_partitions = EXPECTED_PARTITIONS_NUM;
+            EFI_STATUS_BUFFER_TOO_SMALL
         }
 
         run_test(|image_handle, systab_ptr| {
-            let mut image_loading = EfiImageLoadingProtocol {
+            let mut image_loading = GblEfiImageLoadingProtocol {
                 get_verify_partitions: Some(get_verify_partitions),
                 ..Default::default()
             };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let protocol = generate_protocol::<image_loading::GblImageLoadingProtocol>(
-                &efi_entry,
-                &mut image_loading,
-            );
+            let protocol =
+                generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
 
-            let partitions_count = protocol.get_verify_partitions_count().unwrap();
-            assert_eq!(partitions_count, 1);
+            let mut partitions: [GblEfiPartitionName; 0] = Default::default();
+            assert_eq!(
+                protocol.get_verify_partitions(&mut partitions).unwrap_err(),
+                Error::BufferTooSmall(Some(EXPECTED_PARTITIONS_NUM))
+            );
         });
     }
 
     #[test]
     fn test_proto_get_partitions_count_error() {
         unsafe extern "C" fn get_verify_partitions(
-            _: *mut EfiImageLoadingProtocol,
+            _: *mut GblEfiImageLoadingProtocol,
             _: *mut usize,
-            _: *mut GblPartitionName,
+            _: *mut GblEfiPartitionName,
         ) -> EfiStatus {
             EFI_STATUS_INVALID_PARAMETER
         }
 
         run_test(|image_handle, systab_ptr| {
-            let mut image_loading = EfiImageLoadingProtocol {
+            let mut image_loading = GblEfiImageLoadingProtocol {
                 get_verify_partitions: Some(get_verify_partitions),
                 ..Default::default()
             };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let protocol = generate_protocol::<image_loading::GblImageLoadingProtocol>(
-                &efi_entry,
-                &mut image_loading,
-            );
+            let protocol =
+                generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
 
-            assert!(protocol.get_verify_partitions_count().is_err());
+            let mut partitions: [GblEfiPartitionName; 0] = Default::default();
+            assert_eq!(
+                protocol.get_verify_partitions(&mut partitions).unwrap_err(),
+                Error::InvalidInput
+            );
         });
     }
 
     #[test]
     fn test_proto_get_partitions_len_and_value() {
+        const EXPECTED_PARTITIONS_NUM: usize = 1;
         unsafe extern "C" fn get_verify_partitions(
-            _: *mut EfiImageLoadingProtocol,
+            _: *mut GblEfiImageLoadingProtocol,
             number_of_partitions: *mut usize,
-            partitions: *mut GblPartitionName,
+            partitions: *mut GblEfiPartitionName,
         ) -> EfiStatus {
             // SAFETY
             // `number_of_partitions` must be valid pointer to usize
             let number_of_partitions = unsafe { number_of_partitions.as_mut() }.unwrap();
 
             match *number_of_partitions {
-                0 => *number_of_partitions = 1,
+                n if n < EXPECTED_PARTITIONS_NUM => {
+                    *number_of_partitions = EXPECTED_PARTITIONS_NUM;
+                    EFI_STATUS_BUFFER_TOO_SMALL
+                }
                 _ => {
                     // SAFETY
                     // `partitions` must be valid array of size `number_of_partitions`
@@ -371,100 +353,103 @@ mod test {
                     };
                     *number_of_partitions = 1;
                     partitions[0].StrUtf16[..UCS2_STR.len()].copy_from_slice(&UCS2_STR);
+                    EFI_STATUS_SUCCESS
                 }
             }
-
-            EFI_STATUS_SUCCESS
         }
 
         run_test(|image_handle, systab_ptr| {
             let mut buffer_utf8 = get_buffer_utf8();
-            let mut image_loading = EfiImageLoadingProtocol {
+            let mut image_loading = GblEfiImageLoadingProtocol {
                 get_verify_partitions: Some(get_verify_partitions),
                 ..Default::default()
             };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let protocol = generate_protocol::<image_loading::GblImageLoadingProtocol>(
-                &efi_entry,
-                &mut image_loading,
-            );
-            let mut partitions: [GblPartitionName; 2] = Default::default();
+            let protocol =
+                generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
+            let mut partitions: [GblEfiPartitionName; 2] = Default::default();
 
-            let verify_partitions_len = protocol.get_verify_partitions_count().unwrap();
-            assert_eq!(verify_partitions_len, 1);
+            assert_eq!(
+                protocol.get_verify_partitions(&mut partitions[..0]).unwrap_err(),
+                Error::BufferTooSmall(Some(EXPECTED_PARTITIONS_NUM))
+            );
             let verify_partitions_len = protocol.get_verify_partitions(&mut partitions).unwrap();
             assert_eq!(verify_partitions_len, 1);
             assert_eq!(partitions[0].get_str(&mut buffer_utf8[0]), Ok(UTF8_STR));
         });
     }
+
     #[test]
     fn test_proto_get_partitions_zero_len() {
+        const EXPECTED_PARTITIONS_NUM: usize = 1;
         unsafe extern "C" fn get_verify_partitions(
-            _: *mut EfiImageLoadingProtocol,
+            _: *mut GblEfiImageLoadingProtocol,
             number_of_partitions: *mut usize,
-            _: *mut GblPartitionName,
+            _: *mut GblEfiPartitionName,
         ) -> EfiStatus {
             // SAFETY
             // `number_of_partitions` must be valid pointer to usize
             let number_of_partitions = unsafe { number_of_partitions.as_mut() }.unwrap();
             assert_eq!(*number_of_partitions, 0);
-            *number_of_partitions = 1;
-            EFI_STATUS_SUCCESS
+            *number_of_partitions = EXPECTED_PARTITIONS_NUM;
+            EFI_STATUS_BUFFER_TOO_SMALL
         }
 
         run_test(|image_handle, systab_ptr| {
-            let mut image_loading = EfiImageLoadingProtocol {
+            let mut image_loading = GblEfiImageLoadingProtocol {
                 get_verify_partitions: Some(get_verify_partitions),
                 ..Default::default()
             };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let protocol = generate_protocol::<image_loading::GblImageLoadingProtocol>(
-                &efi_entry,
-                &mut image_loading,
-            );
-            let mut partitions: [GblPartitionName; 0] = Default::default();
+            let protocol =
+                generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
+            let mut partitions: [GblEfiPartitionName; 0] = Default::default();
 
-            let verify_partitions_len = protocol.get_verify_partitions(&mut partitions).unwrap();
-            assert_eq!(verify_partitions_len, 1);
+            let verify_partitions_res = protocol.get_verify_partitions(&mut partitions);
+            assert_eq!(
+                verify_partitions_res.unwrap_err(),
+                Error::BufferTooSmall(Some(EXPECTED_PARTITIONS_NUM))
+            );
         });
     }
 
     #[test]
     fn test_proto_get_partitions_less_than_buffer() {
+        const EXPECTED_PARTITIONS_NUM: usize = 1;
         unsafe extern "C" fn get_verify_partitions(
-            _: *mut EfiImageLoadingProtocol,
+            _: *mut GblEfiImageLoadingProtocol,
             number_of_partitions: *mut usize,
-            partitions: *mut GblPartitionName,
+            partitions: *mut GblEfiPartitionName,
         ) -> EfiStatus {
-            assert!(!partitions.is_null());
             // SAFETY
             // `number_of_partitions` must be valid pointer to usize
             let number_of_partitions = unsafe { number_of_partitions.as_mut() }.unwrap();
+
+            assert!(!partitions.is_null());
             assert!(*number_of_partitions > 0);
+
             // SAFETY
             // `partitions` must be valid array of size `number_of_partitions`
             let partitions =
                 unsafe { core::slice::from_raw_parts_mut(partitions, *number_of_partitions) };
             partitions[0].StrUtf16[..UCS2_STR.len()].copy_from_slice(&UCS2_STR);
-            *number_of_partitions = 1;
+            *number_of_partitions = EXPECTED_PARTITIONS_NUM;
             EFI_STATUS_SUCCESS
         }
 
         run_test(|image_handle, systab_ptr| {
             let mut buffer_utf8 = get_buffer_utf8();
-            let mut image_loading = EfiImageLoadingProtocol {
+            let mut image_loading = GblEfiImageLoadingProtocol {
                 get_verify_partitions: Some(get_verify_partitions),
                 ..Default::default()
             };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let protocol = generate_protocol::<image_loading::GblImageLoadingProtocol>(
-                &efi_entry,
-                &mut image_loading,
-            );
-            let mut partitions: [GblPartitionName; 2] = Default::default();
+            let protocol =
+                generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
+            let mut partitions: [GblEfiPartitionName; 2] = Default::default();
 
             let verify_partitions_len = protocol.get_verify_partitions(&mut partitions).unwrap();
-            assert_eq!(verify_partitions_len, 1);
+            assert_eq!(verify_partitions_len, EXPECTED_PARTITIONS_NUM);
             assert_eq!(partitions[0].get_str(&mut buffer_utf8[0]), Ok(UTF8_STR));
         });
     }
@@ -472,22 +457,25 @@ mod test {
     #[test]
     fn test_proto_get_partitions_name_max() {
         unsafe extern "C" fn get_verify_partitions(
-            _: *mut EfiImageLoadingProtocol,
+            _: *mut GblEfiImageLoadingProtocol,
             number_of_partitions: *mut usize,
-            partitions: *mut GblPartitionName,
+            partitions: *mut GblEfiPartitionName,
         ) -> EfiStatus {
             let printable_utf16 = get_printable_utf16();
-            assert!(!partitions.is_null());
             // SAFETY
             // `number_of_partitions` must be valid pointer to usize
             let number_of_partitions = unsafe { number_of_partitions.as_mut() }.unwrap();
+
+            assert!(!partitions.is_null());
             assert!(*number_of_partitions > 0);
+
             // SAFETY
             // `partitions` must be valid array of size `number_of_partitions`
             let partitions =
                 unsafe { core::slice::from_raw_parts_mut(partitions, *number_of_partitions) };
 
-            let partition_names: [GblPartitionName; PARTITIONS_MAX] = (0..PARTITION_NAME_LEN_U16)
+            let partition_names: [GblEfiPartitionName; PARTITIONS_MAX] = (0
+                ..PARTITION_NAME_LEN_U16)
                 .cycle()
                 .take(PARTITIONS_MAX)
                 .map(|i| printable_utf16[i..i + PARTITION_NAME_LEN_U16].into())
@@ -507,16 +495,14 @@ mod test {
         run_test(|image_handle, systab_ptr| {
             let mut buffer_utf8 = get_buffer_utf8();
             let printable_str = get_printable_string();
-            let mut image_loading = EfiImageLoadingProtocol {
+            let mut image_loading = GblEfiImageLoadingProtocol {
                 get_verify_partitions: Some(get_verify_partitions),
                 ..Default::default()
             };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let protocol = generate_protocol::<image_loading::GblImageLoadingProtocol>(
-                &efi_entry,
-                &mut image_loading,
-            );
-            let mut partitions = [GblPartitionName::default(); PARTITIONS_MAX];
+            let protocol =
+                generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
+            let mut partitions = [GblEfiPartitionName::default(); PARTITIONS_MAX];
             let expected_strs: Vec<&str> = (0..PARTITION_NAME_LEN_U16)
                 .cycle()
                 .take(PARTITIONS_MAX)
@@ -533,41 +519,42 @@ mod test {
 
     #[test]
     fn test_proto_get_partitions() {
+        const EXPECTED_PARTITIONS_NUM: usize = 2;
         unsafe extern "C" fn get_verify_partitions(
-            _: *mut EfiImageLoadingProtocol,
+            _: *mut GblEfiImageLoadingProtocol,
             number_of_partitions: *mut usize,
-            partitions: *mut GblPartitionName,
+            partitions: *mut GblEfiPartitionName,
         ) -> EfiStatus {
-            assert!(!partitions.is_null());
             // SAFETY
             // `number_of_partitions` must be valid pointer to usize
             let number_of_partitions = unsafe { number_of_partitions.as_mut() }.unwrap();
+
+            assert!(!partitions.is_null());
             assert!(*number_of_partitions > 0);
+
             // SAFETY
             // `partitions` must be valid array of size `number_of_partitions`
             let partitions =
                 unsafe { core::slice::from_raw_parts_mut(partitions, *number_of_partitions) };
             partitions[0].StrUtf16[..UCS2_STR.len()].copy_from_slice(&UCS2_STR);
             partitions[1].StrUtf16[..UCS2_STR.len() - 1].copy_from_slice(&UCS2_STR[1..]);
-            *number_of_partitions = 2;
+            *number_of_partitions = EXPECTED_PARTITIONS_NUM;
             EFI_STATUS_SUCCESS
         }
 
         run_test(|image_handle, systab_ptr| {
             let mut buffer_utf8 = get_buffer_utf8();
-            let mut image_loading = EfiImageLoadingProtocol {
+            let mut image_loading = GblEfiImageLoadingProtocol {
                 get_verify_partitions: Some(get_verify_partitions),
                 ..Default::default()
             };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let protocol = generate_protocol::<image_loading::GblImageLoadingProtocol>(
-                &efi_entry,
-                &mut image_loading,
-            );
-            let mut partitions: [GblPartitionName; 2] = Default::default();
+            let protocol =
+                generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
+            let mut partitions: [GblEfiPartitionName; EXPECTED_PARTITIONS_NUM] = Default::default();
 
             let verify_partitions_len = protocol.get_verify_partitions(&mut partitions).unwrap();
-            assert_eq!(verify_partitions_len, 2);
+            assert_eq!(verify_partitions_len, EXPECTED_PARTITIONS_NUM);
 
             let mut char_idx = UTF8_STR.char_indices();
             char_idx.next();
@@ -580,58 +567,54 @@ mod test {
 
     #[test]
     fn test_proto_get_partitions_empty() {
+        const EXPECTED_PARTITIONS_NUM: usize = 0;
         unsafe extern "C" fn get_verify_partitions(
-            _: *mut EfiImageLoadingProtocol,
+            _: *mut GblEfiImageLoadingProtocol,
             number_of_partitions: *mut usize,
-            partitions: *mut GblPartitionName,
+            partitions: *mut GblEfiPartitionName,
         ) -> EfiStatus {
-            assert!(!partitions.is_null());
             // SAFETY
             // `number_of_partitions` must be valid pointer to usize
             let number_of_partitions = unsafe { number_of_partitions.as_mut() }.unwrap();
-            assert!(*number_of_partitions > 0);
-            *number_of_partitions = 0;
+            assert!(!partitions.is_null());
+            *number_of_partitions = EXPECTED_PARTITIONS_NUM;
             EFI_STATUS_SUCCESS
         }
 
         run_test(|image_handle, systab_ptr| {
-            let mut image_loading = EfiImageLoadingProtocol {
+            let mut image_loading = GblEfiImageLoadingProtocol {
                 get_verify_partitions: Some(get_verify_partitions),
                 ..Default::default()
             };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let protocol = generate_protocol::<image_loading::GblImageLoadingProtocol>(
-                &efi_entry,
-                &mut image_loading,
-            );
-            let mut partitions: [GblPartitionName; 2] = Default::default();
+            let protocol =
+                generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
+            let mut partitions: [GblEfiPartitionName; 2] = Default::default();
 
             let verify_partitions_len = protocol.get_verify_partitions(&mut partitions).unwrap();
-            assert_eq!(verify_partitions_len, 0);
+            assert_eq!(verify_partitions_len, EXPECTED_PARTITIONS_NUM);
         });
     }
 
     #[test]
     fn test_proto_get_partitions_error() {
         unsafe extern "C" fn get_verify_partitions(
-            _: *mut EfiImageLoadingProtocol,
+            _: *mut GblEfiImageLoadingProtocol,
             _: *mut usize,
-            _: *mut GblPartitionName,
+            _: *mut GblEfiPartitionName,
         ) -> EfiStatus {
             EFI_STATUS_BAD_BUFFER_SIZE
         }
 
         run_test(|image_handle, systab_ptr| {
-            let mut image_loading = EfiImageLoadingProtocol {
+            let mut image_loading = GblEfiImageLoadingProtocol {
                 get_verify_partitions: Some(get_verify_partitions),
                 ..Default::default()
             };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let protocol = generate_protocol::<image_loading::GblImageLoadingProtocol>(
-                &efi_entry,
-                &mut image_loading,
-            );
-            let mut partitions: [GblPartitionName; 1] = Default::default();
+            let protocol =
+                generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
+            let mut partitions: [GblEfiPartitionName; 1] = Default::default();
 
             assert!(protocol.get_verify_partitions(&mut partitions).is_err());
         });
@@ -643,22 +626,20 @@ mod test {
     #[test]
     fn test_proto_get_buffer_error() {
         unsafe extern "C" fn get_buffer(
-            _: *mut EfiImageLoadingProtocol,
-            _: *const GblImageInfo,
-            _: *mut GblImageBuffer,
+            _: *mut GblEfiImageLoadingProtocol,
+            _: *const GblEfiImageInfo,
+            _: *mut GblEfiImageBuffer,
         ) -> EfiStatus {
             EFI_STATUS_INVALID_PARAMETER
         }
 
         run_test(|image_handle, systab_ptr| {
-            let gbl_image_info: GblImageInfo = Default::default();
+            let gbl_image_info: GblEfiImageInfo = Default::default();
             let mut image_loading =
-                EfiImageLoadingProtocol { get_buffer: Some(get_buffer), ..Default::default() };
+                GblEfiImageLoadingProtocol { get_buffer: Some(get_buffer), ..Default::default() };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let protocol = generate_protocol::<image_loading::GblImageLoadingProtocol>(
-                &efi_entry,
-                &mut image_loading,
-            );
+            let protocol =
+                generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
 
             assert!(protocol.get_buffer(&gbl_image_info).is_err());
         });
@@ -667,14 +648,14 @@ mod test {
     #[test]
     fn test_proto_get_buffer_not_provided() {
         unsafe extern "C" fn get_buffer(
-            _: *mut EfiImageLoadingProtocol,
-            image_info: *const GblImageInfo,
-            buffer: *mut GblImageBuffer,
+            _: *mut GblEfiImageLoadingProtocol,
+            image_info: *const GblEfiImageInfo,
+            buffer: *mut GblEfiImageBuffer,
         ) -> EfiStatus {
             assert!(!image_info.is_null());
             assert!(!buffer.is_null());
             // SAFETY
-            // `buffer` must be valid pointer to `GblImageBuffer`
+            // `buffer` must be valid pointer to `GblEfiImageBuffer`
             let buffer = unsafe { buffer.as_mut() }.unwrap();
 
             buffer.Memory = null_mut();
@@ -684,17 +665,15 @@ mod test {
         }
 
         run_test(|image_handle, systab_ptr| {
-            let gbl_image_info: GblImageInfo = Default::default();
+            let gbl_image_info: GblEfiImageInfo = Default::default();
             let mut image_loading =
-                EfiImageLoadingProtocol { get_buffer: Some(get_buffer), ..Default::default() };
+                GblEfiImageLoadingProtocol { get_buffer: Some(get_buffer), ..Default::default() };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let protocol = generate_protocol::<image_loading::GblImageLoadingProtocol>(
-                &efi_entry,
-                &mut image_loading,
-            );
+            let protocol =
+                generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
 
-            let buffer_res = protocol.get_buffer(&gbl_image_info);
-            assert_eq!(buffer_res, Err(Error::InvalidInput));
+            let res = protocol.get_buffer(&gbl_image_info);
+            assert_eq!(res.unwrap_err(), Error::InvalidInput);
         });
     }
 
@@ -705,14 +684,14 @@ mod test {
     #[test]
     fn test_proto_get_buffer_zero_size() {
         unsafe extern "C" fn get_buffer(
-            _: *mut EfiImageLoadingProtocol,
-            image_info: *const GblImageInfo,
-            buffer: *mut GblImageBuffer,
+            _: *mut GblEfiImageLoadingProtocol,
+            image_info: *const GblEfiImageInfo,
+            buffer: *mut GblEfiImageBuffer,
         ) -> EfiStatus {
             assert!(!image_info.is_null());
             assert!(!buffer.is_null());
             // SAFETY
-            // `buffer` must be valid pointer to `GblImageBuffer`
+            // `buffer` must be valid pointer to `GblEfiImageBuffer`
             let buffer = unsafe { buffer.as_mut() }.unwrap();
 
             buffer.Memory = Box::leak(get_memory()).as_mut_ptr() as *mut c_void;
@@ -722,35 +701,33 @@ mod test {
         }
 
         run_test(|image_handle, systab_ptr| {
-            let gbl_image_info: GblImageInfo = Default::default();
+            let gbl_image_info: GblEfiImageInfo = Default::default();
             let mut image_loading =
-                EfiImageLoadingProtocol { get_buffer: Some(get_buffer), ..Default::default() };
+                GblEfiImageLoadingProtocol { get_buffer: Some(get_buffer), ..Default::default() };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let protocol = generate_protocol::<image_loading::GblImageLoadingProtocol>(
-                &efi_entry,
-                &mut image_loading,
-            );
+            let protocol =
+                generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
 
             let _guard = GET_BUFFER_MUTEX.lock();
-            let buffer = protocol.get_buffer(&gbl_image_info).unwrap();
-            assert!(buffer.as_ref().is_empty());
+            let res = protocol.get_buffer(&gbl_image_info).unwrap();
+            assert!(res.buffer.as_ref().unwrap().is_empty());
         });
     }
 
     #[test]
     fn test_proto_get_buffer_small() {
         unsafe extern "C" fn get_buffer(
-            _: *mut EfiImageLoadingProtocol,
-            image_info: *const GblImageInfo,
-            buffer: *mut GblImageBuffer,
+            _: *mut GblEfiImageLoadingProtocol,
+            image_info: *const GblEfiImageInfo,
+            buffer: *mut GblEfiImageBuffer,
         ) -> EfiStatus {
             assert!(!image_info.is_null());
             // SAFETY
-            // `image_info` must be valid pointer to `GblImageInfo`
+            // `image_info` must be valid pointer to `GblEfiImageInfo`
             let image_info = unsafe { image_info.as_ref() }.unwrap();
             assert!(!buffer.is_null());
             // SAFETY
-            // `buffer` must be valid pointer to `GblImageBuffer`
+            // `buffer` must be valid pointer to `GblEfiImageBuffer`
             let buffer = unsafe { buffer.as_mut() }.unwrap();
 
             buffer.Memory = Box::leak(get_memory()).as_mut_ptr() as *mut c_void;
@@ -760,33 +737,31 @@ mod test {
         }
 
         run_test(|image_handle, systab_ptr| {
-            let gbl_image_info: GblImageInfo =
-                GblImageInfo { ImageType: [0; PARTITION_NAME_LEN_U16], SizeBytes: 10 };
+            let gbl_image_info: GblEfiImageInfo =
+                GblEfiImageInfo { ImageType: [0; PARTITION_NAME_LEN_U16], SizeBytes: 10 };
             let mut image_loading =
-                EfiImageLoadingProtocol { get_buffer: Some(get_buffer), ..Default::default() };
+                GblEfiImageLoadingProtocol { get_buffer: Some(get_buffer), ..Default::default() };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let protocol = generate_protocol::<image_loading::GblImageLoadingProtocol>(
-                &efi_entry,
-                &mut image_loading,
-            );
+            let protocol =
+                generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
 
             let _guard = GET_BUFFER_MUTEX.lock();
             let res = protocol.get_buffer(&gbl_image_info);
-            assert_eq!(res, Err(Error::BufferTooSmall(Some(10))));
+            assert_eq!(res.unwrap_err(), Error::BufferTooSmall(Some(10)));
         });
     }
 
     #[test]
     fn test_proto_get_buffer() {
         unsafe extern "C" fn get_buffer(
-            _: *mut EfiImageLoadingProtocol,
-            image_info: *const GblImageInfo,
-            buffer: *mut GblImageBuffer,
+            _: *mut GblEfiImageLoadingProtocol,
+            image_info: *const GblEfiImageInfo,
+            buffer: *mut GblEfiImageBuffer,
         ) -> EfiStatus {
             assert!(!image_info.is_null());
             assert!(!buffer.is_null());
             // SAFETY
-            // `buffer` must be valid pointer to `GblImageBuffer`
+            // `buffer` must be valid pointer to `GblEfiImageBuffer`
             let buffer = unsafe { buffer.as_mut() }.unwrap();
 
             let mem = get_memory();
@@ -797,20 +772,18 @@ mod test {
         }
 
         run_test(|image_handle, systab_ptr| {
-            let gbl_image_info: GblImageInfo =
-                GblImageInfo { ImageType: [0; PARTITION_NAME_LEN_U16], SizeBytes: 100 };
+            let gbl_image_info: GblEfiImageInfo =
+                GblEfiImageInfo { ImageType: [0; PARTITION_NAME_LEN_U16], SizeBytes: 100 };
             let mut image_loading =
-                EfiImageLoadingProtocol { get_buffer: Some(get_buffer), ..Default::default() };
+                GblEfiImageLoadingProtocol { get_buffer: Some(get_buffer), ..Default::default() };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let protocol = generate_protocol::<image_loading::GblImageLoadingProtocol>(
-                &efi_entry,
-                &mut image_loading,
-            );
+            let protocol =
+                generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
 
             let _guard = GET_BUFFER_MUTEX.lock();
             let buf = protocol.get_buffer(&gbl_image_info).unwrap();
-            assert_ne!(buf.as_ref().as_ptr(), null_mut());
-            assert_eq!(buf.as_ref().len(), 100);
+            assert_ne!(buf.buffer.as_ref().unwrap().as_ptr(), null_mut());
+            assert_eq!(buf.buffer.as_ref().unwrap().len(), 100);
         });
     }
 
@@ -818,22 +791,22 @@ mod test {
     fn test_proto_get_buffer_image_type() {
         const IMAGE_TYPE_STR: &'static str = "test";
         unsafe extern "C" fn get_buffer(
-            _: *mut EfiImageLoadingProtocol,
-            image_info: *const GblImageInfo,
-            buffer: *mut GblImageBuffer,
+            _: *mut GblEfiImageLoadingProtocol,
+            image_info: *const GblEfiImageInfo,
+            buffer: *mut GblEfiImageBuffer,
         ) -> EfiStatus {
             assert!(!image_info.is_null());
             // SAFETY
-            // `image_info` must be valid pointer to `GblImageInfo`
+            // `image_info` must be valid pointer to `GblEfiImageInfo`
             let image_info = unsafe { image_info.as_ref() }.unwrap();
             assert!(!buffer.is_null());
             // SAFETY
-            // `buffer` must be valid pointer to `GblImageBuffer`
+            // `buffer` must be valid pointer to `GblEfiImageBuffer`
             let buffer = unsafe { buffer.as_mut() }.unwrap();
 
             let mut buffer_utf8 = [0u8; 100];
             assert_eq!(
-                GblPartitionName::from(image_info.ImageType).get_str(&mut buffer_utf8).unwrap(),
+                GblEfiPartitionName::from(image_info.ImageType).get_str(&mut buffer_utf8).unwrap(),
                 IMAGE_TYPE_STR
             );
 
@@ -847,15 +820,13 @@ mod test {
         run_test(|image_handle, systab_ptr| {
             let mut image_type = [0u16; PARTITION_NAME_LEN_U16];
             image_type[..4].copy_from_slice(&IMAGE_TYPE_STR.encode_utf16().collect::<Vec<u16>>());
-            let gbl_image_info: GblImageInfo =
-                GblImageInfo { ImageType: image_type, SizeBytes: 100 };
+            let gbl_image_info: GblEfiImageInfo =
+                GblEfiImageInfo { ImageType: image_type, SizeBytes: 100 };
             let mut image_loading =
-                EfiImageLoadingProtocol { get_buffer: Some(get_buffer), ..Default::default() };
+                GblEfiImageLoadingProtocol { get_buffer: Some(get_buffer), ..Default::default() };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let protocol = generate_protocol::<image_loading::GblImageLoadingProtocol>(
-                &efi_entry,
-                &mut image_loading,
-            );
+            let protocol =
+                generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
 
             let _guard = GET_BUFFER_MUTEX.lock();
             let res = protocol.get_buffer(&gbl_image_info);
@@ -866,14 +837,14 @@ mod test {
     #[test]
     fn test_proto_get_buffer_double_call() {
         unsafe extern "C" fn get_buffer(
-            _: *mut EfiImageLoadingProtocol,
-            image_info: *const GblImageInfo,
-            buffer: *mut GblImageBuffer,
+            _: *mut GblEfiImageLoadingProtocol,
+            image_info: *const GblEfiImageInfo,
+            buffer: *mut GblEfiImageBuffer,
         ) -> EfiStatus {
             assert!(!image_info.is_null());
             assert!(!buffer.is_null());
             // SAFETY
-            // `buffer` must be valid pointer to `GblImageBuffer`
+            // `buffer` must be valid pointer to `GblEfiImageBuffer`
             let buffer = unsafe { buffer.as_mut() }.unwrap();
 
             let mem = get_memory();
@@ -884,33 +855,31 @@ mod test {
         }
 
         run_test(|image_handle, systab_ptr| {
-            let gbl_image_info: GblImageInfo =
-                GblImageInfo { ImageType: [0; PARTITION_NAME_LEN_U16], SizeBytes: 100 };
+            let gbl_image_info: GblEfiImageInfo =
+                GblEfiImageInfo { ImageType: [0; PARTITION_NAME_LEN_U16], SizeBytes: 100 };
             let mut image_loading =
-                EfiImageLoadingProtocol { get_buffer: Some(get_buffer), ..Default::default() };
+                GblEfiImageLoadingProtocol { get_buffer: Some(get_buffer), ..Default::default() };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let protocol = generate_protocol::<image_loading::GblImageLoadingProtocol>(
-                &efi_entry,
-                &mut image_loading,
-            );
+            let protocol =
+                generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
 
             let _guard = GET_BUFFER_MUTEX.lock();
             let _buf = protocol.get_buffer(&gbl_image_info).unwrap();
-            assert_eq!(protocol.get_buffer(&gbl_image_info), Err(Error::AlreadyStarted));
+            assert_eq!(protocol.get_buffer(&gbl_image_info).unwrap_err(), Error::AlreadyStarted);
         });
     }
 
     #[test]
     fn test_proto_get_buffer_double_call_after_drop() {
         unsafe extern "C" fn get_buffer(
-            _: *mut EfiImageLoadingProtocol,
-            image_info: *const GblImageInfo,
-            buffer: *mut GblImageBuffer,
+            _: *mut GblEfiImageLoadingProtocol,
+            image_info: *const GblEfiImageInfo,
+            buffer: *mut GblEfiImageBuffer,
         ) -> EfiStatus {
             assert!(!image_info.is_null());
             assert!(!buffer.is_null());
             // SAFETY
-            // `buffer` must be valid pointer to `GblImageBuffer`
+            // `buffer` must be valid pointer to `GblEfiImageBuffer`
             let buffer = unsafe { buffer.as_mut() }.unwrap();
 
             let mem = get_memory();
@@ -921,15 +890,13 @@ mod test {
         }
 
         run_test(|image_handle, systab_ptr| {
-            let gbl_image_info: GblImageInfo =
-                GblImageInfo { ImageType: [0; PARTITION_NAME_LEN_U16], SizeBytes: 100 };
+            let gbl_image_info: GblEfiImageInfo =
+                GblEfiImageInfo { ImageType: [0; PARTITION_NAME_LEN_U16], SizeBytes: 100 };
             let mut image_loading =
-                EfiImageLoadingProtocol { get_buffer: Some(get_buffer), ..Default::default() };
+                GblEfiImageLoadingProtocol { get_buffer: Some(get_buffer), ..Default::default() };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let protocol = generate_protocol::<image_loading::GblImageLoadingProtocol>(
-                &efi_entry,
-                &mut image_loading,
-            );
+            let protocol =
+                generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
 
             let _guard = GET_BUFFER_MUTEX.lock();
             protocol.get_buffer(&gbl_image_info).unwrap();
@@ -941,14 +908,14 @@ mod test {
     #[should_panic]
     fn test_proto_get_buffer_too_many_times() {
         unsafe extern "C" fn get_buffer(
-            _: *mut EfiImageLoadingProtocol,
-            image_info: *const GblImageInfo,
-            buffer: *mut GblImageBuffer,
+            _: *mut GblEfiImageLoadingProtocol,
+            image_info: *const GblEfiImageInfo,
+            buffer: *mut GblEfiImageBuffer,
         ) -> EfiStatus {
             assert!(!image_info.is_null());
             assert!(!buffer.is_null());
             // SAFETY
-            // `buffer` must be valid pointer to `GblImageBuffer`
+            // `buffer` must be valid pointer to `GblEfiImageBuffer`
             let buffer = unsafe { buffer.as_mut() }.unwrap();
 
             let mem = get_memory();
@@ -960,21 +927,101 @@ mod test {
         }
 
         run_test(|image_handle, systab_ptr| {
-            let gbl_image_info: GblImageInfo =
-                GblImageInfo { ImageType: [0; PARTITION_NAME_LEN_U16], SizeBytes: 100 };
+            let gbl_image_info: GblEfiImageInfo =
+                GblEfiImageInfo { ImageType: [0; PARTITION_NAME_LEN_U16], SizeBytes: 100 };
             let mut image_loading =
-                EfiImageLoadingProtocol { get_buffer: Some(get_buffer), ..Default::default() };
+                GblEfiImageLoadingProtocol { get_buffer: Some(get_buffer), ..Default::default() };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let protocol = generate_protocol::<image_loading::GblImageLoadingProtocol>(
-                &efi_entry,
-                &mut image_loading,
-            );
+            let protocol =
+                generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
 
             let _guard = GET_BUFFER_MUTEX.lock();
-            let mut keep_alive: Vec<ImageBuffer> = vec![];
+            let mut keep_alive: Vec<EfiImageBuffer> = vec![];
             for _ in 1..=MAX_ARRAY_SIZE + 1 {
                 keep_alive.push(protocol.get_buffer(&gbl_image_info).unwrap());
             }
         });
+    }
+
+    #[test]
+    fn test_efi_image_buffer() {
+        let mut v = vec![0u8; 1];
+        let gbl_buffer =
+            GblEfiImageBuffer { Memory: v.as_mut_ptr() as *mut c_void, SizeBytes: v.len() };
+
+        let _guard = GET_BUFFER_MUTEX.lock();
+        // SAFETY:
+        // 'gbl_buffer` represents valid buffer created by vector.
+        let res = unsafe { EfiImageBuffer::new(gbl_buffer) };
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_efi_image_buffer_null() {
+        let gbl_buffer = GblEfiImageBuffer { Memory: null_mut(), SizeBytes: 1 };
+
+        let _guard = GET_BUFFER_MUTEX.lock();
+        // SAFETY:
+        // 'gbl_buffer` contains Memory == NULL, which is valid input value. And we expect Error as
+        // a result
+        let res = unsafe { EfiImageBuffer::new(gbl_buffer) };
+        assert_eq!(res.unwrap_err(), Error::InvalidInput);
+    }
+
+    #[test]
+    fn test_efi_image_buffer_same_buffer() {
+        let mut v = vec![0u8; 1];
+        let gbl_buffer =
+            GblEfiImageBuffer { Memory: v.as_mut_ptr() as *mut c_void, SizeBytes: v.len() };
+
+        let _guard = GET_BUFFER_MUTEX.lock();
+        // SAFETY:
+        // 'gbl_buffer` represents valid buffer created by vector.
+        let res1 = unsafe { EfiImageBuffer::new(gbl_buffer) };
+        assert!(res1.is_ok());
+
+        // Since we keep `res1`, second return of same buffer should fail
+        // SAFETY:
+        // 'gbl_buffer` represents valid buffer created by vector.
+        let res2 = unsafe { EfiImageBuffer::new(gbl_buffer) };
+        assert_eq!(res2.unwrap_err(), Error::AlreadyStarted);
+    }
+
+    #[test]
+    fn test_efi_image_buffer_same_buffer_after_drop() {
+        let mut v = vec![0u8; 1];
+        let gbl_buffer =
+            GblEfiImageBuffer { Memory: v.as_mut_ptr() as *mut c_void, SizeBytes: v.len() };
+
+        let _guard = GET_BUFFER_MUTEX.lock();
+        // SAFETY:
+        // 'gbl_buffer` represents valid buffer created by vector.
+        let res1 = unsafe { EfiImageBuffer::new(gbl_buffer) };
+        drop(res1);
+
+        // Since `res1` was dropped same buffer can be returned.
+        // SAFETY:
+        // 'gbl_buffer` represents valid buffer created by vector.
+        let res2 = unsafe { EfiImageBuffer::new(gbl_buffer) };
+        assert!(res2.is_ok());
+    }
+
+    #[test]
+    fn test_efi_image_buffer_take() {
+        let mut v = vec![0u8; 1];
+        let gbl_buffer =
+            GblEfiImageBuffer { Memory: v.as_mut_ptr() as *mut c_void, SizeBytes: v.len() };
+
+        let _guard = GET_BUFFER_MUTEX.lock();
+        // SAFETY:
+        // 'gbl_buffer` represents valid buffer created by vector.
+        let res1 = unsafe { EfiImageBuffer::new(gbl_buffer) }.unwrap();
+        let _tmp = res1.take();
+
+        // Since `res1` was taken, we can't reuse same buffer.
+        // SAFETY:
+        // 'gbl_buffer` represents valid buffer created by vector.
+        let res2 = unsafe { EfiImageBuffer::new(gbl_buffer) };
+        assert_eq!(res2.unwrap_err(), Error::AlreadyStarted);
     }
 }
