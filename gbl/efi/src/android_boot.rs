@@ -12,30 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::str::from_utf8;
 use core::ffi::CStr;
 use core::fmt::Write;
-use core::str::from_utf8;
 
 use bootconfig::BootConfigBuilder;
-use bootimg::{BootImage, VendorImageHeader};
-use efi::{efi_print, efi_println, exit_boot_services, EfiEntry};
 use fdt::Fdt;
 use liberror::Error;
+use safemath::SafeNum;
+use efi::{efi_print, efi_println, exit_boot_services, EfiEntry};
+use bootimg::{BootImage, VendorImageHeader};
 use libgbl::{IntegrationError, Result};
 use misc::{AndroidBootMode, BootloaderMessage};
-use safemath::SafeNum;
 use zerocopy::{AsBytes, ByteSlice};
 
 use crate::{
-    efi_blocks::{find_block_devices, EfiMultiBlockDevices},
     utils::{aligned_subslice, cstr_bytes_to_str, get_efi_fdt},
+    efi_blocks::{find_block_devices, EfiMultiBlockDevices},
 };
 
 use crate::avb::GblEfiAvbOps;
 use avb::{slot_verify, HashtreeErrorMode, Ops, SlotVerifyFlags};
-
-#[cfg(target_arch = "aarch64")]
-use gbl_efi_aarch64::decompress_kernel;
 
 // Linux kernel requires 2MB alignment.
 const KERNEL_ALIGNMENT: usize = 2 * 1024 * 1024;
@@ -315,17 +312,6 @@ pub fn load_android_simple<'a>(
     efi_println!(efi_entry, "final bootconfig: \"{}\"", bootconfig_builder);
 
     ramdisk_load_curr += bootconfig_builder.config_bytes().len();
-
-    // On ARM, we may need to decompress the kernel and re-split the buffer to the new kernel size.
-    #[cfg(target_arch = "aarch64")]
-    let (load, kernel_size, kernel_tail_buffer) = {
-        let kernel_size = kernel_tail_buffer.len();
-        let compressed_kernel_offset = images_buffer.len() - kernel_size;
-        let decompressed_kernel_offset =
-            decompress_kernel(efi_entry, images_buffer, compressed_kernel_offset)?;
-        let (load, kernel_tail_buffer) = images_buffer.split_at_mut(decompressed_kernel_offset);
-        (load, kernel_tail_buffer.len(), kernel_tail_buffer)
-    };
 
     // Prepare FDT.
 

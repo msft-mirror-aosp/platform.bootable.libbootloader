@@ -28,7 +28,6 @@
 // TODO: b/312610985 - return warning for unused partitions
 #![allow(unused_variables, dead_code)]
 #![allow(async_fn_in_trait)]
-#![feature(associated_type_defaults)]
 // TODO: b/312608163 - Adding ZBI library usage to check dependencies
 extern crate avb;
 extern crate core;
@@ -44,7 +43,6 @@ pub mod boot_reason;
 pub mod error;
 pub mod fastboot;
 pub mod fuchsia_boot;
-mod image_buffer;
 pub mod ops;
 mod overlap;
 pub mod partition;
@@ -60,7 +58,7 @@ pub use boot_mode::BootMode;
 pub use boot_reason::KnownBootReason;
 pub use error::{IntegrationError, Result};
 use liberror::Error;
-pub use ops::{AndroidBootImages, BootImages, DefaultGblOps, FuchsiaBootImages, GblOps};
+pub use ops::{AndroidBootImages, BootImages, DefaultGblOps, FuchsiaBootImages, GblAvbOps, GblOps};
 
 use overlap::is_overlap;
 
@@ -168,7 +166,7 @@ pub fn get_images<'a: 'b, 'b: 'c, 'c, 'd>(
 /// GBL object that provides implementation of helpers for boot process.
 pub struct Gbl<'a, G>
 where
-    G: GblOps<'a>,
+    G: GblOps,
 {
     ops: &'a mut G,
     boot_token: Option<BootToken>,
@@ -176,7 +174,7 @@ where
 
 impl<'a, G> Gbl<'a, G>
 where
-    G: GblOps<'a>,
+    G: GblOps,
 {
     /// Returns a new [Gbl] object.
     ///

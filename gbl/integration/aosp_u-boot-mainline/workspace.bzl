@@ -365,15 +365,6 @@ cc_library(
         build_file_content = rust_crate_build_file("termtree"),
     )
 
-    native.new_local_repository(
-        name = "zune_inflate",
-        path = "external/rust/crates/zune-inflate",
-        build_file_content = rust_crate_build_file(
-            "zune_inflate",
-            features = ["gzip"],
-        ),
-    )
-
     # Following are third party rust crates dependencies which already contain a
     # BUILD file that we can use as-is without any modification.
 

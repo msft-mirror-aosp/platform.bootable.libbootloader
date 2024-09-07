@@ -32,9 +32,9 @@ pub const ZIRCON_KERNEL_ALIGN: usize = 64 * 1024;
 const DURABLE_BOOT_PARTITION: &str = "durable_boot";
 
 /// `GblAbrOps` wraps an object implementing `GblOps` and implements the `abr::Ops` trait.
-struct GblAbrOps<'a, T>(&'a mut T);
+struct GblAbrOps<'a, T: GblOps>(&'a mut T);
 
-impl<'b, T: GblOps<'b>> AbrOps for GblAbrOps<'_, T> {
+impl<'a, T: GblOps> AbrOps for GblAbrOps<'a, T> {
     fn read_abr_metadata(&mut self, out: &mut [u8]) -> Result<()> {
         self.0.read_from_partition_sync(DURABLE_BOOT_PARTITION, 0, out)
     }
@@ -145,8 +145,8 @@ fn slot_cmd_line(slot: SlotIndex) -> &'static str {
 ///
 /// On success returns a pair containing: 1. the slice of the ZBI container with device ZBI items
 /// and 2. the slice of the relocated kernel at the tail.
-pub fn zircon_load_verify<'a, 'b>(
-    ops: &mut impl GblOps<'b>,
+pub fn zircon_load_verify<'a>(
+    ops: &mut impl GblOps,
     slot: Option<SlotIndex>,
     slot_booted_successfully: bool,
     load: &'a mut [u8],
@@ -204,8 +204,8 @@ pub fn zircon_load_verify<'a, 'b>(
 ///
 /// Returns a tuple containing: 1. the slice of the ZBI container with device ZBI items, 2. the
 /// slice of the relocated kernel, and 3. the selected slot index.
-pub fn zircon_load_verify_abr<'a, 'b>(
-    ops: &mut impl GblOps<'b>,
+pub fn zircon_load_verify_abr<'a>(
+    ops: &mut impl GblOps,
     buffer: &'a mut [u8],
 ) -> GblResult<(&'a mut [u8], &'a mut [u8], SlotIndex)> {
     let (slot, successful) = get_boot_slot(&mut GblAbrOps(ops), true);
@@ -219,8 +219,7 @@ pub fn zircon_load_verify_abr<'a, 'b>(
 mod test {
     use super::*;
     use crate::{
-        ops::{AvbIoResult, CertPermanentAttributes, ImageBuffer, SHA256_DIGEST_SIZE},
-        partition::PartitionBlockDevice,
+        ops::{AvbIoResult, CertPermanentAttributes, GblAvbOps, SHA256_DIGEST_SIZE},
         slots, BootImages,
     };
     use abr::{mark_slot_active, mark_slot_unbootable, ABR_MAX_TRIES_REMAINING};
@@ -229,7 +228,6 @@ mod test {
         collections::{BTreeSet, HashMap},
         fmt::Write,
         fs,
-        num::NonZeroUsize,
         ops::{Deref, DerefMut},
         path::Path,
     };
@@ -286,7 +284,7 @@ mod test {
         }
     }
 
-    impl<'a> GblOps<'a> for TestZirconBootGblOps {
+    impl GblOps for TestZirconBootGblOps {
         fn console_out(&mut self) -> Option<&mut dyn Write> {
             None
         }
@@ -296,12 +294,6 @@ mod test {
         }
 
         fn preboot(&mut self, boot_images: BootImages) -> Result<()> {
-            unimplemented!();
-        }
-
-        fn partitions(&self) -> Result<&'a [PartitionBlockDevice<'a, Self::PartitionBlockIo>]> {
-            // For simplicity, we override `read_from_partition/write_to_partition` directly to
-            // avoid bringing in block device details.
             unimplemented!();
         }
 
@@ -355,17 +347,22 @@ mod test {
             unimplemented!();
         }
 
-        fn load_slot_interface<'b, B: gbl_storage::AsBlockDevice>(
-            &'b mut self,
-            block_device: &'b mut B,
+        fn load_slot_interface<'a, B: gbl_storage::AsBlockDevice>(
+            &'a mut self,
+            block_device: &'a mut B,
             boot_token: slots::BootToken,
-        ) -> GblResult<slots::Cursor<'b, B>> {
+        ) -> GblResult<slots::Cursor<'a, B>> {
             unimplemented!();
         }
 
-        // `avb::test_op:TestOps` provides a more comprehensive a set of mocks. Consider using it when
-        // we add more mocks.
+        fn avb_ops(&mut self) -> Option<impl GblAvbOps> {
+            Some(self)
+        }
+    }
 
+    // `avb::test_op:TestOps` provides a more comprehensive a set of mocks. Consider using it when
+    // we add more mocks.
+    impl GblAvbOps for &mut TestZirconBootGblOps {
         fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
             Ok(self.avb_unlocked)
         }
@@ -395,14 +392,6 @@ mod test {
             &mut self,
         ) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
             Ok(read_test_data("cert_permanent_attributes.hash").try_into().unwrap())
-        }
-
-        fn get_image_buffer<'c>(
-            &mut self,
-            image_name: &str,
-            size: NonZeroUsize,
-        ) -> GblResult<ImageBuffer<'c>> {
-            unimplemented!();
         }
     }
 

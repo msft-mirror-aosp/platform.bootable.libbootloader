@@ -162,9 +162,10 @@ mod test {
     extern crate avb_sysdeps;
 
     use super::*;
-    use crate::protocol::Protocol;
+    use crate::protocol::{Protocol, ProtocolInfo};
     use crate::test::*;
-    use crate::EfiEntry;
+    use crate::{DeviceHandle, EfiEntry};
+    use core::ptr::null_mut;
     use efi_types::{
         EfiStatus, GblEfiSlotInfo, GblEfiSlotMetadataBlock, GblEfiSlotProtocol,
         EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_SUCCESS,
@@ -173,18 +174,15 @@ mod test {
         GBL_EFI_BOOT_REASON_GBL_EFI_WATCHDOG as REASON_WATCHDOG,
     };
     use gbl::{
-        ops::{AvbIoResult, CertPermanentAttributes, SHA256_DIGEST_SIZE},
-        partition::PartitionBlockDevice,
+        ops::{avb_ops_none, GblAvbOps},
         slots::{Bootability, Cursor, RecoveryTarget, UnbootableReason},
         BootImages, Gbl, GblOps, Result as GblResult,
     };
     use gbl_storage_testlib::TestBlockDevice;
-    use libgbl::ops::ImageBuffer;
     // TODO(b/350526796): use ptr.is_aligned() when Rust 1.79 is in Android
     use std::{
         fmt::Write,
         mem::align_of,
-        num::NonZeroUsize,
         sync::atomic::{AtomicBool, AtomicU32, Ordering},
     };
     use zbi::ZbiContainer;
@@ -244,10 +242,7 @@ mod test {
         }
     }
 
-    impl<'a> GblOps<'a> for TestGblOps<'_>
-    where
-        Self: 'a,
-    {
+    impl<'b> GblOps for TestGblOps<'b> {
         fn console_out(&mut self) -> Option<&mut dyn Write> {
             unimplemented!();
         }
@@ -260,7 +255,15 @@ mod test {
             unimplemented!();
         }
 
-        fn partitions(&self) -> Result<&'a [PartitionBlockDevice<'a, Self::PartitionBlockIo>]> {
+        async fn read_from_partition(&mut self, _: &str, _: u64, _: &mut [u8]) -> Result<()> {
+            unimplemented!();
+        }
+
+        async fn write_to_partition(&mut self, _: &str, _: u64, _: &mut [u8]) -> Result<()> {
+            unimplemented!();
+        }
+
+        fn partition_size(&mut self, _: &str) -> Result<Option<u64>> {
             unimplemented!();
         }
 
@@ -272,51 +275,26 @@ mod test {
             unimplemented!();
         }
 
-        fn load_slot_interface<'b, B: gbl_storage::AsBlockDevice>(
-            &'b mut self,
-            block_dev: &'b mut B,
+        fn load_slot_interface<'a, B: gbl_storage::AsBlockDevice>(
+            &'a mut self,
+            block_dev: &'a mut B,
             boot_token: BootToken,
-        ) -> GblResult<Cursor<'b, B>> {
+        ) -> GblResult<Cursor<'a, B>> {
             self.manager.boot_token = Some(boot_token);
             Ok(Cursor { ctx: &mut self.manager, block_dev })
         }
 
-        fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
-            unimplemented!();
+        fn avb_ops(&mut self) -> Option<impl GblAvbOps> {
+            avb_ops_none()
         }
+    }
 
-        fn avb_read_rollback_index(&mut self, _rollback_index_location: usize) -> AvbIoResult<u64> {
-            unimplemented!();
-        }
-
-        fn avb_write_rollback_index(
-            &mut self,
-            _rollback_index_location: usize,
-            _index: u64,
-        ) -> AvbIoResult<()> {
-            unimplemented!();
-        }
-
-        fn avb_cert_read_permanent_attributes(
-            &mut self,
-            _attributes: &mut CertPermanentAttributes,
-        ) -> AvbIoResult<()> {
-            unimplemented!();
-        }
-
-        fn avb_cert_read_permanent_attributes_hash(
-            &mut self,
-        ) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
-            unimplemented!();
-        }
-
-        fn get_image_buffer<'c>(
-            &mut self,
-            _image_name: &str,
-            _size: NonZeroUsize,
-        ) -> GblResult<ImageBuffer<'c>> {
-            unimplemented!();
-        }
+    fn generate_protocol<'a, P: ProtocolInfo>(
+        efi_entry: &'a EfiEntry,
+        proto: &'a mut P::InterfaceType,
+    ) -> Protocol<'a, P> {
+        // SAFETY: proto is a valid pointer and lasts at least as long as efi_entry.
+        unsafe { Protocol::<'a, P>::new(DeviceHandle::new(null_mut()), proto, efi_entry) }
     }
 
     #[test]

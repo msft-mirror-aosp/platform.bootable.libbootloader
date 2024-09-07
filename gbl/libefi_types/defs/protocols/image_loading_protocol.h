@@ -15,39 +15,39 @@
  *
  */
 
-#ifndef __GBL_EFI_IMAGE_LOADING_PROTOCOL_H__
-#define __GBL_EFI_IMAGE_LOADING_PROTOCOL_H__
+#ifndef __IMAGE_LOADING_PROTOCOL_H__
+#define __IMAGE_LOADING_PROTOCOL_H__
 
 #include <stddef.h>
 
 #include "types.h"
 
-const uint64_t GBL_EFI_IMAGE_LOADING_PROTOCOL_REVISION = 0x00010000;
+const uint64_t EFI_IMAGE_LOADING_PROTOCOL_REVISION = 0x00010000;
 
 const size_t PARTITION_NAME_LEN_U16 = 36;
 
-typedef struct GblEfiImageInfo {
+typedef struct GblImageInfo {
   char16_t ImageType[PARTITION_NAME_LEN_U16];
   size_t SizeBytes;
-} GblEfiImageInfo;
+} GblImageInfo;
 
-typedef struct GblEfiImageBuffer {
+typedef struct GblImageBuffer {
   void* Memory;
   size_t SizeBytes;
-} GblEfiImageBuffer;
+} GblImageBuffer;
 
-typedef struct GblEfiPartitionName {
+typedef struct GblPartitionName {
   char16_t StrUtf16[PARTITION_NAME_LEN_U16];
-} GblEfiPartitionName;
+} GblPartitionName;
 
-typedef struct GblEfiImageLoadingProtocol {
+typedef struct EfiImageLoadingProtocol {
   uint64_t revision;
-  EfiStatus (*get_buffer)(struct GblEfiImageLoadingProtocol* self,
-                          const GblEfiImageInfo* ImageInfo,
-                          GblEfiImageBuffer* Buffer);
-  EfiStatus (*get_verify_partitions)(struct GblEfiImageLoadingProtocol* self,
+  EfiStatus (*get_buffer)(struct EfiImageLoadingProtocol* self,
+                          const GblImageInfo* ImageInfo,
+                          GblImageBuffer* Buffer);
+  EfiStatus (*get_verify_partitions)(struct EfiImageLoadingProtocol* self,
                                      size_t* NumberOfPartitions,
-                                     GblEfiPartitionName* Partitions);
-} GblEfiImageLoadingProtocol;
+                                     GblPartitionName* Partitions);
+} EfiImageLoadingProtocol;
 
-#endif  //__GBL_EFI_IMAGE_LOADING_PROTOCOL_H__
+#endif  //__IMAGE_LOADING_PROTOCOL_H__

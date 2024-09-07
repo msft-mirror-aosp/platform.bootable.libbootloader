@@ -14,7 +14,7 @@
 
 use crate::{
     fuchsia_boot::{zbi_split_unused_buffer, zircon_part_name, SlotIndex},
-    gbl_print, GblOps, Result as GblResult,
+    gbl_print, GblAvbOps, GblOps, Result as GblResult,
 };
 use avb::{
     cert_validate_vbmeta_public_key, slot_verify, CertOps, CertPermanentAttributes, Descriptor,
@@ -25,6 +25,7 @@ use core::{
     cmp::{max, min},
     ffi::CStr,
 };
+use liberror::Error;
 use safemath::SafeNum;
 use uuid::Uuid;
 use zbi::{merge_within, ZbiContainer};
@@ -33,7 +34,7 @@ use zbi::{merge_within, ZbiContainer};
 const AVB_ATX_NUM_KEY_VERSIONS: usize = 2;
 
 /// `GblZirconBootAvbOps` implements `avb::Ops` for GBL Zircon boot flow.
-struct GblZirconBootAvbOps<'a, T> {
+struct GblZirconBootAvbOps<'a, T: GblOps> {
     gbl_ops: &'a mut T,
     preloaded_partitions: &'a [(&'a str, &'a [u8])],
     // Used for storing key versions to be set. (location, version).
@@ -41,7 +42,7 @@ struct GblZirconBootAvbOps<'a, T> {
     key_versions: [Option<(usize, u64)>; AVB_ATX_NUM_KEY_VERSIONS],
 }
 
-impl<'a, T: GblOps<'a>> GblZirconBootAvbOps<'_, T> {
+impl<'a, T: GblOps> GblZirconBootAvbOps<'a, T> {
     /// Returns the size of a partition.
     fn partition_size(&mut self, partition: &str) -> AvbIoResult<u64> {
         Ok(self
@@ -50,6 +51,11 @@ impl<'a, T: GblOps<'a>> GblZirconBootAvbOps<'_, T> {
             .or(Err(AvbIoError::Io))?
             .ok_or(AvbIoError::NoSuchPartition)?)
     }
+
+    /// Gets the `GblAvbOps`. Returns error if not supported.
+    fn gbl_avb_ops(&mut self) -> AvbIoResult<impl GblAvbOps + '_> {
+        self.gbl_ops.avb_ops().ok_or(AvbIoError::NotImplemented)
+    }
 }
 
 /// A helper function for converting `CStr` to `str`
@@ -57,7 +63,7 @@ fn cstr_to_str<E>(s: &CStr, err: E) -> Result<&str, E> {
     Ok(s.to_str().or(Err(err))?)
 }
 
-impl<'a, 'b, T: GblOps<'b>> AvbOps<'a> for GblZirconBootAvbOps<'a, T> {
+impl<'a, T: GblOps> AvbOps<'a> for GblZirconBootAvbOps<'a, T> {
     fn read_from_partition(
         &mut self,
         partition: &CStr,
@@ -98,7 +104,7 @@ impl<'a, 'b, T: GblOps<'b>> AvbOps<'a> for GblZirconBootAvbOps<'a, T> {
     }
 
     fn read_rollback_index(&mut self, rollback_index_location: usize) -> AvbIoResult<u64> {
-        self.gbl_ops.avb_read_rollback_index(rollback_index_location)
+        self.gbl_avb_ops()?.avb_read_rollback_index(rollback_index_location)
     }
 
     fn write_rollback_index(
@@ -106,11 +112,11 @@ impl<'a, 'b, T: GblOps<'b>> AvbOps<'a> for GblZirconBootAvbOps<'a, T> {
         rollback_index_location: usize,
         index: u64,
     ) -> AvbIoResult<()> {
-        self.gbl_ops.avb_write_rollback_index(rollback_index_location, index)
+        self.gbl_avb_ops()?.avb_write_rollback_index(rollback_index_location, index)
     }
 
     fn read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
-        self.gbl_ops.avb_read_is_device_unlocked()
+        self.gbl_avb_ops()?.avb_read_is_device_unlocked()
     }
 
     fn get_unique_guid_for_partition(&mut self, partition: &CStr) -> AvbIoResult<Uuid> {
@@ -159,16 +165,16 @@ impl<'a, 'b, T: GblOps<'b>> AvbOps<'a> for GblZirconBootAvbOps<'a, T> {
     }
 }
 
-impl<'a, T: GblOps<'a>> CertOps for GblZirconBootAvbOps<'_, T> {
+impl<T: GblOps> CertOps for GblZirconBootAvbOps<'_, T> {
     fn read_permanent_attributes(
         &mut self,
         attributes: &mut CertPermanentAttributes,
     ) -> AvbIoResult<()> {
-        self.gbl_ops.avb_cert_read_permanent_attributes(attributes)
+        self.gbl_avb_ops()?.avb_cert_read_permanent_attributes(attributes)
     }
 
     fn read_permanent_attributes_hash(&mut self) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
-        self.gbl_ops.avb_cert_read_permanent_attributes_hash()
+        self.gbl_avb_ops()?.avb_cert_read_permanent_attributes_hash()
     }
 
     fn set_key_version(&mut self, rollback_index_location: usize, key_version: u64) {
@@ -202,17 +208,24 @@ fn slot_suffix(slot: Option<SlotIndex>) -> Option<&'static CStr> {
 }
 
 /// Verifies a loaded ZBI kernel.
-pub(crate) fn zircon_verify_kernel<'a, 'b>(
-    gbl_ops: &mut impl GblOps<'b>,
+pub(crate) fn zircon_verify_kernel<G: GblOps>(
+    gbl_ops: &mut G,
     slot: Option<SlotIndex>,
     slot_booted_successfully: bool,
-    zbi_kernel: &'a mut [u8],
+    zbi_kernel: &mut [u8],
 ) -> GblResult<()> {
     let (kernel, desc_buf) = zbi_split_unused_buffer(&mut zbi_kernel[..])?;
     let desc_zbi_off = kernel.len();
 
     // Determines verify flags and error mode.
-    let unlocked = gbl_ops.avb_read_is_device_unlocked()?;
+    let unlocked =
+        match gbl_ops.avb_ops().map(|mut v| v.avb_read_is_device_unlocked()).transpose()? {
+            Some(v) => v,
+            _ => {
+                gbl_print!(gbl_ops, "Verified boot backend is missing.\r\n");
+                return Err(Error::NotImplemented.into());
+            }
+        };
     let mode = HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_EIO; // Don't care for fuchsia
     let flag = match unlocked {
         true => SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_ALLOW_VERIFICATION_ERROR,

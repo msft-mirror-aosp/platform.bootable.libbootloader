@@ -187,23 +187,6 @@ impl<T: BlockIoAsync> BlockIoAsync for &mut T {
     }
 }
 
-/// An implementation of `BlockIoAsync` of where all required methods are `unimplemented!()`
-pub struct BlockIoNull {}
-
-impl BlockIoAsync for BlockIoNull {
-    fn info(&mut self) -> BlockInfo {
-        unimplemented!();
-    }
-
-    async fn read_blocks(&mut self, _: u64, _: &mut [u8]) -> Result<()> {
-        unimplemented!();
-    }
-
-    async fn write_blocks(&mut self, _: u64, _: &mut [u8]) -> Result<()> {
-        unimplemented!();
-    }
-}
-
 /// `BlockIoSync` provide interfaces for synchronous read and write.
 pub trait BlockIoSync {
     /// Gets the `BlockInfo` for this block device
