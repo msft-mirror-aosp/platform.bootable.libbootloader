@@ -80,7 +80,7 @@ impl GptHeader {
 
 /// GptEntry is the partition entry data structure in the GPT.
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes, PartialEq)]
 pub struct GptEntry {
     /// Partition type GUID.
     pub part_type: [u8; GPT_GUID_LEN],
@@ -155,7 +155,7 @@ enum HeaderType {
 }
 
 /// `Partition` contains information about a GPT partition.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct Partition {
     entry: GptEntry,
     block_size: u64,
