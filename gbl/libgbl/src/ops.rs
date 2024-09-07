@@ -17,6 +17,7 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+pub use crate::image_buffer::ImageBuffer;
 use crate::{
     error::Result as GblResult,
     partition::{
@@ -27,6 +28,7 @@ use crate::{
 use alloc::ffi::CString;
 use core::{
     fmt::{Debug, Write},
+    num::NonZeroUsize,
     result::Result,
 };
 use gbl_async::block_on;
@@ -221,6 +223,13 @@ where
     ///
     /// The interface has the same requirement as `avb::CertOps::read_permanent_attributes_hash`.
     fn avb_cert_read_permanent_attributes_hash(&mut self) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]>;
+
+    /// Get buffer for specific image of requested size.
+    fn get_image_buffer<'c>(
+        &mut self,
+        image_name: &str,
+        size: NonZeroUsize,
+    ) -> GblResult<ImageBuffer<'c>>;
 }
 
 /// Default [GblOps] implementation that returns errors and does nothing.
@@ -294,6 +303,14 @@ where
 
     fn avb_cert_read_permanent_attributes_hash(&mut self) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
         unimplemented!();
+    }
+
+    fn get_image_buffer<'c>(
+        &mut self,
+        image_name: &str,
+        size: NonZeroUsize,
+    ) -> GblResult<ImageBuffer<'c>> {
+        Err(Error::Unsupported.into())
     }
 }
 
