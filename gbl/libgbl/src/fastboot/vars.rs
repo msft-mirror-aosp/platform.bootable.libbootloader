@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::fastboot::shared_resource::BlockStatus;
-use crate::fastboot::{GblFastboot, GblFbResource, TasksExecutor, GPT_NAME_LEN_U8};
+use crate::{
+    fastboot::{GblFastboot, TasksExecutor},
+    GblOps,
+};
 use core::fmt::Write;
 use core::str::{from_utf8, Split};
 use fastboot::{next_arg, next_arg_u64, snprintf, CommandError, FormattedBytes, VarSender};
-use gbl_storage::BlockIoAsync;
 
 /// Internal trait that provides methods for getting and enumerating values for one or multiple
 /// related fastboot variables.
@@ -26,27 +27,27 @@ pub(crate) trait Variable {
     ///
     /// Return Ok(Some(`size`)) where `size` is the number of bytes written to `out`. Return
     /// `Ok(None)` if the variable is not supported.
-    async fn get<'b, T: TasksExecutor<'b>, B: BlockIoAsync>(
+    async fn get<'b, T: TasksExecutor<'b>, G: GblOps<'b>>(
         &self,
-        gbl_fb: &mut GblFastboot<'_, 'b, T, B>,
+        gbl_fb: &mut GblFastboot<'_, 'b, T, G>,
         name: &str,
         args: Split<'_, char>,
         out: &mut [u8],
     ) -> Result<Option<usize>, CommandError>;
 
     /// Iterates and calls `f` on all values/arguments combinations.
-    async fn get_all<'b, T: TasksExecutor<'b>, B: BlockIoAsync>(
+    async fn get_all<'b, T: TasksExecutor<'b>, G: GblOps<'b>>(
         &self,
-        gbl_fb: &mut GblFastboot<'_, 'b, T, B>,
+        gbl_fb: &mut GblFastboot<'_, 'b, T, G>,
         sender: &mut impl VarSender,
     ) -> Result<(), CommandError>;
 }
 
-// Constant fastboot variable
+// Constant fastboot variableGblFbResource,101
 impl Variable for (&'static str, &'static str) {
-    async fn get<'b, T: TasksExecutor<'b>, B: BlockIoAsync>(
+    async fn get<'b, T: TasksExecutor<'b>, G: GblOps<'b>>(
         &self,
-        _: &mut GblFastboot<'_, 'b, T, B>,
+        _: &mut GblFastboot<'_, 'b, T, G>,
         name: &str,
         _: Split<'_, char>,
         out: &mut [u8],
@@ -54,9 +55,9 @@ impl Variable for (&'static str, &'static str) {
         Ok((name == self.0).then_some(snprintf!(out, "{}", self.1).len()))
     }
 
-    async fn get_all<'b, T: TasksExecutor<'b>, B: BlockIoAsync>(
+    async fn get_all<'b, T: TasksExecutor<'b>, G: GblOps<'b>>(
         &self,
-        _: &mut GblFastboot<'_, 'b, T, B>,
+        _: &mut GblFastboot<'_, 'b, T, G>,
         sender: &mut impl VarSender,
     ) -> Result<(), CommandError> {
         sender.send(self.0, &[], self.1).await
@@ -72,37 +73,36 @@ pub(crate) struct Partition {}
 const PARTITION_SIZE: &str = "partition-size";
 const PARTITION_TYPE: &str = "partition-type";
 impl Variable for Partition {
-    async fn get<'b, T: TasksExecutor<'b>, B: BlockIoAsync>(
+    async fn get<'b, T: TasksExecutor<'b>, G: GblOps<'b>>(
         &self,
-        gbl_fb: &mut GblFastboot<'_, 'b, T, B>,
+        gbl_fb: &mut GblFastboot<'_, 'b, T, G>,
         name: &str,
         args: Split<'_, char>,
         out: &mut [u8],
     ) -> Result<Option<usize>, CommandError> {
-        let (_, part) = gbl_fb.parse_partition(args)?;
+        let (_, _, start, sz) = gbl_fb.parse_partition(args.clone())?;
         Ok(match name {
-            PARTITION_SIZE => Some(snprintf!(out, "{:#x}", part.size()).len()),
+            PARTITION_SIZE => Some(snprintf!(out, "{:#x}", sz).len()),
             PARTITION_TYPE => Some(snprintf!(out, "raw").len()), // Image type not supported yet.
             _ => None,
         })
     }
 
-    async fn get_all<'b, T: TasksExecutor<'b>, B: BlockIoAsync>(
+    async fn get_all<'b, T: TasksExecutor<'b>, G: GblOps<'b>>(
         &self,
-        gbl_fb: &mut GblFastboot<'_, 'b, T, B>,
+        gbl_fb: &mut GblFastboot<'_, 'b, T, G>,
         sender: &mut impl VarSender,
     ) -> Result<(), CommandError> {
         // Though any sub range of a GPT partition or raw block counts as a partition in GBL
         // Fastboot, for "getvar all" we only enumerate whole range GPT partitions.
-        let part_name = &mut [0u8; GPT_NAME_LEN_U8][..];
+        let partitions = gbl_fb.gbl_ops.partitions()?;
         let mut size_str = [0u8; 32];
-        for blk_idx in 0..gbl_fb.shared_resource().num_blks() {
-            for ptn_idx in 0..gbl_fb.shared_resource().num_partitions(blk_idx) {
-                let ptn = gbl_fb.shared_resource().get_partition(blk_idx, ptn_idx);
+        for (idx, blk) in partitions.iter().enumerate() {
+            for ptn in blk.partition_iter() {
                 let sz: u64 = ptn.size()?;
-                let part = ptn.gpt_entry().name_to_str(part_name)?;
+                let part = ptn.name()?;
                 let mut id_str = [0u8; 32];
-                let id = snprintf!(id_str, "{:x}", blk_idx);
+                let id = snprintf!(id_str, "{:x}", idx);
                 sender.send(PARTITION_SIZE, &[part, id], snprintf!(size_str, "{:#x}", sz)).await?;
                 // Image type is not supported yet.
                 sender.send(PARTITION_TYPE, &[part, id], snprintf!(size_str, "raw")).await?;
@@ -123,19 +123,10 @@ const TOTAL_BLOCKS: &str = "total-blocks";
 const BLOCK_SIZE: &str = "block-size";
 const BLOCK_DEVICE_STATUS: &str = "status";
 
-/// Returns the status string for a block device.
-fn block_device_status<B: BlockIoAsync>(shared: &GblFbResource<B>, idx: usize) -> &'static str {
-    match shared.blk_status(idx) {
-        BlockStatus::Idle => "idle",
-        BlockStatus::Error => "error",
-        BlockStatus::Pending => "IO pending",
-    }
-}
-
 impl Variable for BlockDevice {
-    async fn get<'b, T: TasksExecutor<'b>, B: BlockIoAsync>(
+    async fn get<'b, T: TasksExecutor<'b>, G: GblOps<'b>>(
         &self,
-        gbl_fb: &mut GblFastboot<'_, 'b, T, B>,
+        gbl_fb: &mut GblFastboot<'_, 'b, T, G>,
         name: &str,
         mut args: Split<'_, char>,
         out: &mut [u8],
@@ -145,14 +136,14 @@ impl Variable for BlockDevice {
                 let id = next_arg_u64(&mut args, Err("Missing block device ID".into()))?;
                 let id = usize::try_from(id)?;
                 let val_type = next_arg(&mut args, Err("Missing value type".into()))?;
-                let shared = gbl_fb.shared_resource();
-                let info = shared.blk_info(id);
+                let blk = &gbl_fb.gbl_ops.partitions()?[id];
+                let info = blk.block_info();
                 Some(
                     match val_type {
                         TOTAL_BLOCKS => snprintf!(out, "{:#x}", info.num_blocks),
                         BLOCK_SIZE => snprintf!(out, "{:#x}", info.block_size),
                         BLOCK_DEVICE_STATUS => {
-                            snprintf!(out, "{}", block_device_status(shared, id))
+                            snprintf!(out, "{}", blk.status().to_str())
                         }
                         _ => return Err("Invalid type".into()),
                     }
@@ -163,17 +154,16 @@ impl Variable for BlockDevice {
         })
     }
 
-    async fn get_all<'b, T: TasksExecutor<'b>, B: BlockIoAsync>(
+    async fn get_all<'b, T: TasksExecutor<'b>, G: GblOps<'b>>(
         &self,
-        gbl_fb: &mut GblFastboot<'_, 'b, T, B>,
+        gbl_fb: &mut GblFastboot<'_, 'b, T, G>,
         sender: &mut impl VarSender,
     ) -> Result<(), CommandError> {
         let mut val = [0u8; 32];
-        let shared = gbl_fb.shared_resource();
-        for blk_idx in 0..shared.num_blks() {
+        for (idx, blk) in gbl_fb.gbl_ops.partitions()?.iter().enumerate() {
             let mut id_str = [0u8; 32];
-            let id = snprintf!(id_str, "{:x}", blk_idx);
-            let info = shared.blk_info(blk_idx);
+            let id = snprintf!(id_str, "{:x}", idx);
+            let info = blk.block_info();
             sender
                 .send(BLOCK_DEVICE, &[id, TOTAL_BLOCKS], snprintf!(val, "{:#x}", info.num_blocks))
                 .await?;
@@ -184,7 +174,7 @@ impl Variable for BlockDevice {
                 .send(
                     BLOCK_DEVICE,
                     &[id, BLOCK_DEVICE_STATUS],
-                    snprintf!(val, "{}", block_device_status(shared, blk_idx)),
+                    snprintf!(val, "{}", blk.status().to_str()),
                 )
                 .await?;
         }
@@ -200,7 +190,7 @@ macro_rules! fb_vars_api {
         ///
         /// The macro simply generates `var.get()` calls for each variable. i.e.:
         ///
-        ///   pub(crate) async fn fb_vars_get<B: BlockIoAsync>(
+        ///   pub(crate) async fn fb_vars_get<G: GblOps<'b>>(
         ///       gbl_fb: &mut GblFastboot<'_, '_, B>,
         ///       name: &str,
         ///       args: Split<'_, char>,
@@ -218,8 +208,8 @@ macro_rules! fb_vars_api {
         ///
         ///       Ok(None)
         ///   }
-        pub(crate) async fn fb_vars_get<'b, T: TasksExecutor<'b>, B: BlockIoAsync>(
-            gbl_fb: &mut GblFastboot<'_, 'b, T, B>,
+        pub(crate) async fn fb_vars_get<'b, T: TasksExecutor<'b>, G: GblOps<'b>>(
+            gbl_fb: &mut GblFastboot<'_, 'b, T, G>,
             name: &str,
             args: Split<'_, char>,
             out: &mut [u8],
@@ -232,7 +222,7 @@ macro_rules! fb_vars_api {
         ///
         /// The macro simply generates `var.get_all()` calls for each variable.
         ///
-        ///   pub(crate) async fn fb_vars_get_all<B: BlockIoAsync>(
+        ///   pub(crate) async fn fb_vars_get_all<G: GblOps<'b>>(
         ///       gbl_fb: &mut GblFastboot<'_, '_, B>,
         ///       sender: &mut impl VarSender,
         ///   ) -> Result<(), CommandError> {
@@ -242,8 +232,8 @@ macro_rules! fb_vars_api {
         ///       Partition {}.get_all(gbl_fb, sender).await?;
         ///       Ok(())
         ///   }
-        pub(crate) async fn fb_vars_get_all<'b, T: TasksExecutor<'b>, B: BlockIoAsync>(
-            gbl_fb: &mut GblFastboot<'_, 'b, T, B>,
+        pub(crate) async fn fb_vars_get_all<'b, T: TasksExecutor<'b>, G: GblOps<'b>>(
+            gbl_fb: &mut GblFastboot<'_, 'b, T, G>,
             sender: &mut impl VarSender,
         ) -> Result<(), CommandError> {
             fb_vars_get_all_body!(gbl_fb, sender, $($vars),*);
