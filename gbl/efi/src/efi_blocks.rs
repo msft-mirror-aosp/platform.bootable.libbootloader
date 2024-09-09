@@ -21,7 +21,7 @@ use efi::{
 };
 use efi_types::EfiBlockIoMedia;
 use gbl_async::block_on;
-use gbl_storage::{AsyncBlockDevice, AsyncGptDevice, BlockInfo, BlockIoAsync, GptCache};
+use gbl_storage::{AsyncBlockDevice, BlockInfo, BlockIoAsync, GptCache};
 use liberror::Error;
 use libgbl::partition::{
     check_part_unique, read_unique_partition, Partition, PartitionBlockDevice,
@@ -76,11 +76,6 @@ impl BlockIoAsync for EfiBlockDeviceIo<'_> {
     }
 }
 
-/// Type alias for `AsyncBlockDevice` that uses `&mut EfiBlockDeviceIo` as IO.
-pub type EfiAsyncBlockDevice<'a, 'b> = AsyncBlockDevice<'b, &'b mut EfiBlockDeviceIo<'a>>;
-/// Type alias for `AsyncGptDevice` that uses `&mut EfiBlockDeviceIo` as IO.
-pub type EfiAsyncGptDevice<'a, 'b> = AsyncGptDevice<'b, &'b mut EfiBlockDeviceIo<'a>>;
-
 const MAX_GPT_ENTRIES: u64 = 128;
 
 /// `PartitionInfoBuffer` manages the buffer for raw partition name or GPT partition table.
@@ -101,7 +96,8 @@ impl<'a> EfiBlockDevice<'a> {
     ///
     /// The API allocates scratch and GPT buffer from heap.
     pub fn new_gpt(mut io: EfiBlockDeviceIo<'a>) -> Result<Self, Error> {
-        let scratch_size = SafeNum::from(EfiAsyncBlockDevice::required_scratch_size(&mut io)?);
+        let scratch_size =
+            SafeNum::from(AsyncBlockDevice::<EfiBlockDeviceIo>::required_scratch_size(&mut io)?);
         let mut gpt_buf = vec![0u8; GptCache::required_buffer_size(MAX_GPT_ENTRIES)?];
         // Initializes GPT buffer.
         let _ = GptCache::from_uninit(MAX_GPT_ENTRIES, &mut gpt_buf)?;
@@ -122,15 +118,6 @@ impl<'a> EfiBlockDevice<'a> {
                 PartitionBlockDevice::new_gpt(blk, GptCache::from_existing(buf).unwrap())
             }
         })
-    }
-
-    /// Creates an instance of `EfiAsyncGptDevice`.
-    // TODO(b/357688291): Remove once we switch to `PartitionBlockDevice` and `GblOps`.
-    pub fn as_gpt_dev(&mut self) -> Result<EfiAsyncGptDevice<'a, '_>, Error> {
-        let PartitionInfoBuffer::Gpt(ref mut buf) = &mut self.partition;
-        let blk = AsyncBlockDevice::new(&mut self.io, &mut self.scratch)?;
-        let gpt = GptCache::from_existing(buf).unwrap();
-        Ok(EfiAsyncGptDevice::new(blk, gpt))
     }
 }
 
