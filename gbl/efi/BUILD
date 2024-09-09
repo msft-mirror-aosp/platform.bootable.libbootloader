@@ -50,7 +50,14 @@ rust_library(
         "@spin",
         "@uuid",
         "@zerocopy",
-    ],
+    ] + select(
+        {
+            "@gbl//toolchain:gbl_rust_uefi_aarch64": [
+                "@gbl//efi/arch/aarch64",
+            ],
+            "//conditions:default": [],
+        },
+    ),
 )
 
 rust_test(
@@ -96,12 +103,6 @@ rust_binary(
         {
             "@gbl//toolchain:gbl_rust_elf_riscv64": [
                 "@gbl//efi/arch/riscv64:efi_arch_deps_riscv64",
-            ],
-            "@gbl//toolchain:gbl_rust_uefi_x86_64": [
-                "@gbl//efi/arch/x86_64:efi_arch_deps_x86_64",
-            ],
-            "@gbl//toolchain:gbl_rust_uefi_x86_32": [
-                "@gbl//efi/arch/x86:efi_arch_deps_x86",
             ],
             "//conditions:default": [],
         },
