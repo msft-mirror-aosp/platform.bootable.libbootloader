@@ -809,6 +809,15 @@ mod test {
     use std::{cell::RefCell, collections::VecDeque, mem::size_of, slice::from_raw_parts_mut};
     use zerocopy::AsBytes;
 
+    /// Helper function to generate a Protocol from an interface type.
+    pub fn generate_protocol<'a, P: ProtocolInfo>(
+        efi_entry: &'a EfiEntry,
+        proto: &'a mut P::InterfaceType,
+    ) -> Protocol<'a, P> {
+        // SAFETY: proto is a valid pointer and lasts at least as long as efi_entry.
+        unsafe { Protocol::<'a, P>::new(DeviceHandle::new(null_mut()), proto, efi_entry) }
+    }
+
     /// A structure to store the traces of arguments/outputs for EFI methods.
     #[derive(Default)]
     pub struct EfiCallTraces {
