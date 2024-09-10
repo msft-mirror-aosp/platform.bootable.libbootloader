@@ -14,7 +14,7 @@
 
 //! This file provides APIs for loading, verifying and booting Fuchsia/Zircon.
 
-use crate::{gbl_print, GblOps, Result as GblResult};
+use crate::{gbl_print, gbl_println, GblOps, Result as GblResult};
 pub use abr::{get_boot_slot, Ops as AbrOps, SlotIndex};
 use core::fmt::Write;
 use liberror::{Error, Result};
@@ -209,9 +209,9 @@ pub fn zircon_load_verify_abr<'a, 'b>(
     buffer: &'a mut [u8],
 ) -> GblResult<(&'a mut [u8], &'a mut [u8], SlotIndex)> {
     let (slot, successful) = get_boot_slot(&mut GblAbrOps(ops), true);
-    gbl_print!(ops, "Loading kernel from {}...\r\n", zircon_part_name(Some(slot)));
+    gbl_println!(ops, "Loading kernel from {}...", zircon_part_name(Some(slot)));
     let (zbi_items, kernel) = zircon_load_verify(ops, Some(slot), successful, buffer)?;
-    gbl_print!(ops, "Successfully loaded slot: {}\r\n", zircon_part_name(Some(slot)));
+    gbl_println!(ops, "Successfully loaded slot: {}", zircon_part_name(Some(slot)));
     Ok((zbi_items, kernel, slot))
 }
 
@@ -219,7 +219,7 @@ pub fn zircon_load_verify_abr<'a, 'b>(
 mod test {
     use super::*;
     use crate::{
-        ops::{AvbIoResult, CertPermanentAttributes, SHA256_DIGEST_SIZE},
+        ops::{AvbIoResult, CertPermanentAttributes, ImageBuffer, SHA256_DIGEST_SIZE},
         partition::PartitionBlockDevice,
         slots, BootImages,
     };
@@ -229,6 +229,7 @@ mod test {
         collections::{BTreeSet, HashMap},
         fmt::Write,
         fs,
+        num::NonZeroUsize,
         ops::{Deref, DerefMut},
         path::Path,
     };
@@ -362,8 +363,8 @@ mod test {
             unimplemented!();
         }
 
-        // `avb::test_op:TestOps` provides a more comprehensive a set of mocks. Consider using it
-        // when we add more mocks.
+        // `avb::test_op:TestOps` provides a more comprehensive a set of mocks. Consider using it when
+        // we add more mocks.
 
         fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
             Ok(self.avb_unlocked)
@@ -394,6 +395,14 @@ mod test {
             &mut self,
         ) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
             Ok(read_test_data("cert_permanent_attributes.hash").try_into().unwrap())
+        }
+
+        fn get_image_buffer<'c>(
+            &mut self,
+            image_name: &str,
+            size: NonZeroUsize,
+        ) -> GblResult<ImageBuffer<'c>> {
+            unimplemented!();
         }
     }
 
