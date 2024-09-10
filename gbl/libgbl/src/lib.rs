@@ -28,6 +28,7 @@
 // TODO: b/312610985 - return warning for unused partitions
 #![allow(unused_variables, dead_code)]
 #![allow(async_fn_in_trait)]
+#![feature(associated_type_defaults)]
 // TODO: b/312608163 - Adding ZBI library usage to check dependencies
 extern crate avb;
 extern crate core;
@@ -43,8 +44,10 @@ pub mod boot_reason;
 pub mod error;
 pub mod fastboot;
 pub mod fuchsia_boot;
+mod image_buffer;
 pub mod ops;
 mod overlap;
+pub mod partition;
 
 /// The 'slots' module, containing types and traits for
 /// querying and modifying slotted boot behavior.
@@ -55,10 +58,9 @@ use slots::{BootTarget, BootToken, Cursor, OneShot, SuffixBytes, UnbootableReaso
 pub use avb::Descriptor;
 pub use boot_mode::BootMode;
 pub use boot_reason::KnownBootReason;
-pub use error::{Error, IntegrationError, Result};
-pub use ops::{
-    AndroidBootImages, BootImages, DefaultGblOps, FuchsiaBootImages, GblOps, GblOpsError,
-};
+pub use error::{IntegrationError, Result};
+use liberror::Error;
+pub use ops::{AndroidBootImages, BootImages, DefaultGblOps, FuchsiaBootImages, GblOps};
 
 use overlap::is_overlap;
 
@@ -166,7 +168,7 @@ pub fn get_images<'a: 'b, 'b: 'c, 'c, 'd>(
 /// GBL object that provides implementation of helpers for boot process.
 pub struct Gbl<'a, G>
 where
-    G: GblOps,
+    G: GblOps<'a>,
 {
     ops: &'a mut G,
     boot_token: Option<BootToken>,
@@ -174,7 +176,7 @@ where
 
 impl<'a, G> Gbl<'a, G>
 where
-    G: GblOps,
+    G: GblOps<'a>,
 {
     /// Returns a new [Gbl] object.
     ///
@@ -207,7 +209,7 @@ where
         let bytes: SuffixBytes =
             if let Some(tgt) = boot_target { tgt.suffix().into() } else { Default::default() };
 
-        let avb_suffix = CStr::from_bytes_until_nul(&bytes)?;
+        let avb_suffix = CStr::from_bytes_until_nul(&bytes).map_err(Error::from)?;
 
         Ok(avb::slot_verify(
             avb_ops,
@@ -233,9 +235,7 @@ where
         block_device: &'a mut B,
     ) -> Result<Cursor<'a, B>> {
         let boot_token = self.boot_token.take().ok_or(Error::OperationProhibited)?;
-        self.ops
-            .load_slot_interface::<B>(block_device, boot_token)
-            .map_err(move |_| Error::OperationProhibited.into())
+        self.ops.load_slot_interface::<B>(block_device, boot_token)
     }
 
     /// Info Load
@@ -445,7 +445,7 @@ where
         if oneshot_status == Some(OneShot::Bootloader) {
             match self.ops.do_fastboot(&mut slot_cursor) {
                 Ok(_) => oneshot_status = slot_cursor.ctx.get_oneshot_status(),
-                Err(IntegrationError::GblNativeError(Error::NotImplemented)) => (),
+                Err(IntegrationError::UnificationError(Error::NotImplemented)) => (),
                 Err(e) => return Err(e),
             }
         }
@@ -495,7 +495,7 @@ where
             &ramdisk.0,
             kernel_load_buffer,
         ]) {
-            return Err(IntegrationError::GblNativeError(Error::BufferOverlap));
+            return Err(IntegrationError::UnificationError(Error::BufferOverlap));
         }
 
         let info_struct = self.unpack_boot_image(&boot_image, Some(boot_target))?;

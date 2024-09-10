@@ -12,17 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{aligned_subslice, read_async, write_async, BlockIoAsync, Result, StorageError};
-use core::default::Default;
-use core::mem::{align_of, size_of};
-use core::num::NonZeroU64;
+use crate::{aligned_subslice, read_async, write_async, BlockIoAsync, Result};
+use core::{
+    convert::TryFrom,
+    default::Default,
+    mem::{align_of, size_of},
+    num::NonZeroU64,
+    str::from_utf8,
+};
 use crc32fast::Hasher;
 use safemath::SafeNum;
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 
+use liberror::Error;
+
 const GPT_GUID_LEN: usize = 16;
 /// The maximum number of UTF-16 characters in a GPT partition name, including termination.
 pub const GPT_NAME_LEN_U16: usize = 36;
+const GPT_NAME_LEN_U8: usize = 2 * GPT_GUID_LEN;
 
 /// The top-level GPT header.
 #[repr(C, packed)]
@@ -73,7 +80,7 @@ impl GptHeader {
 
 /// GptEntry is the partition entry data structure in the GPT.
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes, PartialEq)]
 pub struct GptEntry {
     /// Partition type GUID.
     pub part_type: [u8; GPT_GUID_LEN],
@@ -92,7 +99,7 @@ pub struct GptEntry {
 impl GptEntry {
     /// Return the partition entry size in blocks.
     pub fn blocks(&self) -> Result<u64> {
-        u64::try_from((SafeNum::from(self.last) - self.first) + 1).map_err(|e| e.into())
+        u64::try_from((SafeNum::from(self.last) - self.first) + 1).map_err(Into::into)
     }
 
     /// Return whether this is a `NULL` entry. The first null entry marks the end of the partition
@@ -111,7 +118,7 @@ impl GptEntry {
                 c if c.len_utf8() <= buffer[index..].len() => {
                     index += c.encode_utf8(&mut buffer[index..]).len()
                 }
-                _ => return Err(StorageError::InvalidInput), // Not enough space in `buffer`.
+                _ => return Err(Error::InvalidInput), // Not enough space in `buffer`.
             }
         }
         // SAFETY:
@@ -148,23 +155,33 @@ enum HeaderType {
 }
 
 /// `Partition` contains information about a GPT partition.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct Partition {
     entry: GptEntry,
     block_size: u64,
+    decoded_name: Option<([u8; GPT_NAME_LEN_U8], usize)>,
 }
 
 impl Partition {
     /// Creates a new instance.
     fn new(entry: GptEntry, block_size: u64) -> Self {
-        Self { entry, block_size }
+        let mut buf = [0u8; GPT_NAME_LEN_U8];
+        let decoded_name = match entry.name_to_str(&mut buf[..]).ok().map(|v| v.len()) {
+            Some(len) => Some((buf, len)),
+            _ => None,
+        };
+        Self { entry, block_size, decoded_name }
+    }
+
+    /// Gets the decoded partition name.
+    pub fn name(&self) -> Option<&str> {
+        // Correct by construction. `from_utf8` should not fail.
+        self.decoded_name.as_ref().map(|(buf, sz)| from_utf8(&buf[..*sz]).unwrap())
     }
 
     /// Returns the partition size in bytes.
     pub fn size(&self) -> Result<u64> {
-        (SafeNum::from(self.entry.blocks()?) * self.block_size)
-            .try_into()
-            .map_err(|e: safemath::Error| e.into())
+        u64::try_from(SafeNum::from(self.entry.blocks()?) * self.block_size).map_err(Error::from)
     }
 
     /// Returns the block size of this partition.
@@ -187,8 +204,9 @@ impl Partition {
     /// Checks a given sub range and returns its absolute offset.
     pub fn check_range(&self, off: u64, size: u64) -> Result<u64> {
         let off = SafeNum::from(off);
-        match u64::try_from(off + size)? > self.size()? {
-            true => Err(StorageError::OutOfRange),
+        let end: u64 = (off + size).try_into()?;
+        match end > self.size()? {
+            true => Err(Error::BadIndex(end as usize)),
             _ => Ok((off + self.absolute_range()?.0).try_into()?),
         }
     }
@@ -236,7 +254,7 @@ impl GptInfo {
     }
 
     fn num_valid_entries(&self) -> Result<u64> {
-        Ok(self.num_valid_entries.ok_or_else(|| StorageError::InvalidInput)?.get())
+        Ok(self.num_valid_entries.ok_or(Error::InvalidInput)?.get())
     }
 }
 
@@ -266,7 +284,7 @@ impl<'a> GptCache<'a> {
         if max_entries > GPT_MAX_NUM_ENTRIES
             || buffer.len() < Self::required_buffer_size(max_entries)?
         {
-            return Err(StorageError::InvalidInput);
+            return Err(Error::InvalidInput);
         }
         let buffer = aligned_subslice(buffer, GPT_ENTRY_ALIGNMENT)?;
         *GptInfo::from_bytes(buffer) =
@@ -318,16 +336,19 @@ impl<'a> GptCache<'a> {
     /// The minimum buffer size needed for `Self::from_uninit()`
     pub fn required_buffer_size(max_entries: u64) -> Result<usize> {
         let entries_size = SafeNum::from(max_entries) * GPT_ENTRY_SIZE;
-        (((entries_size + GPT_HEADER_SIZE_PADDED) * 2) + size_of::<GptInfo>() + GPT_ENTRY_ALIGNMENT
-            - 1)
-        .try_into()
-        .map_err(|e: safemath::Error| e.into())
+        usize::try_from(
+            ((entries_size + GPT_HEADER_SIZE_PADDED) * 2)
+                + size_of::<GptInfo>()
+                + GPT_ENTRY_ALIGNMENT
+                - 1,
+        )
+        .map_err(Into::<Error>::into)
     }
 
     /// Checks if a read/write range into a GPT partition overflows and returns the range's absolute
     /// offset in number of bytes.
     pub fn check_range(&self, part_name: &str, offset: u64, size: usize) -> Result<u64> {
-        self.find_partition(part_name)?.check_range(offset, size.try_into()?)
+        self.find_partition(part_name)?.check_range(offset, u64::try_from(size)?)
     }
 
     /// Return the list of GPT entries.
@@ -336,7 +357,7 @@ impl<'a> GptCache<'a> {
     fn entries(&self) -> Result<&[GptEntry]> {
         self.check_valid()?;
         Ok(&Ref::<_, [GptEntry]>::new_slice(&self.primary_entries[..]).unwrap().into_slice()
-            [..self.info.num_valid_entries()?.try_into()?])
+            [..usize::try_from(self.info.num_valid_entries()?)?])
     }
 
     /// Returns the total number of partitions.
@@ -346,7 +367,7 @@ impl<'a> GptCache<'a> {
 
     /// Gets the `idx`th partition.
     pub fn get_partition(&self, idx: usize) -> Result<Partition> {
-        let entry = *self.entries()?.get(idx).ok_or(StorageError::OutOfRange)?;
+        let entry = *self.entries()?.get(idx).ok_or(Error::BadIndex(idx))?;
         Ok(Partition::new(entry, self.info.block_size))
     }
 
@@ -363,7 +384,7 @@ impl<'a> GptCache<'a> {
             }
             return Ok(Partition::new(*entry, self.info.block_size));
         }
-        Err(StorageError::NotExist)
+        Err(Error::NotFound)
     }
 
     /// Checks whether the GptCache has been initialized.
@@ -448,7 +469,7 @@ impl<'a> GptCache<'a> {
         let secondary_header = GptHeader::from_bytes(self.secondary_header);
         if !primary_valid {
             if !secondary_valid {
-                return Err(StorageError::NoValidGpt);
+                return Err(Error::NoGpt);
             }
             // Restore to primary
             primary_header.as_bytes_mut().clone_from_slice(secondary_header.as_bytes());

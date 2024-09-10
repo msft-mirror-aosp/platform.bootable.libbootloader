@@ -16,21 +16,24 @@
 
 use core::ptr::null_mut;
 
-use crate::defs::*;
-use crate::{DeviceHandle, EfiEntry, EfiResult};
+use crate::{DeviceHandle, EfiEntry};
+use efi_types::*;
 
-pub mod ab_slot;
 pub mod block_io;
 pub mod block_io2;
 pub mod device_path;
+pub mod gbl_efi_ab_slot;
+pub mod gbl_efi_fastboot;
 pub mod gbl_efi_fastboot_usb;
+pub mod gbl_efi_image_loading;
 pub mod gbl_efi_os_configuration;
-pub mod image_loading;
 pub mod loaded_image;
 pub mod riscv;
 pub mod simple_network;
 pub mod simple_text_input;
 pub mod simple_text_output;
+
+use liberror::{Error, Result};
 
 /// ProtocolInfo provides GUID info and the EFI data structure type for a protocol.
 pub trait ProtocolInfo {
@@ -71,9 +74,9 @@ impl<'a, T: ProtocolInfo> Protocol<'a, T> {
     }
 
     /// Returns the EFI data structure for the protocol interface.
-    pub fn interface(&self) -> EfiResult<&T::InterfaceType> {
+    pub fn interface(&self) -> Result<&T::InterfaceType> {
         // SAFETY: EFI protocol interface data structure.
-        unsafe { self.interface.as_ref() }.ok_or_else(|| EFI_STATUS_INVALID_PARAMETER.into())
+        unsafe { self.interface.as_ref() }.ok_or(Error::InvalidInput)
     }
 
     /// Returns the reference to EFI entry.
@@ -94,22 +97,22 @@ impl<T: ProtocolInfo> Drop for Protocol<'_, T> {
         // handle as a static permanent reference and don't close it. An example is
         // `EFI_SYSTEM_TABLE.ConOut`.
         if self.device.0 != null_mut() {
-            self.efi_entry.system_table().boot_services().close_protocol::<T>(self.device).unwrap();
-        }
-    }
-}
+            // Currently we open all protocols using flags BY_HANDLE_PROTOCOL. The flag allows a
+            // protocol to be opened for multiple copies, which is needed if a UEFI protocol
+            // implementation also require access for other protocols. But if any one of them is
+            // closed, all other opened copies will be affected. Therefore for now we don't close
+            // the protocol on drop. In the future when we start using other flags such as
+            // EXCLUSIVE, we should perform protocol close based on the open flags.
 
-impl EfiGuid {
-    /// Returns a new `[EfiGuid]` using the given data.
-    pub const fn new(data1: u32, data2: u16, data3: u16, data4: [u8; 8usize]) -> Self {
-        EfiGuid { data1, data2, data3, data4 }
+            // self.efi_entry.system_table().boot_services().close_protocol::<T>(self.device).unwrap();
+        }
     }
 }
 
 /// Macro to perform an EFI protocol function call.
 ///
-/// The first argument is the function pointer, and the following arguments are passed through
-/// as protocol args.
+/// In the first variant, the first argument is the function pointer,
+/// and the following arguments are passed through as protocol args.
 ///
 /// With our [Protocol] struct, usage generally looks something like:
 ///
@@ -122,13 +125,51 @@ impl EfiGuid {
 ///   ...
 /// )
 /// ```
+/// Most efi_call! invocations should use the first variant.
+///
+/// With the second variant, the first argument is an expression that references
+/// a buffer in-out size parameter.
+/// This is part of a pattern used by some protocol methods
+/// that take an output buffer and an in-out buffer size:
+/// if the method returns EFI_STATUS_BUFFER_TOO_SMALL,
+/// the size is mutated to contain the minimum required buffer size.
+/// The caller can then allocate a larger buffer and reattempt the method call.
+///
+/// Usage generally looks something like:
+/// ```
+/// efi_call!(
+///   @bufsize arg2,
+///   self.interface()?.protocol_function_name,
+///   self.interface,
+///   arg1,
+///   &mut arg2,
+///   ...
+/// )
+/// ```
 #[macro_export]
 macro_rules! efi_call {
     ( $method:expr, $($x:expr),*$(,)? ) => {
         {
-            let res: EfiResult<()> = match $method {
-                None => Err(EFI_STATUS_NOT_FOUND.into()),
-                Some(f) => map_efi_err(f($($x,)*))
+            use liberror::{Error, Result, efi_status_to_result};
+            let res: Result<()> = match $method {
+                None => Err(Error::NotFound),
+                Some(f) => efi_status_to_result(f($($x,)*)),
+            };
+            res
+        }
+    };
+    ( @bufsize $size:expr, $method:expr, $($x:expr),*$(,)? ) => {
+        {
+            use liberror::{Error, Result, efi_status_to_result};
+            use efi_types::EFI_STATUS_BUFFER_TOO_SMALL;
+            let res: Result<()> = match $method {
+                None => Err(Error::NotFound),
+                Some(f) => {
+                    match f($($x,)*) {
+                        EFI_STATUS_BUFFER_TOO_SMALL => Err(Error::BufferTooSmall(Some($size))),
+                        r => efi_status_to_result(r),
+                    }
+                },
             };
             res
         }

@@ -32,6 +32,7 @@ rust_library(
     deps = [
         "@crc32fast",
         "@gbl//libasync",
+        "@gbl//liberror",
         "@gbl//libsafemath",
         "@zerocopy",
     ],
@@ -49,6 +50,7 @@ rust_library(
         ":libstorage",
         "@crc32fast",
         "@gbl//libasync",
+        "@gbl//liberror",
         "@gbl//libsafemath",
         "@zerocopy",
     ],

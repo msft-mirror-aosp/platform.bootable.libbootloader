@@ -12,26 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{
-    error::{EfiAppError, Result},
-    utils::{get_device_path, loop_with_timeout},
-};
+use crate::error::{listen_to_unified, recv_to_unified, send_to_unified};
+use crate::utils::{get_device_path, loop_with_timeout};
 use alloc::{boxed::Box, vec::Vec};
 use core::{
     fmt::Write,
     sync::atomic::{AtomicU64, Ordering},
 };
 use efi::{
-    defs::{
-        EfiEvent, EfiMacAddress, EFI_STATUS_ALREADY_STARTED, EFI_STATUS_NOT_STARTED,
-        EFI_TIMER_DELAY_TIMER_PERIODIC,
-    },
     efi_print, efi_println,
     protocol::{simple_network::SimpleNetworkProtocol, Protocol},
     utils::{ms_to_100ns, Timeout},
     DeviceHandle, EfiEntry, EventNotify, EventType, Tpl,
 };
+use efi_types::{EfiEvent, EfiMacAddress, EFI_TIMER_DELAY_TIMER_PERIODIC};
 use gbl_async::{yield_now, YieldCounter};
+use liberror::{Error, Result};
 use smoltcp::{
     iface::{Config, Interface, SocketSet},
     phy,
@@ -53,14 +49,12 @@ const SOCKET_TX_RX_BUFFER: usize = 256 * 1024;
 /// Performs a shutdown and restart of the simple network protocol.
 fn reset_simple_network<'a>(snp: &Protocol<'a, SimpleNetworkProtocol>) -> Result<()> {
     match snp.shutdown() {
-        Err(e) if !e.is_efi_err(EFI_STATUS_NOT_STARTED) => return Err(e.into()),
+        Err(e) if e != Error::NotStarted => return Err(e),
         _ => {}
     };
 
     match snp.start() {
-        Err(e) if !e.is_efi_err(EFI_STATUS_ALREADY_STARTED) => {
-            return Err(e.into());
-        }
+        Err(e) if e != Error::AlreadyStarted => return Err(e),
         _ => {}
     };
     snp.initialize(0, 0)?;
@@ -100,7 +94,7 @@ impl<'a> EfiNetworkDevice<'a> {
 impl Drop for EfiNetworkDevice<'_> {
     fn drop(&mut self) {
         if let Err(e) = self.protocol.shutdown() {
-            if !e.is_efi_err(EFI_STATUS_NOT_STARTED) {
+            if e != Error::NotStarted {
                 // If shutdown fails, the protocol might still be operating on transmit buffers,
                 // which can cause undefined behavior. Thus we need to panic.
                 panic!("Failed to shutdown EFI network. {:?}", e);
@@ -289,7 +283,7 @@ fn find_net_device(efi_entry: &EfiEntry) -> Result<DeviceHandle> {
         // Finds the minimum path lexicographically.
         .min_by(|lhs, rhs| Ord::cmp(lhs.1.text().unwrap(), rhs.1.text().unwrap()))
         .map(|(h, _)| h)
-        .ok_or(EfiAppError::NotFound.into())
+        .ok_or(Error::NotFound.into())
 }
 
 /// Derives a link local ethernet mac address and IPv6 address from `EfiMacAddress`.
@@ -326,7 +320,7 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
     /// Resets the socket and starts listening for new TCP connection.
     pub fn listen(&mut self, port: u16) -> Result<()> {
         self.get_socket().abort();
-        self.get_socket().listen(port)?;
+        self.get_socket().listen(port).map_err(listen_to_unified)?;
         Ok(())
     }
 
@@ -367,12 +361,12 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
             let mut has_progress = false;
 
             if self.is_closed() {
-                return Err(EfiAppError::PeerClosed.into());
+                return Err(Error::Disconnected);
             } else if timer.check()? {
-                return Err(EfiAppError::Timeout.into());
+                return Err(Error::Timeout);
             } else if self.get_socket().can_recv() {
-                let recv_size = self.get_socket().recv_slice(curr)?;
-                curr = curr.get_mut(recv_size..).ok_or(EfiAppError::ArithmeticOverflow)?;
+                let recv_size = self.get_socket().recv_slice(curr).map_err(recv_to_unified)?;
+                curr = curr.get_mut(recv_size..).ok_or(Error::BadIndex(recv_size))?;
                 has_progress = recv_size > 0;
                 // Forces a yield to the executor if the data received/sent reaches a certain
                 // threshold. This is to prevent the async code from holding up the CPU for too long
@@ -398,9 +392,9 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
             if curr.is_empty() && self.get_socket().send_queue() == 0 {
                 return Ok(());
             } else if self.is_closed() {
-                return Err(EfiAppError::PeerClosed.into());
+                return Err(Error::Disconnected.into());
             } else if timer.check()? {
-                return Err(EfiAppError::Timeout.into());
+                return Err(Error::Timeout.into());
             }
 
             let mut has_progress = false;
@@ -411,8 +405,8 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
             }
             // Checks if there are more data to be queued.
             if self.get_socket().can_send() && !curr.is_empty() {
-                let sent = self.get_socket().send_slice(curr)?;
-                curr = curr.get(sent..).ok_or(EfiAppError::ArithmeticOverflow)?;
+                let sent = self.get_socket().send_slice(curr).map_err(send_to_unified)?;
+                curr = curr.get(sent..).ok_or(Error::BadIndex(sent))?;
                 // Forces a yield to the executor if the data received/sent reaches a certain
                 // threshold. This is to prevent the async code from holding up the CPU for too long
                 // in case IO speed is high and the executor uses cooperative scheduling.
@@ -457,7 +451,9 @@ where
         NETWORK_TIMESTAMP.fetch_add(NETWORK_TIMESTAMP_UPDATE_PERIOD, Ordering::Relaxed);
     };
     let mut notify = EventNotify::new(Tpl::Callback, &mut notify_fn);
-    let timer = bs.create_event(EventType::TimerNotifySignal, Some(&mut notify))?;
+    // SAFETY: the notification callback never allocates, deallocates, or panics.
+    let timer =
+        unsafe { bs.create_event_with_notification(EventType::TimerNotifySignal, &mut notify) }?;
     bs.set_timer(
         &timer,
         EFI_TIMER_DELAY_TIMER_PERIODIC,

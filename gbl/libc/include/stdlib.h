@@ -17,7 +17,13 @@
 #ifndef __STDLIB_H__
 #define __STDLIB_H__
 
+#include <string.h>
+
+void* malloc(size_t size);
+void free(void* ptr);
 int memcmp(const void* ptr1, const void* ptr2, size_t num);
+void* memset(void* destination, int c, size_t num);
+void* memcpy(void* destination, const void* source, size_t num);
 void* memmove(void* destination, const void* source, size_t num);
 
 #endif
