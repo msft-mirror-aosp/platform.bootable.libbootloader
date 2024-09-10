@@ -44,6 +44,7 @@ pub mod boot_reason;
 pub mod error;
 pub mod fastboot;
 pub mod fuchsia_boot;
+mod image_buffer;
 pub mod ops;
 mod overlap;
 pub mod partition;
