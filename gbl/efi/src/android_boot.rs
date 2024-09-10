@@ -86,9 +86,14 @@ fn avb_verify_slot<'a, 'b, 'c>(
 }
 
 /// Helper function to parse common fields from vendor image headers.
+///
+/// # Returns
+///
+/// Returns a tuple of 5 slices corresponding to:
+/// (vendor_ramdisk_size, hdr_size, cmdline, page_size, dtb_size)
 fn vendor_header_elements<B: ByteSlice + PartialEq>(
     hdr: &VendorImageHeader<B>,
-) -> Result<(usize, usize, &[u8])> {
+) -> Result<(usize, usize, &[u8], usize, usize)> {
     Ok(match hdr {
         VendorImageHeader::V3(ref hdr) => (
             hdr.vendor_ramdisk_size as usize,
@@ -97,6 +102,8 @@ fn vendor_header_elements<B: ByteSlice + PartialEq>(
                 .try_into()
                 .map_err(Error::from)?,
             &hdr.cmdline.as_bytes(),
+            hdr.page_size as usize,
+            hdr.dtb_size as usize,
         ),
         VendorImageHeader::V4(ref hdr) => (
             hdr._base.vendor_ramdisk_size as usize,
@@ -105,6 +112,8 @@ fn vendor_header_elements<B: ByteSlice + PartialEq>(
                 .try_into()
                 .map_err(Error::from)?,
             &hdr._base.cmdline.as_bytes(),
+            hdr._base.page_size as usize,
+            hdr._base.dtb_size as usize,
         ),
     })
 }
@@ -164,10 +173,11 @@ pub fn load_android_simple<'a>(
     gpt_devices.read_gpt_partition_sync("vendor_boot_a", 0, vendor_boot_header_buffer)?;
     let vendor_boot_header =
         VendorImageHeader::parse(vendor_boot_header_buffer).map_err(Error::from)?;
-    let (vendor_ramdisk_size, vendor_hdr_size, vendor_cmdline) =
+    let (vendor_ramdisk_size, vendor_hdr_size, vendor_cmdline, vendor_page_size, vendor_dtb_size) =
         vendor_header_elements(&vendor_boot_header)?;
     efi_println!(efi_entry, "vendor ramdisk size: {}", vendor_ramdisk_size);
     efi_println!(efi_entry, "vendor cmdline: \"{}\"", from_utf8(vendor_cmdline).unwrap());
+    efi_println!(efi_entry, "vendor dtb size: {}", vendor_dtb_size);
 
     // Parse init_boot header
     let init_boot_header_buffer = &mut load[..PAGE_SIZE];
@@ -331,7 +341,32 @@ pub fn load_android_simple<'a>(
 
     // For cuttlefish, FDT comes from EFI vendor configuration table installed by u-boot. In real
     // product, it may come from vendor boot image.
-    let (_, fdt_bytes) = get_efi_fdt(&efi_entry).ok_or(Error::NoFdt)?;
+    let mut fdt_bytes_buffer = vec![0u8; vendor_dtb_size];
+    let fdt_bytes_buffer = &mut fdt_bytes_buffer[..];
+    let fdt_bytes = match get_efi_fdt(&efi_entry) {
+        Some((_, fdt_bytes)) => fdt_bytes,
+        None if vendor_dtb_size > 0 => {
+            let vendor_dtb_offset: usize = (SafeNum::from(vendor_hdr_size)
+                + SafeNum::from(vendor_ramdisk_size))
+            .round_up(vendor_page_size)
+            .try_into()
+            .map_err(Error::from)?;
+            efi_println!(
+                efi_entry,
+                "Loading vendor_boot dtb size {} at {}",
+                vendor_dtb_size,
+                vendor_dtb_offset
+            );
+            let fdt_bytes = &mut fdt_bytes_buffer[..vendor_dtb_size.try_into().unwrap()];
+            gpt_devices.read_gpt_partition_sync(
+                "vendor_boot_a",
+                vendor_dtb_offset.try_into().unwrap(),
+                fdt_bytes,
+            )?;
+            fdt_bytes
+        }
+        None => &mut [],
+    };
     let fdt_origin = Fdt::new(fdt_bytes)?;
 
     // Use the remaining load buffer for updating FDT.
