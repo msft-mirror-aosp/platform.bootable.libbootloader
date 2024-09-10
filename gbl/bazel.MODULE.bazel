@@ -14,28 +14,17 @@
 
 """Custom MODULE.bazel definition for GBL.
 
-Ideally, MODULE.bazel from Kleaf should be used instead because Kleaf is the
-root module. However, rules_rust_tinyjson and other crates needs to be resolved
-properly so it can be vendored.
-
-Do not fork this file for other projects!
+This is a stripped down version of Kleaf's MODULE.bazel because this repository does not build
+kernel.
 """
-
-# TODO(b/328465178): Use MODULE.bazel from Kleaf instead.
 
 module(
     name = "uefi-gbl",
     version = "0.0.0",
 )
 
-kernel_toolchain_ext = use_extension("//build/kernel/kleaf:kernel_toolchain_ext.bzl", "kernel_toolchain_ext")
-use_repo(kernel_toolchain_ext, "kernel_toolchain_info")
-use_repo(kernel_toolchain_ext, "kleaf_clang_toolchain")
-use_repo(kernel_toolchain_ext, "kleaf_host_tools")
-
 register_toolchains(
-    "@kleaf_clang_toolchain//:all",
-    "//build/kernel:hermetic_tools_toolchain",
+    "//prebuilts/build-tools:py_toolchain_musl",
     "//prebuilts/build-tools:py_toolchain",
 )
 
@@ -48,10 +37,18 @@ bazel_dep(
 bazel_dep(
     name = "rules_cc",
 )
+bazel_dep(
+    name = "rules_pkg",
+)
 
 local_path_override(
     module_name = "apple_support",
     path = "external/bazelbuild-apple_support",
+)
+
+local_path_override(
+    module_name = "bazel_features",
+    path = "external/bazel-contrib-bazel_features",
 )
 
 local_path_override(
@@ -77,6 +74,11 @@ local_path_override(
 local_path_override(
     module_name = "rules_license",
     path = "external/bazelbuild-rules_license",
+)
+
+local_path_override(
+    module_name = "rules_pkg",
+    path = "external/bazelbuild-rules_pkg",
 )
 
 local_path_override(

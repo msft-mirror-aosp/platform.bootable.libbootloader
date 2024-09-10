@@ -4,11 +4,24 @@ This directory hosts the Generic Bootloader Library project. A Bazel
 workspace is setup for building the library as well as an EFI executable that
 can be loaded directly from the firmware.
 
-## Build
+## Get source tree and build
+
+To succesfully get and build the tree your machine must have the following dependencies installed:
+
+```
+# repo to work with android repositories (https://source.android.com/docs/setup/reference/repo)
+# bazel-bootstrap to build (https://bazel.build/)
+sudo apt install repo bazel-bootstrap
+```
 
 The GBL project are intended to be built from the
 [Android UEFI Manifest](https://android.googlesource.com/kernel/manifest/+/refs/heads/uefi-gbl-mainline/default.xml)
-checkout.
+checkout:
+
+```
+repo init -u https://android.googlesource.com/kernel/manifest -b uefi-gbl-mainline
+repo sync -j16
+```
 
 To build the EFI application:
 
@@ -33,10 +46,10 @@ If you have a main AOSP checkout and is setup to run
 run the EFI image directly with:
 
 ```
-launch_cvd --android_efi_loader=<path to the EFI image> ...
+cvd start --android_efi_loader=<path to the EFI image> ...
 ```
 
-The above uses the same setting as a normal `launch_cvd` run, except that
+The above uses the same setting as a normal `cvd start` run, except that
 insted of booting Android directly, the emulator first hands off to the EFI
 application, which will take over booting android.
 

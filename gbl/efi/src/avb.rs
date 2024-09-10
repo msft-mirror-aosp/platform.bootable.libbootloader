@@ -16,10 +16,9 @@
 // is mainly for use by the boot demo. Eventually, these backends will be implemented from the
 // `GblOps` interface in libgbl, where EFI services will be one level lower as its backend instead.
 
-use crate::utils::EfiMultiBlockDevices;
+use crate::efi_blocks::EfiMultiBlockDevices;
 use avb::{IoError, IoResult, Ops, PublicKeyForPartitionInfo};
 use core::ffi::CStr;
-use gbl_storage::AsMultiBlockDevices;
 use uuid::Uuid;
 
 extern crate avb_sysdeps;
@@ -36,6 +35,16 @@ impl<'a, 'b> GblEfiAvbOps<'a, 'b> {
     ) -> Self {
         Self { gpt_dev, preloaded_partitions }
     }
+
+    /// Returns the size of a partition.
+    fn partition_size(&mut self, partition: &str) -> IoResult<u64> {
+        Ok(self
+            .gpt_dev
+            .find_partition(partition)
+            .map_err(|_| IoError::NoSuchPartition)?
+            .size()
+            .map_err(|_| IoError::NoSuchPartition)?)
+    }
 }
 
 /// A helper function for converting CStr to str
@@ -51,20 +60,17 @@ impl<'b> Ops<'b> for GblEfiAvbOps<'_, 'b> {
         buffer: &mut [u8],
     ) -> IoResult<usize> {
         let part_str = cstr_to_str(partition, IoError::NoSuchPartition)?;
-        let partition_size: u64 = self
-            .gpt_dev
-            .find_partition(part_str)
-            .and_then(|v| v.size())
-            .map_err(|_| IoError::NoSuchPartition)?
-            .try_into()
-            .map_err(|_| IoError::Oom)?;
+        let partition_size: u64 =
+            self.partition_size(part_str)?.try_into().map_err(|_| IoError::Oom)?;
         let read_off: u64 = match offset < 0 {
             true => {
                 partition_size.checked_sub(offset.abs() as u64).ok_or(IoError::InvalidValueSize)?
             }
             _ => offset.try_into().map_err(|_| IoError::InvalidValueSize)?,
         };
-        self.gpt_dev.read_gpt_partition(part_str, read_off, buffer).map_err(|_| IoError::Io)?;
+        self.gpt_dev
+            .read_gpt_partition_sync(part_str, read_off, buffer)
+            .map_err(|_| IoError::Io)?;
         Ok(buffer.len())
     }
 
@@ -109,9 +115,9 @@ impl<'b> Ops<'b> for GblEfiAvbOps<'_, 'b> {
     }
 
     fn get_unique_guid_for_partition(&mut self, partition: &CStr) -> IoResult<Uuid> {
-        let part_str = cstr_to_str(partition, IoError::NoSuchPartition)?;
-        let ptn = self.gpt_dev.find_partition(part_str).map_err(|_| IoError::NoSuchPartition)?;
-        Ok(Uuid::from_bytes(ptn.gpt_entry().guid))
+        // The ops is only used to check that a partition exists. GUID is not used.
+        self.partition_size(cstr_to_str(partition, IoError::NoSuchPartition)?)?;
+        Ok(Uuid::nil())
     }
 
     fn get_size_of_partition(&mut self, partition: &CStr) -> IoResult<u64> {
@@ -119,13 +125,7 @@ impl<'b> Ops<'b> for GblEfiAvbOps<'_, 'b> {
             Ok(img) => Ok(img.len().try_into().unwrap()),
             _ => {
                 let part_str = cstr_to_str(partition, IoError::NoSuchPartition)?;
-                Ok(self
-                    .gpt_dev
-                    .find_partition(part_str)
-                    .and_then(|v| v.size())
-                    .map_err(|_| IoError::NoSuchPartition)?
-                    .try_into()
-                    .map_err(|_| IoError::NoSuchPartition)?)
+                self.partition_size(part_str)
             }
         }
     }

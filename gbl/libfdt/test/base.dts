@@ -1,0 +1,22 @@
+/dts-v1/;
+
+// re-generate and push test artifacts using ./gen_test_dtb.sh after change in this file
+/ {
+	info = "test device tree";
+
+    dev1: dev-1 {};
+
+    dev-2 {
+        dev-2.1 {};
+
+        dev-2.2 {
+            dev221: dev-2.2.1 {
+                property-1 = "dev-2.2.1-property-1";
+            };
+        };
+
+        dev-1.3 {};
+    };
+
+    dev-3 {};
+};

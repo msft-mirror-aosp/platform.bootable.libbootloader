@@ -51,6 +51,8 @@ fi
 
 ALL_INPUTS=$(echo ${INPUT} | sed 's/,/ /g')
 
+# Look for protocols in the source code that do not exist in the documentation.
+# The protocol name we match on here is the Rust struct name.
 DOCLESS_PROTOCOLS=""
 PROTOCOLS=($(grep -hE 'impl ProtocolInfo for .* \\{' ${ALL_INPUTS} | awk '{print $4}' | sort))
 for P in ${PROTOCOLS[@]}
@@ -63,8 +65,11 @@ if [ ! -z "${DOCLESS_PROTOCOLS}" ]; then
   exit 1
 fi
 
+# Look for protocols in the documentation that are not in the source, to try to
+# prevent stale docs referring to protocols we are no longer using.
+# Here we're matching on words ending in "Protocol", except "Protocol" itself.
 UNUSED_PROTOCOLS=""
-README_PROTOCOLS=($(grep -P " ?.*?Protocol$" ${README} | awk '{print $NF}' | sort | uniq))
+README_PROTOCOLS=($(grep -P " ?[^ ]+Protocol$" ${README} | awk '{print $NF}' | sort | uniq))
 for P in ${README_PROTOCOLS[@]}
 do
   grep -qhE "impl ProtocolInfo for $P" ${ALL_INPUTS} || UNUSED_PROTOCOLS+="\n\t$P"

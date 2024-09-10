@@ -19,9 +19,13 @@
 
 #include <stddef.h>
 
-size_t strlen(const char * str);
+size_t strlen(const char *str);
 void *memchr(const void *ptr, int ch, size_t count);
 char *strrchr(const char *str, int c);
+char *strchr(const char *str, int c);
 size_t strnlen(const char *s, size_t maxlen);
+int strcmp(const char *s1, const char *s2);
+int strncmp(const char *s1, const char *s2, size_t n);
+unsigned long int strtoul(const char *s, char **endptr, int base);
 
 #endif
