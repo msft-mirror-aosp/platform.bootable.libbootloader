@@ -12,27 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::ffi::CStr;
-use core::fmt::Write;
-use core::str::from_utf8;
-
+use crate::{
+    avb::GblEfiAvbOps,
+    efi_blocks::{find_block_devices, EfiMultiBlockDevices},
+    ops::Ops,
+    utils::{aligned_subslice, cstr_bytes_to_str, get_efi_fdt},
+};
+use avb::{slot_verify, HashtreeErrorMode, Ops as _, SlotVerifyFlags};
 use bootconfig::BootConfigBuilder;
 use bootimg::{BootImage, VendorImageHeader};
-use efi::{efi_print, efi_println, exit_boot_services, EfiEntry};
+use core::cmp::max;
+use core::{ffi::CStr, fmt::Write, str::from_utf8};
+use efi::{exit_boot_services, EfiEntry};
 use fdt::Fdt;
 use liberror::Error;
-use libgbl::{IntegrationError, Result};
+use libgbl::{gbl_print, gbl_println, GblOps, IntegrationError, Result};
 use misc::{AndroidBootMode, BootloaderMessage};
 use safemath::SafeNum;
 use zerocopy::{AsBytes, ByteSlice};
-
-use crate::{
-    efi_blocks::{find_block_devices, EfiMultiBlockDevices},
-    utils::{aligned_subslice, cstr_bytes_to_str, get_efi_fdt},
-};
-
-use crate::avb::GblEfiAvbOps;
-use avb::{slot_verify, HashtreeErrorMode, Ops, SlotVerifyFlags};
 
 #[cfg(target_arch = "aarch64")]
 use gbl_efi_aarch64::decompress_kernel;
@@ -85,6 +82,49 @@ fn avb_verify_slot<'a, 'b, 'c>(
     Ok(())
 }
 
+/// Helper function to parse common fields from boot image headers.
+///
+/// # Returns
+///
+/// Returns a tuple of 6 slices corresponding to:
+/// (kernel_size, cmdline, page_size, ramdisk_size, second_size, dtb_size)
+fn boot_header_elements<B: ByteSlice + PartialEq>(
+    hdr: &BootImage<B>,
+) -> Result<(usize, &[u8], usize, usize, usize, usize)> {
+    const PAGE_SIZE: usize = 4096; // V3/V4 image has fixed page size 4096;
+    Ok(match hdr {
+        BootImage::V2(ref hdr) => {
+            let kernel_size = hdr._base._base.kernel_size as usize;
+            let page_size = hdr._base._base.page_size as usize;
+            let ramdisk_size = hdr._base._base.ramdisk_size as usize;
+            let second_size = hdr._base._base.second_size as usize;
+            let dtb_size = hdr.dtb_size as usize;
+            (
+                kernel_size,
+                &hdr._base._base.cmdline[..],
+                page_size,
+                ramdisk_size,
+                second_size,
+                dtb_size,
+            )
+        }
+        BootImage::V3(ref hdr) => {
+            (hdr.kernel_size as usize, &hdr.cmdline[..], PAGE_SIZE, hdr.ramdisk_size as usize, 0, 0)
+        }
+        BootImage::V4(ref hdr) => (
+            hdr._base.kernel_size as usize,
+            &hdr._base.cmdline[..],
+            PAGE_SIZE,
+            hdr._base.ramdisk_size as usize,
+            0,
+            0,
+        ),
+        _ => {
+            return Err(Error::UnsupportedVersion.into());
+        }
+    })
+}
+
 /// Helper function to parse common fields from vendor image headers.
 ///
 /// # Returns
@@ -127,11 +167,16 @@ fn vendor_header_elements<B: ByteSlice + PartialEq>(
 ///   * Only support V3/V4 image and Android 13+ (generic ramdisk from the "init_boot" partition)
 ///   * Only support booting recovery from boot image
 ///
-/// # Returns
+/// # Arguments
+/// * `ops`: the [GblOps] object providing platform-specific backends.
+/// * `efi_entry`: the [EfiEntry] object; to be removed and accessed through `ops` instead.
+/// * `load`: the combined buffer to load all images into.
 ///
+/// # Returns
 /// Returns a tuple of 4 slices corresponding to:
 ///   (ramdisk load buffer, FDT load buffer, kernel load buffer, unused buffer).
-pub fn load_android_simple<'a>(
+pub fn load_android_simple<'a, 'b>(
+    ops: &mut impl GblOps<'b>,
     efi_entry: &EfiEntry,
     load: &'a mut [u8],
 ) -> Result<(&'a mut [u8], &'a mut [u8], &'a mut [u8], &'a mut [u8])> {
@@ -143,30 +188,18 @@ pub fn load_android_simple<'a>(
     gpt_devices.read_gpt_partition_sync("misc", 0, bcb_buffer)?;
     let bcb = BootloaderMessage::from_bytes_ref(bcb_buffer)?;
     let boot_mode = bcb.boot_mode()?;
-    efi_println!(efi_entry, "boot mode from BCB: {}", boot_mode);
+    gbl_println!(ops, "boot mode from BCB: {}", boot_mode);
 
     // Parse boot header.
     let (boot_header_buffer, load) = load.split_at_mut(PAGE_SIZE);
     gpt_devices.read_gpt_partition_sync("boot_a", 0, boot_header_buffer)?;
     let boot_header = BootImage::parse(boot_header_buffer).map_err(Error::from)?;
-    let (kernel_size, cmdline, kernel_hdr_size, boot_ramdisk_size) = match boot_header {
-        BootImage::V3(ref hdr) => {
-            (hdr.kernel_size as usize, &hdr.cmdline[..], PAGE_SIZE, hdr.ramdisk_size as usize)
-        }
-        BootImage::V4(ref hdr) => (
-            hdr._base.kernel_size as usize,
-            &hdr._base.cmdline[..],
-            PAGE_SIZE,
-            hdr._base.ramdisk_size as usize,
-        ),
-        _ => {
-            efi_println!(efi_entry, "V0/V1/V2 images are not supported");
-            return Err(Error::UnsupportedVersion.into());
-        }
-    };
-    efi_println!(efi_entry, "boot image size: {}", kernel_size);
-    efi_println!(efi_entry, "boot image cmdline: \"{}\"", from_utf8(cmdline).unwrap());
-    efi_println!(efi_entry, "boot ramdisk size: {}", boot_ramdisk_size);
+    let (kernel_size, cmdline, kernel_hdr_size, boot_ramdisk_size, boot_second_size, boot_dtb_size) =
+        boot_header_elements(&boot_header)?;
+    gbl_println!(ops, "boot image size: {}", kernel_size);
+    gbl_println!(ops, "boot image cmdline: \"{}\"", from_utf8(cmdline).unwrap());
+    gbl_println!(ops, "boot ramdisk size: {}", boot_ramdisk_size);
+    gbl_println!(ops, "boot dtb size: {}", boot_dtb_size);
 
     // Parse vendor boot header.
     let (vendor_boot_header_buffer, load) = load.split_at_mut(PAGE_SIZE);
@@ -175,9 +208,9 @@ pub fn load_android_simple<'a>(
         VendorImageHeader::parse(vendor_boot_header_buffer).map_err(Error::from)?;
     let (vendor_ramdisk_size, vendor_hdr_size, vendor_cmdline, vendor_page_size, vendor_dtb_size) =
         vendor_header_elements(&vendor_boot_header)?;
-    efi_println!(efi_entry, "vendor ramdisk size: {}", vendor_ramdisk_size);
-    efi_println!(efi_entry, "vendor cmdline: \"{}\"", from_utf8(vendor_cmdline).unwrap());
-    efi_println!(efi_entry, "vendor dtb size: {}", vendor_dtb_size);
+    gbl_println!(ops, "vendor ramdisk size: {}", vendor_ramdisk_size);
+    gbl_println!(ops, "vendor cmdline: \"{}\"", from_utf8(vendor_cmdline).unwrap());
+    gbl_println!(ops, "vendor dtb size: {}", vendor_dtb_size);
 
     // Parse init_boot header
     let init_boot_header_buffer = &mut load[..PAGE_SIZE];
@@ -191,14 +224,14 @@ pub fn load_android_simple<'a>(
                     BootImage::V3(ref hdr) => (hdr.ramdisk_size as usize, PAGE_SIZE),
                     BootImage::V4(ref hdr) => (hdr._base.ramdisk_size as usize, PAGE_SIZE),
                     _ => {
-                        efi_println!(efi_entry, "V0/V1/V2 images are not supported");
+                        gbl_println!(ops, "V0/V1/V2 images are not supported");
                         return Err(Error::UnsupportedVersion.into());
                     }
                 }
             }
             _ => (0, 0),
         };
-    efi_println!(efi_entry, "init_boot image size: {}", generic_ramdisk_size);
+    gbl_println!(ops, "init_boot image size: {}", generic_ramdisk_size);
 
     // Load and prepare various images.
     let images_buffer = aligned_subslice(load, KERNEL_ALIGNMENT)?;
@@ -322,7 +355,7 @@ pub fn load_android_simple<'a>(
         }
         _ => {}
     }
-    efi_println!(efi_entry, "final bootconfig: \"{}\"", bootconfig_builder);
+    gbl_println!(ops, "final bootconfig: \"{}\"", bootconfig_builder);
 
     ramdisk_load_curr += bootconfig_builder.config_bytes().len();
 
@@ -341,7 +374,7 @@ pub fn load_android_simple<'a>(
 
     // For cuttlefish, FDT comes from EFI vendor configuration table installed by u-boot. In real
     // product, it may come from vendor boot image.
-    let mut fdt_bytes_buffer = vec![0u8; vendor_dtb_size];
+    let mut fdt_bytes_buffer = vec![0u8; max(vendor_dtb_size, boot_dtb_size)];
     let fdt_bytes_buffer = &mut fdt_bytes_buffer[..];
     let fdt_bytes = match get_efi_fdt(&efi_entry) {
         Some((_, fdt_bytes)) => fdt_bytes,
@@ -351,8 +384,8 @@ pub fn load_android_simple<'a>(
             .round_up(vendor_page_size)
             .try_into()
             .map_err(Error::from)?;
-            efi_println!(
-                efi_entry,
+            gbl_println!(
+                ops,
                 "Loading vendor_boot dtb size {} at {}",
                 vendor_dtb_size,
                 vendor_dtb_offset
@@ -361,6 +394,19 @@ pub fn load_android_simple<'a>(
             gpt_devices.read_gpt_partition_sync(
                 "vendor_boot_a",
                 vendor_dtb_offset.try_into().unwrap(),
+                fdt_bytes,
+            )?;
+            fdt_bytes
+        }
+        None if boot_dtb_size > 0 => {
+            let mut boot_dtb_offset = SafeNum::from(kernel_hdr_size);
+            for image_size in [kernel_size, boot_ramdisk_size, boot_second_size] {
+                boot_dtb_offset += SafeNum::from(image_size).round_up(kernel_hdr_size);
+            }
+            let fdt_bytes = &mut fdt_bytes_buffer[..boot_dtb_size.try_into().unwrap()];
+            gpt_devices.read_gpt_partition_sync(
+                "boot_a",
+                boot_dtb_offset.try_into().unwrap(),
                 fdt_bytes,
             )?;
             fdt_bytes
@@ -382,8 +428,8 @@ pub fn load_android_simple<'a>(
         ramdisk_addr + u64::try_from(ramdisk_load_buffer.len()).map_err(Error::from)?;
     fdt.set_property("chosen", c"linux,initrd-start", &ramdisk_addr.to_be_bytes())?;
     fdt.set_property("chosen", c"linux,initrd-end", &ramdisk_end.to_be_bytes())?;
-    efi_println!(&efi_entry, "linux,initrd-start: {:#x}", ramdisk_addr);
-    efi_println!(&efi_entry, "linux,initrd-end: {:#x}", ramdisk_end);
+    gbl_println!(ops, "linux,initrd-start: {:#x}", ramdisk_addr);
+    gbl_println!(ops, "linux,initrd-end: {:#x}", ramdisk_end);
 
     // Concatenate kernel commandline and add it to FDT.
     let bootargs_prop = CStr::from_bytes_with_nul(b"bootargs\0").unwrap();
@@ -403,7 +449,7 @@ pub fn load_android_simple<'a>(
         cmdline_payload[cmdline_payload_off..][..ele.len()].clone_from_slice(ele.as_bytes());
         cmdline_payload_off += ele.len();
     }
-    efi_println!(&efi_entry, "final cmdline: \"{}\"", from_utf8(cmdline_payload).unwrap());
+    gbl_println!(ops, "final cmdline: \"{}\"", from_utf8(cmdline_payload).unwrap());
 
     // Finalize FDT to actual used size.
     fdt.shrink_to_fit()?;
@@ -441,22 +487,27 @@ pub fn load_android_simple<'a>(
 // flow in libgbl, which will eventually replace this demo. The demo is currently used as an
 // end-to-end test for libraries developed so far.
 pub fn android_boot_demo(entry: EfiEntry) -> Result<()> {
-    efi_println!(entry, "Try booting as Android");
+    // TODO(b/363074091): load the partitions here and access them through `ops`. For now we're only
+    // using `ops` for console printing.
+    let mut ops = Ops { efi_entry: &entry, partitions: &[] };
+
+    gbl_println!(ops, "Try booting as Android");
 
     // Allocate buffer for load.
     let mut load_buffer = vec![0u8; 128 * 1024 * 1024]; // 128MB
 
-    let (ramdisk, fdt, kernel, remains) = load_android_simple(&entry, &mut load_buffer[..])?;
+    let (ramdisk, fdt, kernel, remains) =
+        load_android_simple(&mut ops, &entry, &mut load_buffer[..])?;
 
-    efi_println!(&entry, "");
-    efi_println!(
-        &entry,
+    gbl_println!(ops, "");
+    gbl_println!(
+        ops,
         "Booting kernel @ {:#x}, ramdisk @ {:#x}, fdt @ {:#x}",
         kernel.as_ptr() as usize,
         ramdisk.as_ptr() as usize,
         fdt.as_ptr() as usize
     );
-    efi_println!(&entry, "");
+    gbl_println!(ops, "");
 
     #[cfg(target_arch = "aarch64")]
     {
@@ -506,7 +557,7 @@ pub fn android_boot_demo(entry: EfiEntry) -> Result<()> {
             .boot_services()
             .find_first_and_open::<efi::protocol::riscv::RiscvBootProtocol>()?
             .get_boot_hartid()?;
-        efi_println!(entry, "riscv boot_hart_id: {}", boot_hart_id);
+        gbl_println!(ops, "riscv boot_hart_id: {}", boot_hart_id);
         let _ = exit_boot_services(entry, remains)?;
         // SAFETY: We currently target at Cuttlefish emulator where images are provided valid.
         unsafe { boot::riscv64::jump_linux(kernel, boot_hart_id, fdt) };
