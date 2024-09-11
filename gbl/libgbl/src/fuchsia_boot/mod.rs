@@ -14,7 +14,7 @@
 
 //! This file provides APIs for loading, verifying and booting Fuchsia/Zircon.
 
-use crate::{gbl_print, GblOps, Result as GblResult};
+use crate::{gbl_print, gbl_println, GblOps, Result as GblResult};
 pub use abr::{get_boot_slot, Ops as AbrOps, SlotIndex};
 use core::fmt::Write;
 use liberror::{Error, Result};
@@ -209,9 +209,9 @@ pub fn zircon_load_verify_abr<'a, 'b>(
     buffer: &'a mut [u8],
 ) -> GblResult<(&'a mut [u8], &'a mut [u8], SlotIndex)> {
     let (slot, successful) = get_boot_slot(&mut GblAbrOps(ops), true);
-    gbl_print!(ops, "Loading kernel from {}...\r\n", zircon_part_name(Some(slot)));
+    gbl_println!(ops, "Loading kernel from {}...", zircon_part_name(Some(slot)));
     let (zbi_items, kernel) = zircon_load_verify(ops, Some(slot), successful, buffer)?;
-    gbl_print!(ops, "Successfully loaded slot: {}\r\n", zircon_part_name(Some(slot)));
+    gbl_println!(ops, "Successfully loaded slot: {}", zircon_part_name(Some(slot)));
     Ok((zbi_items, kernel, slot))
 }
 
