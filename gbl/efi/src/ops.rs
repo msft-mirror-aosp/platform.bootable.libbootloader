@@ -169,6 +169,11 @@ where
         Some(self)
     }
 
+    /// UEFI console uses \r\n newline.
+    fn console_newline(&self) -> &'static str {
+        "\r\n"
+    }
+
     fn should_stop_in_fastboot(&mut self) -> Result<bool, Error> {
         // TODO(b/349829690): also query GblSlotProtocol.get_boot_reason() for board-specific
         // fastboot triggers.
