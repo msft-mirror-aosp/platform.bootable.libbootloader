@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Rust wrapper for `EFI_BLOCK_IO_PROTOCOL`.
+
 use crate::defs::{
     EfiBlockIoMedia, EfiBlockIoProtocol, EfiGuid, EFI_STATUS_INVALID_PARAMETER,
     EFI_STATUS_NOT_FOUND,

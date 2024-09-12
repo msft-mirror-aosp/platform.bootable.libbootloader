@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 rust_library(
@@ -21,10 +22,12 @@ rust_library(
     ],
     crate_name = "safemath",
     edition = "2021",
+    rustc_flags = ANDROID_RUST_LINTS,
     visibility = ["//visibility:public"],
 )
 
 rust_test(
     name = "libsafemath_test",
     crate = ":libsafemath",
+    rustc_flags = ANDROID_RUST_LINTS,
 )

@@ -29,6 +29,7 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 /// Libmisc BCB error type
 #[derive(Debug)]
 pub enum BcbError {
+    /// Failed to parse the BCB data; string contains an error message.
     InvalidInput(&'static str),
 }
 
@@ -39,8 +40,11 @@ pub type Result<T> = core::result::Result<T, BcbError>;
 /// Usually obtained from BCB block of misc partition
 #[derive(PartialEq, Debug)]
 pub enum AndroidBootMode {
+    /// Boot normally using A/B slots.
     Normal = 0,
+    /// Boot into recovery mode using A/B slots.
     Recovery,
+    /// Stop in bootloader fastboot mode.
     BootloaderBootOnce,
 }
 

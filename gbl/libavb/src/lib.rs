@@ -16,6 +16,8 @@
 //! Global allocator is required.
 
 #![cfg_attr(not(test), no_std)]
+// These are implementations of required C functions, see libavb sysdeps for docs.
+#![allow(missing_docs)]
 
 extern crate alloc;
 use alloc::alloc::{alloc, dealloc};

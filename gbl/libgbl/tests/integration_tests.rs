@@ -12,53 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use gbl_storage::BlockIo;
-use gbl_storage_testlib::TestBlockIo;
-use libgbl::{BootImages, FuchsiaBootImages, GblBuilder, GblOps, GblOpsError};
-use std::{collections::VecDeque, vec::Vec};
+use libgbl::{BootImages, FuchsiaBootImages, Gbl, GblOps, GblOpsError};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    vec::Vec,
+};
 
 extern crate avb_sysdeps;
-
-struct GblTestBlockIo {
-    io: TestBlockIo,
-    max_gpt_entries: u64,
-}
 
 /// `TestGblOps` provides mock implementation of GblOps for integration test.
 #[derive(Default)]
 struct TestGblOps<'a> {
-    block_io: Vec<GblTestBlockIo>,
     console_out: VecDeque<u8>,
     boot_cb: Option<MustUse<&'a mut dyn FnMut(BootImages)>>,
-}
-
-impl TestGblOps<'_> {
-    /// Adds a new block device.
-    pub(crate) fn add_block_device<T: AsRef<[u8]>>(
-        &mut self,
-        alignment: u64,
-        block_size: u64,
-        max_gpt_entries: u64,
-        data: T,
-    ) {
-        self.block_io.push(GblTestBlockIo {
-            io: TestBlockIo::new(alignment, block_size, data.as_ref().into()),
-            max_gpt_entries,
-        })
-    }
+    storage: BTreeMap<&'static str, Vec<u8>>,
 }
 
 impl GblOps for TestGblOps<'_> {
-    fn visit_block_devices(
-        &mut self,
-        f: &mut dyn FnMut(&mut dyn BlockIo, u64, u64),
-    ) -> Result<(), GblOpsError> {
-        for (idx, ele) in self.block_io.iter_mut().enumerate() {
-            f(&mut ele.io, idx.try_into().unwrap(), ele.max_gpt_entries);
-        }
-        Ok(())
-    }
-
     fn console_put_char(&mut self, ch: u8) -> Result<(), GblOpsError> {
         Ok(self.console_out.push_back(ch))
     }
@@ -69,6 +39,34 @@ impl GblOps for TestGblOps<'_> {
 
     fn boot(&mut self, boot_images: BootImages) -> Result<(), GblOpsError> {
         Ok((self.boot_cb.as_mut().unwrap().get())(boot_images))
+    }
+
+    async fn read_from_partition(
+        &mut self,
+        part: &str,
+        off: u64,
+        out: &mut [u8],
+    ) -> Result<(), GblOpsError> {
+        match self.storage.get_mut(part) {
+            Some(v) => Ok(out.clone_from_slice(&v[off.try_into().unwrap()..][..out.len()])),
+            _ => Err(GblOpsError(Some("Test: No such partition"))),
+        }
+    }
+
+    async fn write_to_partition(
+        &mut self,
+        part: &str,
+        off: u64,
+        data: &mut [u8],
+    ) -> Result<(), GblOpsError> {
+        match self.storage.get_mut(part) {
+            Some(v) => Ok(v[off.try_into().unwrap()..][..data.len()].clone_from_slice(data)),
+            _ => Err(GblOpsError(Some("Test: No such partition"))),
+        }
+    }
+
+    fn partition_size(&mut self, part: &str) -> Result<Option<usize>, GblOpsError> {
+        Ok(self.storage.get_mut(part).map(|v| v.len()))
     }
 }
 
@@ -118,9 +116,10 @@ mod tests {
             assert_eq!(zbi_items, []);
         };
         let mut ops: TestGblOps = Default::default();
-        ops.add_block_device(512, 512, 128, include_bytes!("../testdata/zircon_gpt.bin"));
+        ops.storage =
+            BTreeMap::from([("zircon_a", include_bytes!("../testdata/zircon_a.bin").to_vec())]);
         ops.boot_cb = Some(MustUse::new(&mut boot_cb));
-        let mut gbl = GblBuilder::new(&mut ops).build();
+        let mut gbl = Gbl::new(&mut ops);
         let mut load_buffer = vec![0u8; 64 * 1024];
         let _ = gbl.zircon_load_and_boot(&mut load_buffer[..]);
     }
