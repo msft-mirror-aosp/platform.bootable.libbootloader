@@ -21,6 +21,7 @@ extern crate alloc;
 use core::fmt::Write;
 use efi::{efi_print, efi_println, EfiEntry};
 use liberror::{Error, Result};
+use lz4_flex::decompress_into;
 use zune_inflate::DeflateDecoder;
 
 /// Decompresses the given kernel if necessary
@@ -50,7 +51,65 @@ pub fn decompress_kernel(
         // Move decompressed data to slice.
         buffer[kernel_start..].clone_from_slice(&decompressed_data);
         Ok(kernel_start)
+    } else if buffer[kernel_start..kernel_start + 4] == [0x02, 0x21, 0x4c, 0x18] {
+        efi_println!(efi_entry, "kernel is lz4 compressed");
+        let kernel_tail_buffer = &buffer[kernel_start..];
+        let mut contents = &kernel_tail_buffer[4..];
+        let mut decompressed_kernel = alloc::vec::Vec::new();
+        loop {
+            if contents.len() < 4 {
+                if contents.len() != 0 {
+                    efi_println!(efi_entry, "Error: some leftover data in the content");
+                }
+                break;
+            }
+            let block_size: usize =
+                u32::from_le_bytes(contents[0..4].try_into().unwrap()).try_into().unwrap();
+            let block;
+            (block, contents) = contents.split_at(block_size + 4);
+            let block = &block[4..];
+            // extend decompressed kernel buffer by 8MB
+            let decompressed_kernel_len = decompressed_kernel.len();
+            decompressed_kernel.resize(decompressed_kernel_len + 8 * 1024 * 1024, 0);
+            // decompress the block
+            let decompressed_data_size =
+                decompress_into(&block, &mut decompressed_kernel[decompressed_kernel_len..])
+                    .unwrap();
+            // reduce the size of decompressed kernel buffer
+            decompressed_kernel.resize(decompressed_kernel_len + decompressed_data_size, 0);
+        }
+        efi_println!(efi_entry, "kernel decompressed size {}", decompressed_kernel.len());
+        let kernel_start = buffer.len() - decompressed_kernel.len();
+        // Move decompressed data to slice
+        buffer[kernel_start..].clone_from_slice(&decompressed_kernel);
+        Ok(kernel_start)
     } else {
         Ok(kernel_start)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use efi_mocks::MockEfi;
+
+    #[test]
+    fn ops_write_trait() {
+        let mut mock_efi = MockEfi::new();
+        let installed = mock_efi.install();
+
+        let original_data = "Test TTTTTTTTT 123";
+        let compressed_data = [
+            0x02, 0x21, 0x4c, 0x18, 0x0f, 0x00, 0x00, 0x00, 0x63, 0x54, 0x65, 0x73, 0x74, 0x20,
+            0x54, 0x01, 0x00, 0x50, 0x54, 0x20, 0x31, 0x32, 0x33,
+        ];
+
+        let buffer = vec![0u8; 8 * 1024];
+        // Copy compressed data somewhere in buffer.
+        buffer[buffer.len() - compressed_data.len()..].clone_from_slice(compressed_data);
+
+        let offset =
+            decompress_kernel(installed.entry(), buffer, buffer.len() - compressed_data.len());
+        assert_eq!(buffer[offset..], original_data);
     }
 }
