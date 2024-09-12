@@ -21,6 +21,7 @@ use crate::{
 use avb::{slot_verify, HashtreeErrorMode, Ops as _, SlotVerifyFlags};
 use bootconfig::BootConfigBuilder;
 use bootimg::{BootImage, VendorImageHeader};
+use core::cmp::max;
 use core::{ffi::CStr, fmt::Write, str::from_utf8};
 use efi::{exit_boot_services, EfiEntry};
 use fdt::Fdt;
@@ -79,6 +80,49 @@ fn avb_verify_slot<'a, 'b, 'c>(
     write!(bootconfig_builder, "androidboot.verifiedbootstate={}\n", avb_state)
         .or(Err(Error::BufferTooSmall(None)))?;
     Ok(())
+}
+
+/// Helper function to parse common fields from boot image headers.
+///
+/// # Returns
+///
+/// Returns a tuple of 6 slices corresponding to:
+/// (kernel_size, cmdline, page_size, ramdisk_size, second_size, dtb_size)
+fn boot_header_elements<B: ByteSlice + PartialEq>(
+    hdr: &BootImage<B>,
+) -> Result<(usize, &[u8], usize, usize, usize, usize)> {
+    const PAGE_SIZE: usize = 4096; // V3/V4 image has fixed page size 4096;
+    Ok(match hdr {
+        BootImage::V2(ref hdr) => {
+            let kernel_size = hdr._base._base.kernel_size as usize;
+            let page_size = hdr._base._base.page_size as usize;
+            let ramdisk_size = hdr._base._base.ramdisk_size as usize;
+            let second_size = hdr._base._base.second_size as usize;
+            let dtb_size = hdr.dtb_size as usize;
+            (
+                kernel_size,
+                &hdr._base._base.cmdline[..],
+                page_size,
+                ramdisk_size,
+                second_size,
+                dtb_size,
+            )
+        }
+        BootImage::V3(ref hdr) => {
+            (hdr.kernel_size as usize, &hdr.cmdline[..], PAGE_SIZE, hdr.ramdisk_size as usize, 0, 0)
+        }
+        BootImage::V4(ref hdr) => (
+            hdr._base.kernel_size as usize,
+            &hdr._base.cmdline[..],
+            PAGE_SIZE,
+            hdr._base.ramdisk_size as usize,
+            0,
+            0,
+        ),
+        _ => {
+            return Err(Error::UnsupportedVersion.into());
+        }
+    })
 }
 
 /// Helper function to parse common fields from vendor image headers.
@@ -150,24 +194,12 @@ pub fn load_android_simple<'a, 'b>(
     let (boot_header_buffer, load) = load.split_at_mut(PAGE_SIZE);
     gpt_devices.read_gpt_partition_sync("boot_a", 0, boot_header_buffer)?;
     let boot_header = BootImage::parse(boot_header_buffer).map_err(Error::from)?;
-    let (kernel_size, cmdline, kernel_hdr_size, boot_ramdisk_size) = match boot_header {
-        BootImage::V3(ref hdr) => {
-            (hdr.kernel_size as usize, &hdr.cmdline[..], PAGE_SIZE, hdr.ramdisk_size as usize)
-        }
-        BootImage::V4(ref hdr) => (
-            hdr._base.kernel_size as usize,
-            &hdr._base.cmdline[..],
-            PAGE_SIZE,
-            hdr._base.ramdisk_size as usize,
-        ),
-        _ => {
-            gbl_println!(ops, "V0/V1/V2 images are not supported");
-            return Err(Error::UnsupportedVersion.into());
-        }
-    };
+    let (kernel_size, cmdline, kernel_hdr_size, boot_ramdisk_size, boot_second_size, boot_dtb_size) =
+        boot_header_elements(&boot_header)?;
     gbl_println!(ops, "boot image size: {}", kernel_size);
     gbl_println!(ops, "boot image cmdline: \"{}\"", from_utf8(cmdline).unwrap());
     gbl_println!(ops, "boot ramdisk size: {}", boot_ramdisk_size);
+    gbl_println!(ops, "boot dtb size: {}", boot_dtb_size);
 
     // Parse vendor boot header.
     let (vendor_boot_header_buffer, load) = load.split_at_mut(PAGE_SIZE);
@@ -342,7 +374,7 @@ pub fn load_android_simple<'a, 'b>(
 
     // For cuttlefish, FDT comes from EFI vendor configuration table installed by u-boot. In real
     // product, it may come from vendor boot image.
-    let mut fdt_bytes_buffer = vec![0u8; vendor_dtb_size];
+    let mut fdt_bytes_buffer = vec![0u8; max(vendor_dtb_size, boot_dtb_size)];
     let fdt_bytes_buffer = &mut fdt_bytes_buffer[..];
     let fdt_bytes = match get_efi_fdt(&efi_entry) {
         Some((_, fdt_bytes)) => fdt_bytes,
@@ -362,6 +394,19 @@ pub fn load_android_simple<'a, 'b>(
             gpt_devices.read_gpt_partition_sync(
                 "vendor_boot_a",
                 vendor_dtb_offset.try_into().unwrap(),
+                fdt_bytes,
+            )?;
+            fdt_bytes
+        }
+        None if boot_dtb_size > 0 => {
+            let mut boot_dtb_offset = SafeNum::from(kernel_hdr_size);
+            for image_size in [kernel_size, boot_ramdisk_size, boot_second_size] {
+                boot_dtb_offset += SafeNum::from(image_size).round_up(kernel_hdr_size);
+            }
+            let fdt_bytes = &mut fdt_bytes_buffer[..boot_dtb_size.try_into().unwrap()];
+            gpt_devices.read_gpt_partition_sync(
+                "boot_a",
+                boot_dtb_offset.try_into().unwrap(),
                 fdt_bytes,
             )?;
             fdt_bytes
