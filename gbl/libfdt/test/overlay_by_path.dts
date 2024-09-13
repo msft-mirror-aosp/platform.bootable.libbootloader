@@ -1,0 +1,41 @@
+/dts-v1/;
+/plugin/;
+
+// re-generate and push test artifacts using ./gen_test_dtb.sh after change in this file
+/ {
+    // modify a property in an existing node
+    fragment@0 {
+        target-path = "/dev-2/dev-2.2/dev-2.2.1";
+        __overlay__ {
+            property-1 = "overlay1-property-1-value";
+        };
+    };
+
+    // add a new property to an existing node
+    fragment@1 {
+        target-path = "/dev-2/dev-2.2/dev-2.2.1";
+        __overlay__ {
+            overlay1-new-property = "overlay1-new-property-value";
+        };
+    };
+
+    // add a new node under an existing node
+    fragment@2 {
+        target-path = "/dev-1";
+        __overlay__ {
+            overlay1-new-node {
+                overlay1-new-node-property = "overlay1-new-node-property-value";
+            };
+        };
+    };
+
+    // add a new node at the root level
+    fragment@3 {
+        target-path = "/";
+        __overlay__ {
+            dev4: dev-4 {
+                overlay1-root-node-property = "overlay1-root-node-property-value";
+            };
+        };
+    };
+};

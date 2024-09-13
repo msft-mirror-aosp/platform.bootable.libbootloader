@@ -17,13 +17,29 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-use crate::error::{Error, Result as GblResult};
+pub use crate::image_buffer::ImageBuffer;
+use crate::{
+    error::Result as GblResult,
+    partition::{
+        check_part_unique, read_unique_partition, write_unique_partition, PartitionBlockDevice,
+    },
+};
 #[cfg(feature = "alloc")]
 use alloc::ffi::CString;
 use core::{
     fmt::{Debug, Write},
+    num::NonZeroUsize,
     result::Result,
 };
+use gbl_async::block_on;
+use gbl_storage::{BlockIoAsync, BlockIoNull};
+
+// Re-exports of types from other dependencies that appear in the APIs of this library.
+pub use avb::{
+    CertPermanentAttributes, IoError as AvbIoError, IoResult as AvbIoResult, SHA256_DIGEST_SIZE,
+};
+use liberror::Error;
+pub use zbi::ZbiContainer;
 
 use super::slots;
 
@@ -53,10 +69,6 @@ pub enum BootImages<'a> {
     Fuchsia(FuchsiaBootImages<'a>),
 }
 
-/// `GblOpsError` is the error type returned by required methods in `GblOps`.
-#[derive(Default, Debug, PartialEq, Eq)]
-pub struct GblOpsError(pub Option<&'static str>);
-
 // https://stackoverflow.com/questions/41081240/idiomatic-callbacks-in-rust
 // should we use traits for this? or optional/box FnMut?
 //
@@ -66,24 +78,39 @@ missing:
 - key management => atx extension in callback =>  atx_ops: ptr::null_mut(), // support optional ATX.
 */
 /// Trait that defines callbacks that can be provided to Gbl.
-pub trait GblOps {
-    /// Prints a ASCII character to the platform console.
-    fn console_put_char(&mut self, ch: u8) -> Result<(), GblOpsError> {
-        Err(GblOpsError(Some("not defined yet")))
+pub trait GblOps<'a>
+where
+    Self: 'a,
+{
+    /// Type that implements `BlockIoAsync` for the array of `PartitionBlockDevice` returned by]
+    /// `partitions()`.
+    type PartitionBlockIo: BlockIoAsync = BlockIoNull;
+
+    /// Gets a console for logging messages.
+    fn console_out(&mut self) -> Option<&mut dyn Write>;
+
+    /// The string to use for console line termination with [gbl_println!].
+    ///
+    /// Defaults to "\n" if not overridden.
+    fn console_newline(&self) -> &'static str {
+        "\n"
     }
 
     /// This method can be used to implement platform specific mechanism for deciding whether boot
     /// should abort and enter Fastboot mode.
-    fn should_stop_in_fastboot(&mut self) -> Result<bool, GblOpsError> {
-        Err(GblOpsError(Some("not defined yet")))
-    }
+    fn should_stop_in_fastboot(&mut self) -> Result<bool, Error>;
 
-    /// Platform specific kernel boot implementation.
+    /// Platform specific processing of boot images before booting.
+    fn preboot(&mut self, boot_images: BootImages) -> Result<(), Error>;
+
+    /// Returns the list of partition block devices.
     ///
-    /// Implementation is not expected to return on success.
-    fn boot(&mut self, boot_images: BootImages) -> Result<(), GblOpsError> {
-        Err(GblOpsError(Some("not defined yet")))
-    }
+    /// Notes that the return slice doesn't capture the life time of `&self`, meaning that the slice
+    /// reference must be producible without borrowing the `GblOps`. This is intended and necessary
+    /// in order to parallelize fastboot flash, download and other commands. For implementation,
+    /// this typically means that the `GblOps` object should hold a reference of the array instead
+    /// of owning it.
+    fn partitions(&self) -> Result<&'a [PartitionBlockDevice<'a, Self::PartitionBlockIo>], Error>;
 
     /// Reads data from a partition.
     async fn read_from_partition(
@@ -91,8 +118,18 @@ pub trait GblOps {
         part: &str,
         off: u64,
         out: &mut [u8],
-    ) -> Result<(), GblOpsError> {
-        Err(GblOpsError(Some("not defined yet")))
+    ) -> Result<(), Error> {
+        read_unique_partition(self.partitions()?, part, off, out).await
+    }
+
+    /// Reads data from a partition synchronously.
+    fn read_from_partition_sync(
+        &mut self,
+        part: &str,
+        off: u64,
+        out: &mut [u8],
+    ) -> Result<(), Error> {
+        block_on(self.read_from_partition(part, off, out))
     }
 
     /// Writes data to a partition.
@@ -101,14 +138,34 @@ pub trait GblOps {
         part: &str,
         off: u64,
         data: &mut [u8],
-    ) -> Result<(), GblOpsError> {
-        Err(GblOpsError(Some("not defined yet")))
+    ) -> Result<(), Error> {
+        write_unique_partition(self.partitions()?, part, off, data).await
+    }
+
+    /// Writes data to a partition synchronously.
+    fn write_to_partition_sync(
+        &mut self,
+        part: &str,
+        off: u64,
+        data: &mut [u8],
+    ) -> Result<(), Error> {
+        block_on(self.write_to_partition(part, off, data))
     }
 
     /// Returns the size of a partiiton. Returns Ok(None) if partition doesn't exist.
-    fn partition_size(&mut self, part: &str) -> Result<Option<usize>, GblOpsError> {
-        Err(GblOpsError(Some("not defined yet")))
+    fn partition_size(&mut self, part: &str) -> Result<Option<u64>, Error> {
+        match check_part_unique(self.partitions()?, part) {
+            Ok((_, p)) => Ok(Some(p.size()?)),
+            Err(Error::NotFound) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
+
+    /// Adds device specific ZBI items to the given `container`
+    fn zircon_add_device_zbi_items(
+        &mut self,
+        container: &mut ZbiContainer<&mut [u8]>,
+    ) -> Result<(), Error>;
 
     // TODO(b/334962570): figure out how to plumb ops-provided hash implementations into
     // libavb. The tricky part is that libavb hashing APIs are global with no way to directly
@@ -123,70 +180,166 @@ pub trait GblOps {
     fn do_fastboot<B: gbl_storage::AsBlockDevice>(
         &self,
         cursor: &mut slots::Cursor<B>,
-    ) -> GblResult<()> {
-        Err(Error::NotImplemented.into())
-    }
+    ) -> GblResult<()>;
 
     /// TODO: b/312607649 - placeholder interface for Gbl specific callbacks that uses alloc.
     #[cfg(feature = "alloc")]
     fn gbl_alloc_extra_action(&mut self, s: &str) -> GblResult<()> {
-        let _c_string = CString::new(s);
-        Err(Error::NotImplemented.into())
+        unimplemented!();
     }
 
     /// Load and initialize a slot manager and return a cursor over the manager on success.
-    fn load_slot_interface<'a, B: gbl_storage::AsBlockDevice>(
-        &'a mut self,
-        block_device: &'a mut B,
+    fn load_slot_interface<'b, B: gbl_storage::AsBlockDevice>(
+        &'b mut self,
+        block_device: &'b mut B,
         boot_token: slots::BootToken,
-    ) -> GblResult<slots::Cursor<'a, B>> {
-        Err(Error::OperationProhibited.into())
-    }
-}
+    ) -> GblResult<slots::Cursor<'b, B>>;
 
-/// `GblUtils` takes a reference to `GblOps` and implements various traits.
-pub(crate) struct GblUtils<'a, T: GblOps> {
-    ops: &'a mut T,
-}
+    // The following is a selective subset of the interfaces in `avb::Ops` and `avb::CertOps` needed
+    // by GBL's usage of AVB. The rest of the APIs are either not relevant to or are implemented and
+    // managed by GBL APIs.
 
-impl<'a, T: GblOps> GblUtils<'a, T> {
-    /// Create a new instance.
+    /// Returns if device is in an unlocked state.
     ///
-    /// # Args
-    ///
-    /// * `ops`: A reference to a `GblOps`,
-    ///
-    /// # Returns
-    ///
-    /// Returns a new instance and the trailing unused part of the input scratch buffer.
-    pub fn new(ops: &'a mut T) -> GblResult<Self> {
-        Ok(Self { ops })
-    }
-}
+    /// The interface has the same requirement as `avb::Ops::read_is_device_unlocked`.
+    fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool>;
 
-impl<T: GblOps> Write for GblUtils<'_, T> {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        for ch in s.as_bytes() {
-            self.ops.console_put_char(*ch).map_err(|_| core::fmt::Error {})?;
-        }
-        Ok(())
-    }
+    /// Reads the AVB rollback index at the given location
+    ///
+    /// The interface has the same requirement as `avb::Ops::read_rollback_index`.
+    fn avb_read_rollback_index(&mut self, _rollback_index_location: usize) -> AvbIoResult<u64>;
+
+    /// Writes the AVB rollback index at the given location.
+    ///
+    /// The interface has the same requirement as `avb::Ops::write_rollback_index`.
+    fn avb_write_rollback_index(
+        &mut self,
+        _rollback_index_location: usize,
+        _index: u64,
+    ) -> AvbIoResult<()>;
+
+    /// Reads AVB certificate extension permanent attributes.
+    ///
+    /// The interface has the same requirement as `avb::CertOps::read_permanent_attributes`.
+    fn avb_cert_read_permanent_attributes(
+        &mut self,
+        attributes: &mut CertPermanentAttributes,
+    ) -> AvbIoResult<()>;
+
+    /// Reads AVB certificate extension permanent attributes hash.
+    ///
+    /// The interface has the same requirement as `avb::CertOps::read_permanent_attributes_hash`.
+    fn avb_cert_read_permanent_attributes_hash(&mut self) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]>;
+
+    /// Get buffer for specific image of requested size.
+    fn get_image_buffer<'c>(
+        &mut self,
+        image_name: &str,
+        size: NonZeroUsize,
+    ) -> GblResult<ImageBuffer<'c>>;
 }
 
 /// Default [GblOps] implementation that returns errors and does nothing.
 #[derive(Debug)]
 pub struct DefaultGblOps {}
 
-impl GblOps for DefaultGblOps {
-    fn console_put_char(&mut self, ch: u8) -> Result<(), GblOpsError> {
-        Err(GblOpsError(Some("unimplemented")))
+impl<'a> GblOps<'a> for DefaultGblOps
+where
+    Self: 'a,
+{
+    fn console_out(&mut self) -> Option<&mut dyn Write> {
+        unimplemented!();
     }
 
-    fn should_stop_in_fastboot(&mut self) -> Result<bool, GblOpsError> {
-        Err(GblOpsError(Some("unimplemented")))
+    fn should_stop_in_fastboot(&mut self) -> Result<bool, Error> {
+        unimplemented!();
     }
 
-    fn boot(&mut self, boot_images: BootImages) -> Result<(), GblOpsError> {
-        Err(GblOpsError(Some("unimplemented")))
+    fn preboot(&mut self, boot_images: BootImages) -> Result<(), Error> {
+        unimplemented!();
     }
+
+    fn partitions(&self) -> Result<&'a [PartitionBlockDevice<'a, Self::PartitionBlockIo>], Error> {
+        unimplemented!();
+    }
+
+    fn zircon_add_device_zbi_items(
+        &mut self,
+        container: &mut ZbiContainer<&mut [u8]>,
+    ) -> Result<(), Error> {
+        unimplemented!();
+    }
+
+    fn do_fastboot<B: gbl_storage::AsBlockDevice>(
+        &self,
+        cursor: &mut slots::Cursor<B>,
+    ) -> GblResult<()> {
+        unimplemented!();
+    }
+
+    fn load_slot_interface<'b, B: gbl_storage::AsBlockDevice>(
+        &'b mut self,
+        block_device: &'b mut B,
+        boot_token: slots::BootToken,
+    ) -> GblResult<slots::Cursor<'b, B>> {
+        unimplemented!();
+    }
+
+    fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
+        unimplemented!();
+    }
+
+    fn avb_read_rollback_index(&mut self, _rollback_index_location: usize) -> AvbIoResult<u64> {
+        unimplemented!();
+    }
+
+    fn avb_write_rollback_index(
+        &mut self,
+        _rollback_index_location: usize,
+        _index: u64,
+    ) -> AvbIoResult<()> {
+        unimplemented!();
+    }
+
+    fn avb_cert_read_permanent_attributes(
+        &mut self,
+        _attributes: &mut CertPermanentAttributes,
+    ) -> AvbIoResult<()> {
+        unimplemented!();
+    }
+
+    fn avb_cert_read_permanent_attributes_hash(&mut self) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
+        unimplemented!();
+    }
+
+    fn get_image_buffer<'c>(
+        &mut self,
+        image_name: &str,
+        size: NonZeroUsize,
+    ) -> GblResult<ImageBuffer<'c>> {
+        Err(Error::Unsupported.into())
+    }
+}
+
+/// Prints with `GblOps::console_out()`.
+#[macro_export]
+macro_rules! gbl_print {
+    ( $ops:expr, $( $x:expr ),* $(,)? ) => {
+        {
+            match $ops.console_out() {
+                Some(v) => write!(v, $($x,)*).unwrap(),
+                _ => {}
+            }
+        }
+    };
+}
+
+/// Prints the given text plus a newline termination with `GblOps::console_out()`.
+#[macro_export]
+macro_rules! gbl_println {
+    ( $ops:expr, $( $x:expr ),* $(,)? ) => {
+        let newline = $ops.console_newline();
+        gbl_print!($ops, $($x,)*);
+        gbl_print!($ops, "{}", newline);
+    };
 }

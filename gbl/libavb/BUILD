@@ -21,16 +21,14 @@ package(
 
 exports_files(glob(["**/*"]))
 
-cc_library(
-    name = "gbl_deps",
-    hdrs = ["deps/include/inttypes.h"],
-    includes = ["./deps/include"],
-)
-
 rust_library(
     name = "sysdeps",
     srcs = glob(["**/*.rs"]),
     crate_name = "avb_sysdeps",
     edition = "2021",
     rustc_flags = ANDROID_RUST_LINTS,
+    deps = [
+        "@avb//:avb_bindgen",
+        "@gbl//libc",
+    ],
 )
