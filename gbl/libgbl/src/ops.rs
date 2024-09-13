@@ -255,15 +255,24 @@ macro_rules! gbl_println {
 #[cfg(test)]
 pub(crate) mod test {
     use super::*;
+    use gbl_storage_testlib::TestBlockIo;
 
     /// Fake [GblOps] implementation for testing.
-    pub(crate) struct FakeGblOps {}
+    pub(crate) struct FakeGblOps<'a> {
+        pub partitions: &'a [PartitionBlockDevice<'a, &'a mut TestBlockIo>],
+    }
 
-    impl<'a> GblOps<'a> for FakeGblOps
+    impl Default for FakeGblOps<'_> {
+        fn default() -> Self {
+            FakeGblOps { partitions: &[] }
+        }
+    }
+
+    impl<'a> GblOps<'a> for FakeGblOps<'a>
     where
         Self: 'a,
     {
-        type PartitionBlockIo = BlockIoNull;
+        type PartitionBlockIo = &'a mut TestBlockIo;
 
         fn console_out(&mut self) -> Option<&mut dyn Write> {
             unimplemented!();
@@ -284,7 +293,7 @@ pub(crate) mod test {
         fn partitions(
             &self,
         ) -> Result<&'a [PartitionBlockDevice<'a, Self::PartitionBlockIo>], Error> {
-            unimplemented!();
+            Ok(self.partitions)
         }
 
         fn zircon_add_device_zbi_items(

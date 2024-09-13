@@ -607,7 +607,7 @@ mod tests {
 
     #[test]
     fn test_load_and_verify_image_success() {
-        let mut gbl_ops = FakeGblOps {};
+        let mut gbl_ops = FakeGblOps::default();
         let mut gbl = Gbl::new(&mut gbl_ops);
         let mut avb_ops = test_avb_ops();
 
@@ -622,7 +622,7 @@ mod tests {
 
     #[test]
     fn test_load_and_verify_image_verification_error() {
-        let mut gbl_ops = FakeGblOps {};
+        let mut gbl_ops = FakeGblOps::default();
         let mut gbl = Gbl::new(&mut gbl_ops);
         let mut avb_ops = test_avb_ops();
 
@@ -644,7 +644,7 @@ mod tests {
 
     #[test]
     fn test_load_and_verify_image_io_error() {
-        let mut gbl_ops = FakeGblOps {};
+        let mut gbl_ops = FakeGblOps::default();
         let mut gbl = Gbl::new(&mut gbl_ops);
         let mut avb_ops = test_avb_ops();
 
@@ -662,7 +662,7 @@ mod tests {
 
     #[test]
     fn test_load_and_verify_image_with_cert_success() {
-        let mut gbl_ops = FakeGblOps {};
+        let mut gbl_ops = FakeGblOps::default();
         let mut gbl = Gbl::new(&mut gbl_ops);
         let mut avb_ops = test_avb_cert_ops();
 
@@ -677,7 +677,7 @@ mod tests {
 
     #[test]
     fn test_load_and_verify_image_with_cert_permanent_attribute_mismatch_error() {
-        let mut gbl_ops = FakeGblOps {};
+        let mut gbl_ops = FakeGblOps::default();
         let mut gbl = Gbl::new(&mut gbl_ops);
         let mut avb_ops = test_avb_cert_ops();
 
