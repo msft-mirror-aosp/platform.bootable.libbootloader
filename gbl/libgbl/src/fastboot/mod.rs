@@ -50,6 +50,7 @@ pub struct GblFastboot<'a, 'b, T: TasksExecutor<'b>, G> {
     current_download_buffer: Option<MutexGuard<'b, &'b mut [u8]>>,
     current_download_size: usize,
     enable_async_block_io: bool,
+    default_block: Option<usize>,
 }
 
 impl<'a, 'b, T: TasksExecutor<'b>, G: GblOps<'b>> GblFastboot<'a, 'b, T, G> {
@@ -66,6 +67,7 @@ impl<'a, 'b, T: TasksExecutor<'b>, G: GblOps<'b>> GblFastboot<'a, 'b, T, G> {
             current_download_buffer: None,
             current_download_size: 0,
             enable_async_block_io: false,
+            default_block: None,
         }
     }
 
@@ -86,6 +88,7 @@ impl<'a, 'b, T: TasksExecutor<'b>, G: GblOps<'b>> GblFastboot<'a, 'b, T, G> {
         // Parses block device ID.
         let blk_id = next_arg_u64(&mut args, Err("".into())).ok();
         let blk_id = blk_id.map(|v| usize::try_from(v)).transpose()?;
+        let blk_id = blk_id.or(self.default_block);
         // Parses sub window offset.
         let window_offset = next_arg_u64(&mut args, Ok(0))?;
         // Parses sub window size.
@@ -250,6 +253,17 @@ impl<'b, T: TasksExecutor<'b>, G: GblOps<'b>> FastbootImplementation for GblFast
             }
             "gbl-disable-async-block-io" => {
                 self.enable_async_block_io = false;
+                Ok(b"")
+            }
+            "gbl-unset-default-block" => {
+                self.default_block = None;
+                Ok(b"")
+            }
+            _ if cmd.starts_with("gbl-set-default-block ") => {
+                let mut args = cmd.split(' ');
+                let _ = args.next();
+                let id = next_arg_u64(&mut args, Err("Missing block device ID".into()))?;
+                self.default_block = Some(id.try_into()?);
                 Ok(b"")
             }
             _ => Err("Unknown oem command".into()),
@@ -537,6 +551,7 @@ mod test {
                 "block-device:3:total-blocks: 0x10",
                 "block-device:3:block-size: 0x200",
                 "block-device:3:status: idle",
+                "gbl-default-block:: None",
                 "partition-size:boot_a:0: 0x2000",
                 "partition-type:boot_a:0: raw",
                 "partition-size:boot_b:0: 0x3000",
@@ -548,18 +563,20 @@ mod test {
                 "partition-size:raw_0:2: 0x1000",
                 "partition-type:raw_0:2: raw",
                 "partition-size:raw_1:3: 0x2000",
-                "partition-type:raw_1:3: raw"
+                "partition-type:raw_1:3: raw",
             ]
         );
     }
 
     /// A helper for fetching partition from a `GblFastboot`
-    fn fetch(
+    fn fetch<EOff: core::fmt::Debug, ESz: core::fmt::Debug>(
         fb: &mut TestGblFastboot,
         part: String,
-        off: u64,
-        size: u64,
+        off: impl TryInto<u64, Error = EOff>,
+        size: impl TryInto<u64, Error = ESz>,
     ) -> CommandResult<Vec<u8>> {
+        let off = off.try_into().unwrap();
+        let size = size.try_into().unwrap();
         // Forces upload in two batches for testing.
         let download_buffer = vec![0u8; max(1, usize::try_from(size).unwrap() / 2usize)];
         let mut utils: TestFastbootUtils = Default::default();
@@ -691,21 +708,22 @@ mod test {
         data.iter().map(|v| !(*v)).collect::<Vec<_>>()
     }
 
-    /// A helper for testing GPT partition flashing.
-    fn check_flash_part(fb: &mut TestGblFastboot, part: &str, expected: &[u8]) {
+    /// A helper function to flash data to a partition
+    fn flash_part(fb: &mut TestGblFastboot, part: &str, data: &[u8]) {
         // Prepare a download buffer.
-        let dl_size = expected.len();
-        let download = expected.to_vec();
+        let dl_size = data.len();
+        let download = data.to_vec();
         let mut utils: TestFastbootUtils = Default::default();
         set_download(fb, &download[..]);
         block_on(fb.flash(part, &mut utils)).unwrap();
-        assert_eq!(fetch(fb, part.into(), 0, dl_size.try_into().unwrap()).unwrap(), download);
+        assert_eq!(fetch(fb, part.into(), 0, dl_size).unwrap(), download);
+    }
 
+    /// A helper for testing partition flashing.
+    fn check_flash_part(fb: &mut TestGblFastboot, part: &str, expected: &[u8]) {
+        flash_part(fb, part, expected);
         // Also flashes bit-wise reversed version in case the initial content is the same.
-        let download = flipped_bits(expected);
-        set_download(fb, &download[..]);
-        block_on(fb.flash(part, &mut utils)).unwrap();
-        assert_eq!(fetch(fb, part.into(), 0, dl_size.try_into().unwrap()).unwrap(), download);
+        flash_part(fb, part, &flipped_bits(expected));
     }
 
     #[test]
@@ -755,7 +773,7 @@ mod test {
         let mut utils: TestFastbootUtils = Default::default();
         set_download(&mut gbl_fb, &download[..]);
         block_on(gbl_fb.flash(":0", &mut utils)).unwrap();
-        assert_eq!(fetch(&mut gbl_fb, ":0".into(), 0, raw.len().try_into().unwrap()).unwrap(), raw);
+        assert_eq!(fetch(&mut gbl_fb, ":0".into(), 0, raw.len()).unwrap(), raw);
     }
 
     /// A helper to invoke OEM commands.
@@ -826,14 +844,10 @@ mod test {
 
         // Verifies flashed image.
         assert_eq!(
-            fetch(&mut gbl_fb, "boot_a".into(), 0, expect_boot_a.len().try_into().unwrap())
-                .unwrap(),
+            fetch(&mut gbl_fb, "boot_a".into(), 0, expect_boot_a.len()).unwrap(),
             expect_boot_a
         );
-        assert_eq!(
-            fetch(&mut gbl_fb, "sparse".into(), 0, sparse_raw.len().try_into().unwrap()).unwrap(),
-            sparse_raw
-        );
+        assert_eq!(fetch(&mut gbl_fb, "sparse".into(), 0, sparse_raw.len()).unwrap(), sparse_raw);
     }
 
     #[test]
@@ -878,13 +892,11 @@ mod test {
 
         // Verifies flashed image.
         assert_eq!(
-            fetch(&mut gbl_fb, "boot_a".into(), 0, expect_boot_a.len().try_into().unwrap())
-                .unwrap(),
+            fetch(&mut gbl_fb, "boot_a".into(), 0, expect_boot_a.len()).unwrap(),
             expect_boot_a
         );
         assert_eq!(
-            fetch(&mut gbl_fb, "boot_b".into(), 0, expect_boot_b.len().try_into().unwrap())
-                .unwrap(),
+            fetch(&mut gbl_fb, "boot_b".into(), 0, expect_boot_b.len()).unwrap(),
             expect_boot_b
         );
     }
@@ -917,5 +929,82 @@ mod test {
         assert!(block_on(gbl_fb.flash("boot_a", &mut utils)).is_err());
         // "oem gbl-sync-blocks" should fail.
         assert!(block_on(oem(&mut gbl_fb, "gbl-sync-blocks", &mut utils)).is_err());
+    }
+
+    #[test]
+    fn test_default_block() {
+        let mut test_data = TestData::new(128 * 1024, 1);
+        test_data.add_gpt(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
+        let disk_dup = include_bytes!("../../../libstorage/test/gpt_test_2.bin");
+        test_data.add_gpt(disk_dup);
+        test_data.add_gpt(disk_dup);
+        let raw_a = [0xaau8; 4 * 1024];
+        let raw_b = [0x55u8; 8 * 1024];
+        test_data.add_raw("raw", raw_a);
+        test_data.add_raw("raw", raw_b);
+        let (partitions, dl_buffers) = test_data.get();
+        let mut gbl_ops = FbTestGblOps { partitions: &partitions };
+        let blk_io_executor: TestGblFbExecutor = Default::default();
+        let mut gbl_fb = GblFastboot::new(&blk_io_executor, &mut gbl_ops, &dl_buffers);
+        let mut utils: TestFastbootUtils = Default::default();
+
+        let boot_a = include_bytes!("../../../libstorage/test/boot_a.bin");
+        // Flips the bits on partition "vendor_boot_a" on block device #2 to make it different from
+        // block #1.
+        let vendor_boot_a =
+            flipped_bits(include_bytes!("../../../libstorage/test/vendor_boot_a.bin"));
+        flash_part(&mut gbl_fb, "vendor_boot_a:2", &vendor_boot_a);
+
+        let size = 512;
+        let off = 512;
+
+        check_var(&mut gbl_fb, "gbl-default-block", "", "None");
+        // Sets default block to #2
+        block_on(oem(&mut gbl_fb, "gbl-set-default-block 2", &mut utils)).unwrap();
+        check_var(&mut gbl_fb, "gbl-default-block", "", "0x2");
+        // The following fetch should succeed and fetch from "vendor_boot_a" on block 2.
+        check_part_upload(&mut gbl_fb, "vendor_boot_a", off, size, None, &vendor_boot_a);
+
+        // Sets default block to #4 (raw_b)
+        block_on(oem(&mut gbl_fb, "gbl-set-default-block 4", &mut utils)).unwrap();
+        check_var(&mut gbl_fb, "gbl-default-block", "", "0x4");
+        // The following fetch should succeed and fetch from "raw" on block 4.
+        check_part_upload(&mut gbl_fb, "raw", off, size, None, &raw_b);
+
+        // Fetches with explicit storage ID shouldn't be affected.
+        check_part_upload(&mut gbl_fb, "boot_a", off, size, Some(0), boot_a);
+        check_part_upload(&mut gbl_fb, "raw", off, size, Some(3), &raw_a);
+        check_blk_upload(&mut gbl_fb, 1, off, size, disk_dup);
+
+        // Fetching without storage ID should use default ID and thus the following should fail.
+        assert!(fetch(&mut gbl_fb, "boot_a".into(), 0, boot_a.len()).is_err());
+
+        // Sets default block to #1 (unmodified `disk_dup`)
+        block_on(oem(&mut gbl_fb, "gbl-set-default-block 1", &mut utils)).unwrap();
+        check_var(&mut gbl_fb, "gbl-default-block", "", "0x1");
+        // Fetches whole raw block but without block ID should use the default block.
+        check_part_upload(&mut gbl_fb, "", off, size, None, disk_dup);
+
+        // Unset default block
+        block_on(oem(&mut gbl_fb, "gbl-unset-default-block", &mut utils)).unwrap();
+        check_var(&mut gbl_fb, "gbl-default-block", "", "None");
+        // Fetching non-unique partitions should now fail.
+        assert!(fetch(&mut gbl_fb, "raw".into(), 0, raw_a.len()).is_err());
+        assert!(fetch(&mut gbl_fb, "vendor_boot_a".into(), 0, vendor_boot_a.len()).is_err());
+        assert!(fetch(&mut gbl_fb, ":".into(), 0, 512).is_err());
+    }
+
+    #[test]
+    fn test_set_default_block_invalid_arg() {
+        let mut test_data = TestData::new(128 * 1024, 2);
+        let (partitions, dl_buffers) = test_data.get();
+        let mut gbl_ops = FbTestGblOps { partitions: &partitions };
+        let blk_io_executor: TestGblFbExecutor = Default::default();
+        let mut gbl_fb = GblFastboot::new(&blk_io_executor, &mut gbl_ops, &dl_buffers);
+        let mut utils: TestFastbootUtils = Default::default();
+        // Missing block device ID.
+        assert!(block_on(oem(&mut gbl_fb, "gbl-set-default-block ", &mut utils)).is_err());
+        // Invalid block device ID.
+        assert!(block_on(oem(&mut gbl_fb, "gbl-set-default-block zzz", &mut utils)).is_err());
     }
 }
