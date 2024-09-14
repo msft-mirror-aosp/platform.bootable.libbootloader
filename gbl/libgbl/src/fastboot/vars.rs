@@ -182,6 +182,46 @@ impl Variable for BlockDevice {
     }
 }
 
+/// Gives the value of current default block device ID set by "oem gbl-set-default-block".
+///
+/// `fastboot getvar gbl-default-block`
+pub(crate) struct DefaultBlock {}
+
+const DEFAULT_BLOCK: &str = "gbl-default-block";
+
+impl Variable for DefaultBlock {
+    async fn get<'b, T: TasksExecutor<'b>, G: GblOps<'b>>(
+        &self,
+        gbl_fb: &mut GblFastboot<'_, 'b, T, G>,
+        name: &str,
+        _: Split<'_, char>,
+        out: &mut [u8],
+    ) -> Result<Option<usize>, CommandError> {
+        Ok(match name {
+            DEFAULT_BLOCK => Some(
+                match gbl_fb.default_block {
+                    Some(v) => snprintf!(out, "{:#x}", v),
+                    _ => snprintf!(out, "None"),
+                }
+                .len(),
+            ),
+            _ => None,
+        })
+    }
+
+    async fn get_all<'b, T: TasksExecutor<'b>, G: GblOps<'b>>(
+        &self,
+        gbl_fb: &mut GblFastboot<'_, 'b, T, G>,
+        sender: &mut impl VarSender,
+    ) -> Result<(), CommandError> {
+        let mut val = [0u8; 32];
+        match gbl_fb.default_block {
+            Some(v) => sender.send(DEFAULT_BLOCK, &[], snprintf!(val, "{:#x}", v)).await,
+            _ => sender.send(DEFAULT_BLOCK, &[], snprintf!(val, "None")).await,
+        }
+    }
+}
+
 /// `fb_vars_api` generates a `fn fb_vars_get()` and `fn fb_vars_get_all()` helper API for all
 /// registered Fastboot variables.
 macro_rules! fb_vars_api {
@@ -273,5 +313,6 @@ fb_vars_api! {
     // max-fetch-size.
     ("max-fetch-size", "0xffffffffffffffff"),
     BlockDevice {},
+    DefaultBlock {},
     Partition {},
 }
