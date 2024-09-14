@@ -89,6 +89,13 @@ where
     /// Gets a console for logging messages.
     fn console_out(&mut self) -> Option<&mut dyn Write>;
 
+    /// The string to use for console line termination with [gbl_println!].
+    ///
+    /// Defaults to "\n" if not overridden.
+    fn console_newline(&self) -> &'static str {
+        "\n"
+    }
+
     /// This method can be used to implement platform specific mechanism for deciding whether boot
     /// should abort and enter Fastboot mode.
     fn should_stop_in_fastboot(&mut self) -> Result<bool, Error>;
@@ -324,5 +331,15 @@ macro_rules! gbl_print {
                 _ => {}
             }
         }
+    };
+}
+
+/// Prints the given text plus a newline termination with `GblOps::console_out()`.
+#[macro_export]
+macro_rules! gbl_println {
+    ( $ops:expr, $( $x:expr ),* $(,)? ) => {
+        let newline = $ops.console_newline();
+        gbl_print!($ops, $($x,)*);
+        gbl_print!($ops, "{}", newline);
     };
 }
