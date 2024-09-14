@@ -99,7 +99,9 @@ pub struct GptEntry {
 impl GptEntry {
     /// Return the partition entry size in blocks.
     pub fn blocks(&self) -> Result<u64> {
-        u64::try_from((SafeNum::from(self.last) - self.first) + 1).map_err(Into::into)
+        // Must perform "+1" first before subtracting `self.first`. Otherwise if partition size is
+        // zero, where `self.first > self.last`, arithmetic will overflow.
+        u64::try_from(SafeNum::from(self.last) + 1 - self.first).map_err(Into::into)
     }
 
     /// Return whether this is a `NULL` entry. The first null entry marks the end of the partition
@@ -539,7 +541,8 @@ fn crc32(data: &[u8]) -> u32 {
 pub(crate) mod test {
     use super::*;
     use gbl_storage_testlib::{
-        alignment_scratch_size, AsBlockDevice, TestBlockDevice, TestBlockDeviceBuilder,
+        alignment_scratch_size, AsBlockDevice, BackingStore, TestBlockDevice,
+        TestBlockDeviceBuilder,
     };
 
     /// Helper function to extract the gpt header from a test block device.
@@ -774,5 +777,13 @@ pub(crate) mod test {
 
         assert!(dev.read_gpt_partition("boot_b", 1, &mut boot_b).is_err());
         assert!(dev.write_gpt_partition("boot_b", 1, boot_b.as_mut_slice()).is_err());
+    }
+
+    #[test]
+    fn test_zero_partition_size() {
+        let mut dev =
+            TestBlockDeviceBuilder::new().add_partition("zero_size", BackingStore::Size(0)).build();
+        dev.sync_gpt().unwrap();
+        assert_eq!(gpt(&mut dev).partition_iter().next().unwrap().size().unwrap(), 0);
     }
 }
