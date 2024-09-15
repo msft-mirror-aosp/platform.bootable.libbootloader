@@ -27,6 +27,7 @@ rust_library(
     deps = [
         "@gbl//libefi",
         "@gbl//liberror",
+        "@lz4_flex",
         "@zune_inflate",
     ],
 )
@@ -35,4 +36,7 @@ rust_test(
     name = "test",
     crate = ":aarch64",
     rustc_flags = ANDROID_RUST_LINTS,
+    deps = [
+        "@gbl//libefi:mocks",
+    ],
 )
