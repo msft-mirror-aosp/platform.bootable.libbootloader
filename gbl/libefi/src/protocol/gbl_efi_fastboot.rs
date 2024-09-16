@@ -232,7 +232,9 @@ impl Protocol<'_, GblFastbootProtocol> {
 
     /// Wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.serial_number`
     pub fn serial_number(&self) -> Result<&str> {
-        Ok(from_utf8(self.interface()?.serial_number.as_slice())?)
+        let serial_number = &self.interface()?.serial_number;
+        let null_idx = serial_number.iter().position(|c| *c == 0).unwrap_or(serial_number.len());
+        Ok(from_utf8(&serial_number[..null_idx])?)
     }
 
     /// Wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.version`
@@ -551,6 +553,49 @@ mod test {
             let len = protocol.get_var_with_hint(args, &mut buffer, Token::new()).unwrap();
             let actual = std::str::from_utf8(&buffer[..len]).unwrap();
             assert_eq!(actual, "nautilus");
+        });
+    }
+
+    #[test]
+    fn test_serial_number() {
+        run_test(|image_handle, systab_ptr| {
+            // Serial number is shorter than max length and contains non-ASCII unicode.
+            let austria = "Österreich";
+
+            let mut fb = GblEfiFastbootProtocol { ..Default::default() };
+            fb.serial_number.as_mut_slice()[..austria.len()].copy_from_slice(austria.as_bytes());
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+
+            let protocol = generate_protocol::<GblFastbootProtocol>(&efi_entry, &mut fb);
+
+            // Don't include trailing Null terminators.
+            assert_eq!(protocol.serial_number().unwrap().len(), 11);
+            assert_eq!(protocol.serial_number().unwrap(), austria);
+        });
+    }
+
+    #[test]
+    fn test_serial_number_max_length() {
+        run_test(|image_handle, systab_ptr| {
+            let mut fb = GblEfiFastbootProtocol { serial_number: [71u8; 32], ..Default::default() };
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+
+            let protocol = generate_protocol::<GblFastbootProtocol>(&efi_entry, &mut fb);
+
+            assert_eq!(protocol.serial_number().unwrap().len(), 32);
+            assert_eq!(protocol.serial_number().unwrap(), "GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG");
+        });
+    }
+
+    #[test]
+    fn test_serial_number_invalid_utf8() {
+        run_test(|image_handle, systab_ptr| {
+            let mut fb = GblEfiFastbootProtocol { serial_number: [0xF8; 32], ..Default::default() };
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+
+            let protocol = generate_protocol::<GblFastbootProtocol>(&efi_entry, &mut fb);
+
+            assert_eq!(protocol.serial_number(), Err(Error::InvalidInput));
         });
     }
 }
