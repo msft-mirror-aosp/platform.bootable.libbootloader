@@ -39,22 +39,24 @@ const KERNEL_ALIGNMENT: usize = 2 * 1024 * 1024;
 // libfdt requires FDT buffer to be 8-byte aligned.
 const FDT_ALIGNMENT: usize = 8;
 
-/// A helper macro for creating a null-terminated string literal as CStr.
-macro_rules! cstr_literal {
-    ( $( $x:expr ),* $(,)?) => {
-       CStr::from_bytes_until_nul(core::concat!($($x),*, "\0").as_bytes()).unwrap()
-    };
-}
-
 /// Helper function for performing libavb verification.
 fn avb_verify_slot<'a, 'b, 'c>(
     gpt_dev: &'b mut EfiMultiBlockDevices,
     kernel: &'b [u8],
     vendor_boot: &'b [u8],
     init_boot: &'b [u8],
+    dtbo: Option<&'b [u8]>,
     bootconfig_builder: &'b mut BootConfigBuilder<'c>,
 ) -> Result<()> {
-    let preloaded = [("boot", kernel), ("vendor_boot", vendor_boot), ("init_boot", init_boot)];
+    let mut partitions = vec![c"boot", c"vendor_boot", c"init_boot"];
+    let mut preloaded =
+        vec![("boot", kernel), ("vendor_boot", vendor_boot), ("init_boot", init_boot)];
+
+    if let Some(dtbo) = dtbo {
+        partitions.push(c"dtbo");
+        preloaded.push(("dtbo", dtbo));
+    }
+
     let mut avb_ops = GblEfiAvbOps::new(gpt_dev, Some(&preloaded));
     let avb_state = match avb_ops.read_is_device_unlocked()? {
         true => "orange",
@@ -63,8 +65,8 @@ fn avb_verify_slot<'a, 'b, 'c>(
 
     let res = slot_verify(
         &mut avb_ops,
-        &[cstr_literal!("boot"), cstr_literal!("vendor_boot"), cstr_literal!("init_boot")],
-        Some(cstr_literal!("_a")),
+        &partitions,
+        Some(c"_a"),
         SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_NONE,
         // For demo, we use the same setting as Cuttlefish u-boot.
         HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_RESTART_AND_INVALIDATE,
@@ -212,6 +214,16 @@ pub fn load_android_simple<'a, 'b>(
     gbl_println!(ops, "vendor cmdline: \"{}\"", from_utf8(vendor_cmdline).unwrap());
     gbl_println!(ops, "vendor dtb size: {}", vendor_dtb_size);
 
+    let (dtbo_buffer, load) = match gpt_devices.find_partition("dtbo_a").map(|v| v.size()) {
+        Ok(Ok(sz)) => {
+            let (dtbo_buffer, load) =
+                aligned_subslice(load, FDT_ALIGNMENT)?.split_at_mut(sz.try_into().unwrap());
+            gpt_devices.read_gpt_partition_sync("dtbo_a", 0, dtbo_buffer)?;
+            (Some(dtbo_buffer), load)
+        }
+        _ => (None, load),
+    };
+
     // Parse init_boot header
     let init_boot_header_buffer = &mut load[..PAGE_SIZE];
     let (generic_ramdisk_size, init_boot_hdr_size) =
@@ -293,6 +305,7 @@ pub fn load_android_simple<'a, 'b>(
         boot_img_buffer,
         vendor_boot_load_buffer,
         init_boot_load_buffer,
+        dtbo_buffer.as_deref(),
         &mut bootconfig_builder,
     )?;
 
