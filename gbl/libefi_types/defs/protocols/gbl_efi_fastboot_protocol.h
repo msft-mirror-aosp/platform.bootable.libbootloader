@@ -56,6 +56,8 @@ typedef enum GBL_EFI_FASTBOOT_LOCK_FLAGS {
   GBL_EFI_FASTBOOT_GBL_EFI_CRITICAL_LOCKED = 0x1 << 1,
 } GblEfiFastbootLockFlags;
 
+typedef void const* GblEfiFastbootToken;
+
 typedef struct GblEfiFastbootProtocol {
   // Revision of the protocol supported.
   uint32_t version;
@@ -65,12 +67,12 @@ typedef struct GblEfiFastbootProtocol {
   // Fastboot variable methods
   EfiStatus (*get_var)(struct GblEfiFastbootProtocol* this,
                        const GblEfiFastbootArg* args, size_t num_args,
-                       char8_t* buf, size_t* bufsize, void const* hint);
+                       char8_t* buf, size_t* bufsize, GblEfiFastbootToken hint);
   EfiStatus (*start_var_iterator)(struct GblEfiFastbootProtocol* this,
-                                  void const** token);
+                                  GblEfiFastbootToken* token);
   EfiStatus (*get_next_var_args)(struct GblEfiFastbootProtocol* this,
                                  GblEfiFastbootArg* args, size_t* num_args,
-                                 void const** token);
+                                 GblEfiFastbootToken* token);
 
   // Fastboot oem function methods
   EfiStatus (*run_oem_function)(struct GblEfiFastbootProtocol* this,
