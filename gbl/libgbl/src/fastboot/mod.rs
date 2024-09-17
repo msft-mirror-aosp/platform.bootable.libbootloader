@@ -275,114 +275,15 @@ impl<'b, T: TasksExecutor<'b>, G: GblOps<'b>> FastbootImplementation for GblFast
 mod test {
     use super::*;
     use crate::{
-        error::Result as GblResult,
-        ops::{
-            AvbIoResult, BootImages, CertPermanentAttributes, ImageBuffer, ZbiContainer,
-            SHA256_DIGEST_SIZE,
-        },
-        partition::{
-            sync_gpt,
-            test::{as_gpt_part, as_raw_part},
-            PartitionBlockDevice,
-        },
-        slots::{BootToken, Cursor},
+        ops::test::{FakeGblOps, FakeGblOpsStorage},
+        partition::PartitionBlockDevice,
     };
-    use core::{cmp::max, future::Future, num::NonZeroUsize, pin::pin};
+    use core::{cmp::max, future::Future, pin::pin};
     use fastboot::{test_utils::TestUploadBuilder, MAX_RESPONSE_SIZE};
     use gbl_async::{block_on, poll};
     use gbl_cyclic_executor::CyclicExecutor;
-    use gbl_storage_testlib::{BackingStore, TestBlockDevice, TestBlockDeviceBuilder, TestBlockIo};
+    use gbl_storage_testlib::{BackingStore, TestBlockDeviceBuilder, TestBlockIo};
     use liberror::Error;
-
-    /// Implementation of GblOps for Fastboot tests.
-    struct FbTestGblOps<'a> {
-        partitions: &'a [PartitionBlockDevice<'a, &'a mut TestBlockIo>],
-    }
-
-    impl<'a> GblOps<'a> for FbTestGblOps<'a>
-    where
-        Self: 'a,
-    {
-        type PartitionBlockIo = &'a mut TestBlockIo;
-
-        fn console_out(&mut self) -> Option<&mut dyn Write> {
-            unimplemented!();
-        }
-
-        fn should_stop_in_fastboot(&mut self) -> Result<bool, Error> {
-            unimplemented!();
-        }
-
-        fn preboot(&mut self, boot_images: BootImages) -> Result<(), Error> {
-            unimplemented!();
-        }
-
-        /// Returns the list of partition block devices.
-        fn partitions(
-            &self,
-        ) -> Result<&'a [PartitionBlockDevice<'a, Self::PartitionBlockIo>], Error> {
-            Ok(self.partitions)
-        }
-
-        fn zircon_add_device_zbi_items(
-            &mut self,
-            container: &mut ZbiContainer<&mut [u8]>,
-        ) -> Result<(), Error> {
-            unimplemented!();
-        }
-
-        fn do_fastboot<B: gbl_storage::AsBlockDevice>(
-            &self,
-            cursor: &mut Cursor<B>,
-        ) -> GblResult<()> {
-            unimplemented!();
-        }
-
-        fn load_slot_interface<'b, B: gbl_storage::AsBlockDevice>(
-            &'b mut self,
-            block_device: &'b mut B,
-            boot_token: BootToken,
-        ) -> GblResult<Cursor<'b, B>> {
-            unimplemented!();
-        }
-
-        fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
-            unimplemented!();
-        }
-
-        fn avb_read_rollback_index(&mut self, _rollback_index_location: usize) -> AvbIoResult<u64> {
-            unimplemented!();
-        }
-
-        fn avb_write_rollback_index(
-            &mut self,
-            _rollback_index_location: usize,
-            _index: u64,
-        ) -> AvbIoResult<()> {
-            unimplemented!();
-        }
-
-        fn avb_cert_read_permanent_attributes(
-            &mut self,
-            _attributes: &mut CertPermanentAttributes,
-        ) -> AvbIoResult<()> {
-            unimplemented!();
-        }
-
-        fn avb_cert_read_permanent_attributes_hash(
-            &mut self,
-        ) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
-            unimplemented!();
-        }
-
-        fn get_image_buffer<'c>(
-            &mut self,
-            image_name: &str,
-            size: NonZeroUsize,
-        ) -> GblResult<ImageBuffer<'c>> {
-            Err(Error::Unsupported.into())
-        }
-    }
 
     /// A test implementation of FastbootUtils.
     #[derive(Default)]
@@ -400,7 +301,7 @@ mod test {
         }
     }
 
-    type TestGblFastboot<'a, 'b> = GblFastboot<'a, 'b, TestGblFbExecutor<'b>, FbTestGblOps<'b>>;
+    type TestGblFastboot<'a, 'b> = GblFastboot<'a, 'b, TestGblFbExecutor<'b>, FakeGblOps<'b>>;
 
     /// Helper to test fastboot variable value.
     fn check_var(gbl_fb: &mut TestGblFastboot, var: &str, args: &str, expected: &str) {
@@ -431,10 +332,8 @@ mod test {
     /// A Helper type for preparing test data such as block devices AND download buffers for
     /// Fastboot tests.
     struct TestData {
-        /// GPT partition block devices.
-        gpt: Vec<TestBlockDevice>,
-        /// Raw partition block devcies.
-        raw: Vec<(&'static str, TestBlockDevice)>,
+        /// Fake backing storage.
+        storage: FakeGblOpsStorage,
         /// Download buffers.
         download: Vec<Vec<u8>>,
     }
@@ -444,39 +343,27 @@ mod test {
         ///
         /// Initializes `dl_n` number of download buffers with size `dl_sz`.
         fn new(dl_sz: usize, dl_n: usize) -> Self {
-            Self { gpt: vec![], raw: vec![], download: vec![vec![0u8; dl_sz]; dl_n] }
-        }
-
-        /// Adds a GPT block device.
-        fn add_gpt(&mut self, data: impl AsRef<[u8]>) {
-            self.gpt.push(data.as_ref().into())
-        }
-
-        /// Adds a raw block device.
-        fn add_raw(&mut self, name: &'static str, data: impl AsRef<[u8]>) {
-            self.raw.push((name, data.as_ref().into()))
+            Self { storage: Default::default(), download: vec![vec![0u8; dl_sz]; dl_n] }
         }
 
         /// Creates an array of `PartitionBlockDevice` and fastboot download buffers.
         fn get(&mut self) -> (Vec<PartitionBlockDevice<&mut TestBlockIo>>, Vec<Mutex<&mut [u8]>>) {
-            let mut parts = self.gpt.iter_mut().map(|v| as_gpt_part(v)).collect::<Vec<_>>();
-            parts.extend(self.raw.iter_mut().map(|(n, v)| as_raw_part(v, n)).collect::<Vec<_>>());
-            block_on(sync_gpt(&mut parts[..])).unwrap();
-            let dl_buffers =
-                self.download.iter_mut().map(|v| (&mut v[..]).into()).collect::<Vec<_>>();
-            (parts, dl_buffers)
+            (
+                self.storage.as_partition_block_devices(),
+                self.download.iter_mut().map(|v| (&mut v[..]).into()).collect::<Vec<_>>(),
+            )
         }
     }
 
     #[test]
     fn test_get_var_partition_info() {
         let mut test_data = TestData::new(128 * 1024, 1);
-        test_data.add_gpt(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
-        test_data.add_gpt(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
-        test_data.add_raw("raw_0", [0xaau8; 4 * 1024]);
-        test_data.add_raw("raw_1", [0x55u8; 8 * 1024]);
+        test_data.storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
+        test_data.storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
+        test_data.storage.add_raw_device("raw_0", [0xaau8; 4 * 1024]);
+        test_data.storage.add_raw_device("raw_1", [0x55u8; 8 * 1024]);
         let (partitions, dl_buffers) = test_data.get();
-        let mut gbl_ops = FbTestGblOps { partitions: &partitions };
+        let mut gbl_ops = FakeGblOps::new(&partitions);
         let blk_io_executor: TestGblFbExecutor = Default::default();
         let mut gbl_fb = GblFastboot::new(&blk_io_executor, &mut gbl_ops, &dl_buffers);
 
@@ -522,12 +409,12 @@ mod test {
     #[test]
     fn test_get_var_all() {
         let mut test_data = TestData::new(128 * 1024, 1);
-        test_data.add_gpt(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
-        test_data.add_gpt(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
-        test_data.add_raw("raw_0", [0xaau8; 4 * 1024]);
-        test_data.add_raw("raw_1", [0x55u8; 8 * 1024]);
+        test_data.storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
+        test_data.storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
+        test_data.storage.add_raw_device("raw_0", [0xaau8; 4 * 1024]);
+        test_data.storage.add_raw_device("raw_1", [0x55u8; 8 * 1024]);
         let (partitions, dl_buffers) = test_data.get();
-        let mut gbl_ops = FbTestGblOps { partitions: &partitions };
+        let mut gbl_ops = FakeGblOps::new(&partitions);
         let blk_io_executor: TestGblFbExecutor = Default::default();
         let mut gbl_fb = GblFastboot::new(&blk_io_executor, &mut gbl_ops, &dl_buffers);
 
@@ -589,11 +476,11 @@ mod test {
     #[test]
     fn test_fetch_invalid_partition_arg() {
         let mut test_data = TestData::new(128 * 1024, 1);
-        test_data.add_gpt(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
-        test_data.add_gpt(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
-        test_data.add_gpt(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
+        test_data.storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
+        test_data.storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
+        test_data.storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
         let (partitions, dl_buffers) = test_data.get();
-        let mut gbl_ops = FbTestGblOps { partitions: &partitions };
+        let mut gbl_ops = FakeGblOps::new(&partitions);
         let blk_io_executor: TestGblFbExecutor = Default::default();
         let mut gbl_fb = GblFastboot::new(&blk_io_executor, &mut gbl_ops, &dl_buffers);
 
@@ -632,10 +519,10 @@ mod test {
         let mut test_data = TestData::new(128 * 1024, 1);
         let disk_0 = include_bytes!("../../../libstorage/test/gpt_test_1.bin");
         let disk_1 = include_bytes!("../../../libstorage/test/gpt_test_2.bin");
-        test_data.add_gpt(disk_0);
-        test_data.add_gpt(disk_1);
+        test_data.storage.add_gpt_device(disk_0);
+        test_data.storage.add_gpt_device(disk_1);
         let (parts, dl_buffers) = test_data.get();
-        let mut gbl_ops = FbTestGblOps { partitions: &parts };
+        let mut gbl_ops = FakeGblOps::new(&parts);
         let blk_io_executor: TestGblFbExecutor = Default::default();
         let mut gbl_fb = GblFastboot::new(&blk_io_executor, &mut gbl_ops, &dl_buffers);
 
@@ -670,12 +557,12 @@ mod test {
     #[test]
     fn test_fetch_partition() {
         let mut test_data = TestData::new(128 * 1024, 1);
-        test_data.add_gpt(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
-        test_data.add_gpt(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
-        test_data.add_raw("raw_0", [0xaau8; 4 * 1024]);
-        test_data.add_raw("raw_1", [0x55u8; 8 * 1024]);
+        test_data.storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
+        test_data.storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
+        test_data.storage.add_raw_device("raw_0", [0xaau8; 4 * 1024]);
+        test_data.storage.add_raw_device("raw_1", [0x55u8; 8 * 1024]);
         let (partitions, dl_buffers) = test_data.get();
-        let mut gbl_ops = FbTestGblOps { partitions: &partitions };
+        let mut gbl_ops = FakeGblOps::new(&partitions);
         let blk_io_executor: TestGblFbExecutor = Default::default();
         let mut gbl_fb = GblFastboot::new(&blk_io_executor, &mut gbl_ops, &dl_buffers);
 
@@ -731,12 +618,12 @@ mod test {
         let disk_0 = include_bytes!("../../../libstorage/test/gpt_test_1.bin");
         let disk_1 = include_bytes!("../../../libstorage/test/gpt_test_2.bin");
         let mut test_data = TestData::new(128 * 1024, 1);
-        test_data.add_gpt(disk_0);
-        test_data.add_gpt(disk_1);
-        test_data.add_raw("raw_0", [0xaau8; 4 * 1024]);
-        test_data.add_raw("raw_1", [0x55u8; 8 * 1024]);
+        test_data.storage.add_gpt_device(disk_0);
+        test_data.storage.add_gpt_device(disk_1);
+        test_data.storage.add_raw_device("raw_0", [0xaau8; 4 * 1024]);
+        test_data.storage.add_raw_device("raw_1", [0x55u8; 8 * 1024]);
         let (partitions, dl_buffers) = test_data.get();
-        let mut gbl_ops = FbTestGblOps { partitions: &partitions };
+        let mut gbl_ops = FakeGblOps::new(&partitions);
         let blk_io_executor: TestGblFbExecutor = Default::default();
         let mut gbl_fb = GblFastboot::new(&blk_io_executor, &mut gbl_ops, &dl_buffers);
 
@@ -763,9 +650,9 @@ mod test {
         let raw = include_bytes!("../../testdata/sparse_test_raw.bin");
         let sparse = include_bytes!("../../testdata/sparse_test.bin");
         let mut test_data = TestData::new(128 * 1024, 1);
-        test_data.add_raw("raw", vec![0u8; raw.len()]);
+        test_data.storage.add_raw_device("raw", vec![0u8; raw.len()]);
         let (partitions, dl_buffers) = test_data.get();
-        let mut gbl_ops = FbTestGblOps { partitions: &partitions };
+        let mut gbl_ops = FakeGblOps::new(&partitions);
         let blk_io_executor: TestGblFbExecutor = Default::default();
         let mut gbl_fb = GblFastboot::new(&blk_io_executor, &mut gbl_ops, &dl_buffers);
 
@@ -798,10 +685,10 @@ mod test {
             .add_partition("sparse", BackingStore::Size(sparse_raw.len()))
             .build();
         let mut test_data = TestData::new(128 * 1024, 2);
-        test_data.add_gpt(dev_sparse.io.storage);
-        test_data.add_gpt(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
+        test_data.storage.add_gpt_device(dev_sparse.io.storage);
+        test_data.storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
         let (partitions, dl_buffers) = test_data.get();
-        let mut gbl_ops = FbTestGblOps { partitions: &partitions };
+        let mut gbl_ops = FakeGblOps::new(&partitions);
         let blk_io_executor: TestGblFbExecutor = Default::default();
         let mut gbl_fb = GblFastboot::new(&blk_io_executor, &mut gbl_ops, &dl_buffers);
         let mut utils: TestFastbootUtils = Default::default();
@@ -853,10 +740,10 @@ mod test {
     #[test]
     fn test_async_flash_block_on_busy_blk() {
         let mut test_data = TestData::new(128 * 1024, 2);
-        test_data.add_gpt(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
-        test_data.add_gpt(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
+        test_data.storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
+        test_data.storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
         let (partitions, dl_buffers) = test_data.get();
-        let mut gbl_ops = FbTestGblOps { partitions: &partitions };
+        let mut gbl_ops = FakeGblOps::new(&partitions);
         let blk_io_executor: TestGblFbExecutor = Default::default();
         let mut gbl_fb = GblFastboot::new(&blk_io_executor, &mut gbl_ops, &dl_buffers);
         let mut utils: TestFastbootUtils = Default::default();
@@ -904,9 +791,9 @@ mod test {
     #[test]
     fn test_async_flash_error() {
         let mut test_data = TestData::new(128 * 1024, 2);
-        test_data.add_gpt(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
+        test_data.storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
         let (partitions, dl_buffers) = test_data.get();
-        let mut gbl_ops = FbTestGblOps { partitions: &partitions };
+        let mut gbl_ops = FakeGblOps::new(&partitions);
         // Injects an error.
         partitions[0].partition_io(None).unwrap().dev().io().errors =
             [liberror::Error::Other(None)].into();
@@ -934,16 +821,16 @@ mod test {
     #[test]
     fn test_default_block() {
         let mut test_data = TestData::new(128 * 1024, 1);
-        test_data.add_gpt(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
+        test_data.storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
         let disk_dup = include_bytes!("../../../libstorage/test/gpt_test_2.bin");
-        test_data.add_gpt(disk_dup);
-        test_data.add_gpt(disk_dup);
+        test_data.storage.add_gpt_device(disk_dup);
+        test_data.storage.add_gpt_device(disk_dup);
         let raw_a = [0xaau8; 4 * 1024];
         let raw_b = [0x55u8; 8 * 1024];
-        test_data.add_raw("raw", raw_a);
-        test_data.add_raw("raw", raw_b);
+        test_data.storage.add_raw_device("raw", raw_a);
+        test_data.storage.add_raw_device("raw", raw_b);
         let (partitions, dl_buffers) = test_data.get();
-        let mut gbl_ops = FbTestGblOps { partitions: &partitions };
+        let mut gbl_ops = FakeGblOps::new(&partitions);
         let blk_io_executor: TestGblFbExecutor = Default::default();
         let mut gbl_fb = GblFastboot::new(&blk_io_executor, &mut gbl_ops, &dl_buffers);
         let mut utils: TestFastbootUtils = Default::default();
@@ -998,7 +885,7 @@ mod test {
     fn test_set_default_block_invalid_arg() {
         let mut test_data = TestData::new(128 * 1024, 2);
         let (partitions, dl_buffers) = test_data.get();
-        let mut gbl_ops = FbTestGblOps { partitions: &partitions };
+        let mut gbl_ops = FakeGblOps::new(&partitions);
         let blk_io_executor: TestGblFbExecutor = Default::default();
         let mut gbl_fb = GblFastboot::new(&blk_io_executor, &mut gbl_ops, &dl_buffers);
         let mut utils: TestFastbootUtils = Default::default();
