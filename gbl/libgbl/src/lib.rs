@@ -60,7 +60,7 @@ pub use boot_mode::BootMode;
 pub use boot_reason::KnownBootReason;
 pub use error::{IntegrationError, Result};
 use liberror::Error;
-pub use ops::{AndroidBootImages, BootImages, DefaultGblOps, FuchsiaBootImages, GblOps};
+pub use ops::{AndroidBootImages, BootImages, FuchsiaBootImages, GblOps};
 
 use overlap::is_overlap;
 
@@ -522,6 +522,7 @@ mod tests {
     extern crate avb_sysdeps;
     extern crate avb_test;
     use super::*;
+    use crate::ops::test::FakeGblOps;
     use avb::{CertPermanentAttributes, SlotVerifyError};
     use avb_test::{FakeVbmetaKey, TestOps};
     use std::{fs, path::Path};
@@ -606,7 +607,7 @@ mod tests {
 
     #[test]
     fn test_load_and_verify_image_success() {
-        let mut gbl_ops = DefaultGblOps {};
+        let mut gbl_ops = FakeGblOps::default();
         let mut gbl = Gbl::new(&mut gbl_ops);
         let mut avb_ops = test_avb_ops();
 
@@ -621,7 +622,7 @@ mod tests {
 
     #[test]
     fn test_load_and_verify_image_verification_error() {
-        let mut gbl_ops = DefaultGblOps {};
+        let mut gbl_ops = FakeGblOps::default();
         let mut gbl = Gbl::new(&mut gbl_ops);
         let mut avb_ops = test_avb_ops();
 
@@ -643,7 +644,7 @@ mod tests {
 
     #[test]
     fn test_load_and_verify_image_io_error() {
-        let mut gbl_ops = DefaultGblOps {};
+        let mut gbl_ops = FakeGblOps::default();
         let mut gbl = Gbl::new(&mut gbl_ops);
         let mut avb_ops = test_avb_ops();
 
@@ -661,7 +662,7 @@ mod tests {
 
     #[test]
     fn test_load_and_verify_image_with_cert_success() {
-        let mut gbl_ops = DefaultGblOps {};
+        let mut gbl_ops = FakeGblOps::default();
         let mut gbl = Gbl::new(&mut gbl_ops);
         let mut avb_ops = test_avb_cert_ops();
 
@@ -676,7 +677,7 @@ mod tests {
 
     #[test]
     fn test_load_and_verify_image_with_cert_permanent_attribute_mismatch_error() {
-        let mut gbl_ops = DefaultGblOps {};
+        let mut gbl_ops = FakeGblOps::default();
         let mut gbl = Gbl::new(&mut gbl_ops);
         let mut avb_ops = test_avb_cert_ops();
 
