@@ -136,7 +136,7 @@ boards will need to implement them.
 
 ### GblFastbootProtocol
 
-* [`GBL_EFI_FASTBOOT_PROTOCOL`](./GBL_FASTBOOT_PROTOCOL.md)
+* [`GBL_EFI_FASTBOOT_PROTOCOL`](./gbl_efi_fastboot_protocol.md)
 * optional: enables custom fastboot functionality.
 
 Used to provide an interface for

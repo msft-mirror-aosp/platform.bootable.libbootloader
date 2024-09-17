@@ -26,11 +26,7 @@ use crate::{
 };
 #[cfg(feature = "alloc")]
 use alloc::ffi::CString;
-use core::{
-    fmt::{Debug, Write},
-    num::NonZeroUsize,
-    result::Result,
-};
+use core::{fmt::Write, num::NonZeroUsize, result::Result};
 use gbl_async::block_on;
 use gbl_storage::{BlockIoAsync, BlockIoNull};
 
@@ -182,12 +178,6 @@ where
         cursor: &mut slots::Cursor<B>,
     ) -> GblResult<()>;
 
-    /// TODO: b/312607649 - placeholder interface for Gbl specific callbacks that uses alloc.
-    #[cfg(feature = "alloc")]
-    fn gbl_alloc_extra_action(&mut self, s: &str) -> GblResult<()> {
-        unimplemented!();
-    }
-
     /// Load and initialize a slot manager and return a cursor over the manager on success.
     fn load_slot_interface<'b, B: gbl_storage::AsBlockDevice>(
         &'b mut self,
@@ -239,88 +229,6 @@ where
     ) -> GblResult<ImageBuffer<'c>>;
 }
 
-/// Default [GblOps] implementation that returns errors and does nothing.
-#[derive(Debug)]
-pub struct DefaultGblOps {}
-
-impl<'a> GblOps<'a> for DefaultGblOps
-where
-    Self: 'a,
-{
-    fn console_out(&mut self) -> Option<&mut dyn Write> {
-        unimplemented!();
-    }
-
-    fn should_stop_in_fastboot(&mut self) -> Result<bool, Error> {
-        unimplemented!();
-    }
-
-    fn preboot(&mut self, boot_images: BootImages) -> Result<(), Error> {
-        unimplemented!();
-    }
-
-    fn partitions(&self) -> Result<&'a [PartitionBlockDevice<'a, Self::PartitionBlockIo>], Error> {
-        unimplemented!();
-    }
-
-    fn zircon_add_device_zbi_items(
-        &mut self,
-        container: &mut ZbiContainer<&mut [u8]>,
-    ) -> Result<(), Error> {
-        unimplemented!();
-    }
-
-    fn do_fastboot<B: gbl_storage::AsBlockDevice>(
-        &self,
-        cursor: &mut slots::Cursor<B>,
-    ) -> GblResult<()> {
-        unimplemented!();
-    }
-
-    fn load_slot_interface<'b, B: gbl_storage::AsBlockDevice>(
-        &'b mut self,
-        block_device: &'b mut B,
-        boot_token: slots::BootToken,
-    ) -> GblResult<slots::Cursor<'b, B>> {
-        unimplemented!();
-    }
-
-    fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
-        unimplemented!();
-    }
-
-    fn avb_read_rollback_index(&mut self, _rollback_index_location: usize) -> AvbIoResult<u64> {
-        unimplemented!();
-    }
-
-    fn avb_write_rollback_index(
-        &mut self,
-        _rollback_index_location: usize,
-        _index: u64,
-    ) -> AvbIoResult<()> {
-        unimplemented!();
-    }
-
-    fn avb_cert_read_permanent_attributes(
-        &mut self,
-        _attributes: &mut CertPermanentAttributes,
-    ) -> AvbIoResult<()> {
-        unimplemented!();
-    }
-
-    fn avb_cert_read_permanent_attributes_hash(&mut self) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
-        unimplemented!();
-    }
-
-    fn get_image_buffer<'c>(
-        &mut self,
-        image_name: &str,
-        size: NonZeroUsize,
-    ) -> GblResult<ImageBuffer<'c>> {
-        Err(Error::Unsupported.into())
-    }
-}
-
 /// Prints with `GblOps::console_out()`.
 #[macro_export]
 macro_rules! gbl_print {
@@ -342,4 +250,109 @@ macro_rules! gbl_println {
         gbl_print!($ops, $($x,)*);
         gbl_print!($ops, "{}", newline);
     };
+}
+
+#[cfg(test)]
+pub(crate) mod test {
+    use super::*;
+    use gbl_storage_testlib::TestBlockIo;
+
+    /// Fake [GblOps] implementation for testing.
+    pub(crate) struct FakeGblOps<'a> {
+        pub partitions: &'a [PartitionBlockDevice<'a, &'a mut TestBlockIo>],
+    }
+
+    impl Default for FakeGblOps<'_> {
+        fn default() -> Self {
+            FakeGblOps { partitions: &[] }
+        }
+    }
+
+    impl<'a> GblOps<'a> for FakeGblOps<'a>
+    where
+        Self: 'a,
+    {
+        type PartitionBlockIo = &'a mut TestBlockIo;
+
+        fn console_out(&mut self) -> Option<&mut dyn Write> {
+            unimplemented!();
+        }
+
+        fn console_newline(&self) -> &'static str {
+            unimplemented!();
+        }
+
+        fn should_stop_in_fastboot(&mut self) -> Result<bool, Error> {
+            unimplemented!();
+        }
+
+        fn preboot(&mut self, boot_images: BootImages) -> Result<(), Error> {
+            unimplemented!();
+        }
+
+        fn partitions(
+            &self,
+        ) -> Result<&'a [PartitionBlockDevice<'a, Self::PartitionBlockIo>], Error> {
+            Ok(self.partitions)
+        }
+
+        fn zircon_add_device_zbi_items(
+            &mut self,
+            container: &mut ZbiContainer<&mut [u8]>,
+        ) -> Result<(), Error> {
+            unimplemented!();
+        }
+
+        fn do_fastboot<B: gbl_storage::AsBlockDevice>(
+            &self,
+            cursor: &mut slots::Cursor<B>,
+        ) -> GblResult<()> {
+            unimplemented!();
+        }
+
+        fn load_slot_interface<'b, B: gbl_storage::AsBlockDevice>(
+            &'b mut self,
+            block_device: &'b mut B,
+            boot_token: slots::BootToken,
+        ) -> GblResult<slots::Cursor<'b, B>> {
+            unimplemented!();
+        }
+
+        fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
+            unimplemented!();
+        }
+
+        fn avb_read_rollback_index(&mut self, _rollback_index_location: usize) -> AvbIoResult<u64> {
+            unimplemented!();
+        }
+
+        fn avb_write_rollback_index(
+            &mut self,
+            _rollback_index_location: usize,
+            _index: u64,
+        ) -> AvbIoResult<()> {
+            unimplemented!();
+        }
+
+        fn avb_cert_read_permanent_attributes(
+            &mut self,
+            attributes: &mut CertPermanentAttributes,
+        ) -> AvbIoResult<()> {
+            unimplemented!();
+        }
+
+        fn avb_cert_read_permanent_attributes_hash(
+            &mut self,
+        ) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
+            unimplemented!();
+        }
+
+        fn get_image_buffer<'c>(
+            &mut self,
+            image_name: &str,
+            size: NonZeroUsize,
+        ) -> GblResult<ImageBuffer<'c>> {
+            unimplemented!();
+        }
+    }
 }
