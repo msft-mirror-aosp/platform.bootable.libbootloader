@@ -255,16 +255,72 @@ macro_rules! gbl_println {
 #[cfg(test)]
 pub(crate) mod test {
     use super::*;
-    use gbl_storage_testlib::TestBlockIo;
+    use crate::partition::sync_gpt;
+    use gbl_storage_testlib::{TestBlockDevice, TestBlockIo};
+
+    /// Backing storage for [FakeGblOps].
+    ///
+    /// This needs to be a separate object because [GblOps] has designed its lifetimes to borrow
+    /// the [PartitionBlockDevice] objects rather than own it, so that they can outlive the ops
+    /// object when necessary.
+    ///
+    /// # Example usage
+    /// ```
+    /// let storage = FakeGblOpsStorage::default();
+    /// storage.add_gpt_device(&gpt_disk_contents);
+    /// storage.add_raw_device("raw", &raw_disk_contents);
+    ///
+    /// let partitions = storage.as_partition_block_devices();
+    /// let fake_ops = FakeGblOps(&partitions);
+    /// ```
+    #[derive(Default)]
+    pub(crate) struct FakeGblOpsStorage {
+        /// GPT block devices.
+        gpt_devices: Vec<TestBlockDevice>,
+        /// Raw partition block devices.
+        raw_devices: Vec<(&'static str, TestBlockDevice)>,
+    }
+
+    impl FakeGblOpsStorage {
+        /// Adds a GPT block device.
+        pub fn add_gpt_device(&mut self, data: impl AsRef<[u8]>) {
+            self.gpt_devices.push(data.as_ref().into())
+        }
+
+        /// Adds a raw partition block device.
+        pub fn add_raw_device(&mut self, name: &'static str, data: impl AsRef<[u8]>) {
+            self.raw_devices.push((name, data.as_ref().into()))
+        }
+
+        /// Returns a vector of [PartitionBlockDevice]s wrapping the added devices.
+        pub fn as_partition_block_devices(
+            &mut self,
+        ) -> Vec<PartitionBlockDevice<&mut TestBlockIo>> {
+            let mut parts = Vec::default();
+            // Convert GPT devices.
+            for device in self.gpt_devices.iter_mut() {
+                let (gpt_blk, gpt) = device.as_gpt_dev().into_blk_and_gpt();
+                parts.push(PartitionBlockDevice::new_gpt(gpt_blk, gpt));
+            }
+            // Convert raw devices.
+            for (name, device) in self.raw_devices.iter_mut() {
+                parts.push(PartitionBlockDevice::new_raw(device.as_blk_dev(), name).unwrap());
+            }
+            block_on(sync_gpt(&mut parts[..])).unwrap();
+            parts
+        }
+    }
 
     /// Fake [GblOps] implementation for testing.
+    #[derive(Default)]
     pub(crate) struct FakeGblOps<'a> {
+        /// Partition data to expose.
         pub partitions: &'a [PartitionBlockDevice<'a, &'a mut TestBlockIo>],
     }
 
-    impl Default for FakeGblOps<'_> {
-        fn default() -> Self {
-            FakeGblOps { partitions: &[] }
+    impl<'a> FakeGblOps<'a> {
+        pub fn new(partitions: &'a [PartitionBlockDevice<'a, &'a mut TestBlockIo>]) -> Self {
+            Self { partitions }
         }
     }
 
