@@ -150,11 +150,21 @@ EFI_STATUS
 ### Related Definitions
 
 ```c
+typedef enum _GBL_EFI_SLOT_MERGE_STATUS {
+  GBL_EFI_SLOT_MERGE_STATUS_NONE = 0,
+  GBL_EFI_SLOT_MERGE_STATUS_UNKNOWN,
+  GBL_EFI_SLOT_MERGE_STATUS_SNAPSHOTTED,
+  GBL_EFI_SLOT_MERGE_STATUS_MERGING,
+  GBL_EFI_SLOT_MERGE_STATUS_CANCELLED,
+} GBL_EFI_SLOT_MERGE_STATUS;
+
 typedef struct _GBL_EFI_SLOT_METADATA_BLOCK {
   // Value of 1 if persistent metadata tracks slot unbootable reasons.
   UINT8 UnbootableMetadata;
   UINT8 MaxRetries;
   UINT8 SlotCount;
+  // See the definition of GBL_EFI_SLOT_MERGE_STATUS.
+  UINT8  MergeStatus;
 } GBL_EFI_SLOT_METADATA_BLOCK;
 ```
 
@@ -179,8 +189,10 @@ In particular, implementations might not store persistent metadata detailing why
 specific slots are not bootable (i.e. unbootable metadata). Developers may want
 to know whether a device supports unbootable metadata to ease in debugging.
 
-**Note:** calls to `LoadBootData()` are expected to be idempotent. The data
-returned are not invalidated by any other operations.
+Certain operations may be prohibited due to the device's A/B merge status.
+For more information about the *MergeStatus* field and Android Virtual A/B, see
+the documentation
+[here](https://source.android.com/docs/core/ota/virtual_ab/implement).
 
 ### Status Codes Returned
 
@@ -231,7 +243,6 @@ typedef struct _GBL_EFI_SLOT_INFO {
     UINT8  Tries;
     // Value of 1 if slot has successfully booted
     UINT8  Successful;
-    UINT8  MergeStatus;
 } GBL_EFI_SLOT_INFO;
 ```
 
@@ -519,7 +530,6 @@ device-specific defaults:
 
 and have the following fields set to `0`:
 * *UnbootableReason*
-* *MergeStatus*
 * *Successful*
 
 This may change the current target boot slot.

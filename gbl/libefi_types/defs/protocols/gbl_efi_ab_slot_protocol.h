@@ -21,6 +21,14 @@
 #include "system_table.h"
 #include "types.h"
 
+typedef enum GBL_EFI_SLOT_MERGE_STATUS {
+  GBL_EFI_SLOT_MERGE_STATUS_NONE = 0,
+  GBL_EFI_SLOT_MERGE_STATUS_UNKNOWN,
+  GBL_EFI_SLOT_MERGE_STATUS_SNAPSHOTTED,
+  GBL_EFI_SLOT_MERGE_STATUS_MERGING,
+  GBL_EFI_SLOT_MERGE_STATUS_CANCELLED,
+} GblEfiSlotMergeStatus;
+
 typedef enum GBL_EFI_UNBOOTABLE_REASON {
   GBL_EFI_UNKNOWN_REASON = 0,
   GBL_EFI_NO_MORE_TRIES,
@@ -53,7 +61,6 @@ typedef struct {
   uint8_t tries;
   // Value of 1 if slot has successfully booted.
   uint8_t successful;
-  uint8_t merge_status;
 } GblEfiSlotInfo;
 
 typedef struct {
@@ -61,6 +68,8 @@ typedef struct {
   uint8_t unbootable_metadata;
   uint8_t max_retries;
   uint8_t slot_count;
+  // See GblEFiSlotMergeStatus for enum values.
+  uint8_t merge_status;
 } GblEfiSlotMetadataBlock;
 
 typedef struct GblEfiABSlotProtocol {
