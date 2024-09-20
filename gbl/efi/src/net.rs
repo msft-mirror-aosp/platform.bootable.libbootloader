@@ -465,6 +465,16 @@ where
     let snp = bs.open_protocol::<SimpleNetworkProtocol>(snp_dev)?;
     reset_simple_network(&snp)?;
 
+    // The TCP stack requires ICMP6 solicitation for discovery. Enable promiscuous mode so that all
+    // uni/multicast packets can be captured.
+    match snp.set_promiscuous_mode() {
+        Err(e) => efi_println!(
+            efi_entry,
+            "Warning: Failed to set promiscuous mode {e:?}. Device may be undiscoverable",
+        ),
+        _ => {}
+    }
+
     // Gets our MAC address and IPv6 address.
     // We can also consider getting this from vendor configuration.
     let (ll_mac, ll_ip6_addr) = ll_mac_ip6_addr_from_efi_mac(snp.mode()?.current_address);
