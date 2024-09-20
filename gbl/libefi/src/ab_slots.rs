@@ -220,7 +220,6 @@ mod test {
                 priority: idx + 1,
                 tries: idx,
                 successful: 2 & idx,
-                merge_status: 0,
             };
             unsafe { *info = slot_info };
             EFI_STATUS_SUCCESS
@@ -395,7 +394,6 @@ mod test {
                 priority: 7,
                 tries: 15,
                 successful: 1,
-                merge_status: 0,
             };
 
             unsafe { *info = slot_info };
@@ -504,6 +502,7 @@ mod test {
                 unbootable_metadata: 1,
                 max_retries: 66,
                 slot_count: 32, // why not?
+                merge_status: 0,
             };
 
             unsafe { *meta = meta_block };
