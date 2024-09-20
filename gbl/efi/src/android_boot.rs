@@ -14,7 +14,7 @@
 
 use crate::{
     avb::GblEfiAvbOps,
-    efi_blocks::{find_block_devices, EfiMultiBlockDevices},
+    efi_blocks::find_block_devices,
     ops::Ops,
     utils::{aligned_subslice, cstr_bytes_to_str, get_efi_fdt},
 };
@@ -46,7 +46,6 @@ const FDT_ALIGNMENT: usize = 8;
 /// which ones are preloaded.
 ///
 /// # Arguments
-/// * `gpt_dev`: EFI GPT device - to be removed once we use `ops` everywhere instead.
 /// * `ops`: [GblOps] providing device-specific backend.
 /// * `kernel`: buffer containing the `boot` image loaded from disk.
 /// * `vendor_boot`: buffer containing the `vendor_boot` image loaded from disk.
@@ -57,8 +56,7 @@ const FDT_ALIGNMENT: usize = 8;
 /// # Returns
 /// `()` on success, error if the images fail to verify or we fail to update the bootconfig.
 fn avb_verify_slot<'a>(
-    gpt_dev: &mut EfiMultiBlockDevices,
-    _ops: &mut impl GblOps<'a>,
+    ops: &mut impl GblOps<'a>,
     kernel: &[u8],
     vendor_boot: &[u8],
     init_boot: &[u8],
@@ -74,7 +72,7 @@ fn avb_verify_slot<'a>(
         preloaded.push(("dtbo", dtbo));
     }
 
-    let mut avb_ops = GblEfiAvbOps::new(gpt_dev, Some(&preloaded));
+    let mut avb_ops = GblEfiAvbOps::new(ops, Some(&preloaded));
     let avb_state = match avb_ops.read_is_device_unlocked()? {
         true => "orange",
         _ => "green",
@@ -199,8 +197,6 @@ pub fn load_android_simple<'a, 'b>(
     efi_entry: &EfiEntry,
     load: &'a mut [u8],
 ) -> Result<(&'a mut [u8], &'a mut [u8], &'a mut [u8], &'a mut [u8])> {
-    let mut gpt_devices = find_block_devices(efi_entry)?;
-
     const PAGE_SIZE: usize = 4096; // V3/V4 image has fixed page size 4096;
 
     let (bcb_buffer, load) = load.split_at_mut(BootloaderMessage::SIZE_BYTES);
@@ -317,7 +313,6 @@ pub fn load_android_simple<'a, 'b>(
     let mut bootconfig_builder = BootConfigBuilder::new(remains)?;
     // Perform avb verification.
     avb_verify_slot(
-        &mut gpt_devices,
         ops,
         boot_img_buffer,
         vendor_boot_load_buffer,
@@ -395,7 +390,7 @@ pub fn load_android_simple<'a, 'b>(
         let kernel_size = kernel_tail_buffer.len();
         let compressed_kernel_offset = images_buffer.len() - kernel_size;
         let decompressed_kernel_offset =
-            decompress_kernel(efi_entry, images_buffer, compressed_kernel_offset)?;
+            decompress_kernel(ops, images_buffer, compressed_kernel_offset)?;
         let (load, kernel_tail_buffer) = images_buffer.split_at_mut(decompressed_kernel_offset);
         (load, kernel_tail_buffer.len(), kernel_tail_buffer)
     };

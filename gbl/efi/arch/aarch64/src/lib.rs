@@ -18,9 +18,8 @@
 // Decompression is done on the heap
 extern crate alloc;
 
-use core::fmt::Write;
-use efi::{efi_print, efi_println, EfiEntry};
 use liberror::{Error, Result};
+use libgbl::{gbl_print, gbl_println, GblOps};
 use lz4_flex::decompress_into;
 use zune_inflate::DeflateDecoder;
 
@@ -32,13 +31,13 @@ use zune_inflate::DeflateDecoder;
 /// # Returns
 /// The offset of the decompressed kernel in `buffer`. If the kernel was not compressed. this
 /// function is a no-op and will return `kernel_start` unchanged.
-pub fn decompress_kernel(
-    efi_entry: &EfiEntry,
+pub fn decompress_kernel<'a>(
+    ops: &mut impl GblOps<'a>,
     buffer: &mut [u8],
     kernel_start: usize,
 ) -> Result<usize> {
     if buffer[kernel_start..kernel_start + 2] == [0x1f, 0x8b] {
-        efi_println!(efi_entry, "kernel is gzip compressed");
+        gbl_println!(ops, "kernel is gzip compressed");
         let mut decoder = DeflateDecoder::new(&buffer[kernel_start..]);
         let decompressed_data = match decoder.decode_gzip() {
             Ok(decompressed_data) => decompressed_data,
@@ -46,20 +45,20 @@ pub fn decompress_kernel(
                 return Err(Error::InvalidInput.into());
             }
         };
-        efi_println!(efi_entry, "kernel decompressed size {}", decompressed_data.len());
+        gbl_println!(ops, "kernel decompressed size {}", decompressed_data.len());
         let kernel_start = buffer.len() - decompressed_data.len();
         // Move decompressed data to slice.
         buffer[kernel_start..].clone_from_slice(&decompressed_data);
         Ok(kernel_start)
     } else if buffer[kernel_start..kernel_start + 4] == [0x02, 0x21, 0x4c, 0x18] {
-        efi_println!(efi_entry, "kernel is lz4 compressed");
+        gbl_println!(ops, "kernel is lz4 compressed");
         let kernel_tail_buffer = &buffer[kernel_start..];
         let mut contents = &kernel_tail_buffer[4..];
         let mut decompressed_kernel = alloc::vec::Vec::new();
         loop {
             if contents.len() < 4 {
                 if contents.len() != 0 {
-                    efi_println!(efi_entry, "Error: some leftover data in the content");
+                    gbl_println!(ops, "Error: some leftover data in the content");
                 }
                 break;
             }
@@ -78,7 +77,7 @@ pub fn decompress_kernel(
             // reduce the size of decompressed kernel buffer
             decompressed_kernel.resize(decompressed_kernel_len + decompressed_data_size, 0);
         }
-        efi_println!(efi_entry, "kernel decompressed size {}", decompressed_kernel.len());
+        gbl_println!(ops, "kernel decompressed size {}", decompressed_kernel.len());
         let kernel_start = buffer.len() - decompressed_kernel.len();
         // Move decompressed data to slice
         buffer[kernel_start..].clone_from_slice(&decompressed_kernel);
