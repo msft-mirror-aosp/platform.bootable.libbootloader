@@ -316,6 +316,10 @@ mod test {
         ) -> GblResult<ImageBuffer<'c>> {
             unimplemented!();
         }
+
+        fn get_custom_device_tree(&mut self) -> Option<&'a [u8]> {
+            unimplemented!();
+        }
     }
 
     #[test]
