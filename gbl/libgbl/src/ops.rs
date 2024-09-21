@@ -227,6 +227,13 @@ where
         image_name: &str,
         size: NonZeroUsize,
     ) -> GblResult<ImageBuffer<'c>>;
+
+    /// Returns the custom device tree to use, if any.
+    ///
+    /// If this returns a device tree, it will be used instead of any on-disk contents. This is
+    /// currently needed for Cuttlefish, but should not be used in production devices because this
+    /// data cannot be verified with libavb.
+    fn get_custom_device_tree(&mut self) -> Option<&'a [u8]>;
 }
 
 /// Prints with `GblOps::console_out()`.
@@ -256,7 +263,11 @@ macro_rules! gbl_println {
 pub(crate) mod test {
     use super::*;
     use crate::partition::sync_gpt;
-    use gbl_storage_testlib::{TestBlockDevice, TestBlockIo};
+    use avb::{CertOps, Ops};
+    use avb_test::TestOps as AvbTestOps;
+    use gbl_storage_testlib::{TestBlockDevice, TestBlockDeviceBuilder, TestBlockIo};
+    use safemath::SafeNum;
+    use zbi::{ZbiFlags, ZbiType};
 
     /// Backing storage for [FakeGblOps].
     ///
@@ -292,6 +303,17 @@ pub(crate) mod test {
             self.raw_devices.push((name, data.as_ref().into()))
         }
 
+        /// Similar to [add_raw_device] but pads `data` with zeros up to the next
+        /// [TestBlockDeviceBuilder::DEFAULT_BLOCK_SIZE].
+        pub(crate) fn add_raw_device_padded(&mut self, name: &'static str, mut data: Vec<u8>) {
+            let padded_size = SafeNum::from(data.len())
+                .round_up(TestBlockDeviceBuilder::DEFAULT_BLOCK_SIZE)
+                .try_into()
+                .unwrap();
+            data.resize(padded_size, 0);
+            self.add_raw_device(name, data);
+        }
+
         /// Returns a vector of [PartitionBlockDevice]s wrapping the added devices.
         pub fn as_partition_block_devices(
             &mut self,
@@ -316,11 +338,43 @@ pub(crate) mod test {
     pub(crate) struct FakeGblOps<'a> {
         /// Partition data to expose.
         pub partitions: &'a [PartitionBlockDevice<'a, &'a mut TestBlockIo>],
+
+        /// Test fixture for [avb::Ops] and [avb::CertOps], provided by libavb.
+        ///
+        /// We don't use all the available functionality here, in particular the backing storage
+        /// is provided by `partitions` and our custom storage APIs rather than the [AvbTestOps]
+        /// fake storage, so that we can more accurately test our storage implementation.
+        pub avb_ops: AvbTestOps<'static>,
+    }
+
+    /// Print `console_out` output, which can be useful for debugging.
+    impl Write for FakeGblOps<'_> {
+        fn write_str(&mut self, s: &str) -> Result<(), std::fmt::Error> {
+            Ok(print!("{s}"))
+        }
     }
 
     impl<'a> FakeGblOps<'a> {
+        /// For now we've just hardcoded the `zircon_add_device_zbi_items()` callback to add a
+        /// single commandline ZBI item with these contents; if necessary we can generalize this
+        /// later and allow tests to configure the ZBI modifications.
+        pub const ADDED_ZBI_COMMANDLINE_CONTENTS: &'static [u8] = b"test_zbi_item";
+
         pub fn new(partitions: &'a [PartitionBlockDevice<'a, &'a mut TestBlockIo>]) -> Self {
-            Self { partitions }
+            Self { partitions, ..Default::default() }
+        }
+
+        /// Copies an entire partition contents into a vector.
+        ///
+        /// This is a common enough operation in tests that it's worth a small wrapper to provide
+        /// a more convenient API using [Vec].
+        ///
+        /// Panics if the given partition name doesn't exist.
+        pub fn copy_partition(&mut self, name: &str) -> Vec<u8> {
+            let mut contents =
+                vec![0u8; self.partition_size(name).unwrap().unwrap().try_into().unwrap()];
+            assert!(self.read_from_partition_sync(name, 0, &mut contents[..]).is_ok());
+            contents
         }
     }
 
@@ -331,11 +385,7 @@ pub(crate) mod test {
         type PartitionBlockIo = &'a mut TestBlockIo;
 
         fn console_out(&mut self) -> Option<&mut dyn Write> {
-            unimplemented!();
-        }
-
-        fn console_newline(&self) -> &'static str {
-            unimplemented!();
+            Some(self)
         }
 
         fn should_stop_in_fastboot(&mut self) -> Result<bool, Error> {
@@ -356,7 +406,15 @@ pub(crate) mod test {
             &mut self,
             container: &mut ZbiContainer<&mut [u8]>,
         ) -> Result<(), Error> {
-            unimplemented!();
+            container
+                .create_entry_with_payload(
+                    ZbiType::CmdLine,
+                    0,
+                    ZbiFlags::default(),
+                    Self::ADDED_ZBI_COMMANDLINE_CONTENTS,
+                )
+                .unwrap();
+            Ok(())
         }
 
         fn do_fastboot<B: gbl_storage::AsBlockDevice>(
@@ -375,32 +433,32 @@ pub(crate) mod test {
         }
 
         fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
-            unimplemented!();
+            self.avb_ops.read_is_device_unlocked()
         }
 
-        fn avb_read_rollback_index(&mut self, _rollback_index_location: usize) -> AvbIoResult<u64> {
-            unimplemented!();
+        fn avb_read_rollback_index(&mut self, rollback_index_location: usize) -> AvbIoResult<u64> {
+            self.avb_ops.read_rollback_index(rollback_index_location)
         }
 
         fn avb_write_rollback_index(
             &mut self,
-            _rollback_index_location: usize,
-            _index: u64,
+            rollback_index_location: usize,
+            index: u64,
         ) -> AvbIoResult<()> {
-            unimplemented!();
+            self.avb_ops.write_rollback_index(rollback_index_location, index)
         }
 
         fn avb_cert_read_permanent_attributes(
             &mut self,
             attributes: &mut CertPermanentAttributes,
         ) -> AvbIoResult<()> {
-            unimplemented!();
+            self.avb_ops.read_permanent_attributes(attributes)
         }
 
         fn avb_cert_read_permanent_attributes_hash(
             &mut self,
         ) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
-            unimplemented!();
+            self.avb_ops.read_permanent_attributes_hash()
         }
 
         fn get_image_buffer<'c>(
@@ -409,6 +467,10 @@ pub(crate) mod test {
             size: NonZeroUsize,
         ) -> GblResult<ImageBuffer<'c>> {
             unimplemented!();
+        }
+
+        fn get_custom_device_tree(&mut self) -> Option<&'static [u8]> {
+            None
         }
     }
 }

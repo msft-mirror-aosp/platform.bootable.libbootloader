@@ -18,7 +18,7 @@ extern crate libgbl;
 use crate::efi_call;
 use crate::protocol::{Protocol, ProtocolInfo};
 use efi_types::{
-    EfiGuid, GblEfiBootReason, GblEfiSlotInfo, GblEfiSlotMetadataBlock, GblEfiSlotProtocol,
+    EfiGuid, GblEfiABSlotProtocol, GblEfiBootReason, GblEfiSlotInfo, GblEfiSlotMetadataBlock,
     GblEfiUnbootableReason, GBL_EFI_UNBOOTABLE_REASON_GBL_EFI_NO_MORE_TRIES as NO_MORE_TRIES,
     GBL_EFI_UNBOOTABLE_REASON_GBL_EFI_SYSTEM_UPDATE as SYSTEM_UPDATE,
     GBL_EFI_UNBOOTABLE_REASON_GBL_EFI_USER_REQUESTED as USER_REQUESTED,
@@ -32,7 +32,7 @@ use libgbl::slots::{Bootability, Slot, UnbootableReason};
 pub struct GblSlotProtocol;
 
 impl ProtocolInfo for GblSlotProtocol {
-    type InterfaceType = GblEfiSlotProtocol;
+    type InterfaceType = GblEfiABSlotProtocol;
 
     const GUID: EfiGuid =
         EfiGuid::new(0x9a7a7db4, 0x614b, 0x4a08, [0x3d, 0xf9, 0x00, 0x6f, 0x49, 0xb0, 0xd8, 0x0c]);
