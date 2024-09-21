@@ -16,7 +16,7 @@ use crate::{
     avb::GblEfiAvbOps,
     efi_blocks::find_block_devices,
     ops::Ops,
-    utils::{aligned_subslice, cstr_bytes_to_str, get_efi_fdt},
+    utils::{aligned_subslice, cstr_bytes_to_str},
 };
 use avb::{slot_verify, HashtreeErrorMode, Ops as _, SlotVerifyFlags};
 use bootconfig::BootConfigBuilder;
@@ -186,7 +186,6 @@ fn vendor_header_elements<B: ByteSlice + PartialEq>(
 ///
 /// # Arguments
 /// * `ops`: the [GblOps] object providing platform-specific backends.
-/// * `efi_entry`: the [EfiEntry] object; to be removed and accessed through `ops` instead.
 /// * `load`: the combined buffer to load all images into.
 ///
 /// # Returns
@@ -194,7 +193,6 @@ fn vendor_header_elements<B: ByteSlice + PartialEq>(
 ///   (ramdisk load buffer, FDT load buffer, kernel load buffer, unused buffer).
 pub fn load_android_simple<'a, 'b>(
     ops: &mut impl GblOps<'b>,
-    efi_entry: &EfiEntry,
     load: &'a mut [u8],
 ) -> Result<(&'a mut [u8], &'a mut [u8], &'a mut [u8], &'a mut [u8])> {
     const PAGE_SIZE: usize = 4096; // V3/V4 image has fixed page size 4096;
@@ -401,8 +399,8 @@ pub fn load_android_simple<'a, 'b>(
     // product, it may come from vendor boot image.
     let mut fdt_bytes_buffer = vec![0u8; max(vendor_dtb_size, boot_dtb_size)];
     let fdt_bytes_buffer = &mut fdt_bytes_buffer[..];
-    let fdt_bytes = match get_efi_fdt(&efi_entry) {
-        Some((_, fdt_bytes)) => fdt_bytes,
+    let fdt_bytes = match ops.get_custom_device_tree() {
+        Some(fdt_bytes) => fdt_bytes,
         None if vendor_dtb_size > 0 => {
             let vendor_dtb_offset: usize = (SafeNum::from(vendor_hdr_size)
                 + SafeNum::from(vendor_ramdisk_size))
@@ -517,8 +515,7 @@ pub fn android_boot_demo(entry: EfiEntry) -> Result<()> {
     // Allocate buffer for load.
     let mut load_buffer = vec![0u8; 128 * 1024 * 1024]; // 128MB
 
-    let (ramdisk, fdt, kernel, remains) =
-        load_android_simple(&mut ops, &entry, &mut load_buffer[..])?;
+    let (ramdisk, fdt, kernel, remains) = load_android_simple(&mut ops, &mut load_buffer[..])?;
 
     gbl_println!(ops, "");
     gbl_println!(

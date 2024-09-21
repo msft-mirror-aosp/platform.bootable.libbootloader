@@ -227,6 +227,13 @@ where
         image_name: &str,
         size: NonZeroUsize,
     ) -> GblResult<ImageBuffer<'c>>;
+
+    /// Returns the custom device tree to use, if any.
+    ///
+    /// If this returns a device tree, it will be used instead of any on-disk contents. This is
+    /// currently needed for Cuttlefish, but should not be used in production devices because this
+    /// data cannot be verified with libavb.
+    fn get_custom_device_tree(&mut self) -> Option<&'a [u8]>;
 }
 
 /// Prints with `GblOps::console_out()`.
@@ -460,6 +467,10 @@ pub(crate) mod test {
             size: NonZeroUsize,
         ) -> GblResult<ImageBuffer<'c>> {
             unimplemented!();
+        }
+
+        fn get_custom_device_tree(&mut self) -> Option<&'static [u8]> {
+            None
         }
     }
 }
