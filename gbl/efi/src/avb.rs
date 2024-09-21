@@ -16,34 +16,34 @@
 // is mainly for use by the boot demo. Eventually, these backends will be implemented from the
 // `GblOps` interface in libgbl, where EFI services will be one level lower as its backend instead.
 
-use crate::efi_blocks::EfiMultiBlockDevices;
-use avb::{IoError, IoResult, Ops, PublicKeyForPartitionInfo};
+use avb::{IoError, IoResult, Ops as AvbOps, PublicKeyForPartitionInfo};
 use core::ffi::CStr;
+use libgbl::GblOps;
 use uuid::Uuid;
 
 extern crate avb_sysdeps;
 
-pub struct GblEfiAvbOps<'a, 'b> {
-    gpt_dev: &'b mut EfiMultiBlockDevices<'a>,
-    preloaded_partitions: Option<&'b [(&'b str, &'b [u8])]>,
+/// [AvbOps] implementation for [GblOps].
+// TODO(b/363074091): this code is now platform-independent; move it into libgbl.
+pub struct GblEfiAvbOps<'a, G> {
+    gbl_ops: &'a mut G,
+    preloaded_partitions: Option<&'a [(&'a str, &'a [u8])]>,
 }
 
-impl<'a, 'b> GblEfiAvbOps<'a, 'b> {
+/// # Lifetimes
+/// * `'a`: borrowed data minimum lifetime
+/// * `'b`: [GblOps] partition lifetime
+impl<'a, 'b, G: GblOps<'b>> GblEfiAvbOps<'a, G> {
     pub fn new(
-        gpt_dev: &'b mut EfiMultiBlockDevices<'a>,
-        preloaded_partitions: Option<&'b [(&'b str, &'b [u8])]>,
+        gbl_ops: &'a mut G,
+        preloaded_partitions: Option<&'a [(&'a str, &'a [u8])]>,
     ) -> Self {
-        Self { gpt_dev, preloaded_partitions }
+        Self { gbl_ops, preloaded_partitions }
     }
 
     /// Returns the size of a partition.
     fn partition_size(&mut self, partition: &str) -> IoResult<u64> {
-        Ok(self
-            .gpt_dev
-            .find_partition(partition)
-            .map_err(|_| IoError::NoSuchPartition)?
-            .size()
-            .map_err(|_| IoError::NoSuchPartition)?)
+        self.gbl_ops.partition_size(partition).or(Err(IoError::Io))?.ok_or(IoError::NoSuchPartition)
     }
 }
 
@@ -52,7 +52,7 @@ fn cstr_to_str<E>(s: &CStr, err: E) -> Result<&str, E> {
     Ok(s.to_str().map_err(|_| err)?)
 }
 
-impl<'b> Ops<'b> for GblEfiAvbOps<'_, 'b> {
+impl<'a, 'b, G: GblOps<'b>> AvbOps<'a> for GblEfiAvbOps<'a, G> {
     fn read_from_partition(
         &mut self,
         partition: &CStr,
@@ -68,13 +68,11 @@ impl<'b> Ops<'b> for GblEfiAvbOps<'_, 'b> {
             }
             _ => offset.try_into().map_err(|_| IoError::InvalidValueSize)?,
         };
-        self.gpt_dev
-            .read_gpt_partition_sync(part_str, read_off, buffer)
-            .map_err(|_| IoError::Io)?;
+        self.gbl_ops.read_from_partition_sync(part_str, read_off, buffer).or(Err(IoError::Io))?;
         Ok(buffer.len())
     }
 
-    fn get_preloaded_partition(&mut self, partition: &CStr) -> IoResult<&'b [u8]> {
+    fn get_preloaded_partition(&mut self, partition: &CStr) -> IoResult<&'a [u8]> {
         let part_str = cstr_to_str(partition, IoError::NotImplemented)?;
         Ok(self
             .preloaded_partitions
