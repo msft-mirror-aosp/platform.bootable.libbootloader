@@ -25,8 +25,8 @@ rust_library(
     crate_name = "gbl_efi_aarch64",
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
-        "@gbl//libefi",
         "@gbl//liberror",
+        "@gbl//libgbl",
         "@lz4_flex",
         "@zune_inflate",
     ],

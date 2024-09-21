@@ -178,7 +178,11 @@ where
         // TODO(b/349829690): also query GblSlotProtocol.get_boot_reason() for board-specific
         // fastboot triggers.
         efi_println!(self.efi_entry, "Press Backspace to enter fastboot");
-        let found = wait_key_stroke(self.efi_entry, '\x08', 2000);
+        let found = wait_key_stroke(
+            self.efi_entry,
+            |key| key.unicode_char == 0x08 || (key.unicode_char == 0x0 && key.scan_code == 0x08),
+            2000,
+        );
         if matches!(found, Ok(true)) {
             efi_println!(self.efi_entry, "Backspace pressed, entering fastboot");
         }
