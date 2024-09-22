@@ -292,7 +292,7 @@ impl<'a> TestBlockDeviceBuilder<'a> {
                 partitions_to_disk_data(&partitions, self.block_size as usize)
             }
         };
-        assert!(storage.len() % (self.block_size as usize) == 0);
+        assert_eq!(storage.len() % (self.block_size as usize), 0);
         let mut io = TestBlockIo::new(self.block_size, self.alignment, storage);
         let scratch_size = match self.scratch_size {
             Some(s) => s,
