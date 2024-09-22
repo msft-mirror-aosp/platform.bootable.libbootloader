@@ -23,9 +23,7 @@ use efi_types::EfiBlockIoMedia;
 use gbl_async::block_on;
 use gbl_storage::{AsyncBlockDevice, BlockInfo, BlockIoAsync, GptCache};
 use liberror::Error;
-use libgbl::partition::{
-    check_part_unique, read_unique_partition, Partition, PartitionBlockDevice,
-};
+use libgbl::partition::{check_part_unique, Partition, PartitionBlockDevice};
 use safemath::SafeNum;
 
 /// `EfiBlockDeviceIo` wraps a EFI `BlockIoProtocol` or `BlockIo2Protocol` and implements the
@@ -134,31 +132,6 @@ impl<'a> EfiMultiBlockDevices<'a> {
             res.push(ele.as_gbl_part()?)
         }
         Ok(res)
-    }
-
-    /// Checks uniqueness of and reads from a GPT partition
-    // TODO(b/357688291): Remove once we switch to GblOps for read/writing partitions.
-    pub async fn read_gpt_partition(
-        &mut self,
-        part: &str,
-        off: u64,
-        out: &mut [u8],
-    ) -> Result<(), Error> {
-        // This is not very efficient because `as_gbl_parts()` allocates temporaray memory for array
-        // of `PartitionBlockDevice`. Ideally, we want to create the array once and re-use it. This
-        // will be done once we switch to GblOps for reading/writing partition.
-        read_unique_partition(&self.as_gbl_parts()?, part, off, out).await
-    }
-
-    /// Checks uniqueness of and reads from a GPT partition synchronously.
-    // TODO(b/357688291): Remove once we switch to GblOps for read/writing partitions.
-    pub fn read_gpt_partition_sync(
-        &mut self,
-        part: &str,
-        off: u64,
-        out: &mut [u8],
-    ) -> Result<(), Error> {
-        block_on(self.read_gpt_partition(part, off, out))
     }
 
     /// Finds a partition.
