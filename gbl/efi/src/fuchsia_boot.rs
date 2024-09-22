@@ -31,14 +31,16 @@ pub fn is_fuchsia_gpt(efi_entry: &EfiEntry) -> Result<()> {
         &["vbmeta_a"],
         &["vbmeta_b"],
         &["vbmeta_r"],
-        &["durable_boot"],
         &["fvm"],
+        &["misc", "durable_boot"],
     ];
-    for partition in partitions {
-        if !partition.iter().any(|v| gpt_devices.find_partition(*v).is_ok()) {
-            return Err(Error::NotFound.into());
-        }
+    if !partitions
+        .iter()
+        .all(|&partition| partition.iter().any(|v| gpt_devices.find_partition(*v).is_ok()))
+    {
+        return Err(Error::NotFound.into());
     }
+
     Ok(())
 }
 
@@ -72,7 +74,14 @@ pub fn fuchsia_boot_demo(efi_entry: EfiEntry) -> Result<()> {
 
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     {
-        unimplemented!();
+        let items_size = zbi::ZbiContainer::parse(&mut _zbi_items[..])?.container_size();
+        let (_, remains) = _zbi_items.split_at_mut(items_size);
+        // `exit_boot_service` returnes EFI memory map that is used to derive and append MEM_CONFIG
+        // items.
+        let _ = efi::exit_boot_services(efi_entry, remains).unwrap();
+        // SAFETY: The kernel has passed libavb verification or device is unlocked, in which case we
+        // assume the caller has addressed all safety and security concerns.
+        unsafe { boot::x86::zbi_boot(_kernel, _zbi_items) };
     }
 
     #[cfg(target_arch = "riscv64")]
