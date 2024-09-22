@@ -26,11 +26,7 @@ use crate::{
 };
 #[cfg(feature = "alloc")]
 use alloc::ffi::CString;
-use core::{
-    fmt::{Debug, Write},
-    num::NonZeroUsize,
-    result::Result,
-};
+use core::{fmt::Write, num::NonZeroUsize, result::Result};
 use gbl_async::block_on;
 use gbl_storage::{BlockIoAsync, BlockIoNull};
 
@@ -182,12 +178,6 @@ where
         cursor: &mut slots::Cursor<B>,
     ) -> GblResult<()>;
 
-    /// TODO: b/312607649 - placeholder interface for Gbl specific callbacks that uses alloc.
-    #[cfg(feature = "alloc")]
-    fn gbl_alloc_extra_action(&mut self, s: &str) -> GblResult<()> {
-        unimplemented!();
-    }
-
     /// Load and initialize a slot manager and return a cursor over the manager on success.
     fn load_slot_interface<'b, B: gbl_storage::AsBlockDevice>(
         &'b mut self,
@@ -239,88 +229,6 @@ where
     ) -> GblResult<ImageBuffer<'c>>;
 }
 
-/// Default [GblOps] implementation that returns errors and does nothing.
-#[derive(Debug)]
-pub struct DefaultGblOps {}
-
-impl<'a> GblOps<'a> for DefaultGblOps
-where
-    Self: 'a,
-{
-    fn console_out(&mut self) -> Option<&mut dyn Write> {
-        unimplemented!();
-    }
-
-    fn should_stop_in_fastboot(&mut self) -> Result<bool, Error> {
-        unimplemented!();
-    }
-
-    fn preboot(&mut self, boot_images: BootImages) -> Result<(), Error> {
-        unimplemented!();
-    }
-
-    fn partitions(&self) -> Result<&'a [PartitionBlockDevice<'a, Self::PartitionBlockIo>], Error> {
-        unimplemented!();
-    }
-
-    fn zircon_add_device_zbi_items(
-        &mut self,
-        container: &mut ZbiContainer<&mut [u8]>,
-    ) -> Result<(), Error> {
-        unimplemented!();
-    }
-
-    fn do_fastboot<B: gbl_storage::AsBlockDevice>(
-        &self,
-        cursor: &mut slots::Cursor<B>,
-    ) -> GblResult<()> {
-        unimplemented!();
-    }
-
-    fn load_slot_interface<'b, B: gbl_storage::AsBlockDevice>(
-        &'b mut self,
-        block_device: &'b mut B,
-        boot_token: slots::BootToken,
-    ) -> GblResult<slots::Cursor<'b, B>> {
-        unimplemented!();
-    }
-
-    fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
-        unimplemented!();
-    }
-
-    fn avb_read_rollback_index(&mut self, _rollback_index_location: usize) -> AvbIoResult<u64> {
-        unimplemented!();
-    }
-
-    fn avb_write_rollback_index(
-        &mut self,
-        _rollback_index_location: usize,
-        _index: u64,
-    ) -> AvbIoResult<()> {
-        unimplemented!();
-    }
-
-    fn avb_cert_read_permanent_attributes(
-        &mut self,
-        _attributes: &mut CertPermanentAttributes,
-    ) -> AvbIoResult<()> {
-        unimplemented!();
-    }
-
-    fn avb_cert_read_permanent_attributes_hash(&mut self) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
-        unimplemented!();
-    }
-
-    fn get_image_buffer<'c>(
-        &mut self,
-        image_name: &str,
-        size: NonZeroUsize,
-    ) -> GblResult<ImageBuffer<'c>> {
-        Err(Error::Unsupported.into())
-    }
-}
-
 /// Prints with `GblOps::console_out()`.
 #[macro_export]
 macro_rules! gbl_print {
@@ -342,4 +250,216 @@ macro_rules! gbl_println {
         gbl_print!($ops, $($x,)*);
         gbl_print!($ops, "{}", newline);
     };
+}
+
+#[cfg(test)]
+pub(crate) mod test {
+    use super::*;
+    use crate::partition::sync_gpt;
+    use avb::{CertOps, Ops};
+    use avb_test::TestOps as AvbTestOps;
+    use gbl_storage_testlib::{TestBlockDevice, TestBlockDeviceBuilder, TestBlockIo};
+    use safemath::SafeNum;
+    use zbi::{ZbiFlags, ZbiType};
+
+    /// Backing storage for [FakeGblOps].
+    ///
+    /// This needs to be a separate object because [GblOps] has designed its lifetimes to borrow
+    /// the [PartitionBlockDevice] objects rather than own it, so that they can outlive the ops
+    /// object when necessary.
+    ///
+    /// # Example usage
+    /// ```
+    /// let storage = FakeGblOpsStorage::default();
+    /// storage.add_gpt_device(&gpt_disk_contents);
+    /// storage.add_raw_device("raw", &raw_disk_contents);
+    ///
+    /// let partitions = storage.as_partition_block_devices();
+    /// let fake_ops = FakeGblOps(&partitions);
+    /// ```
+    #[derive(Default)]
+    pub(crate) struct FakeGblOpsStorage {
+        /// GPT block devices.
+        gpt_devices: Vec<TestBlockDevice>,
+        /// Raw partition block devices.
+        raw_devices: Vec<(&'static str, TestBlockDevice)>,
+    }
+
+    impl FakeGblOpsStorage {
+        /// Adds a GPT block device.
+        pub fn add_gpt_device(&mut self, data: impl AsRef<[u8]>) {
+            self.gpt_devices.push(data.as_ref().into())
+        }
+
+        /// Adds a raw partition block device.
+        pub fn add_raw_device(&mut self, name: &'static str, data: impl AsRef<[u8]>) {
+            self.raw_devices.push((name, data.as_ref().into()))
+        }
+
+        /// Similar to [add_raw_device] but pads `data` with zeros up to the next
+        /// [TestBlockDeviceBuilder::DEFAULT_BLOCK_SIZE].
+        pub(crate) fn add_raw_device_padded(&mut self, name: &'static str, mut data: Vec<u8>) {
+            let padded_size = SafeNum::from(data.len())
+                .round_up(TestBlockDeviceBuilder::DEFAULT_BLOCK_SIZE)
+                .try_into()
+                .unwrap();
+            data.resize(padded_size, 0);
+            self.add_raw_device(name, data);
+        }
+
+        /// Returns a vector of [PartitionBlockDevice]s wrapping the added devices.
+        pub fn as_partition_block_devices(
+            &mut self,
+        ) -> Vec<PartitionBlockDevice<&mut TestBlockIo>> {
+            let mut parts = Vec::default();
+            // Convert GPT devices.
+            for device in self.gpt_devices.iter_mut() {
+                let (gpt_blk, gpt) = device.as_gpt_dev().into_blk_and_gpt();
+                parts.push(PartitionBlockDevice::new_gpt(gpt_blk, gpt));
+            }
+            // Convert raw devices.
+            for (name, device) in self.raw_devices.iter_mut() {
+                parts.push(PartitionBlockDevice::new_raw(device.as_blk_dev(), name).unwrap());
+            }
+            block_on(sync_gpt(&mut parts[..])).unwrap();
+            parts
+        }
+    }
+
+    /// Fake [GblOps] implementation for testing.
+    #[derive(Default)]
+    pub(crate) struct FakeGblOps<'a> {
+        /// Partition data to expose.
+        pub partitions: &'a [PartitionBlockDevice<'a, &'a mut TestBlockIo>],
+
+        /// Test fixture for [avb::Ops] and [avb::CertOps], provided by libavb.
+        ///
+        /// We don't use all the available functionality here, in particular the backing storage
+        /// is provided by `partitions` and our custom storage APIs rather than the [AvbTestOps]
+        /// fake storage, so that we can more accurately test our storage implementation.
+        pub avb_ops: AvbTestOps<'static>,
+    }
+
+    /// Print `console_out` output, which can be useful for debugging.
+    impl Write for FakeGblOps<'_> {
+        fn write_str(&mut self, s: &str) -> Result<(), std::fmt::Error> {
+            Ok(print!("{s}"))
+        }
+    }
+
+    impl<'a> FakeGblOps<'a> {
+        /// For now we've just hardcoded the `zircon_add_device_zbi_items()` callback to add a
+        /// single commandline ZBI item with these contents; if necessary we can generalize this
+        /// later and allow tests to configure the ZBI modifications.
+        pub const ADDED_ZBI_COMMANDLINE_CONTENTS: &'static [u8] = b"test_zbi_item";
+
+        pub fn new(partitions: &'a [PartitionBlockDevice<'a, &'a mut TestBlockIo>]) -> Self {
+            Self { partitions, ..Default::default() }
+        }
+
+        /// Copies an entire partition contents into a vector.
+        ///
+        /// This is a common enough operation in tests that it's worth a small wrapper to provide
+        /// a more convenient API using [Vec].
+        ///
+        /// Panics if the given partition name doesn't exist.
+        pub fn copy_partition(&mut self, name: &str) -> Vec<u8> {
+            let mut contents =
+                vec![0u8; self.partition_size(name).unwrap().unwrap().try_into().unwrap()];
+            assert!(self.read_from_partition_sync(name, 0, &mut contents[..]).is_ok());
+            contents
+        }
+    }
+
+    impl<'a> GblOps<'a> for FakeGblOps<'a>
+    where
+        Self: 'a,
+    {
+        type PartitionBlockIo = &'a mut TestBlockIo;
+
+        fn console_out(&mut self) -> Option<&mut dyn Write> {
+            Some(self)
+        }
+
+        fn should_stop_in_fastboot(&mut self) -> Result<bool, Error> {
+            unimplemented!();
+        }
+
+        fn preboot(&mut self, boot_images: BootImages) -> Result<(), Error> {
+            unimplemented!();
+        }
+
+        fn partitions(
+            &self,
+        ) -> Result<&'a [PartitionBlockDevice<'a, Self::PartitionBlockIo>], Error> {
+            Ok(self.partitions)
+        }
+
+        fn zircon_add_device_zbi_items(
+            &mut self,
+            container: &mut ZbiContainer<&mut [u8]>,
+        ) -> Result<(), Error> {
+            container
+                .create_entry_with_payload(
+                    ZbiType::CmdLine,
+                    0,
+                    ZbiFlags::default(),
+                    Self::ADDED_ZBI_COMMANDLINE_CONTENTS,
+                )
+                .unwrap();
+            Ok(())
+        }
+
+        fn do_fastboot<B: gbl_storage::AsBlockDevice>(
+            &self,
+            cursor: &mut slots::Cursor<B>,
+        ) -> GblResult<()> {
+            unimplemented!();
+        }
+
+        fn load_slot_interface<'b, B: gbl_storage::AsBlockDevice>(
+            &'b mut self,
+            block_device: &'b mut B,
+            boot_token: slots::BootToken,
+        ) -> GblResult<slots::Cursor<'b, B>> {
+            unimplemented!();
+        }
+
+        fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
+            self.avb_ops.read_is_device_unlocked()
+        }
+
+        fn avb_read_rollback_index(&mut self, rollback_index_location: usize) -> AvbIoResult<u64> {
+            self.avb_ops.read_rollback_index(rollback_index_location)
+        }
+
+        fn avb_write_rollback_index(
+            &mut self,
+            rollback_index_location: usize,
+            index: u64,
+        ) -> AvbIoResult<()> {
+            self.avb_ops.write_rollback_index(rollback_index_location, index)
+        }
+
+        fn avb_cert_read_permanent_attributes(
+            &mut self,
+            attributes: &mut CertPermanentAttributes,
+        ) -> AvbIoResult<()> {
+            self.avb_ops.read_permanent_attributes(attributes)
+        }
+
+        fn avb_cert_read_permanent_attributes_hash(
+            &mut self,
+        ) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
+            self.avb_ops.read_permanent_attributes_hash()
+        }
+
+        fn get_image_buffer<'c>(
+            &mut self,
+            image_name: &str,
+            size: NonZeroUsize,
+        ) -> GblResult<ImageBuffer<'c>> {
+            unimplemented!();
+        }
+    }
 }

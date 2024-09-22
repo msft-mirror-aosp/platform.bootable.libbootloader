@@ -1,4 +1,4 @@
-// Copyright 2023, The Android Open Source Project
+// Copyright 2024, The Android Open Source Project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -46,11 +46,9 @@
 mod zbi_format;
 
 use bitflags::bitflags;
-use core::{
-    fmt::{Debug, Display, Formatter},
-    mem::{size_of, take},
-    ops::DerefMut,
-};
+use core::fmt::{Debug, Display, Formatter};
+use core::mem::{size_of, take};
+use core::ops::DerefMut;
 use zbi_format::*;
 use zerocopy::{AsBytes, ByteSlice, ByteSliceMut, Ref};
 
@@ -813,7 +811,7 @@ pub enum ZbiType {
 
     /// Device-specific factory data, stored in BOOTFS format.
     //
-    // TODO(fxbug.dev/34597): This should not use the "STORAGE" infix.
+    // TODO(fxbug.dev/42109921): This should not use the "STORAGE" infix.
     //
     // 'BFSF'
     StorageBootFsFactory = ZBI_TYPE_STORAGE_BOOTFS_FACTORY,
@@ -1143,7 +1141,7 @@ impl ZbiHeader {
 /// The kernel assumes it was loaded at a fixed physical address of
 /// 0x100000 (1MB).  `ZbiKernel.entry` is the absolute physical address
 /// of the PC location where the kernel will start.
-/// TODO(fxbug.dev/24762): Perhaps this will change??
+/// TODO(https://fxbug.dev/42098994): Perhaps this will change??
 /// The processor is in 64-bit mode with direct virtual to physical
 /// mapping covering the physical memory where the kernel and
 /// bootloader-constructed ZBI were loaded.
@@ -1400,13 +1398,13 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_align_overflow() {
+    fn test_zbi_align_overflow() {
         assert!(usize::MAX > ZBI_ALIGNMENT.try_into().unwrap());
         assert_eq!(u32::try_from(ZBI_ALIGNMENT_USIZE).unwrap(), ZBI_ALIGNMENT);
     }
 
     #[test]
-    fn zbi_test_item_new() {
+    fn test_zbi_item_new() {
         let mut buffer = ZbiAligned::default();
         let expect = get_test_zbi_headers(1)[0];
 
@@ -1434,7 +1432,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_item_new_too_small() {
+    fn test_zbi_item_new_too_small() {
         let mut buffer = ZbiAligned::default();
 
         assert_eq!(
@@ -1450,7 +1448,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_item_new_not_aligned() {
+    fn test_zbi_item_new_not_aligned() {
         let mut buffer = ZbiAligned::default();
         for offset in [1, 2, 4] {
             assert_eq!(
@@ -1467,7 +1465,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_item_parse() {
+    fn test_zbi_item_parse() {
         let mut buffer = ZbiAligned::default();
         let buffer = TestZbiBuilder::new(&mut buffer.0[..]).container_hdr(0).build();
         let buffer_hdr_extra_expected =
@@ -1479,7 +1477,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_item_edit() {
+    fn test_zbi_item_edit() {
         let mut buffer = ZbiAligned::default();
         let buffer_build = TestZbiBuilder::new(&mut buffer.0[..]).container_hdr(0).build();
         let buffer_hdr_type =
@@ -1494,7 +1492,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_new() {
+    fn test_zbi_container_new() {
         let mut buffer = ZbiAligned::default();
         let _container = ZbiContainer::new(&mut buffer.0[..]).unwrap();
         let expect_hdr = ZbiHeader {
@@ -1513,13 +1511,13 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_new_too_small() {
+    fn test_zbi_container_new_too_small() {
         let mut buffer = ZbiAligned::default();
         assert_eq!(ZbiContainer::new(&mut buffer.0[..ZBI_HEADER_SIZE - 1]), Err(ZbiError::TooBig));
     }
 
     #[test]
-    fn zbi_test_container_new_unaligned() {
+    fn test_zbi_container_new_unaligned() {
         let mut buffer = ZbiAligned::default();
         for offset in [1, 2, 3, 4, 5, 6, 7] {
             assert_eq!(
@@ -1530,7 +1528,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_parse_empty() {
+    fn test_zbi_container_parse_empty() {
         let mut buffer = ZbiAligned::default();
         let _container = ZbiContainer::new(&mut buffer.0[..]).unwrap();
         let expect_hdr = ZbiHeader {
@@ -1550,7 +1548,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_parse_bad_type() {
+    fn test_zbi_container_parse_bad_type() {
         let mut buffer = ZbiAligned::default();
         let _ = TestZbiBuilder::new(&mut buffer.0[..])
             .item(
@@ -1571,7 +1569,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_parse_bad_magic() {
+    fn test_zbi_container_parse_bad_magic() {
         let mut buffer = ZbiAligned::default();
         let _ = TestZbiBuilder::new(&mut buffer.0[..])
             .item(
@@ -1592,7 +1590,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_parse_bad_version() {
+    fn test_zbi_container_parse_bad_version() {
         let mut buffer = ZbiAligned::default();
         let _ = TestZbiBuilder::new(&mut buffer.0[..])
             .item(
@@ -1613,7 +1611,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_parse_bad_crc32() {
+    fn test_zbi_container_parse_bad_crc32() {
         let mut buffer = ZbiAligned::default();
         let _ = TestZbiBuilder::new(&mut buffer.0[..])
             .item(
@@ -1634,7 +1632,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_parse_entries_bad_magic() {
+    fn test_zbi_container_parse_entries_bad_magic() {
         let mut buffer = ZbiAligned::default();
         let _ = TestZbiBuilder::new(&mut buffer.0[..])
             .item(
@@ -1655,7 +1653,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_parse() {
+    fn test_zbi_container_parse() {
         let expected_payloads: [&[u8]; 9] = [
             &[1],
             &[1, 2],
@@ -1695,7 +1693,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_parse_unaligned() {
+    fn test_zbi_container_parse_unaligned() {
         let buffer = ZbiAligned::default();
         for offset in [1, 2, 3, 4, 5, 6, 7] {
             assert_eq!(ZbiContainer::parse(&buffer.0[offset..]), Err(ZbiError::BadAlignment));
@@ -1703,7 +1701,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_parse_without_last_padding_fail_truncated() {
+    fn test_zbi_container_parse_without_last_padding_fail_truncated() {
         let mut buffer = ZbiAligned::default();
         let buffer = TestZbiBuilder::new(&mut buffer.0[..])
             .container_hdr(0)
@@ -1718,7 +1716,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_parse_error_payload_truncated() {
+    fn test_zbi_container_parse_error_payload_truncated() {
         let mut buffer = ZbiAligned::default();
         let buffer = TestZbiBuilder::new(&mut buffer.0[..])
             .container_hdr(0)
@@ -1730,7 +1728,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_parse_error_truncated() {
+    fn test_zbi_container_parse_error_truncated() {
         let mut buffer = ZbiAligned::default();
         let buffer = TestZbiBuilder::new(&mut buffer.0[..])
             .container_hdr(0)
@@ -1742,7 +1740,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_parse_bad_first_entry_marked() {
+    fn test_zbi_container_parse_bad_first_entry_marked() {
         let mut buffer = get_test_creference_buffer();
         let mut container = ZbiContainer::parse(&mut buffer.0[..]).unwrap();
 
@@ -1757,7 +1755,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_parse_bad_entry_magic() {
+    fn test_zbi_container_parse_bad_entry_magic() {
         let mut buffer = get_test_creference_buffer();
         let mut container = ZbiContainer::parse(&mut buffer.0[..]).unwrap();
 
@@ -1770,7 +1768,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_parse_bad_entry_version() {
+    fn test_zbi_container_parse_bad_entry_version() {
         let mut buffer = get_test_creference_buffer();
         let mut container = ZbiContainer::parse(&mut buffer.0[..]).unwrap();
 
@@ -1783,7 +1781,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_parse_bad_entry_crc() {
+    fn test_zbi_container_parse_bad_entry_crc() {
         let mut buffer = get_test_creference_buffer();
         let mut container = ZbiContainer::parse(&mut buffer.0[..]).unwrap();
 
@@ -1798,7 +1796,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_new_entry() {
+    fn test_zbi_container_new_entry() {
         let mut buffer = ZbiAligned::default();
         let new_entries = get_test_entries_all();
 
@@ -1815,7 +1813,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_new_entry_crc32_not_supported() {
+    fn test_zbi_container_new_entry_crc32_not_supported() {
         let mut buffer = ZbiAligned::default();
         let (new_entry, payload) = get_test_entry_nonempty_payload();
         let mut container = ZbiContainer::new(&mut buffer.0[..]).unwrap();
@@ -1831,7 +1829,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_new_entry_no_space_left() {
+    fn test_zbi_container_new_entry_no_space_left() {
         let mut buffer = ZbiAligned::default();
         let new_entry = get_test_entry_empty_payload().0;
 
@@ -1861,7 +1859,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_new_entry_no_space_for_header() {
+    fn test_zbi_container_new_entry_no_space_for_header() {
         let mut buffer = ZbiAligned::default();
         let new_entry = get_test_entry_empty_payload().0;
 
@@ -1881,7 +1879,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_new_entry_no_space_for_payload() {
+    fn test_zbi_container_new_entry_no_space_for_payload() {
         let mut buffer = ZbiAligned::default();
         let (new_entry, payload) = get_test_entry_nonempty_payload();
 
@@ -1901,7 +1899,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_new_entry_with_payload_just_enough_to_fit_no_align() {
+    fn test_zbi_container_new_entry_with_payload_just_enough_to_fit_no_align() {
         let mut buffer = ZbiAligned::default();
         let (new_entry, _payload) = get_test_entry_empty_payload();
         let payload = [0; ZBI_ALIGNMENT_USIZE];
@@ -1920,7 +1918,7 @@ mod tests {
         );
     }
     #[test]
-    fn zbi_test_container_new_entry_with_payload_just_enough_to_fit_with_alignment() {
+    fn test_zbi_container_new_entry_with_payload_just_enough_to_fit_with_alignment() {
         let mut buffer = ZbiAligned::default();
         let (new_entry, payload) = get_test_entry_nonempty_payload();
         let buf_len = 2 * core::mem::size_of::<ZbiHeader>()
@@ -1939,7 +1937,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_new_entry_payload_too_big() {
+    fn test_zbi_container_new_entry_payload_too_big() {
         let mut buffer = ZbiAligned::default();
         let (new_entry, _payload) = get_test_entry_nonempty_payload();
         let mut container = ZbiContainer::new(&mut buffer.0[..]).unwrap();
@@ -1955,7 +1953,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_new_entry_no_space_left_unaligned() {
+    fn test_zbi_container_new_entry_no_space_left_unaligned() {
         let mut buffer = ZbiAligned::default();
         let new_entry = get_test_entry_empty_payload().0;
 
@@ -1985,7 +1983,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_extend_new() {
+    fn test_zbi_container_extend_new() {
         let mut buffer = ZbiAligned::default();
         let buffer = TestZbiBuilder::new(&mut buffer.0[..])
             .container_hdr(0)
@@ -2021,7 +2019,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_extend_unaligned() {
+    fn test_zbi_container_extend_unaligned() {
         let mut buffer_0 = ZbiAligned::default();
         let mut container_0 = ZbiContainer::new(&mut buffer_0.0[..]).unwrap();
         container_0
@@ -2057,7 +2055,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_extend_unaligned_too_big() {
+    fn test_zbi_container_extend_unaligned_too_big() {
         let mut buffer = ZbiAligned::default();
         let buffer_len = buffer.0.len();
         let mut container = ZbiContainer::new(&mut buffer.0[..]).unwrap();
@@ -2071,7 +2069,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_extend_unaligned_invalid_container() {
+    fn test_zbi_container_extend_unaligned_invalid_container() {
         let mut buffer = ZbiAligned::default();
         let buffer_len = buffer.0.len();
         let mut container = ZbiContainer::new(&mut buffer.0[..]).unwrap();
@@ -2080,7 +2078,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_extend_with_empty() {
+    fn test_zbi_container_extend_with_empty() {
         let mut buffer = ZbiAligned::default();
         let buffer = TestZbiBuilder::new(&mut buffer.0[..])
             .container_hdr(0)
@@ -2100,7 +2098,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_extend_full() {
+    fn test_zbi_container_extend_full() {
         let mut buffer = ZbiAligned::default();
         let buffer = TestZbiBuilder::new(&mut buffer.0[..])
             .container_hdr(0)
@@ -2122,7 +2120,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_extend_1_byte_short() {
+    fn test_zbi_container_extend_1_byte_short() {
         let mut buffer = ZbiAligned::default();
         let _ = TestZbiBuilder::new(&mut buffer.0[..])
             .container_hdr(0)
@@ -2146,7 +2144,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_extend_use_all_buffer() {
+    fn test_zbi_container_extend_use_all_buffer() {
         let mut buffer = ZbiAligned::default();
         let _ = TestZbiBuilder::new(&mut buffer.0[..])
             .container_hdr(0)
@@ -2171,7 +2169,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_new_entry_with_payload() {
+    fn test_zbi_container_new_entry_with_payload() {
         let mut buffer = ZbiAligned::default();
         let new_entries = get_test_entries_all();
 
@@ -2226,7 +2224,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_get_next_paylad() {
+    fn test_zbi_container_get_next_paylad() {
         let mut buffer = ZbiAligned::default();
         let new_entries = get_test_entries_all();
 
@@ -2245,7 +2243,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_get_next_paylad_length() {
+    fn test_zbi_container_get_next_paylad_length() {
         let mut buffer = ZbiAligned::default();
         // Expected payload length is same as buffer - container header - item header
         let expected_payload_len = buffer.0.len() - 2 * core::mem::size_of::<ZbiHeader>();
@@ -2257,7 +2255,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_get_next_paylad_only_header_can_fit() {
+    fn test_zbi_container_get_next_paylad_only_header_can_fit() {
         let mut buffer = ZbiAligned::default();
         // Buffer length that only fits container and item header.
         let len = 2 * core::mem::size_of::<ZbiHeader>();
@@ -2269,7 +2267,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_get_next_paylad_header_cant_fit() {
+    fn test_zbi_container_get_next_paylad_header_cant_fit() {
         let mut buffer = ZbiAligned::default();
         // Buffer length that only fits container but not item header.
         let len = 2 * core::mem::size_of::<ZbiHeader>() - 1;
@@ -2279,7 +2277,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_get_next_paylad_length_overflow() {
+    fn test_zbi_container_get_next_paylad_length_overflow() {
         let mut buffer = ZbiAligned::default();
         // Buffer length that only fits container but not item header.
         let len = 2 * core::mem::size_of::<ZbiHeader>() - 1;
@@ -2318,7 +2316,7 @@ mod tests {
      * +}
      */
     #[test]
-    fn zbi_test_container_parse_c_reference() {
+    fn test_zbi_container_parse_c_reference() {
         let ref_buffer = get_test_creference_buffer_vec();
         let expected_container_hdr = ZbiHeader {
             type_: ZBI_TYPE_CONTAINER,
@@ -2342,7 +2340,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_new_entry_iterate() {
+    fn test_zbi_container_new_entry_iterate() {
         let mut buffer = ZbiAligned::default();
         let new_entry = get_test_entry_nonempty_payload();
 
@@ -2361,7 +2359,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_new_entry_mut_iterate() {
+    fn test_zbi_container_new_entry_mut_iterate() {
         let mut buffer = ZbiAligned::default();
         let new_entry = get_test_entry_nonempty_payload();
 
@@ -2383,7 +2381,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_parse_new_entry_mut_iterate() {
+    fn test_zbi_container_parse_new_entry_mut_iterate() {
         let mut buffer = ZbiAligned::default();
         let _ = TestZbiBuilder::new(&mut buffer.0[..])
             .container_hdr(0)
@@ -2412,7 +2410,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_iterate_empty() {
+    fn test_zbi_container_iterate_empty() {
         let mut buffer = ZbiAligned::default();
         let _ = TestZbiBuilder::new(&mut buffer.0[..]).container_hdr(0).build();
 
@@ -2427,7 +2425,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_iterate_ref() {
+    fn test_zbi_container_iterate_ref() {
         let mut buffer = get_test_creference_buffer();
         let container = ZbiContainer::parse(&mut buffer.0[..]).unwrap();
 
@@ -2438,7 +2436,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_container_iterate_modify() {
+    fn test_zbi_container_iterate_modify() {
         let mut buffer = ZbiAligned::default();
         let _ = TestZbiBuilder::new(&mut buffer.0[..])
             .container_hdr(0)
@@ -2459,7 +2457,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_bad_type() {
+    fn test_zbi_bad_type() {
         assert_eq!(ZbiType::try_from(0), Err(ZbiError::BadType));
     }
 
@@ -2516,12 +2514,12 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_type_is_kernel() {
+    fn test_zbi_type_is_kernel() {
         assert!(get_kernel_zbi_types().iter().all(|t| t.is_kernel()))
     }
 
     #[test]
-    fn zbi_test_type_is_not_kernel() {
+    fn test_zbi_type_is_not_kernel() {
         assert!(get_all_zbi_type_values()
             .iter()
             .filter(|v| !get_kernel_zbi_types().contains(v))
@@ -2529,12 +2527,12 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_type_is_driver_metadata() {
+    fn test_zbi_type_is_driver_metadata() {
         assert!(get_metadata_zbi_types().iter().all(|t| t.is_driver_metadata()));
     }
 
     #[test]
-    fn zbi_test_type_is_not_driver_metadata() {
+    fn test_zbi_type_is_not_driver_metadata() {
         assert!(get_all_zbi_type_values()
             .iter()
             .filter(|v| !get_metadata_zbi_types().contains(v))
@@ -2542,12 +2540,12 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_default_type_has_version() {
+    fn test_zbi_default_type_has_version() {
         assert!(ZbiFlags::default().contains(ZbiFlags::VERSION));
     }
 
     #[test]
-    fn zbi_test_is_bootable() {
+    fn test_zbi_is_bootable() {
         let mut buffer = ZbiAligned::default();
         let mut container = ZbiContainer::new(&mut buffer.0[..]).unwrap();
 
@@ -2560,7 +2558,7 @@ mod tests {
 
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn zbi_test_is_bootable_reference() {
+    fn test_zbi_is_bootable_reference() {
         let ref_buffer = get_test_creference_buffer_vec();
         let mut buffer = ZbiAligned::default();
         buffer.0[..ref_buffer.len()].clone_from_slice(&ref_buffer);
@@ -2569,14 +2567,14 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_is_bootable_empty_container() {
+    fn test_zbi_is_bootable_empty_container() {
         let mut buffer = ZbiAligned::default();
         let container = ZbiContainer::new(&mut buffer.0[..]).unwrap();
         assert_eq!(container.is_bootable(), Err(ZbiError::Truncated));
     }
 
     #[test]
-    fn zbi_test_is_bootable_wrong_arch() {
+    fn test_zbi_is_bootable_wrong_arch() {
         let mut buffer = ZbiAligned::default();
         let _ = TestZbiBuilder::new(&mut buffer.0[..])
             .container_hdr(0)
@@ -2590,7 +2588,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_is_bootable_not_first_item_fail() {
+    fn test_zbi_is_bootable_not_first_item_fail() {
         let mut buffer = ZbiAligned::default();
         let mut container = ZbiContainer::new(&mut buffer.0[..]).unwrap();
 
@@ -2605,7 +2603,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_get_kernel_entry_and_reserved_memory_size() {
+    fn test_zbi_get_kernel_entry_and_reserved_memory_size() {
         let mut buffer = ZbiAligned::default();
         let mut container = ZbiContainer::new(&mut buffer.0[..]).unwrap();
         let bytes = [1u64.to_le_bytes(), 2u64.to_le_bytes()].concat();
@@ -2616,7 +2614,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_get_kernel_entry_and_reserved_memory_size_truncated() {
+    fn test_zbi_get_kernel_entry_and_reserved_memory_size_truncated() {
         let mut buffer = ZbiAligned::default();
         let mut container = ZbiContainer::new(&mut buffer.0[..]).unwrap();
         container
@@ -2640,7 +2638,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_header_alignment() {
+    fn test_zbi_header_alignment() {
         assert_eq!(core::mem::size_of::<ZbiHeader>() & ZBI_ALIGNMENT_USIZE, 0);
     }
 
@@ -2804,7 +2802,7 @@ mod tests {
     }
 
     #[test]
-    fn zbi_test_zbi_error() {
+    fn test_zbi_zbi_error() {
         let e = ZbiError::Error;
         println!("{e}");
         println!("{e:?}");
@@ -2812,7 +2810,7 @@ mod tests {
     }
 
     #[test]
-    fn zby_test_container_align_buffer() {
+    fn test_zbi_container_align_buffer() {
         let buffer = ZbiAligned::default();
         let original_len = buffer.0.len();
         let buffer = align_buffer(&buffer.0[1..]).unwrap();
@@ -2821,7 +2819,7 @@ mod tests {
     }
 
     #[test]
-    fn zby_test_container_align_buffer_empty() {
+    fn test_zbi_container_align_buffer_empty() {
         let buffer = ZbiAligned::default();
         let buffer = align_buffer(&buffer.0[..0]).unwrap();
         assert_eq!(buffer.as_ptr() as usize % ZBI_ALIGNMENT_USIZE, 0);
@@ -2829,13 +2827,13 @@ mod tests {
     }
 
     #[test]
-    fn zby_test_container_align_buffer_too_short() {
+    fn test_zbi_container_align_buffer_too_short() {
         let buffer = ZbiAligned::default();
         assert_eq!(align_buffer(&buffer.0[1..ZBI_ALIGNMENT_USIZE - 1]), Err(ZbiError::TooBig));
     }
 
     #[test]
-    fn zby_test_container_align_buffer_just_enough() {
+    fn test_zbi_container_align_buffer_just_enough() {
         let buffer = ZbiAligned::default();
         let buffer = align_buffer(&buffer.0[1..ZBI_ALIGNMENT_USIZE]).unwrap();
         assert_eq!(buffer.as_ptr() as usize % ZBI_ALIGNMENT_USIZE, 0);
