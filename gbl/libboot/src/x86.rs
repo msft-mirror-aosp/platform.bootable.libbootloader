@@ -48,6 +48,7 @@ use core::arch::asm;
 use core::mem::size_of;
 use core::slice::from_raw_parts_mut;
 use liberror::{Error, Result};
+use zbi::ZbiContainer;
 
 pub use x86_bootparam_defs::{boot_params, e820entry, setup_header};
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
@@ -266,4 +267,58 @@ where
     }
 
     Ok(())
+}
+
+/// Jump to prepared ZBI Fuchsia entry
+///
+/// SAFETY:
+/// Caller must ensure `entry` is valid entry point for kernel.
+/// Caller must ensure `data` is valid ZBI data and is 4K aligned.
+pub unsafe fn zbi_boot_raw(entry: usize, data: &[u8]) -> ! {
+    // Clears stack pointers, interrupt and jumps to protected mode kernel.
+    // SAFETY: By safety requirement of this function, input contains a valid ZBI kernel.
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        asm!(
+            "xor ebp, ebp",
+            "xor esp, esp",
+            "cld",
+            "cli",
+            "jmp {ep}",
+            ep = in(reg) entry,
+            in("rsi") data.as_ptr(),
+        );
+    }
+    // SAFETY: By safety requirement of this function, input contains a valid ZBI kernel.
+    #[cfg(target_arch = "x86")]
+    unsafe {
+        asm!(
+            "xor ebp, ebp",
+            "xor esp, esp",
+            "mov esi, eax",
+            "cld",
+            "cli",
+            "jmp {ep}",
+            ep = in(reg) entry,
+            in("eax") data.as_ptr(),
+        );
+    }
+
+    unreachable!();
+}
+
+/// Boot ZBI kernel from provided ZBI containers
+///
+/// SAFETY:
+/// Caller must ensure `kernel` is valid ZBI kernel and is 4K aligned.
+/// Caller must ensure `data` is valid ZBI data and is 4K aligned.
+pub unsafe fn zbi_boot(kernel: &[u8], data: &[u8]) -> ! {
+    let (entry, _) =
+        ZbiContainer::parse(kernel).unwrap().get_kernel_entry_and_reserved_memory_size().unwrap();
+    let addr = (kernel.as_ptr() as usize).checked_add(usize::try_from(entry).unwrap()).unwrap();
+    // SAFETY:
+    // `addr` is calculated from kernel ZBI, which is valid according to safety requirements for
+    // `zbi_boot()` function.
+    // `data` is required to be valid ZBI data as per safety requirements for `zbi_boot()`
+    unsafe { zbi_boot_raw(addr, data) };
 }
