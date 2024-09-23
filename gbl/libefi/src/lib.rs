@@ -770,7 +770,7 @@ macro_rules! efi_print {
 /// Similar to [efi_print!], but automatically adds the UEFI newline sequence (`\r\n`).
 #[macro_export]
 macro_rules! efi_println {
-    ( $efi_entry:expr, $( $x:expr ),* ) => {
+    ( $efi_entry:expr, $( $x:expr ),* $(,)? ) => {
         {
             efi_print!($efi_entry, $($x,)*);
             efi_print!($efi_entry, "\r\n");
