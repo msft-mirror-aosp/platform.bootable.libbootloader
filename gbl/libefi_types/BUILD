@@ -56,7 +56,7 @@ rust_bindgen(
         "--allowlist-type",
         "(Efi.*)|(GblEfi.*)|(GBL_EFI_.*)",
         "--allowlist-var",
-        "PARTITION_NAME_LEN_U16",
+        "PARTITION_NAME_LEN_U16|EFI_.*",
         "--raw-line",
         """
 #![allow(non_camel_case_types)]
