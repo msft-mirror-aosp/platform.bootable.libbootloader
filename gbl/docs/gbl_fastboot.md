@@ -24,9 +24,9 @@ name argument in fastboot.
 
 * Partition
   ```sh
-  <part>[:<storage_id>]
-  <part>:[<storage_id>][:<offset>]
-  <part>:[<storage_id>]:[<offset>][:<size>]
+  <part>[/<storage_id>]
+  <part>/[<storage_id>][/<offset>]
+  <part>/[<storage_id>]/[<offset>][/<size>]
   ```
 
   This specifies range `[offset, offset+size)` in partition `part` on the
@@ -48,21 +48,21 @@ name argument in fastboot.
     range of partition `boot_a` on storage device `<default ID>`. If not,
     checks that `boot_a` can match to a unique partition among all storage
     devices and flashes to it.
-  * `fastboot flash boot_a:0x0` or `boot_a:0` -- Flashes in the entire range of
+  * `fastboot flash boot_a/0x0` or `boot_a/0` -- Flashes in the entire range of
     partition "boot_a" on storage device 0.
-  * `fastboot flash boot_a:0:200` -- Flashes only in range `[512, end)` of
+  * `fastboot flash boot_a/0/200` -- Flashes only in range `[512, end)` of
     partition "boot_a" on storage device 0.
-  * `fastboot flash boot_a:0:200:200` -- Flashes only in range `[512, 1024)` of
+  * `fastboot flash boot_a/0/200/200` -- Flashes only in range `[512, 1024)` of
     partition "boot_a" on storage device 0.
-  * `fastboot flash boot_a:::` -- Same as `"fastboot flash boot_a"`.
-  * `fastboot flash boot_a::200:200` -- Same as `"fastboot flash boot_a:::"`,
+  * `fastboot flash boot_a///` -- Same as `"fastboot flash boot_a"`.
+  * `fastboot flash boot_a//200/200` -- Same as `"fastboot flash boot_a///"`,
     except that it only flashes in range `[512, 1024)`
 
 * Raw storage devices by ID
   ```
-  :[<storage_id>]
-  :[<storage_id>][:<offset>]
-  :[<storage_id>][:<offset>][:<size>]
+  /[<storage_id>]
+  /[<storage_id>][/<offset>]
+  /[<storage_id>][/<offset>][/<size>]
   ```
 
   This is similar to the case of partition except that `part` is an empty
@@ -76,18 +76,27 @@ name argument in fastboot.
   a raw storage partition or GPT device.
 
   Examples:
-  * `fastboot flash :` -- If a default storage ID is set via
+  * `fastboot flash /` -- If a default storage ID is set via
     `fastboot oem gbl-set-default-block <default ID>`, flashes in the entire
     range of storage device `<default ID>`.
-  * `fastboot flash :0x0` or `:0` -- Flashes in the entire range of storage
+  * `fastboot flash /0x0` or `/0` -- Flashes in the entire range of storage
     device 0.
-  * `fastboot flash :0:200` -- Flashes only in range `[512, end)` of storage
+  * `fastboot flash /0/200` -- Flashes only in range `[512, end)` of storage
     device 0.
-  * `fastboot flash :0:200:200` -- Flashes only in range `[512, 1024)` of
+  * `fastboot flash /0/200/200` -- Flashes only in range `[512, 1024)` of
     storage device 0.
-  * `fastboot flash :::` -- Same as `"fastboot flash :"`.
-  * `fastboot flash ::200:200` -- Same as `"fastboot flash :::"`, except that
+  * `fastboot flash ///` -- Same as `"fastboot flash /"`.
+  * `fastboot flash //200/200` -- Same as `"fastboot flash ///"`, except that
     it only flashes in range `[512, 1024)`
+
+Note: AOSP fastboot client tool introduces a special flash command syntax
+`fastboot flash vendor_boot_a:<part_size>` for performing vendor ramdisk
+repacking and flashing. This however, does not work with GBL's `'/'` syntax
+discussed above, i.e. `fastboot flash vendor_boot_a/0:<part_size>` will not
+trigger the repack and flash flow for the vendor_boot_a partition on storage 0
+as might be expected. Instead, in this case, user should run
+`fastboot oem gbl-set-default-block 0` to set the default block to 0 first and
+then use `fastboot flash vendor_boot_a:<part size>` normally.
 
 ## Non-blocking `fastboot flash`.
 
