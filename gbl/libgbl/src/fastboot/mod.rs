@@ -80,9 +80,10 @@ impl<'a, 'b, T: TasksExecutor<'b>, G: GblOps<'b>> GblFastboot<'a, 'b, T, G> {
     /// index, start offset and size.
     pub(crate) fn parse_partition<'s>(
         &self,
-        mut args: Split<'s, char>,
+        part: &'s str,
     ) -> CommandResult<(Option<&'s str>, usize, u64, u64)> {
         let devs = self.gbl_ops.partitions()?;
+        let mut args = part.split('/');
         // Parses partition name.
         let part = next_arg(&mut args, Err("".into())).ok();
         // Parses block device ID.
@@ -178,7 +179,7 @@ impl<'b, T: TasksExecutor<'b>, G: GblOps<'b>> FastbootImplementation for GblFast
     }
 
     async fn flash(&mut self, part: &str, utils: &mut impl FastbootUtils) -> CommandResult<()> {
-        let (part, blk_idx, start, sz) = self.parse_partition(part.split(':'))?;
+        let (part, blk_idx, start, sz) = self.parse_partition(part)?;
         let partitions = self.gbl_ops.partitions()?;
         let mut part_io = partitions[blk_idx].wait_partition_io(part).await?.sub(start, sz)?;
         part_io.last_err()?;
@@ -222,7 +223,7 @@ impl<'b, T: TasksExecutor<'b>, G: GblOps<'b>> FastbootImplementation for GblFast
         upload_builder: impl UploadBuilder,
         utils: &mut impl FastbootUtils,
     ) -> CommandResult<()> {
-        let (part, blk_idx, start, sz) = self.parse_partition(part.split(':'))?;
+        let (part, blk_idx, start, sz) = self.parse_partition(part)?;
         let partitions = self.gbl_ops.partitions()?;
         let mut part_io = partitions[blk_idx].wait_partition_io(part).await?.sub(start, sz)?;
         part_io.last_err()?;
@@ -369,19 +370,19 @@ mod test {
 
         // Check different semantics
         check_var(&mut gbl_fb, "partition-size", "boot_a", "0x2000");
-        check_var(&mut gbl_fb, "partition-size", "boot_a:", "0x2000");
-        check_var(&mut gbl_fb, "partition-size", "boot_a::", "0x2000");
-        check_var(&mut gbl_fb, "partition-size", "boot_a:::", "0x2000");
-        check_var(&mut gbl_fb, "partition-size", "boot_a:0", "0x2000");
-        check_var(&mut gbl_fb, "partition-size", "boot_a:0:", "0x2000");
-        check_var(&mut gbl_fb, "partition-size", "boot_a::0", "0x2000");
-        check_var(&mut gbl_fb, "partition-size", "boot_a:0:0", "0x2000");
-        check_var(&mut gbl_fb, "partition-size", "boot_a::0x1000", "0x1000");
+        check_var(&mut gbl_fb, "partition-size", "boot_a/", "0x2000");
+        check_var(&mut gbl_fb, "partition-size", "boot_a//", "0x2000");
+        check_var(&mut gbl_fb, "partition-size", "boot_a///", "0x2000");
+        check_var(&mut gbl_fb, "partition-size", "boot_a/0", "0x2000");
+        check_var(&mut gbl_fb, "partition-size", "boot_a/0/", "0x2000");
+        check_var(&mut gbl_fb, "partition-size", "boot_a//0", "0x2000");
+        check_var(&mut gbl_fb, "partition-size", "boot_a/0/0", "0x2000");
+        check_var(&mut gbl_fb, "partition-size", "boot_a//0x1000", "0x1000");
 
-        check_var(&mut gbl_fb, "partition-size", "boot_b:0", "0x3000");
-        check_var(&mut gbl_fb, "partition-size", "vendor_boot_a:1", "0x1000");
-        check_var(&mut gbl_fb, "partition-size", "vendor_boot_b:1", "0x1800");
-        check_var(&mut gbl_fb, "partition-size", "boot_a::0x1000", "0x1000");
+        check_var(&mut gbl_fb, "partition-size", "boot_b/0", "0x3000");
+        check_var(&mut gbl_fb, "partition-size", "vendor_boot_a/1", "0x1000");
+        check_var(&mut gbl_fb, "partition-size", "vendor_boot_b/1", "0x1800");
+        check_var(&mut gbl_fb, "partition-size", "boot_a//0x1000", "0x1000");
         check_var(&mut gbl_fb, "partition-size", "raw_0", "0x1000");
         check_var(&mut gbl_fb, "partition-size", "raw_1", "0x2000");
 
@@ -439,18 +440,18 @@ mod test {
                 "block-device:3:block-size: 0x200",
                 "block-device:3:status: idle",
                 "gbl-default-block:: None",
-                "partition-size:boot_a:0: 0x2000",
-                "partition-type:boot_a:0: raw",
-                "partition-size:boot_b:0: 0x3000",
-                "partition-type:boot_b:0: raw",
-                "partition-size:vendor_boot_a:1: 0x1000",
-                "partition-type:vendor_boot_a:1: raw",
-                "partition-size:vendor_boot_b:1: 0x1800",
-                "partition-type:vendor_boot_b:1: raw",
-                "partition-size:raw_0:2: 0x1000",
-                "partition-type:raw_0:2: raw",
-                "partition-size:raw_1:3: 0x2000",
-                "partition-type:raw_1:3: raw",
+                "partition-size:boot_a/0: 0x2000",
+                "partition-type:boot_a/0: raw",
+                "partition-size:boot_b/0: 0x3000",
+                "partition-type:boot_b/0: raw",
+                "partition-size:vendor_boot_a/1: 0x1000",
+                "partition-type:vendor_boot_a/1: raw",
+                "partition-size:vendor_boot_b/1: 0x1800",
+                "partition-type:vendor_boot_b/1: raw",
+                "partition-size:raw_0/2: 0x1000",
+                "partition-type:raw_0/2: raw",
+                "partition-size:raw_1/3: 0x2000",
+                "partition-type:raw_1/3: raw"
             ]
         );
     }
@@ -485,20 +486,20 @@ mod test {
         let mut gbl_fb = GblFastboot::new(&blk_io_executor, &mut gbl_ops, &dl_buffers);
 
         // Missing mandatory block device ID for raw block partition.
-        assert!(fetch(&mut gbl_fb, "::0:0".into(), 0, 0).is_err());
+        assert!(fetch(&mut gbl_fb, "//0/0".into(), 0, 0).is_err());
 
         // GPT partition does not exist.
-        assert!(fetch(&mut gbl_fb, "non:::".into(), 0, 0).is_err());
+        assert!(fetch(&mut gbl_fb, "non///".into(), 0, 0).is_err());
 
         // GPT Partition is not unique.
-        assert!(fetch(&mut gbl_fb, "vendor_boot_a:::".into(), 0, 0).is_err());
+        assert!(fetch(&mut gbl_fb, "vendor_boot_a///".into(), 0, 0).is_err());
 
         // Offset overflows.
-        assert!(fetch(&mut gbl_fb, "boot_a::0x2001:".into(), 0, 1).is_err());
+        assert!(fetch(&mut gbl_fb, "boot_a//0x2001/".into(), 0, 1).is_err());
         assert!(fetch(&mut gbl_fb, "boot_a".into(), 0x2000, 1).is_err());
 
         // Size overflows.
-        assert!(fetch(&mut gbl_fb, "boot_a:::0x2001".into(), 0, 0).is_err());
+        assert!(fetch(&mut gbl_fb, "boot_a///0x2001".into(), 0, 0).is_err());
         assert!(fetch(&mut gbl_fb, "boot_a".into(), 0, 0x2001).is_err());
     }
 
@@ -507,10 +508,10 @@ mod test {
     fn check_blk_upload(fb: &mut TestGblFastboot, blk_id: u64, off: u64, size: u64, disk: &[u8]) {
         let expected = disk[off.try_into().unwrap()..][..size.try_into().unwrap()].to_vec();
         // offset/size as part of the partition string.
-        let part = format!(":{:#x}:{:#x}:{:#x}", blk_id, off, size);
+        let part = format!("/{:#x}/{:#x}/{:#x}", blk_id, off, size);
         assert_eq!(fetch(fb, part, 0, size).unwrap(), expected);
         // offset/size as separate fetch arguments.
-        let part = format!(":{:#x}", blk_id);
+        let part = format!("/{:#x}", blk_id);
         assert_eq!(fetch(fb, part, off, size).unwrap(), expected);
     }
 
@@ -547,10 +548,10 @@ mod test {
             partition_data[off.try_into().unwrap()..][..size.try_into().unwrap()].to_vec();
         let blk_id = blk_id.map_or("".to_string(), |v| format!("{:#x}", v));
         // offset/size as part of the partition string.
-        let gpt_part = format!("{}:{}:{:#x}:{:#x}", part, blk_id, off, size);
+        let gpt_part = format!("{}/{}/{:#x}/{:#x}", part, blk_id, off, size);
         assert_eq!(fetch(fb, gpt_part, 0, size).unwrap(), expected);
         // offset/size as separate fetch arguments.
-        let gpt_part = format!("{}:{}", part, blk_id);
+        let gpt_part = format!("{}/{}", part, blk_id);
         assert_eq!(fetch(fb, gpt_part, off, size).unwrap(), expected);
     }
 
@@ -633,16 +634,16 @@ mod test {
         check_flash_part(&mut gbl_fb, "boot_b", expect_boot_b);
         check_flash_part(&mut gbl_fb, "raw_0", &[0xaau8; 4 * 1024]);
         check_flash_part(&mut gbl_fb, "raw_1", &[0x55u8; 8 * 1024]);
-        check_flash_part(&mut gbl_fb, ":0", disk_0);
-        check_flash_part(&mut gbl_fb, ":1", disk_1);
+        check_flash_part(&mut gbl_fb, "/0", disk_0);
+        check_flash_part(&mut gbl_fb, "/1", disk_1);
 
         // Partital flash
         let off = 0x200;
         let size = 1024;
-        check_flash_part(&mut gbl_fb, "boot_a::200", &expect_boot_a[off..size]);
-        check_flash_part(&mut gbl_fb, "boot_b::200", &expect_boot_b[off..size]);
-        check_flash_part(&mut gbl_fb, ":0:200", &disk_0[off..size]);
-        check_flash_part(&mut gbl_fb, ":1:200", &disk_1[off..size]);
+        check_flash_part(&mut gbl_fb, "boot_a//200", &expect_boot_a[off..size]);
+        check_flash_part(&mut gbl_fb, "boot_b//200", &expect_boot_b[off..size]);
+        check_flash_part(&mut gbl_fb, "/0/200", &disk_0[off..size]);
+        check_flash_part(&mut gbl_fb, "/1/200", &disk_1[off..size]);
     }
 
     #[test]
@@ -659,8 +660,8 @@ mod test {
         let download = sparse.to_vec();
         let mut utils: TestFastbootUtils = Default::default();
         set_download(&mut gbl_fb, &download[..]);
-        block_on(gbl_fb.flash(":0", &mut utils)).unwrap();
-        assert_eq!(fetch(&mut gbl_fb, ":0".into(), 0, raw.len()).unwrap(), raw);
+        block_on(gbl_fb.flash("/0", &mut utils)).unwrap();
+        assert_eq!(fetch(&mut gbl_fb, "/0".into(), 0, raw.len()).unwrap(), raw);
     }
 
     /// A helper to invoke OEM commands.
@@ -840,7 +841,7 @@ mod test {
         // block #1.
         let vendor_boot_a =
             flipped_bits(include_bytes!("../../../libstorage/test/vendor_boot_a.bin"));
-        flash_part(&mut gbl_fb, "vendor_boot_a:2", &vendor_boot_a);
+        flash_part(&mut gbl_fb, "vendor_boot_a/2", &vendor_boot_a);
 
         let size = 512;
         let off = 512;
@@ -878,7 +879,7 @@ mod test {
         // Fetching non-unique partitions should now fail.
         assert!(fetch(&mut gbl_fb, "raw".into(), 0, raw_a.len()).is_err());
         assert!(fetch(&mut gbl_fb, "vendor_boot_a".into(), 0, vendor_boot_a.len()).is_err());
-        assert!(fetch(&mut gbl_fb, ":".into(), 0, 512).is_err());
+        assert!(fetch(&mut gbl_fb, "/".into(), 0, 512).is_err());
     }
 
     #[test]
