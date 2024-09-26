@@ -38,6 +38,9 @@ fn handle_panic(p_info: &PanicInfo) -> ! {
 #[global_allocator]
 static mut EFI_GLOBAL_ALLOCATOR: EfiAllocator = EfiAllocator::Uninitialized;
 
+/// Pull in the sysdeps required by libavb so the linker can find them.
+extern crate avb_sysdeps;
+
 /// EFI application entry point. Does not return.
 ///
 /// # Safety

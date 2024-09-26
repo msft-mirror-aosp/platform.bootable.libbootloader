@@ -21,8 +21,6 @@ use core::ffi::CStr;
 use libgbl::GblOps;
 use uuid::Uuid;
 
-extern crate avb_sysdeps;
-
 /// [AvbOps] implementation for [GblOps].
 // TODO(b/363074091): this code is now platform-independent; move it into libgbl.
 pub struct GblEfiAvbOps<'a, G> {
