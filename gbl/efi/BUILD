@@ -43,6 +43,7 @@ rust_library(
         "@gbl//libmisc",
         "@gbl//libsafemath",
         "@gbl//libstorage",
+        "@gbl//libutils",
         "@gbl//third_party/libzbi",
         "@smoltcp",
         "@spin",
