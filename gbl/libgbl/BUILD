@@ -38,6 +38,7 @@ rust_library(
         "@gbl//libfastboot",
         "@gbl//libsafemath",
         "@gbl//libstorage",
+        "@gbl//libutils",
         "@gbl//third_party/libzbi",
         "@itertools_noalloc",
         "@spin",

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{aligned_subslice, read_async, write_async, BlockIoAsync, Result};
+use crate::{read_async, write_async, BlockIoAsync, Result};
 use core::{
     convert::TryFrom,
     default::Default,
@@ -21,10 +21,10 @@ use core::{
     str::from_utf8,
 };
 use crc32fast::Hasher;
+use liberror::Error;
+use libutils::aligned_subslice;
 use safemath::SafeNum;
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
-
-use liberror::Error;
 
 const GPT_GUID_LEN: usize = 16;
 /// The maximum number of UTF-16 characters in a GPT partition name, including termination.

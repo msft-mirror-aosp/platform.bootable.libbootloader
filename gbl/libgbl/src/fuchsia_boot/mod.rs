@@ -18,6 +18,7 @@ use crate::{gbl_print, gbl_println, GblOps, Result as GblResult};
 pub use abr::{get_boot_slot, Ops as AbrOps, SlotIndex};
 use core::fmt::Write;
 use liberror::{Error, Result};
+use libutils::aligned_subslice;
 use safemath::SafeNum;
 use zbi::{ZbiContainer, ZbiFlags, ZbiHeader, ZbiType};
 use zerocopy::AsBytes;
@@ -52,13 +53,6 @@ impl<'b, T: GblOps<'b>> AbrOps for GblAbrOps<'_, T> {
 fn aligned_offset(buffer: &[u8], alignment: usize) -> Result<usize> {
     let addr = SafeNum::from(buffer.as_ptr() as usize);
     (addr.round_up(alignment) - addr).try_into().map_err(From::from)
-}
-
-/// A helper for getting a subslice with an aligned address.
-fn aligned_subslice(buffer: &mut [u8], alignment: usize) -> Result<&mut [u8]> {
-    let aligned_offset = aligned_offset(buffer, alignment)?;
-    let len = buffer.len();
-    Ok(buffer.get_mut(aligned_offset..).ok_or(Error::BufferTooSmall(Some(aligned_offset)))?)
 }
 
 /// A helper for splitting the trailing unused portion of a ZBI container buffer.
