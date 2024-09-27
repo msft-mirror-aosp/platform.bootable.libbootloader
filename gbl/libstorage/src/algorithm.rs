@@ -12,13 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{
-    aligned_subslice, check_range, is_aligned, is_buffer_aligned, BlockInfo, BlockIoAsync,
-    BlockIoSync,
-};
+use crate::{check_range, is_aligned, is_buffer_aligned, BlockInfo, BlockIoAsync, BlockIoSync};
 use core::cmp::min;
 use gbl_async::block_on;
 use liberror::Result;
+use libutils::aligned_subslice;
 use safemath::SafeNum;
 
 /// Reads from a range at block boundary to an aligned buffer.

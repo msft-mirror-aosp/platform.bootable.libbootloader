@@ -541,12 +541,6 @@ pub fn alignment_scratch_size(info: BlockInfo) -> Result<usize> {
     ((SafeNum::from(info.alignment) - 1) * 2 + block_alignment).try_into().map_err(Into::into)
 }
 
-/// Gets a subslice of the given slice with aligned address according to `alignment`
-fn aligned_subslice(buffer: &mut [u8], alignment: u64) -> Result<&mut [u8]> {
-    let addr = SafeNum::from(buffer.as_ptr() as usize);
-    Ok(&mut buffer[(addr.round_up(alignment) - addr).try_into()?..])
-}
-
 /// `AsyncBlockDevice` provides APIs for asynchronous read/write of raw block or GPT partitions.
 pub struct AsyncBlockDevice<'a, T: BlockIoAsync> {
     io: T,
