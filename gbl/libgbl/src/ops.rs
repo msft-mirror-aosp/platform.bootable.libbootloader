@@ -345,6 +345,9 @@ pub(crate) mod test {
         /// is provided by `partitions` and our custom storage APIs rather than the [AvbTestOps]
         /// fake storage, so that we can more accurately test our storage implementation.
         pub avb_ops: AvbTestOps<'static>,
+
+        /// Value returned by `should_stop_in_fastboot`.
+        pub stop_in_fastboot: Option<Result<bool, Error>>,
     }
 
     /// Print `console_out` output, which can be useful for debugging.
@@ -389,7 +392,7 @@ pub(crate) mod test {
         }
 
         fn should_stop_in_fastboot(&mut self) -> Result<bool, Error> {
-            unimplemented!();
+            self.stop_in_fastboot.unwrap_or(Ok(false))
         }
 
         fn preboot(&mut self, boot_images: BootImages) -> Result<(), Error> {
