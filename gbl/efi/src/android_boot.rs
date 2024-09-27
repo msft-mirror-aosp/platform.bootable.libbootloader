@@ -13,10 +13,7 @@
 // limitations under the License.
 
 use crate::{
-    avb::GblEfiAvbOps,
-    efi_blocks::find_block_devices,
-    ops::Ops,
-    utils::{aligned_subslice, cstr_bytes_to_str},
+    avb::GblEfiAvbOps, efi_blocks::find_block_devices, ops::Ops, utils::cstr_bytes_to_str,
 };
 use avb::{slot_verify, HashtreeErrorMode, Ops as _, SlotVerifyFlags};
 use bootconfig::BootConfigBuilder;
@@ -27,6 +24,7 @@ use efi::{exit_boot_services, EfiEntry};
 use fdt::Fdt;
 use liberror::Error;
 use libgbl::{gbl_print, gbl_println, GblOps, IntegrationError, Result};
+use libutils::aligned_subslice;
 use misc::{AndroidBootMode, BootloaderMessage};
 use safemath::SafeNum;
 use zerocopy::{AsBytes, ByteSlice};
@@ -399,7 +397,7 @@ pub fn load_android_simple<'a, 'b>(
     // product, it may come from vendor boot image.
     let mut fdt_bytes_buffer = vec![0u8; max(vendor_dtb_size, boot_dtb_size)];
     let fdt_bytes_buffer = &mut fdt_bytes_buffer[..];
-    let fdt_bytes = match ops.get_custom_device_tree() {
+    let fdt_bytes: &[u8] = match ops.get_custom_device_tree() {
         Some(fdt_bytes) => fdt_bytes,
         None if vendor_dtb_size > 0 => {
             let vendor_dtb_offset: usize = (SafeNum::from(vendor_hdr_size)
