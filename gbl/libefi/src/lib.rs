@@ -76,6 +76,7 @@ use efi_types::{
     EFI_LOCATE_HANDLE_SEARCH_TYPE_BY_PROTOCOL, EFI_OPEN_PROTOCOL_ATTRIBUTE_BY_HANDLE_PROTOCOL,
 };
 use liberror::{Error, Result};
+use libutils::aligned_subslice;
 use protocol::{
     simple_text_output::SimpleTextOutputProtocol,
     {Protocol, ProtocolInfo},
@@ -135,17 +136,6 @@ pub unsafe fn initialize(
     Ok(efi_entry)
 }
 
-/// A helper for getting a subslice with an aligned address.
-pub fn aligned_subslice(buffer: &mut [u8], alignment: usize) -> Option<&mut [u8]> {
-    let addr = buffer.as_ptr() as usize;
-    let aligned_offset = addr
-        .checked_add(alignment - 1)?
-        .checked_div(alignment)?
-        .checked_mul(alignment)?
-        .checked_sub(addr)?;
-    buffer.get_mut(aligned_offset..)
-}
-
 /// Exits boot service and returns the memory map in the given buffer.
 ///
 /// The API takes ownership of the given `entry` and causes it to go out of scope.
@@ -155,8 +145,7 @@ pub fn aligned_subslice(buffer: &mut [u8], alignment: usize) -> Option<&mut [u8]
 /// Existing heap allocated memories will maintain their states. All system memory including them
 /// will be under onwership of the subsequent OS or OS loader code.
 pub fn exit_boot_services(entry: EfiEntry, mmap_buffer: &mut [u8]) -> Result<EfiMemoryMap> {
-    let aligned = aligned_subslice(mmap_buffer, core::mem::align_of::<EfiMemoryDescriptor>())
-        .ok_or(Error::BufferTooSmall(None))?;
+    let aligned = aligned_subslice(mmap_buffer, core::mem::align_of::<EfiMemoryDescriptor>())?;
 
     let res = entry.system_table().boot_services().get_memory_map(aligned)?;
     entry.system_table().boot_services().exit_boot_services(&res)?;
@@ -770,7 +759,7 @@ macro_rules! efi_print {
 /// Similar to [efi_print!], but automatically adds the UEFI newline sequence (`\r\n`).
 #[macro_export]
 macro_rules! efi_println {
-    ( $efi_entry:expr, $( $x:expr ),* ) => {
+    ( $efi_entry:expr, $( $x:expr ),* $(,)? ) => {
         {
             efi_print!($efi_entry, $($x,)*);
             efi_print!($efi_entry, "\r\n");
