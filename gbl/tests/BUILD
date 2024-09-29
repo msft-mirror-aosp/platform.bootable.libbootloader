@@ -36,6 +36,7 @@ test_suite(
         "@gbl//libstorage:libstorage_doc_test",
         "@gbl//libstorage:libstorage_test",
         "@gbl//libstorage:libstorage_testlib_test",
+        "@gbl//libutils:test",
         "@gbl//third_party/libzbi:libzbi_test",
     ],
 )
