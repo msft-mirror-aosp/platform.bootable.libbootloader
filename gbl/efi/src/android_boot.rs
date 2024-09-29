@@ -13,10 +13,7 @@
 // limitations under the License.
 
 use crate::{
-    avb::GblEfiAvbOps,
-    efi_blocks::find_block_devices,
-    ops::Ops,
-    utils::{aligned_subslice, cstr_bytes_to_str},
+    avb::GblEfiAvbOps, efi_blocks::find_block_devices, ops::Ops, utils::cstr_bytes_to_str,
 };
 use avb::{slot_verify, HashtreeErrorMode, Ops as _, SlotVerifyFlags};
 use bootconfig::BootConfigBuilder;
@@ -27,6 +24,7 @@ use efi::{exit_boot_services, EfiEntry};
 use fdt::Fdt;
 use liberror::Error;
 use libgbl::{gbl_print, gbl_println, GblOps, IntegrationError, Result};
+use libutils::aligned_subslice;
 use misc::{AndroidBootMode, BootloaderMessage};
 use safemath::SafeNum;
 use zerocopy::{AsBytes, ByteSlice};
@@ -147,10 +145,10 @@ fn boot_header_elements<B: ByteSlice + PartialEq>(
 /// # Returns
 ///
 /// Returns a tuple of 5 slices corresponding to:
-/// (vendor_ramdisk_size, hdr_size, cmdline, page_size, dtb_size)
+/// (vendor_ramdisk_size, hdr_size, cmdline, page_size, dtb_size, vendor_bootconfig_size, vendor_ramdisk_table_size)
 fn vendor_header_elements<B: ByteSlice + PartialEq>(
     hdr: &VendorImageHeader<B>,
-) -> Result<(usize, usize, &[u8], usize, usize)> {
+) -> Result<(usize, usize, &[u8], usize, usize, usize, usize)> {
     Ok(match hdr {
         VendorImageHeader::V3(ref hdr) => (
             hdr.vendor_ramdisk_size as usize,
@@ -161,6 +159,8 @@ fn vendor_header_elements<B: ByteSlice + PartialEq>(
             &hdr.cmdline.as_bytes(),
             hdr.page_size as usize,
             hdr.dtb_size as usize,
+            0,
+            0,
         ),
         VendorImageHeader::V4(ref hdr) => (
             hdr._base.vendor_ramdisk_size as usize,
@@ -171,6 +171,8 @@ fn vendor_header_elements<B: ByteSlice + PartialEq>(
             &hdr._base.cmdline.as_bytes(),
             hdr._base.page_size as usize,
             hdr._base.dtb_size as usize,
+            hdr.bootconfig_size as usize,
+            hdr.vendor_ramdisk_table_size as usize,
         ),
     })
 }
@@ -216,11 +218,25 @@ pub fn load_android_simple<'a, 'b>(
 
     // Parse vendor boot header.
     let (vendor_boot_header_buffer, load) = load.split_at_mut(PAGE_SIZE);
-    ops.read_from_partition_sync("vendor_boot_a", 0, vendor_boot_header_buffer)?;
-    let vendor_boot_header =
-        VendorImageHeader::parse(vendor_boot_header_buffer).map_err(Error::from)?;
-    let (vendor_ramdisk_size, vendor_hdr_size, vendor_cmdline, vendor_page_size, vendor_dtb_size) =
-        vendor_header_elements(&vendor_boot_header)?;
+    let vendor_boot_header;
+    let (
+        vendor_ramdisk_size,
+        vendor_hdr_size,
+        vendor_cmdline,
+        vendor_page_size,
+        vendor_dtb_size,
+        vendor_bootconfig_size,
+        vendor_ramdisk_table_size,
+    ) = match ops.partition_size("vendor_boot_a") {
+        Ok(Some(_sz)) => {
+            ops.read_from_partition_sync("vendor_boot_a", 0, vendor_boot_header_buffer)?;
+            vendor_boot_header =
+                VendorImageHeader::parse(vendor_boot_header_buffer).map_err(Error::from)?;
+            vendor_header_elements(&vendor_boot_header)?
+        }
+        _ => (0 as usize, 0 as usize, b"".as_bytes(), 0 as usize, 0 as usize, 0 as usize, 0),
+    };
+
     gbl_println!(ops, "vendor ramdisk size: {}", vendor_ramdisk_size);
     gbl_println!(ops, "vendor cmdline: \"{}\"", from_utf8(vendor_cmdline).unwrap());
     gbl_println!(ops, "vendor dtb size: {}", vendor_dtb_size);
@@ -279,11 +295,13 @@ pub fn load_android_simple<'a, 'b>(
 
     // Load vendor ramdisk
     let mut ramdisk_load_curr = SafeNum::ZERO;
-    ops.read_from_partition_sync(
-        "vendor_boot_a",
-        u64::try_from(vendor_hdr_size).map_err(Error::from)?,
-        &mut load[ramdisk_load_curr.try_into().map_err(Error::from)?..][..vendor_ramdisk_size],
-    )?;
+    if vendor_ramdisk_size > 0 {
+        ops.read_from_partition_sync(
+            "vendor_boot_a",
+            u64::try_from(vendor_hdr_size).map_err(Error::from)?,
+            &mut load[ramdisk_load_curr.try_into().map_err(Error::from)?..][..vendor_ramdisk_size],
+        )?;
+    }
     ramdisk_load_curr += vendor_ramdisk_size;
 
     // Load generic ramdisk
@@ -343,20 +361,18 @@ pub fn load_android_simple<'a, 'b>(
     }
 
     // V4 image has vendor bootconfig.
-    if let VendorImageHeader::V4(ref hdr) = vendor_boot_header {
+    if vendor_bootconfig_size > 0 {
         let mut bootconfig_offset = SafeNum::from(vendor_hdr_size);
-        for image_size in
-            [hdr._base.vendor_ramdisk_size, hdr._base.dtb_size, hdr.vendor_ramdisk_table_size]
-        {
-            bootconfig_offset += SafeNum::from(image_size).round_up(hdr._base.page_size);
+        for image_size in [vendor_ramdisk_size, vendor_dtb_size, vendor_ramdisk_table_size] {
+            bootconfig_offset += SafeNum::from(image_size).round_up(vendor_page_size);
         }
         bootconfig_builder.add_with(|out| {
             ops.read_from_partition_sync(
                 "vendor_boot_a",
                 bootconfig_offset.try_into()?,
-                &mut out[..hdr.bootconfig_size as usize],
+                &mut out[..vendor_bootconfig_size as usize],
             )?;
-            Ok(hdr.bootconfig_size as usize)
+            Ok(vendor_bootconfig_size as usize)
         })?;
     }
     // Check if there is a device specific bootconfig partition.
@@ -399,7 +415,7 @@ pub fn load_android_simple<'a, 'b>(
     // product, it may come from vendor boot image.
     let mut fdt_bytes_buffer = vec![0u8; max(vendor_dtb_size, boot_dtb_size)];
     let fdt_bytes_buffer = &mut fdt_bytes_buffer[..];
-    let fdt_bytes = match ops.get_custom_device_tree() {
+    let fdt_bytes: &[u8] = match ops.get_custom_device_tree() {
         Some(fdt_bytes) => fdt_bytes,
         None if vendor_dtb_size > 0 => {
             let vendor_dtb_offset: usize = (SafeNum::from(vendor_hdr_size)
@@ -457,7 +473,7 @@ pub fn load_android_simple<'a, 'b>(
         " ",
         cstr_bytes_to_str(cmdline)?,
         " ",
-        cstr_bytes_to_str(vendor_cmdline)?,
+        if vendor_cmdline.len() > 0 { cstr_bytes_to_str(vendor_cmdline)? } else { "" },
         "\0",
     ];
     let mut all_cmdline_len = 0;
