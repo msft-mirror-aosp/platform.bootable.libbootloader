@@ -178,7 +178,11 @@ where
         // TODO(b/349829690): also query GblSlotProtocol.get_boot_reason() for board-specific
         // fastboot triggers.
         efi_println!(self.efi_entry, "Press Backspace to enter fastboot");
-        let found = wait_key_stroke(self.efi_entry, '\x08', 2000);
+        let found = wait_key_stroke(
+            self.efi_entry,
+            |key| key.unicode_char == 0x08 || (key.unicode_char == 0x0 && key.scan_code == 0x08),
+            2000,
+        );
         if matches!(found, Ok(true)) {
             efi_println!(self.efi_entry, "Backspace pressed, entering fastboot");
         }
@@ -265,6 +269,13 @@ where
         self.get_buffer_image_loading(image_name, size)
             .or(Self::allocate_image_buffer(image_name, size)
                 .map_err(|e| libgbl::IntegrationError::UnificationError(e)))
+    }
+
+    fn get_custom_device_tree(&mut self) -> Option<&'a [u8]> {
+        // On Cuttlefish, the device tree comes from the UEFI config tables.
+        // TODO(b/353272981): once we've settled on the device tree UEFI protocol, use that
+        // instead to provide a Cuttlefish-specific backend.
+        Some(get_efi_fdt(&self.efi_entry)?.1)
     }
 }
 

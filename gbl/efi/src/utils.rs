@@ -23,7 +23,7 @@ use efi::{
     utils::Timeout,
     DeviceHandle, EfiEntry,
 };
-use efi_types::EfiGuid;
+use efi_types::{EfiGuid, EfiInputKey};
 use fdt::FdtHeader;
 use liberror::Error;
 use libgbl::Result;
@@ -129,19 +129,20 @@ where
 /// Waits for a key stroke value from simple text input.
 ///
 /// Returns `Ok(true)` if the expected key stroke is read, `Ok(false)` if timeout, `Err` otherwise.
-pub fn wait_key_stroke(efi_entry: &EfiEntry, expected: char, timeout_ms: u64) -> Result<bool> {
+pub fn wait_key_stroke(
+    efi_entry: &EfiEntry,
+    pred: impl Fn(EfiInputKey) -> bool,
+    timeout_ms: u64,
+) -> Result<bool> {
     let input = efi_entry
         .system_table()
         .boot_services()
         .find_first_and_open::<SimpleTextInputProtocol>()?;
     loop_with_timeout(efi_entry, timeout_ms, || -> core::result::Result<Result<bool>, bool> {
         match input.read_key_stroke() {
-            Ok(Some(key)) => match char::decode_utf16([key.unicode_char]).next().unwrap() {
-                Ok(ch) if ch == expected => Ok(Ok(true)),
-                _ => Err(false),
-            },
-            Ok(None) => Err(false),
+            Ok(Some(key)) if pred(key) => Ok(Ok(true)),
             Err(e) => Ok(Err(e.into())),
+            _ => Err(false),
         }
     })?
     .unwrap_or(Ok(false))

@@ -77,10 +77,10 @@ impl Variable for Partition {
         &self,
         gbl_fb: &mut GblFastboot<'_, 'b, T, G>,
         name: &str,
-        args: Split<'_, char>,
+        mut args: Split<'_, char>,
         out: &mut [u8],
     ) -> Result<Option<usize>, CommandError> {
-        let (_, _, start, sz) = gbl_fb.parse_partition(args.clone())?;
+        let (_, _, start, sz) = gbl_fb.parse_partition(args.next().ok_or("Missing var")?)?;
         Ok(match name {
             PARTITION_SIZE => Some(snprintf!(out, "{:#x}", sz).len()),
             PARTITION_TYPE => Some(snprintf!(out, "raw").len()), // Image type not supported yet.
@@ -101,11 +101,12 @@ impl Variable for Partition {
             for ptn in blk.partition_iter() {
                 let sz: u64 = ptn.size()?;
                 let part = ptn.name()?;
-                let mut id_str = [0u8; 32];
-                let id = snprintf!(id_str, "{:x}", idx);
-                sender.send(PARTITION_SIZE, &[part, id], snprintf!(size_str, "{:#x}", sz)).await?;
+                // Assumes max partition name length of 72 plus max u64 hex string length 18.
+                let mut part_id_buf = [0u8; 128];
+                let part = snprintf!(part_id_buf, "{}/{:x}", part, idx);
+                sender.send(PARTITION_SIZE, &[part], snprintf!(size_str, "{:#x}", sz)).await?;
                 // Image type is not supported yet.
-                sender.send(PARTITION_TYPE, &[part, id], snprintf!(size_str, "raw")).await?;
+                sender.send(PARTITION_TYPE, &[part], snprintf!(size_str, "raw")).await?;
             }
         }
         Ok(())
