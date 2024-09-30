@@ -13,9 +13,6 @@
 // limitations under the License.
 
 //! GblOps trait that defines GBL callbacks.
-//!
-#[cfg(feature = "alloc")]
-extern crate alloc;
 
 pub use crate::image_buffer::ImageBuffer;
 use crate::{
@@ -24,8 +21,6 @@ use crate::{
         check_part_unique, read_unique_partition, write_unique_partition, PartitionBlockDevice,
     },
 };
-#[cfg(feature = "alloc")]
-use alloc::ffi::CString;
 use core::{fmt::Write, num::NonZeroUsize, result::Result};
 use gbl_async::block_on;
 use gbl_storage::{BlockIoAsync, BlockIoNull};
