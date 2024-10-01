@@ -13,7 +13,8 @@
 // limitations under the License.
 
 use crate::{
-    avb::GblEfiAvbOps, efi_blocks::find_block_devices, ops::Ops, utils::cstr_bytes_to_str,
+    avb::GblEfiAvbOps, efi_blocks::find_block_devices, fastboot::fastboot, ops::Ops,
+    utils::cstr_bytes_to_str,
 };
 use avb::{slot_verify, HashtreeErrorMode, Ops as _, SlotVerifyFlags};
 use bootconfig::BootConfigBuilder;
@@ -525,6 +526,17 @@ pub fn android_boot_demo(entry: EfiEntry) -> Result<()> {
     let mut blks = find_block_devices(&entry)?;
     let partitions = &blks.as_gbl_parts()?;
     let mut ops = Ops { efi_entry: &entry, partitions };
+
+    match ops.should_stop_in_fastboot() {
+        Ok(true) => {
+            fastboot(&mut ops)?;
+        }
+        Ok(false) => {}
+        Err(e) => {
+            gbl_println!(ops, "Warning: error while checking fastboot trigger ({:?})", e);
+            gbl_println!(ops, "Ignoring error and continuing with normal boot");
+        }
+    }
 
     gbl_println!(ops, "Try booting as Android");
 
