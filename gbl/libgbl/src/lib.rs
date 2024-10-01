@@ -19,11 +19,12 @@
 //! The intended users of this library are firmware, bootloader, and bring-up teams at OEMs and SOC
 //! Vendors
 //!
-//! # Features
-//! * `alloc` - enables AVB ops related logic that relies on allocation and depends on allocation.
+//! This library is `no_std` as it is intended for use in bootloaders that typically will not
+//! support the Rust standard library. However, it does require `alloc` with a global allocator,
+//! currently used for:
+//! * libavb
+//! * kernel decompression
 
-// This code is intended for use in bootloaders that typically will not support
-// the Rust standard library
 #![cfg_attr(not(any(test, android_dylib)), no_std)]
 // TODO: b/312610985 - return warning for unused partitions
 #![allow(unused_variables, dead_code)]
@@ -41,6 +42,7 @@ use core::ffi::CStr;
 
 pub mod boot_mode;
 pub mod boot_reason;
+pub mod decompress;
 pub mod error;
 pub mod fastboot;
 pub mod fuchsia_boot;
