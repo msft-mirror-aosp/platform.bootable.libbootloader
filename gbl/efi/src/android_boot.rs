@@ -30,7 +30,7 @@ use safemath::SafeNum;
 use zerocopy::{AsBytes, ByteSlice};
 
 #[cfg(target_arch = "aarch64")]
-use gbl_efi_aarch64::decompress_kernel;
+use libgbl::decompress::decompress_kernel;
 
 // Linux kernel requires 2MB alignment.
 const KERNEL_ALIGNMENT: usize = 2 * 1024 * 1024;
