@@ -40,6 +40,7 @@ extern crate zbi;
 use avb::{HashtreeErrorMode, SlotVerifyData, SlotVerifyError, SlotVerifyFlags};
 use core::ffi::CStr;
 
+pub mod android_boot;
 pub mod boot_mode;
 pub mod boot_reason;
 pub mod decompress;
