@@ -41,10 +41,12 @@ rust_library(
         "@gbl//libutils",
         "@gbl//third_party/libzbi",
         "@itertools_noalloc",
+        "@lz4_flex",
         "@spin",
         "@static_assertions",
         "@uuid",
         "@zerocopy",
+        "@zune_inflate",
     ],
 )
 
