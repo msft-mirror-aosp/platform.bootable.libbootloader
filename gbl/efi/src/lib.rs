@@ -55,7 +55,7 @@ pub(crate) use efi_mocks as efi;
 use {
     core::fmt::Write,
     efi::{efi_print, efi_println, EfiEntry},
-    libgbl::{GblOps, Result},
+    libgbl::Result,
     utils::loaded_image_path,
 };
 
@@ -84,22 +84,9 @@ fn get_target_os(entry: &EfiEntry) -> TargetOs {
 /// GBL EFI application logic entry point.
 #[cfg(not(test))]
 pub fn app_main(entry: EfiEntry) -> Result<()> {
-    let mut ops = ops::Ops { efi_entry: &entry, partitions: &[] };
-
-    efi_println!(entry, "****Rust EFI Application****");
+    efi_println!(entry, "****Generic Bootloader Application****");
     if let Ok(v) = loaded_image_path(&entry) {
         efi_println!(entry, "Image path: {}", v);
-    }
-
-    match ops.should_stop_in_fastboot() {
-        Ok(true) => {
-            fastboot::fastboot(&entry)?;
-        }
-        Ok(false) => {}
-        Err(e) => {
-            efi_println!(entry, "Warning: error while checking fastboot trigger ({:?})", e);
-            efi_println!(entry, "Ignoring error and continuing with normal boot");
-        }
     }
 
     match get_target_os(&entry) {
