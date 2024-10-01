@@ -12,19 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// This is an example implementation of the libavb rust wrapper backend in the EFI environment. It
-// is mainly for use by the boot demo. Eventually, these backends will be implemented from the
-// `GblOps` interface in libgbl, where EFI services will be one level lower as its backend instead.
+//! AVB backend for Android boot.
 
+use crate::GblOps;
 use avb::{IoError, IoResult, Ops as AvbOps, PublicKeyForPartitionInfo};
 use core::ffi::CStr;
-use libgbl::GblOps;
 use uuid::Uuid;
 
-extern crate avb_sysdeps;
-
 /// [AvbOps] implementation for [GblOps].
-// TODO(b/363074091): this code is now platform-independent; move it into libgbl.
 pub struct GblEfiAvbOps<'a, G> {
     gbl_ops: &'a mut G,
     preloaded_partitions: Option<&'a [(&'a str, &'a [u8])]>,
@@ -34,6 +29,7 @@ pub struct GblEfiAvbOps<'a, G> {
 /// * `'a`: borrowed data minimum lifetime
 /// * `'b`: [GblOps] partition lifetime
 impl<'a, 'b, G: GblOps<'b>> GblEfiAvbOps<'a, G> {
+    /// Creates a new [GblEfiAvbOps] wrapping `gbl_ops`.
     pub fn new(
         gbl_ops: &'a mut G,
         preloaded_partitions: Option<&'a [(&'a str, &'a [u8])]>,
@@ -52,6 +48,8 @@ fn cstr_to_str<E>(s: &CStr, err: E) -> Result<&str, E> {
     Ok(s.to_str().map_err(|_| err)?)
 }
 
+// TODO(b/363074091): a good amount of this code is similar or the same for Fuchsia; see if we can
+// consolidate.
 impl<'a, 'b, G: GblOps<'b>> AvbOps<'a> for GblEfiAvbOps<'a, G> {
     fn read_from_partition(
         &mut self,
@@ -88,28 +86,20 @@ impl<'a, 'b, G: GblOps<'b>> AvbOps<'a> for GblEfiAvbOps<'a, G> {
         _public_key: &[u8],
         _public_key_metadata: Option<&[u8]>,
     ) -> IoResult<bool> {
-        // Not supported until we add our GBL specific EFI protocol that does this.
+        // Not needed yet; eventually we will plumb this through [GblOps].
         Ok(true)
     }
 
-    fn read_rollback_index(&mut self, _rollback_index_location: usize) -> IoResult<u64> {
-        // Not supported until we add our GBL specific EFI protocol that does this.
-        Ok(0)
+    fn read_rollback_index(&mut self, rollback_index_location: usize) -> IoResult<u64> {
+        self.gbl_ops.avb_read_rollback_index(rollback_index_location)
     }
 
-    fn write_rollback_index(
-        &mut self,
-        _rollback_index_location: usize,
-        _index: u64,
-    ) -> IoResult<()> {
-        // Not supported until we add our GBL specific EFI protocol that does this.
-        Ok(())
+    fn write_rollback_index(&mut self, rollback_index_location: usize, index: u64) -> IoResult<()> {
+        self.gbl_ops.avb_write_rollback_index(rollback_index_location, index)
     }
 
     fn read_is_device_unlocked(&mut self) -> IoResult<bool> {
-        // Not supported until we add our GBL specific EFI protocol that does this.
-        // For now always consider unlocked.
-        Ok(true)
+        self.gbl_ops.avb_read_is_device_unlocked()
     }
 
     fn get_unique_guid_for_partition(&mut self, partition: &CStr) -> IoResult<Uuid> {
@@ -129,17 +119,17 @@ impl<'a, 'b, G: GblOps<'b>> AvbOps<'a> for GblEfiAvbOps<'a, G> {
     }
 
     fn read_persistent_value(&mut self, _name: &CStr, _value: &mut [u8]) -> IoResult<usize> {
-        // Not supported until we add our GBL specific EFI protocol that does this.
+        // Not needed yet; eventually we will plumb this through [GblOps].
         unimplemented!();
     }
 
     fn write_persistent_value(&mut self, _name: &CStr, _value: &[u8]) -> IoResult<()> {
-        // Not supported until we add our GBL specific EFI protocol that does this.
+        // Not needed yet; eventually we will plumb this through [GblOps].
         unimplemented!();
     }
 
     fn erase_persistent_value(&mut self, _name: &CStr) -> IoResult<()> {
-        // Not supported until we add our GBL specific EFI protocol that does this.
+        // Not needed yet; eventually we will plumb this through [GblOps].
         unimplemented!();
     }
 
@@ -149,7 +139,7 @@ impl<'a, 'b, G: GblOps<'b>> AvbOps<'a> for GblEfiAvbOps<'a, G> {
         _public_key: &[u8],
         _public_key_metadata: Option<&[u8]>,
     ) -> IoResult<PublicKeyForPartitionInfo> {
-        // Not supported until we add our GBL specific EFI protocol that does this.
+        // Not needed yet; eventually we will plumb this through [GblOps].
         unimplemented!();
     }
 }

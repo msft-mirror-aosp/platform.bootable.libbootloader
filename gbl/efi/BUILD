@@ -28,10 +28,8 @@ rust_library(
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@avb",
-        "@avb//:avb_crypto_ops_sha_impl_staticlib",
         "@gbl//libasync",
         "@gbl//libasync:cyclic_executor",
-        "@gbl//libavb:sysdeps",
         "@gbl//libboot",
         "@gbl//libbootconfig",
         "@gbl//libbootimg",
@@ -45,19 +43,13 @@ rust_library(
         "@gbl//libmisc",
         "@gbl//libsafemath",
         "@gbl//libstorage",
+        "@gbl//libutils",
         "@gbl//third_party/libzbi",
         "@smoltcp",
         "@spin",
         "@uuid",
         "@zerocopy",
-    ] + select(
-        {
-            "@gbl//toolchain:gbl_rust_uefi_aarch64": [
-                "@gbl//efi/arch/aarch64",
-            ],
-            "//conditions:default": [],
-        },
-    ),
+    ],
 )
 
 rust_test(
@@ -97,6 +89,8 @@ rust_binary(
     ],
     deps = [
         ":libgbl_efi",
+        "@avb//:avb_crypto_ops_sha_impl_staticlib",
+        "@gbl//libavb:sysdeps",
         "@gbl//libefi",
         "@gbl//libefi_types",
     ] + select(

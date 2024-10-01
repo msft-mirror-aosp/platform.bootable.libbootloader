@@ -27,20 +27,9 @@ use efi_types::{EfiGuid, EfiInputKey};
 use fdt::FdtHeader;
 use liberror::Error;
 use libgbl::Result;
-use safemath::SafeNum;
 
 pub const EFI_DTB_TABLE_GUID: EfiGuid =
     EfiGuid::new(0xb1b621d5, 0xf19c, 0x41a5, [0x83, 0x0b, 0xd9, 0x15, 0x2c, 0x69, 0xaa, 0xe0]);
-
-/// Gets a subslice of the given slice with aligned address according to `alignment`
-pub fn aligned_subslice(
-    bytes: &mut [u8],
-    alignment: usize,
-) -> core::result::Result<&mut [u8], Error> {
-    let addr = bytes.as_ptr() as usize;
-    let aligned_start = SafeNum::from(addr).round_up(alignment) - addr;
-    Ok(&mut bytes[aligned_start.try_into()?..])
-}
 
 /// Helper function to get the `DevicePathText` from a `DeviceHandle`.
 pub fn get_device_path<'a>(

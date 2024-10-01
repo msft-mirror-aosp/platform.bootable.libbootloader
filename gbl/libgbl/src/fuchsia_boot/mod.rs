@@ -15,9 +15,10 @@
 //! This file provides APIs for loading, verifying and booting Fuchsia/Zircon.
 
 use crate::{gbl_print, gbl_println, GblOps, Result as GblResult};
-pub use abr::{get_boot_slot, Ops as AbrOps, SlotIndex};
+pub use abr::{get_and_clear_one_shot_bootloader, get_boot_slot, Ops as AbrOps, SlotIndex};
 use core::fmt::Write;
 use liberror::{Error, Result};
+use libutils::aligned_subslice;
 use safemath::SafeNum;
 use zbi::{ZbiContainer, ZbiFlags, ZbiHeader, ZbiType};
 use zerocopy::AsBytes;
@@ -52,13 +53,6 @@ impl<'b, T: GblOps<'b>> AbrOps for GblAbrOps<'_, T> {
 fn aligned_offset(buffer: &[u8], alignment: usize) -> Result<usize> {
     let addr = SafeNum::from(buffer.as_ptr() as usize);
     (addr.round_up(alignment) - addr).try_into().map_err(From::from)
-}
-
-/// A helper for getting a subslice with an aligned address.
-fn aligned_subslice(buffer: &mut [u8], alignment: usize) -> Result<&mut [u8]> {
-    let aligned_offset = aligned_offset(buffer, alignment)?;
-    let len = buffer.len();
-    Ok(buffer.get_mut(aligned_offset..).ok_or(Error::BufferTooSmall(Some(aligned_offset)))?)
 }
 
 /// A helper for splitting the trailing unused portion of a ZBI container buffer.
@@ -215,6 +209,38 @@ pub fn zircon_load_verify_abr<'a, 'b>(
     Ok((zbi_items, kernel, slot))
 }
 
+/// Checks whether platform or A/B/R metadata instructs GBL to boot into fastboot mode.
+///
+/// # Returns
+///
+/// Returns true if fastboot mode is enabled, false if not.
+pub fn zircon_check_enter_fastboot<'a>(ops: &mut impl GblOps<'a>) -> bool {
+    match get_and_clear_one_shot_bootloader(&mut GblAbrOps(ops)) {
+        Ok(true) => {
+            gbl_println!(ops, "A/B/R one-shot-bootloader is set");
+            return true;
+        }
+        Err(e) => {
+            gbl_println!(ops, "Warning: error while checking A/B/R one-shot-bootloader ({:?})", e);
+            gbl_println!(ops, "Ignoring error and considered not set");
+        }
+        _ => {}
+    };
+
+    match ops.should_stop_in_fastboot() {
+        Ok(true) => {
+            gbl_println!(ops, "Platform instructs GBL to enter fastboot mode");
+            return true;
+        }
+        Err(e) => {
+            gbl_println!(ops, "Warning: error while checking platform fastboot trigger ({:?})", e);
+            gbl_println!(ops, "Ignoring error and considered not triggered");
+        }
+        _ => {}
+    };
+    false
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -225,7 +251,9 @@ mod test {
         },
         partition::PartitionBlockDevice,
     };
-    use abr::{mark_slot_active, mark_slot_unbootable, ABR_MAX_TRIES_REMAINING};
+    use abr::{
+        mark_slot_active, mark_slot_unbootable, set_one_shot_bootloader, ABR_MAX_TRIES_REMAINING,
+    };
     use avb_bindgen::{AVB_CERT_PIK_VERSION_LOCATION, AVB_CERT_PSK_VERSION_LOCATION};
     use gbl_storage_testlib::TestBlockIo;
     use std::{
@@ -617,5 +645,46 @@ mod test {
             expect_load_verify_abr_ok(&mut ops, SlotIndex::B);
         }
         expect_load_verify_abr_ok(&mut ops, SlotIndex::R);
+    }
+
+    #[test]
+    fn test_check_enter_fastboot_stop_in_fastboot() {
+        let mut storage = create_storage();
+        let partitions = storage.as_partition_block_devices();
+        let mut ops = create_gbl_ops(&partitions);
+
+        ops.stop_in_fastboot = Ok(false).into();
+        assert!(!zircon_check_enter_fastboot(&mut ops));
+
+        ops.stop_in_fastboot = Ok(true).into();
+        assert!(zircon_check_enter_fastboot(&mut ops));
+
+        ops.stop_in_fastboot = Err(Error::NotImplemented).into();
+        assert!(!zircon_check_enter_fastboot(&mut ops));
+    }
+
+    #[test]
+    fn test_check_enter_fastboot_abr() {
+        let mut storage = create_storage();
+        let partitions = storage.as_partition_block_devices();
+        let mut ops = create_gbl_ops(&partitions);
+        set_one_shot_bootloader(&mut GblAbrOps(&mut ops), true).unwrap();
+        assert!(zircon_check_enter_fastboot(&mut ops));
+        // One-shot only.
+        assert!(!zircon_check_enter_fastboot(&mut ops));
+    }
+
+    #[test]
+    fn test_check_enter_fastboot_prioritize_abr() {
+        let mut storage = create_storage();
+        let partitions = storage.as_partition_block_devices();
+        let mut ops = create_gbl_ops(&partitions);
+        set_one_shot_bootloader(&mut GblAbrOps(&mut ops), true).unwrap();
+        ops.stop_in_fastboot = Ok(true).into();
+        assert!(zircon_check_enter_fastboot(&mut ops));
+        ops.stop_in_fastboot = Ok(false).into();
+        // A/B/R metadata should be prioritized in the previous check and thus one-shot-booloader
+        // flag should be cleared.
+        assert!(!zircon_check_enter_fastboot(&mut ops));
     }
 }

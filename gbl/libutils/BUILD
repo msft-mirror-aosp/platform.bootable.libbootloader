@@ -15,28 +15,22 @@
 load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
-package(
-    default_visibility = ["//visibility:public"],
-)
-
 rust_library(
-    name = "aarch64",
-    srcs = glob(["src/**/*.rs"]),
-    crate_name = "gbl_efi_aarch64",
+    name = "libutils",
+    srcs = [
+        "src/lib.rs",
+    ],
+    edition = "2021",
     rustc_flags = ANDROID_RUST_LINTS,
+    visibility = ["//visibility:public"],
     deps = [
         "@gbl//liberror",
-        "@gbl//libgbl",
-        "@lz4_flex",
-        "@zune_inflate",
+        "@gbl//libsafemath",
     ],
 )
 
 rust_test(
     name = "test",
-    crate = ":aarch64",
+    crate = ":libutils",
     rustc_flags = ANDROID_RUST_LINTS,
-    deps = [
-        "@gbl//libefi:mocks",
-    ],
 )
