@@ -19,6 +19,7 @@ use core::{
     cmp::min,
     fmt::Write,
     future::Future,
+    marker::PhantomData,
     mem::take,
     str::{from_utf8, Split},
 };
@@ -43,22 +44,34 @@ pub trait TasksExecutor<'a> {
 }
 
 /// `GblFastboot` implements fastboot commands in the GBL context.
-pub struct GblFastboot<'a, 'b, T: TasksExecutor<'b>, G> {
+///
+/// # Lifetimes
+/// * `'a`: Lifetime of the `blk_io_executor` and `gbl_ops` objects borrowed.
+/// * `'b`: [GblOps] partition lifetime.
+/// * `'c`: Download buffer lifetime.
+/// * `'d`: Represents the lifetime of any data borrowed by the spawned tasks running on
+///     `blk_io_executor`. `'b` and `'c` will be constrained to outlive `d`.
+pub struct GblFastboot<'a, 'b, 'c, 'd, T, G> {
     blk_io_executor: &'a T,
-    pub(crate) gbl_ops: &'b mut G,
-    download_buffers: &'b [Mutex<&'b mut [u8]>],
-    current_download_buffer: Option<MutexGuard<'b, &'b mut [u8]>>,
+    pub(crate) gbl_ops: &'a mut G,
+    download_buffers: &'c [Mutex<&'c mut [u8]>],
+    current_download_buffer: Option<MutexGuard<'c, &'c mut [u8]>>,
     current_download_size: usize,
     enable_async_block_io: bool,
     default_block: Option<usize>,
+    // Introduces marker type so that we can enforce constraint 'd <= min('b, 'c).
+    // The constraint is expressed in the implementation block for the `FastbootImplementation`
+    // trait.
+    _gbl_ops_parts_lifetime: PhantomData<&'b G>,
+    _blk_io_executor_context_lifetime: PhantomData<&'d T>,
 }
 
-impl<'a, 'b, T: TasksExecutor<'b>, G: GblOps<'b>> GblFastboot<'a, 'b, T, G> {
+impl<'a, 'b, 'c, T, G: GblOps<'b>> GblFastboot<'a, 'b, 'c, '_, T, G> {
     /// Creates a new instance.
     pub fn new(
         blk_io_executor: &'a T,
-        gbl_ops: &'b mut G,
-        download_buffers: &'b [Mutex<&'b mut [u8]>],
+        gbl_ops: &'a mut G,
+        download_buffers: &'c [Mutex<&'c mut [u8]>],
     ) -> Self {
         Self {
             blk_io_executor,
@@ -68,6 +81,8 @@ impl<'a, 'b, T: TasksExecutor<'b>, G: GblOps<'b>> GblFastboot<'a, 'b, T, G> {
             current_download_size: 0,
             enable_async_block_io: false,
             default_block: None,
+            _gbl_ops_parts_lifetime: PhantomData,
+            _blk_io_executor_context_lifetime: PhantomData,
         }
     }
 
@@ -126,11 +141,11 @@ impl<'a, 'b, T: TasksExecutor<'b>, G: GblOps<'b>> GblFastboot<'a, 'b, T, G> {
     }
 
     /// Implementation for "fastboot oem gbl-sync-blocks".
-    async fn oem_sync_blocks<'c>(
+    async fn oem_sync_blocks<'s>(
         &self,
         utils: &mut impl FastbootUtils,
-        res: &'c mut [u8],
-    ) -> CommandResult<&'c [u8]> {
+        res: &'s mut [u8],
+    ) -> CommandResult<&'s [u8]> {
         self.sync_all_blocks().await?;
         // Checks error.
         let mut has_error = false;
@@ -150,7 +165,9 @@ impl<'a, 'b, T: TasksExecutor<'b>, G: GblOps<'b>> GblFastboot<'a, 'b, T, G> {
     }
 }
 
-impl<'b, T: TasksExecutor<'b>, G: GblOps<'b>> FastbootImplementation for GblFastboot<'_, 'b, T, G> {
+impl<'b: 'd, 'c: 'd, 'd, T: TasksExecutor<'d>, G: GblOps<'b>> FastbootImplementation
+    for GblFastboot<'_, 'b, 'c, 'd, T, G>
+{
     async fn get_var(
         &mut self,
         var: &str,
@@ -240,12 +257,12 @@ impl<'b, T: TasksExecutor<'b>, G: GblOps<'b>> FastbootImplementation for GblFast
         Ok(())
     }
 
-    async fn oem<'a>(
+    async fn oem<'s>(
         &mut self,
         cmd: &str,
         utils: &mut impl FastbootUtils,
-        res: &'a mut [u8],
-    ) -> CommandResult<&'a [u8]> {
+        res: &'s mut [u8],
+    ) -> CommandResult<&'s [u8]> {
         match cmd {
             "gbl-sync-blocks" => self.oem_sync_blocks(utils, res).await,
             "gbl-enable-async-block-io" => {
@@ -302,10 +319,11 @@ mod test {
         }
     }
 
-    type TestGblFastboot<'a, 'b> = GblFastboot<'a, 'b, TestGblFbExecutor<'b>, FakeGblOps<'b>>;
+    type TestGblFastboot<'a, 'b> =
+        GblFastboot<'a, 'b, 'b, 'b, TestGblFbExecutor<'b>, FakeGblOps<'b>>;
 
     /// Helper to test fastboot variable value.
-    fn check_var(gbl_fb: &mut TestGblFastboot, var: &str, args: &str, expected: &str) {
+    fn check_var(gbl_fb: &mut TestGblFastboot<'_, '_>, var: &str, args: &str, expected: &str) {
         let mut utils: TestFastbootUtils = Default::default();
         let mut out = vec![0u8; MAX_RESPONSE_SIZE];
         let val = block_on(gbl_fb.get_var_as_str(var, args.split(':'), &mut out[..], &mut utils))
