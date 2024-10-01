@@ -36,8 +36,6 @@ mod utils;
 #[cfg(not(test))]
 mod android_boot;
 #[cfg(not(test))]
-mod avb;
-#[cfg(not(test))]
 mod fastboot;
 #[cfg(not(test))]
 mod fuchsia_boot;

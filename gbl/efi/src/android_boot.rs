@@ -13,8 +13,7 @@
 // limitations under the License.
 
 use crate::{
-    avb::GblEfiAvbOps, efi_blocks::find_block_devices, fastboot::fastboot, ops::Ops,
-    utils::cstr_bytes_to_str,
+    efi_blocks::find_block_devices, fastboot::fastboot, ops::Ops, utils::cstr_bytes_to_str,
 };
 use avb::{slot_verify, HashtreeErrorMode, Ops as _, SlotVerifyFlags};
 use bootconfig::BootConfigBuilder;
@@ -24,7 +23,9 @@ use core::{ffi::CStr, fmt::Write, str::from_utf8};
 use efi::{exit_boot_services, EfiEntry};
 use fdt::Fdt;
 use liberror::Error;
-use libgbl::{gbl_print, gbl_println, GblOps, IntegrationError, Result};
+use libgbl::{
+    android_boot::vboot::GblEfiAvbOps, gbl_print, gbl_println, GblOps, IntegrationError, Result,
+};
 use libutils::aligned_subslice;
 use misc::{AndroidBootMode, BootloaderMessage};
 use safemath::SafeNum;
