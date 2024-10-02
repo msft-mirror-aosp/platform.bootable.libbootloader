@@ -40,20 +40,23 @@ extern crate zbi;
 use avb::{HashtreeErrorMode, SlotVerifyData, SlotVerifyError, SlotVerifyFlags};
 use core::ffi::CStr;
 
+pub mod android_boot;
+pub mod avb_ops; // TODO(b/363074091): make this private once we move Android boot into libgbl.
 pub mod boot_mode;
 pub mod boot_reason;
 pub mod decompress;
 pub mod error;
 pub mod fastboot;
 pub mod fuchsia_boot;
-mod image_buffer;
 pub mod ops;
-mod overlap;
 pub mod partition;
 
 /// The 'slots' module, containing types and traits for
 /// querying and modifying slotted boot behavior.
 pub mod slots;
+
+mod image_buffer;
+mod overlap;
 
 use slots::{BootTarget, BootToken, Cursor, OneShot, SuffixBytes, UnbootableReason};
 
