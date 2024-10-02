@@ -15,10 +15,10 @@
 use crate::{
     efi_blocks::find_block_devices, fastboot::fastboot, ops::Ops, utils::cstr_bytes_to_str,
 };
+use arrayvec::ArrayVec;
 use avb::{slot_verify, HashtreeErrorMode, Ops as _, SlotVerifyFlags};
 use bootimg::{BootImage, VendorImageHeader};
 use bootparams::{bootconfig::BootConfigBuilder, commandline::CommandlineBuilder};
-use core::cmp::max;
 use core::{ffi::CStr, fmt::Write};
 use efi::{exit_boot_services, EfiEntry};
 use fdt::Fdt;
@@ -63,13 +63,20 @@ fn avb_verify_slot<'a>(
     dtbo: Option<&[u8]>,
     bootconfig_builder: &mut BootConfigBuilder,
 ) -> Result<()> {
-    let mut partitions = vec![c"boot", c"vendor_boot", c"init_boot"];
-    let mut preloaded =
-        vec![("boot", kernel), ("vendor_boot", vendor_boot), ("init_boot", init_boot)];
-
-    if let Some(dtbo) = dtbo {
-        partitions.push(c"dtbo");
-        preloaded.push(("dtbo", dtbo));
+    // We need the list of partition names to verify with libavb, and a corresponding list of
+    // (name, image) tuples to register as [GblAvbOps] preloaded data.
+    let mut partitions = ArrayVec::<_, 4>::new();
+    let mut preloaded = ArrayVec::<_, 4>::new();
+    for (c_name, image) in [
+        (c"boot", Some(kernel)),
+        (c"vendor_boot", Some(vendor_boot)),
+        (c"init_boot", Some(init_boot)),
+        (c"dtbo", dtbo),
+    ] {
+        if let Some(image) = image {
+            partitions.push(c_name);
+            preloaded.push((c_name.to_str().unwrap(), image));
+        }
     }
 
     let mut avb_ops = GblAvbOps::new(ops, &preloaded[..], false);
@@ -423,52 +430,45 @@ pub fn load_android_simple<'a, 'b>(
         (load, kernel_tail_buffer.len(), kernel_tail_buffer)
     };
 
-    // Prepare FDT.
-
-    // For cuttlefish, FDT comes from EFI vendor configuration table installed by u-boot. In real
-    // product, it may come from vendor boot image.
-    let mut fdt_bytes_buffer = vec![0u8; max(vendor_dtb_size, boot_dtb_size)];
-    let fdt_bytes_buffer = &mut fdt_bytes_buffer[..];
-    let fdt_bytes: &[u8] = match ops.get_custom_device_tree() {
-        Some(fdt_bytes) => fdt_bytes,
-        None if vendor_dtb_size > 0 => {
-            let vendor_dtb_offset: usize = (SafeNum::from(vendor_hdr_size)
-                + SafeNum::from(vendor_ramdisk_size))
-            .round_up(vendor_page_size)
-            .try_into()
-            .map_err(Error::from)?;
-            gbl_println!(
-                ops,
-                "Loading vendor_boot dtb size {} at {}",
-                vendor_dtb_size,
-                vendor_dtb_offset
-            );
-            let fdt_bytes = &mut fdt_bytes_buffer[..vendor_dtb_size.try_into().unwrap()];
-            ops.read_from_partition_sync(
-                "vendor_boot_a",
-                vendor_dtb_offset.try_into().unwrap(),
-                fdt_bytes,
-            )?;
-            fdt_bytes
-        }
-        None if boot_dtb_size > 0 => {
-            let mut boot_dtb_offset = SafeNum::from(kernel_hdr_size);
-            for image_size in [kernel_size, boot_ramdisk_size, boot_second_size] {
-                boot_dtb_offset += SafeNum::from(image_size).round_up(kernel_hdr_size);
-            }
-            let fdt_bytes = &mut fdt_bytes_buffer[..boot_dtb_size.try_into().unwrap()];
-            ops.read_from_partition_sync("boot_a", boot_dtb_offset.try_into().unwrap(), fdt_bytes)?;
-            fdt_bytes
-        }
-        None => &mut [],
-    };
-    let fdt_origin = Fdt::new(fdt_bytes)?;
-
-    // Use the remaining load buffer for updating FDT.
+    // Use the remaining load buffer for the FDT.
     let (ramdisk_load_buffer, load) =
         load.split_at_mut(ramdisk_load_curr.try_into().map_err(Error::from)?);
-    let load = aligned_subslice(load, FDT_ALIGNMENT)?;
-    let mut fdt = Fdt::new_from_init(&mut load[..], fdt_bytes)?;
+    let fdt_buffer = aligned_subslice(load, FDT_ALIGNMENT)?;
+
+    // TODO(b/353272981): for now we have a hardcoded priority order of DT sources to check, but
+    // the goal is to provide all DTBs and DTBOs to [GblOps] and let it select which ones to use.
+    match ops.get_custom_device_tree() {
+        // First: check for custom FDT (Cuttlefish).
+        Some(custom_fdt) => {
+            gbl_println!(ops, "Using custom FDT");
+            fdt_buffer[..custom_fdt.len()].copy_from_slice(custom_fdt);
+        }
+        None => {
+            // Second: "vendor_boot" FDT.
+            let (part, offset, size) = if vendor_dtb_size > 0 {
+                // DTB is located after the header and ramdisk (aligned).
+                let offset = (SafeNum::from(vendor_hdr_size) + SafeNum::from(vendor_ramdisk_size))
+                    .round_up(vendor_page_size)
+                    .try_into()
+                    .map_err(Error::from)?;
+                ("vendor_boot_a", offset, vendor_dtb_size)
+            // Third: "boot" FDT.
+            } else if boot_dtb_size > 0 {
+                // DTB is located after the header, kernel, ramdisk, and second images (aligned).
+                let mut offset = SafeNum::from(kernel_hdr_size);
+                for image_size in [kernel_size, boot_ramdisk_size, boot_second_size] {
+                    offset += SafeNum::from(image_size).round_up(kernel_hdr_size);
+                }
+                ("boot_a", offset.try_into().map_err(Error::from)?, boot_dtb_size)
+            } else {
+                return Err(Error::NoFdt.into());
+            };
+
+            gbl_println!(ops, "Using FDT from {} (offset = {}, size = {})", part, offset, size);
+            ops.read_from_partition_sync(part, offset, &mut fdt_buffer[..size])?;
+        }
+    };
+    let mut fdt = Fdt::new(fdt_buffer)?;
 
     // Add ramdisk range to FDT
     let ramdisk_addr: u64 =
@@ -480,13 +480,16 @@ pub fn load_android_simple<'a, 'b>(
     gbl_println!(ops, "linux,initrd-start: {:#x}", ramdisk_addr);
     gbl_println!(ops, "linux,initrd-end: {:#x}", ramdisk_end);
 
-    let device_tree_commandline =
-        CStr::from_bytes_until_nul(fdt_origin.get_property("chosen", BOOTARGS_PROP)?)
-            .map_err(Error::from)?;
+    // Update the FDT commandline.
+    let device_tree_commandline_length =
+        CStr::from_bytes_until_nul(fdt.get_property("chosen", BOOTARGS_PROP)?)
+            .map_err(Error::from)?
+            .to_bytes()
+            .len();
 
     // Reserve 1024 bytes for separators and fixup.
     let final_commandline_len =
-        device_tree_commandline.to_bytes().len() + boot_cmdline.len() + vendor_cmdline.len() + 1024;
+        device_tree_commandline_length + boot_cmdline.len() + vendor_cmdline.len() + 1024;
     let final_commandline_buffer =
         fdt.set_property_placeholder("chosen", BOOTARGS_PROP, final_commandline_len)?;
 
