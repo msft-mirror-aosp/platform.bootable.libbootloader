@@ -23,9 +23,7 @@ use core::{ffi::CStr, fmt::Write, str::from_utf8};
 use efi::{exit_boot_services, EfiEntry};
 use fdt::Fdt;
 use liberror::Error;
-use libgbl::{
-    android_boot::vboot::GblEfiAvbOps, gbl_print, gbl_println, GblOps, IntegrationError, Result,
-};
+use libgbl::{avb_ops::GblAvbOps, gbl_print, gbl_println, GblOps, IntegrationError, Result};
 use libutils::aligned_subslice;
 use misc::{AndroidBootMode, BootloaderMessage};
 use safemath::SafeNum;
@@ -72,7 +70,7 @@ fn avb_verify_slot<'a>(
         preloaded.push(("dtbo", dtbo));
     }
 
-    let mut avb_ops = GblEfiAvbOps::new(ops, Some(&preloaded));
+    let mut avb_ops = GblAvbOps::new(ops, &preloaded[..], false);
     let avb_state = match avb_ops.read_is_device_unlocked()? {
         true => "orange",
         _ => "green",
