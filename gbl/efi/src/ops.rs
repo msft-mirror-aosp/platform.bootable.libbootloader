@@ -201,6 +201,11 @@ where
         unimplemented!();
     }
 
+    /// Reboots the system into the last set boot mode.
+    fn reboot(&mut self) {
+        self.efi_entry.system_table().runtime_services().cold_reset();
+    }
+
     fn partitions(&self) -> Result<&'b [PartitionBlockDevice<'b, Self::PartitionBlockIo>], Error> {
         Ok(self.partitions)
     }

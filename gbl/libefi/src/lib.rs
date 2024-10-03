@@ -74,6 +74,7 @@ use efi_types::{
     EFI_EVENT_TYPE_NOTIFY_WAIT, EFI_EVENT_TYPE_RUNTIME, EFI_EVENT_TYPE_SIGNAL_EXIT_BOOT_SERVICES,
     EFI_EVENT_TYPE_SIGNAL_VIRTUAL_ADDRESS_CHANGE, EFI_EVENT_TYPE_TIMER,
     EFI_LOCATE_HANDLE_SEARCH_TYPE_BY_PROTOCOL, EFI_OPEN_PROTOCOL_ATTRIBUTE_BY_HANDLE_PROTOCOL,
+    EFI_RESET_TYPE, EFI_RESET_TYPE_EFI_RESET_COLD, EFI_STATUS, EFI_STATUS_SUCCESS,
 };
 use liberror::{Error, Result};
 use libutils::aligned_subslice;
@@ -521,6 +522,37 @@ impl<'a> RuntimeServices<'a> {
                 data.as_ptr() as *const core::ffi::c_void
             )
         }
+    }
+
+    /// Wrapper of `EFI_RUNTIME_SERVICES.reset_system`.
+    pub fn reset_system(
+        &self,
+        reset_type: EFI_RESET_TYPE,
+        reset_status: EFI_STATUS,
+        reset_data: Option<&mut [u8]>,
+    ) -> ! {
+        let (reset_data_len, reset_data_ptr) = match reset_data {
+            Some(v) => (v.len(), v.as_mut_ptr() as _),
+            _ => (0, null_mut()),
+        };
+        // SAFETY:
+        // * `reset_data_ptr` is either a valid pointer or NULL which by UEFI spec is allowed.
+        // * The call reboots the device and thus is not expected to return.
+        unsafe {
+            self.runtime_services.reset_system.unwrap()(
+                reset_type,
+                reset_status,
+                reset_data_len,
+                reset_data_ptr,
+            );
+        }
+
+        unreachable!();
+    }
+
+    /// Performs a cold reset without status code or data.
+    pub fn cold_reset(&self) -> ! {
+        self.reset_system(EFI_RESET_TYPE_EFI_RESET_COLD, EFI_STATUS_SUCCESS, None)
     }
 }
 
