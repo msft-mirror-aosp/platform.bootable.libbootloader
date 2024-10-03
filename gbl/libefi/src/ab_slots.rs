@@ -259,6 +259,10 @@ mod test {
             unimplemented!();
         }
 
+        fn reboot(&mut self) {
+            unimplemented!();
+        }
+
         fn partitions(&self) -> Result<&'a [PartitionBlockDevice<'a, Self::PartitionBlockIo>]> {
             unimplemented!();
         }

@@ -14,5 +14,4 @@
 
 //! Android boot support.
 
-// TODO(b/363074091): we can make this module internal once we move Android boot here.
-pub mod vboot;
+// TODO(b/363074091): move Android boot logic here.
