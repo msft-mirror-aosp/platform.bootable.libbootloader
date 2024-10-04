@@ -153,6 +153,22 @@ where
     (out_lhs, out_rhs)
 }
 
+/// Runs a [Future] and checks and asserts that it returns eventually.
+pub async fn assert_return<O>(fut: impl Future<Output = O>) -> O {
+    struct Returned(bool);
+
+    impl Drop for Returned {
+        fn drop(&mut self) {
+            assert!(self.0)
+        }
+    }
+
+    let mut flag = Returned(false);
+    let res = fut.await;
+    flag.0 = true;
+    res
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -241,5 +257,19 @@ mod test {
         let (lhs, rhs) = poll(&mut select_fut).unwrap();
         assert!(lhs.is_some());
         assert!(rhs.is_none());
+    }
+
+    #[test]
+    fn test_assert_return() {
+        // Finishes. No assert.
+        block_on(assert_return(async { yield_now().await }));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_assert_return_panics() {
+        let mut fut = pin!(assert_return(async { yield_now().await }));
+        // Need one more poll to finish. Thus it should panic when going out of scope.
+        assert!(poll(&mut fut).is_none());
     }
 }
