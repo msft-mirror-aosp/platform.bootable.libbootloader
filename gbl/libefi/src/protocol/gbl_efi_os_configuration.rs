@@ -17,7 +17,6 @@
 use crate::efi_call;
 use crate::protocol::{Protocol, ProtocolInfo};
 use core::ffi::CStr;
-use core::str;
 use efi_types::{EfiGuid, GblEfiOsConfigurationProtocol};
 use liberror::{Error, Result};
 
@@ -33,12 +32,8 @@ impl ProtocolInfo for GblOsConfigurationProtocol {
 
 // Protocol interface wrappers.
 impl Protocol<'_, GblOsConfigurationProtocol> {
-    /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.fixup_kernel_commandline()`
-    pub fn fixup_kernel_commandline<'a>(
-        &self,
-        commandline: &CStr,
-        fixup: &'a mut [u8],
-    ) -> Result<&'a str> {
+    /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.fixup_kernel_commandline()`.
+    pub fn fixup_kernel_commandline<'a>(&self, commandline: &CStr, fixup: &mut [u8]) -> Result<()> {
         if fixup.is_empty() {
             return Err(Error::InvalidInput);
         }
@@ -62,11 +57,11 @@ impl Protocol<'_, GblOsConfigurationProtocol> {
             )?;
         }
 
-        Ok(CStr::from_bytes_until_nul(&fixup[..])?.to_str()?)
+        Ok(())
     }
 
-    /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.fixup_bootconfig()`
-    pub fn fixup_bootconfig<'a>(&self, bootconfig: &[u8], fixup: &'a mut [u8]) -> Result<&'a [u8]> {
+    /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.fixup_bootconfig()`.
+    pub fn fixup_bootconfig<'a>(&self, bootconfig: &[u8], fixup: &mut [u8]) -> Result<usize> {
         if fixup.is_empty() {
             return Err(Error::InvalidInput);
         }
@@ -90,7 +85,7 @@ impl Protocol<'_, GblOsConfigurationProtocol> {
             )?;
         }
 
-        Ok(&fixup[..fixup_size])
+        Ok(fixup_size)
     }
 }
 
@@ -124,9 +119,13 @@ mod test {
         run_test_with_mock_protocol(c_interface, |os_config_protocol| {
             let mut fixup_buffer = [0x0; 128];
             let commandline = c"foo=bar baz";
+
+            assert!(os_config_protocol
+                .fixup_kernel_commandline(commandline, &mut fixup_buffer)
+                .is_ok());
             assert_eq!(
-                os_config_protocol.fixup_kernel_commandline(commandline, &mut fixup_buffer),
-                Ok("")
+                CStr::from_bytes_until_nul(&fixup_buffer[..]).unwrap().to_str().unwrap(),
+                ""
             );
         });
     }
@@ -134,7 +133,7 @@ mod test {
     #[test]
     fn fixup_kernel_commandline_provided() {
         const EXPECTED_COMMANDLINE: &CStr = c"a=b";
-        const EXPECTED_FIXUP: &[u8; 12] = b"hello=world\0";
+        const EXPECTED_FIXUP: &[u8] = b"hello=world\0";
         const EXPECTED_FIXUP_STR: &str = "hello=world";
 
         // C callback implementation to add "hello=world" to the given command line.
@@ -167,10 +166,12 @@ mod test {
         run_test_with_mock_protocol(c_interface, |os_config_protocol| {
             let mut fixup_buffer = [0x0; 128];
 
+            assert!(os_config_protocol
+                .fixup_kernel_commandline(EXPECTED_COMMANDLINE, &mut fixup_buffer)
+                .is_ok());
             assert_eq!(
-                os_config_protocol
-                    .fixup_kernel_commandline(EXPECTED_COMMANDLINE, &mut fixup_buffer),
-                Ok(EXPECTED_FIXUP_STR),
+                CStr::from_bytes_until_nul(&fixup_buffer[..]).unwrap().to_str().unwrap(),
+                EXPECTED_FIXUP_STR,
             );
         });
     }
@@ -262,12 +263,11 @@ mod test {
 
         run_test_with_mock_protocol(c_interface, |os_config_protocol| {
             let mut fixup_buffer = [0x0; 128];
-            let empty_buffer: [u8; 0] = [0x0; 0];
             let bootconfig = c"foo=bar\nbaz".to_bytes_with_nul();
 
             assert_eq!(
                 os_config_protocol.fixup_bootconfig(&bootconfig[..], &mut fixup_buffer),
-                Ok(&empty_buffer[..])
+                Ok(0)
             );
         });
     }
@@ -275,8 +275,9 @@ mod test {
     #[test]
     fn fixup_bootconfig_provided() {
         // no trailer for simplicity
-        const EXPECTED_BOOTCONFIG: &[u8; 8] = b"a=b\nc=d\n";
-        const EXPECTED_FIXUP: &[u8; 4] = b"e=f\n";
+        const EXPECTED_BOOTCONFIG: &[u8] = b"a=b\nc=d\n";
+        const EXPECTED_LEN: usize = 4;
+        const EXPECTED_FIXUP: &[u8] = b"e=f\n";
 
         // C callback implementation to add "e=f" to the given bootconfig.
         unsafe extern "C" fn c_add_ef(
@@ -311,10 +312,12 @@ mod test {
 
         run_test_with_mock_protocol(c_interface, |os_config_protocol| {
             let mut fixup_buffer = [0x0; 128];
+
             assert_eq!(
                 os_config_protocol.fixup_bootconfig(&EXPECTED_BOOTCONFIG[..], &mut fixup_buffer),
-                Ok(&EXPECTED_FIXUP[..]),
+                Ok(EXPECTED_LEN),
             );
+            assert_eq!(&fixup_buffer[..EXPECTED_LEN], &EXPECTED_FIXUP[..],);
         });
     }
 
@@ -346,7 +349,7 @@ mod test {
     }
 
     #[test]
-    fn fixup_kernel_bootconfig_fixup_buffer_too_small() {
+    fn fixup_bootconfig_fixup_buffer_too_small() {
         const EXPECTED_REQUESTED_FIXUP_SIZE: usize = 256;
         // C callback implementation to return an error.
         unsafe extern "C" fn c_error(
