@@ -12,11 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Library for constructing kernel bootconfig. See the following for more detail:
+//! Module for constructing bootconfig. See the following for more details:
 //!
-//!   https://source.android.com/docs/core/architecture/bootloader/implementing-bootconfig#bootloader-changes
-
-#![cfg_attr(not(test), no_std)]
+//! https://source.android.com/docs/core/architecture/bootloader/implementing-bootconfig#bootloader-changes
 
 use liberror::{Error, Result};
 
@@ -73,10 +71,11 @@ impl<'a> BootConfigBuilder<'a> {
     /// is not possible or desired.
     pub fn add_with<F>(&mut self, reader: F) -> Result<()>
     where
-        F: FnOnce(&mut [u8]) -> Result<usize>,
+        F: FnOnce(&[u8], &mut [u8]) -> Result<usize>,
     {
         let remains = self.remaining_capacity();
-        let size = reader(&mut self.buffer[self.current_size..][..remains])?;
+        let (current_buffer, remains_buffer) = self.buffer.split_at_mut(self.current_size);
+        let size = reader(&current_buffer[..], &mut remains_buffer[..remains])?;
         assert!(size <= remains);
         self.current_size += size;
         // Content may have been modified. Re-compute trailer.
@@ -88,7 +87,7 @@ impl<'a> BootConfigBuilder<'a> {
         if self.remaining_capacity() < config.len() {
             return Err(Error::BufferTooSmall(Some(config.len())));
         }
-        self.add_with(|out| {
+        self.add_with(|_, out| {
             out[..config.len()].clone_from_slice(config.as_bytes());
             Ok(config.len())
         })
@@ -131,7 +130,7 @@ impl core::fmt::Display for BootConfigBuilder<'_> {
 
 impl core::fmt::Write for BootConfigBuilder<'_> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        self.add_with(|out| {
+        self.add_with(|_, out| {
             out.get_mut(..s.len())
                 .ok_or(Error::BufferTooSmall(Some(s.len())))?
                 .clone_from_slice(s.as_bytes());
@@ -223,6 +222,32 @@ androidboot.verifiedbootstate=orange
     }
 
     #[test]
+    fn test_add_with_incremental() {
+        let mut buffer = [0u8; TEST_CONFIG.len() + TEST_CONFIG_TRAILER.len()];
+        let mut builder = BootConfigBuilder::new(&mut buffer[..]).unwrap();
+
+        let mut offset = 0;
+        for ele in TEST_CONFIG.strip_suffix('\n').unwrap().split('\n') {
+            let config = std::string::String::from(ele) + "\n";
+
+            builder
+                .add_with(|current, out| {
+                    assert_eq!(current, &TEST_CONFIG.as_bytes()[..offset]);
+
+                    out[..config.len()].copy_from_slice(config.as_bytes());
+                    Ok(config.len())
+                })
+                .unwrap();
+
+            offset += config.len();
+        }
+        assert_eq!(
+            builder.config_bytes().to_vec(),
+            [TEST_CONFIG.as_bytes(), TEST_CONFIG_TRAILER].concat().to_vec()
+        );
+    }
+
+    #[test]
     fn test_add_incremental_via_fmt_write() {
         let mut buffer = [0u8; TEST_CONFIG.len() + TEST_CONFIG_TRAILER.len()];
         let mut builder = BootConfigBuilder::new(&mut buffer[..]).unwrap();
@@ -259,6 +284,6 @@ androidboot.verifiedbootstate=orange
     fn test_add_with_error() {
         let mut buffer = [0u8; BOOTCONFIG_TRAILER_SIZE + 1];
         let mut builder = BootConfigBuilder::new(&mut buffer[..]).unwrap();
-        assert!(builder.add_with(|_| Err(Error::Other(None))).is_err());
+        assert!(builder.add_with(|_, _| Err(Error::Other(None))).is_err());
     }
 }
