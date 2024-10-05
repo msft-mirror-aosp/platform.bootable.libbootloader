@@ -15,11 +15,11 @@
 use crate::{
     efi_blocks::find_block_devices, fastboot::fastboot, ops::Ops, utils::cstr_bytes_to_str,
 };
+use arrayvec::ArrayVec;
 use avb::{slot_verify, HashtreeErrorMode, Ops as _, SlotVerifyFlags};
-use bootconfig::BootConfigBuilder;
 use bootimg::{BootImage, VendorImageHeader};
-use core::cmp::max;
-use core::{ffi::CStr, fmt::Write, str::from_utf8};
+use bootparams::{bootconfig::BootConfigBuilder, commandline::CommandlineBuilder};
+use core::{ffi::CStr, fmt::Write};
 use efi::{exit_boot_services, EfiEntry};
 use fdt::Fdt;
 use liberror::Error;
@@ -32,6 +32,8 @@ use zerocopy::{AsBytes, ByteSlice};
 #[cfg(target_arch = "aarch64")]
 use libgbl::decompress::decompress_kernel;
 
+// Device tree bootargs property to store kernel command line.
+const BOOTARGS_PROP: &CStr = c"bootargs";
 // Linux kernel requires 2MB alignment.
 const KERNEL_ALIGNMENT: usize = 2 * 1024 * 1024;
 // libfdt requires FDT buffer to be 8-byte aligned.
@@ -61,13 +63,20 @@ fn avb_verify_slot<'a>(
     dtbo: Option<&[u8]>,
     bootconfig_builder: &mut BootConfigBuilder,
 ) -> Result<()> {
-    let mut partitions = vec![c"boot", c"vendor_boot", c"init_boot"];
-    let mut preloaded =
-        vec![("boot", kernel), ("vendor_boot", vendor_boot), ("init_boot", init_boot)];
-
-    if let Some(dtbo) = dtbo {
-        partitions.push(c"dtbo");
-        preloaded.push(("dtbo", dtbo));
+    // We need the list of partition names to verify with libavb, and a corresponding list of
+    // (name, image) tuples to register as [GblAvbOps] preloaded data.
+    let mut partitions = ArrayVec::<_, 4>::new();
+    let mut preloaded = ArrayVec::<_, 4>::new();
+    for (c_name, image) in [
+        (c"boot", Some(kernel)),
+        (c"vendor_boot", Some(vendor_boot)),
+        (c"init_boot", Some(init_boot)),
+        (c"dtbo", dtbo),
+    ] {
+        if let Some(image) = image {
+            partitions.push(c_name);
+            preloaded.push((c_name.to_str().unwrap(), image));
+        }
     }
 
     let mut avb_ops = GblAvbOps::new(ops, &preloaded[..], false);
@@ -105,30 +114,28 @@ fn avb_verify_slot<'a>(
 /// (kernel_size, cmdline, page_size, ramdisk_size, second_size, dtb_size)
 fn boot_header_elements<B: ByteSlice + PartialEq>(
     hdr: &BootImage<B>,
-) -> Result<(usize, &[u8], usize, usize, usize, usize)> {
+) -> Result<(usize, &str, usize, usize, usize, usize)> {
     const PAGE_SIZE: usize = 4096; // V3/V4 image has fixed page size 4096;
     Ok(match hdr {
-        BootImage::V2(ref hdr) => {
-            let kernel_size = hdr._base._base.kernel_size as usize;
-            let page_size = hdr._base._base.page_size as usize;
-            let ramdisk_size = hdr._base._base.ramdisk_size as usize;
-            let second_size = hdr._base._base.second_size as usize;
-            let dtb_size = hdr.dtb_size as usize;
-            (
-                kernel_size,
-                &hdr._base._base.cmdline[..],
-                page_size,
-                ramdisk_size,
-                second_size,
-                dtb_size,
-            )
-        }
-        BootImage::V3(ref hdr) => {
-            (hdr.kernel_size as usize, &hdr.cmdline[..], PAGE_SIZE, hdr.ramdisk_size as usize, 0, 0)
-        }
+        BootImage::V2(ref hdr) => (
+            hdr._base._base.kernel_size as usize,
+            cstr_bytes_to_str(&hdr._base._base.cmdline[..])?,
+            hdr._base._base.page_size as usize,
+            hdr._base._base.ramdisk_size as usize,
+            hdr._base._base.second_size as usize,
+            hdr.dtb_size as usize,
+        ),
+        BootImage::V3(ref hdr) => (
+            hdr.kernel_size as usize,
+            cstr_bytes_to_str(&hdr.cmdline[..])?,
+            PAGE_SIZE,
+            hdr.ramdisk_size as usize,
+            0,
+            0,
+        ),
         BootImage::V4(ref hdr) => (
             hdr._base.kernel_size as usize,
-            &hdr._base.cmdline[..],
+            cstr_bytes_to_str(&hdr._base.cmdline[..])?,
             PAGE_SIZE,
             hdr._base.ramdisk_size as usize,
             0,
@@ -148,7 +155,7 @@ fn boot_header_elements<B: ByteSlice + PartialEq>(
 /// (vendor_ramdisk_size, hdr_size, cmdline, page_size, dtb_size, vendor_bootconfig_size, vendor_ramdisk_table_size)
 fn vendor_header_elements<B: ByteSlice + PartialEq>(
     hdr: &VendorImageHeader<B>,
-) -> Result<(usize, usize, &[u8], usize, usize, usize, usize)> {
+) -> Result<(usize, usize, &str, usize, usize, usize, usize)> {
     Ok(match hdr {
         VendorImageHeader::V3(ref hdr) => (
             hdr.vendor_ramdisk_size as usize,
@@ -156,7 +163,7 @@ fn vendor_header_elements<B: ByteSlice + PartialEq>(
                 .round_up(hdr.page_size)
                 .try_into()
                 .map_err(Error::from)?,
-            &hdr.cmdline.as_bytes(),
+            cstr_bytes_to_str(&hdr.cmdline.as_bytes())?,
             hdr.page_size as usize,
             hdr.dtb_size as usize,
             0,
@@ -168,7 +175,7 @@ fn vendor_header_elements<B: ByteSlice + PartialEq>(
                 .round_up(hdr._base.page_size)
                 .try_into()
                 .map_err(Error::from)?,
-            &hdr._base.cmdline.as_bytes(),
+            cstr_bytes_to_str(&hdr._base.cmdline.as_bytes())?,
             hdr._base.page_size as usize,
             hdr._base.dtb_size as usize,
             hdr.bootconfig_size as usize,
@@ -209,10 +216,16 @@ pub fn load_android_simple<'a, 'b>(
     let (boot_header_buffer, load) = load.split_at_mut(PAGE_SIZE);
     ops.read_from_partition_sync("boot_a", 0, boot_header_buffer)?;
     let boot_header = BootImage::parse(boot_header_buffer).map_err(Error::from)?;
-    let (kernel_size, cmdline, kernel_hdr_size, boot_ramdisk_size, boot_second_size, boot_dtb_size) =
-        boot_header_elements(&boot_header)?;
+    let (
+        kernel_size,
+        boot_cmdline,
+        kernel_hdr_size,
+        boot_ramdisk_size,
+        boot_second_size,
+        boot_dtb_size,
+    ) = boot_header_elements(&boot_header)?;
     gbl_println!(ops, "boot image size: {}", kernel_size);
-    gbl_println!(ops, "boot image cmdline: \"{}\"", from_utf8(cmdline).unwrap());
+    gbl_println!(ops, "boot image cmdline: \"{}\"", boot_cmdline);
     gbl_println!(ops, "boot ramdisk size: {}", boot_ramdisk_size);
     gbl_println!(ops, "boot dtb size: {}", boot_dtb_size);
 
@@ -234,11 +247,11 @@ pub fn load_android_simple<'a, 'b>(
                 VendorImageHeader::parse(vendor_boot_header_buffer).map_err(Error::from)?;
             vendor_header_elements(&vendor_boot_header)?
         }
-        _ => (0 as usize, 0 as usize, b"".as_bytes(), 0 as usize, 0 as usize, 0 as usize, 0),
+        _ => (0 as usize, 0 as usize, "", 0 as usize, 0 as usize, 0 as usize, 0),
     };
 
     gbl_println!(ops, "vendor ramdisk size: {}", vendor_ramdisk_size);
-    gbl_println!(ops, "vendor cmdline: \"{}\"", from_utf8(vendor_cmdline).unwrap());
+    gbl_println!(ops, "vendor cmdline: \"{}\"", vendor_cmdline);
     gbl_println!(ops, "vendor dtb size: {}", vendor_dtb_size);
 
     let (dtbo_buffer, load) = match ops.partition_size("dtbo_a") {
@@ -366,7 +379,7 @@ pub fn load_android_simple<'a, 'b>(
         for image_size in [vendor_ramdisk_size, vendor_dtb_size, vendor_ramdisk_table_size] {
             bootconfig_offset += SafeNum::from(image_size).round_up(vendor_page_size);
         }
-        bootconfig_builder.add_with(|out| {
+        bootconfig_builder.add_with(|_, out| {
             ops.read_from_partition_sync(
                 "vendor_boot_a",
                 bootconfig_offset.try_into()?,
@@ -376,9 +389,11 @@ pub fn load_android_simple<'a, 'b>(
         })?;
     }
     // Check if there is a device specific bootconfig partition.
+    // TODO(b/353272981): Implement cuttlefish-specific u-boot os_configuration implementation
+    //                    to handle this.
     match ops.partition_size("bootconfig") {
         Ok(Some(sz)) => {
-            bootconfig_builder.add_with(|out| {
+            bootconfig_builder.add_with(|_, out| {
                 // For proof-of-concept only, we just load as much as possible and figure out the
                 // actual bootconfig string length after. This however, can introduce large amount
                 // of unnecessary disk access. In real implementation, we might want to either read
@@ -394,6 +409,12 @@ pub fn load_android_simple<'a, 'b>(
         }
         _ => {}
     }
+
+    // TODO(b/353272981): Handle buffer too small
+    bootconfig_builder.add_with(|bytes, out| {
+        // TODO(b/353272981): Verify provided bootconfig and fail here
+        Ok(ops.fixup_bootconfig(&bytes, out)?.map(|slice| slice.len()).unwrap_or(0))
+    })?;
     gbl_println!(ops, "final bootconfig: \"{}\"", bootconfig_builder);
 
     ramdisk_load_curr += bootconfig_builder.config_bytes().len();
@@ -409,52 +430,45 @@ pub fn load_android_simple<'a, 'b>(
         (load, kernel_tail_buffer.len(), kernel_tail_buffer)
     };
 
-    // Prepare FDT.
-
-    // For cuttlefish, FDT comes from EFI vendor configuration table installed by u-boot. In real
-    // product, it may come from vendor boot image.
-    let mut fdt_bytes_buffer = vec![0u8; max(vendor_dtb_size, boot_dtb_size)];
-    let fdt_bytes_buffer = &mut fdt_bytes_buffer[..];
-    let fdt_bytes: &[u8] = match ops.get_custom_device_tree() {
-        Some(fdt_bytes) => fdt_bytes,
-        None if vendor_dtb_size > 0 => {
-            let vendor_dtb_offset: usize = (SafeNum::from(vendor_hdr_size)
-                + SafeNum::from(vendor_ramdisk_size))
-            .round_up(vendor_page_size)
-            .try_into()
-            .map_err(Error::from)?;
-            gbl_println!(
-                ops,
-                "Loading vendor_boot dtb size {} at {}",
-                vendor_dtb_size,
-                vendor_dtb_offset
-            );
-            let fdt_bytes = &mut fdt_bytes_buffer[..vendor_dtb_size.try_into().unwrap()];
-            ops.read_from_partition_sync(
-                "vendor_boot_a",
-                vendor_dtb_offset.try_into().unwrap(),
-                fdt_bytes,
-            )?;
-            fdt_bytes
-        }
-        None if boot_dtb_size > 0 => {
-            let mut boot_dtb_offset = SafeNum::from(kernel_hdr_size);
-            for image_size in [kernel_size, boot_ramdisk_size, boot_second_size] {
-                boot_dtb_offset += SafeNum::from(image_size).round_up(kernel_hdr_size);
-            }
-            let fdt_bytes = &mut fdt_bytes_buffer[..boot_dtb_size.try_into().unwrap()];
-            ops.read_from_partition_sync("boot_a", boot_dtb_offset.try_into().unwrap(), fdt_bytes)?;
-            fdt_bytes
-        }
-        None => &mut [],
-    };
-    let fdt_origin = Fdt::new(fdt_bytes)?;
-
-    // Use the remaining load buffer for updating FDT.
+    // Use the remaining load buffer for the FDT.
     let (ramdisk_load_buffer, load) =
         load.split_at_mut(ramdisk_load_curr.try_into().map_err(Error::from)?);
-    let load = aligned_subslice(load, FDT_ALIGNMENT)?;
-    let mut fdt = Fdt::new_from_init(&mut load[..], fdt_bytes)?;
+    let fdt_buffer = aligned_subslice(load, FDT_ALIGNMENT)?;
+
+    // TODO(b/353272981): for now we have a hardcoded priority order of DT sources to check, but
+    // the goal is to provide all DTBs and DTBOs to [GblOps] and let it select which ones to use.
+    match ops.get_custom_device_tree() {
+        // First: check for custom FDT (Cuttlefish).
+        Some(custom_fdt) => {
+            gbl_println!(ops, "Using custom FDT");
+            fdt_buffer[..custom_fdt.len()].copy_from_slice(custom_fdt);
+        }
+        None => {
+            // Second: "vendor_boot" FDT.
+            let (part, offset, size) = if vendor_dtb_size > 0 {
+                // DTB is located after the header and ramdisk (aligned).
+                let offset = (SafeNum::from(vendor_hdr_size) + SafeNum::from(vendor_ramdisk_size))
+                    .round_up(vendor_page_size)
+                    .try_into()
+                    .map_err(Error::from)?;
+                ("vendor_boot_a", offset, vendor_dtb_size)
+            // Third: "boot" FDT.
+            } else if boot_dtb_size > 0 {
+                // DTB is located after the header, kernel, ramdisk, and second images (aligned).
+                let mut offset = SafeNum::from(kernel_hdr_size);
+                for image_size in [kernel_size, boot_ramdisk_size, boot_second_size] {
+                    offset += SafeNum::from(image_size).round_up(kernel_hdr_size);
+                }
+                ("boot_a", offset.try_into().map_err(Error::from)?, boot_dtb_size)
+            } else {
+                return Err(Error::NoFdt.into());
+            };
+
+            gbl_println!(ops, "Using FDT from {} (offset = {}, size = {})", part, offset, size);
+            ops.read_from_partition_sync(part, offset, &mut fdt_buffer[..size])?;
+        }
+    };
+    let mut fdt = Fdt::new(fdt_buffer)?;
 
     // Add ramdisk range to FDT
     let ramdisk_addr: u64 =
@@ -466,25 +480,30 @@ pub fn load_android_simple<'a, 'b>(
     gbl_println!(ops, "linux,initrd-start: {:#x}", ramdisk_addr);
     gbl_println!(ops, "linux,initrd-end: {:#x}", ramdisk_end);
 
-    // Concatenate kernel commandline and add it to FDT.
-    let bootargs_prop = CStr::from_bytes_with_nul(b"bootargs\0").unwrap();
-    let all_cmdline = [
-        cstr_bytes_to_str(fdt_origin.get_property("chosen", bootargs_prop).unwrap_or(&[0]))?,
-        " ",
-        cstr_bytes_to_str(cmdline)?,
-        " ",
-        if vendor_cmdline.len() > 0 { cstr_bytes_to_str(vendor_cmdline)? } else { "" },
-        "\0",
-    ];
-    let mut all_cmdline_len = 0;
-    all_cmdline.iter().for_each(|v| all_cmdline_len += v.len());
-    let cmdline_payload = fdt.set_property_placeholder("chosen", bootargs_prop, all_cmdline_len)?;
-    let mut cmdline_payload_off: usize = 0;
-    for ele in all_cmdline {
-        cmdline_payload[cmdline_payload_off..][..ele.len()].clone_from_slice(ele.as_bytes());
-        cmdline_payload_off += ele.len();
-    }
-    gbl_println!(ops, "final cmdline: \"{}\"", from_utf8(cmdline_payload).unwrap());
+    // Update the FDT commandline.
+    let device_tree_commandline_length =
+        CStr::from_bytes_until_nul(fdt.get_property("chosen", BOOTARGS_PROP)?)
+            .map_err(Error::from)?
+            .to_bytes()
+            .len();
+
+    // Reserve 1024 bytes for separators and fixup.
+    let final_commandline_len =
+        device_tree_commandline_length + boot_cmdline.len() + vendor_cmdline.len() + 1024;
+    let final_commandline_buffer =
+        fdt.set_property_placeholder("chosen", BOOTARGS_PROP, final_commandline_len)?;
+
+    let mut commandline_builder =
+        CommandlineBuilder::new_from_prefix(&mut final_commandline_buffer[..])?;
+    commandline_builder.add(boot_cmdline)?;
+    commandline_builder.add(vendor_cmdline)?;
+
+    // TODO(b/353272981): Handle buffer too small
+    commandline_builder.add_with(|current, out| {
+        // TODO(b/353272981): Verify provided command line and fail here.
+        Ok(ops.fixup_os_commandline(current, out)?.map(|fixup| fixup.len()).unwrap_or(0))
+    })?;
+    gbl_println!(ops, "final cmdline: \"{}\"", commandline_builder.as_str());
 
     // Finalize FDT to actual used size.
     fdt.shrink_to_fit()?;
@@ -572,11 +591,7 @@ pub fn android_boot_demo(entry: EfiEntry) -> Result<()> {
             boot::x86::boot_linux_bzimage(
                 kernel,
                 ramdisk,
-                fdt.get_property(
-                    "chosen",
-                    core::ffi::CStr::from_bytes_with_nul(b"bootargs\0").unwrap(),
-                )
-                .unwrap(),
+                fdt.get_property("chosen", BOOTARGS_PROP).unwrap(),
                 |e820_entries| {
                     // Convert EFI memory type to e820 memory type.
                     if efi_mmap.len() > e820_entries.len() {

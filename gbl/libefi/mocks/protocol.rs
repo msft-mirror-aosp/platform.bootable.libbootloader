@@ -18,6 +18,7 @@
 //! to either one using the same path.
 
 use crate::{DeviceHandle, MOCK_EFI};
+use core::ffi::CStr;
 use core::fmt::Write;
 use efi::protocol::gbl_efi_image_loading::EfiImageBuffer;
 use efi_types::{EfiInputKey, GblEfiImageInfo, GblEfiPartitionName};
@@ -147,4 +148,31 @@ pub mod gbl_efi_image_loading {
 
     /// Map to the libefi name so code under test can just use one name.
     pub type GblImageLoadingProtocol = MockGblImageLoadingProtocol;
+}
+
+/// Mock os_configuration protocol.
+pub mod gbl_efi_os_configuration {
+    use super::*;
+
+    mock! {
+        /// Mock [efi::OsConfigurationProtocol].
+        pub GblOsConfigurationProtocol {
+            /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.fixup_kernel_commandline()`
+            pub fn fixup_kernel_commandline(
+                &self,
+                commandline: &CStr,
+                fixup: &[u8],
+            ) -> Result<()>;
+
+            /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.fixup_bootconfig()`
+            pub fn fixup_bootconfig(
+                &self,
+                bootconfig: &[u8],
+                fixup: &mut [u8]
+            ) -> Result<usize>;
+        }
+    }
+
+    /// Map to the libefi name so code under test can just use one name.
+    pub type GblOsConfigurationProtocol = MockGblOsConfigurationProtocol;
 }
