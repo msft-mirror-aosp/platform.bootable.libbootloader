@@ -1,4 +1,4 @@
-# Copyright (C) 2023 The Android Open Source Project
+# Copyright (C) 2024 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,9 +20,9 @@ package(
 )
 
 rust_library(
-    name = "libbootconfig",
-    srcs = ["src/lib.rs"],
-    crate_name = "bootconfig",
+    name = "libbootparams",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "bootparams",
     edition = "2021",
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
@@ -31,7 +31,7 @@ rust_library(
 )
 
 rust_test(
-    name = "libbootconfig_test",
-    crate = ":libbootconfig",
+    name = "test",
+    crate = ":libbootparams",
     rustc_flags = ANDROID_RUST_LINTS,
 )
