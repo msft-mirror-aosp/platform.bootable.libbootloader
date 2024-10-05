@@ -21,6 +21,7 @@ use crate::{
         check_part_unique, read_unique_partition, write_unique_partition, PartitionBlockDevice,
     },
 };
+use core::ffi::CStr;
 use core::{fmt::Write, num::NonZeroUsize, result::Result};
 use gbl_async::block_on;
 use gbl_storage::{BlockIoAsync, BlockIoNull};
@@ -93,6 +94,15 @@ where
 
     /// Platform specific processing of boot images before booting.
     fn preboot(&mut self, boot_images: BootImages) -> Result<(), Error>;
+
+    /// Reboots the system into the last set boot mode.
+    ///
+    /// The method is not expected to return. Errors should be handled internally by the
+    /// implementation. In most cases, implementation should continue to reset even in the presence
+    /// of errors (users can force power cycle anyway). If there are error cases where reboot
+    /// absolutely can't be taken, implementation should hang and notify platform user in its own
+    /// way.
+    fn reboot(&mut self);
 
     /// Returns the list of partition block devices.
     ///
@@ -229,6 +239,28 @@ where
     /// currently needed for Cuttlefish, but should not be used in production devices because this
     /// data cannot be verified with libavb.
     fn get_custom_device_tree(&mut self) -> Option<&'a [u8]>;
+
+    /// Requests an OS command line to be used alongside the one built by GBL.
+    ///
+    /// The returned command line will be verified and appended on top of the command line
+    /// built by GBL. Refer to the behavior specified for the corresponding UEFI interface:
+    /// https://cs.android.com/android/platform/superproject/main/+/main:bootable/libbootloader/gbl/docs/gbl_os_configuration_protocol.md
+    fn fixup_os_commandline<'c>(
+        &mut self,
+        commandline: &CStr,
+        fixup_buffer: &'c mut [u8],
+    ) -> Result<Option<&'c str>, Error>;
+
+    /// Requests an OS bootconfig to be used alongside the one built by GBL.
+    ///
+    /// The returned bootconfig will be verified and appended on top of the bootconfig
+    /// built by GBL. Refer to the behavior specified for the corresponding UEFI interface:
+    /// https://cs.android.com/android/platform/superproject/main/+/main:bootable/libbootloader/gbl/docs/gbl_os_configuration_protocol.md
+    fn fixup_bootconfig<'c>(
+        &mut self,
+        bootconfig: &[u8],
+        fixup_buffer: &'c mut [u8],
+    ) -> Result<Option<&'c [u8]>, Error>;
 }
 
 /// Prints with `GblOps::console_out()`.
@@ -394,6 +426,8 @@ pub(crate) mod test {
             unimplemented!();
         }
 
+        fn reboot(&mut self) {}
+
         fn partitions(
             &self,
         ) -> Result<&'a [PartitionBlockDevice<'a, Self::PartitionBlockIo>], Error> {
@@ -469,6 +503,22 @@ pub(crate) mod test {
 
         fn get_custom_device_tree(&mut self) -> Option<&'static [u8]> {
             None
+        }
+
+        fn fixup_os_commandline<'c>(
+            &mut self,
+            _commandline: &CStr,
+            _fixup_buffer: &'c mut [u8],
+        ) -> Result<Option<&'c str>, Error> {
+            unimplemented!();
+        }
+
+        fn fixup_bootconfig<'c>(
+            &mut self,
+            _bootconfig: &[u8],
+            _fixup_buffer: &'c mut [u8],
+        ) -> Result<Option<&'c [u8]>, Error> {
+            unimplemented!();
         }
     }
 }
