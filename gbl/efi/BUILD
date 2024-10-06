@@ -31,32 +31,20 @@ rust_library(
         "@gbl//libasync",
         "@gbl//libasync:cyclic_executor",
         "@gbl//libboot",
-        "@gbl//libbootconfig",
-        "@gbl//libbootimg",
-        "@gbl//libdttable",
         "@gbl//libefi",
         "@gbl//libefi_types",
         "@gbl//liberror",
         "@gbl//libfastboot",
         "@gbl//libfdt",
         "@gbl//libgbl",
-        "@gbl//libmisc",
         "@gbl//libsafemath",
         "@gbl//libstorage",
-        "@gbl//libutils",
         "@gbl//third_party/libzbi",
         "@smoltcp",
         "@spin",
         "@uuid",
         "@zerocopy",
-    ] + select(
-        {
-            "@gbl//toolchain:gbl_rust_uefi_aarch64": [
-                "@gbl//efi/arch/aarch64",
-            ],
-            "//conditions:default": [],
-        },
-    ),
+    ],
 )
 
 rust_test(
