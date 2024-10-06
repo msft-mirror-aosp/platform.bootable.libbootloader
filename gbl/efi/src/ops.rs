@@ -177,6 +177,13 @@ where
     fn should_stop_in_fastboot(&mut self) -> Result<bool, Error> {
         // TODO(b/349829690): also query GblSlotProtocol.get_boot_reason() for board-specific
         // fastboot triggers.
+
+        // TODO(b/366520234): Switch to use GblSlotProtocol.should_stop_in_fastboot once available.
+        match self.get_efi_fdt_prop("gbl", c"stop-in-fastboot") {
+            Some(v) => return Ok(*v.get(0).unwrap_or(&0) == 1),
+            _ => {}
+        }
+
         efi_println!(self.efi_entry, "Press Backspace to enter fastboot");
         let found = wait_key_stroke(
             self.efi_entry,
@@ -192,6 +199,11 @@ where
 
     fn preboot(&mut self, _: BootImages) -> Result<(), Error> {
         unimplemented!();
+    }
+
+    /// Reboots the system into the last set boot mode.
+    fn reboot(&mut self) {
+        self.efi_entry.system_table().runtime_services().cold_reset();
     }
 
     fn partitions(&self) -> Result<&'b [PartitionBlockDevice<'b, Self::PartitionBlockIo>], Error> {

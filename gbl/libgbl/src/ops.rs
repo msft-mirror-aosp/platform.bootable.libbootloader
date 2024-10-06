@@ -13,9 +13,6 @@
 // limitations under the License.
 
 //! GblOps trait that defines GBL callbacks.
-//!
-#[cfg(feature = "alloc")]
-extern crate alloc;
 
 pub use crate::image_buffer::ImageBuffer;
 use crate::{
@@ -24,8 +21,6 @@ use crate::{
         check_part_unique, read_unique_partition, write_unique_partition, PartitionBlockDevice,
     },
 };
-#[cfg(feature = "alloc")]
-use alloc::ffi::CString;
 use core::{fmt::Write, num::NonZeroUsize, result::Result};
 use gbl_async::block_on;
 use gbl_storage::{BlockIoAsync, BlockIoNull};
@@ -98,6 +93,15 @@ where
 
     /// Platform specific processing of boot images before booting.
     fn preboot(&mut self, boot_images: BootImages) -> Result<(), Error>;
+
+    /// Reboots the system into the last set boot mode.
+    ///
+    /// The method is not expected to return. Errors should be handled internally by the
+    /// implementation. In most cases, implementation should continue to reset even in the presence
+    /// of errors (users can force power cycle anyway). If there are error cases where reboot
+    /// absolutely can't be taken, implementation should hang and notify platform user in its own
+    /// way.
+    fn reboot(&mut self);
 
     /// Returns the list of partition block devices.
     ///
@@ -345,6 +349,9 @@ pub(crate) mod test {
         /// is provided by `partitions` and our custom storage APIs rather than the [AvbTestOps]
         /// fake storage, so that we can more accurately test our storage implementation.
         pub avb_ops: AvbTestOps<'static>,
+
+        /// Value returned by `should_stop_in_fastboot`.
+        pub stop_in_fastboot: Option<Result<bool, Error>>,
     }
 
     /// Print `console_out` output, which can be useful for debugging.
@@ -389,12 +396,14 @@ pub(crate) mod test {
         }
 
         fn should_stop_in_fastboot(&mut self) -> Result<bool, Error> {
-            unimplemented!();
+            self.stop_in_fastboot.unwrap_or(Ok(false))
         }
 
         fn preboot(&mut self, boot_images: BootImages) -> Result<(), Error> {
             unimplemented!();
         }
+
+        fn reboot(&mut self) {}
 
         fn partitions(
             &self,
