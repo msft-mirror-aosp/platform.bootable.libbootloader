@@ -182,6 +182,7 @@ mod test {
     use libgbl::ops::ImageBuffer;
     // TODO(b/350526796): use ptr.is_aligned() when Rust 1.79 is in Android
     use std::{
+        ffi::CStr,
         fmt::Write,
         mem::align_of,
         num::NonZeroUsize,
@@ -259,6 +260,10 @@ mod test {
             unimplemented!();
         }
 
+        fn reboot(&mut self) {
+            unimplemented!();
+        }
+
         fn partitions(&self) -> Result<&'a [PartitionBlockDevice<'a, Self::PartitionBlockIo>]> {
             unimplemented!();
         }
@@ -318,6 +323,22 @@ mod test {
         }
 
         fn get_custom_device_tree(&mut self) -> Option<&'a [u8]> {
+            unimplemented!();
+        }
+
+        fn fixup_os_commandline<'c>(
+            &mut self,
+            _commandline: &CStr,
+            _fixup_buffer: &'c mut [u8],
+        ) -> Result<Option<&'c str>> {
+            unimplemented!();
+        }
+
+        fn fixup_bootconfig<'c>(
+            &mut self,
+            _bootconfig: &[u8],
+            _fixup_buffer: &'c mut [u8],
+        ) -> Result<Option<&'c [u8]>> {
             unimplemented!();
         }
     }

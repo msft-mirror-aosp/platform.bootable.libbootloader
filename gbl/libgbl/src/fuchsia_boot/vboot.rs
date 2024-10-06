@@ -13,184 +13,13 @@
 // limitations under the License.
 
 use crate::{
+    avb_ops::GblAvbOps,
     fuchsia_boot::{zbi_split_unused_buffer, zircon_part_name, SlotIndex},
     gbl_print, GblOps, Result as GblResult,
 };
-use avb::{
-    cert_validate_vbmeta_public_key, slot_verify, CertOps, CertPermanentAttributes, Descriptor,
-    HashtreeErrorMode, IoError as AvbIoError, IoResult as AvbIoResult, Ops as AvbOps,
-    PublicKeyForPartitionInfo, SlotVerifyError, SlotVerifyFlags, SHA256_DIGEST_SIZE,
-};
-use core::{
-    cmp::{max, min},
-    ffi::CStr,
-};
-use safemath::SafeNum;
-use uuid::Uuid;
+use avb::{slot_verify, Descriptor, HashtreeErrorMode, Ops as _, SlotVerifyError, SlotVerifyFlags};
+use core::ffi::CStr;
 use zbi::{merge_within, ZbiContainer};
-
-// For Fuchsia, maximum number of key version is 2.
-const AVB_ATX_NUM_KEY_VERSIONS: usize = 2;
-
-/// `GblZirconBootAvbOps` implements `avb::Ops` for GBL Zircon boot flow.
-struct GblZirconBootAvbOps<'a, T> {
-    gbl_ops: &'a mut T,
-    preloaded_partitions: &'a [(&'a str, &'a [u8])],
-    // Used for storing key versions to be set. (location, version).
-    // If `array_map` is imported in the future, consider switching to it.
-    key_versions: [Option<(usize, u64)>; AVB_ATX_NUM_KEY_VERSIONS],
-}
-
-impl<'a, T: GblOps<'a>> GblZirconBootAvbOps<'_, T> {
-    /// Returns the size of a partition.
-    fn partition_size(&mut self, partition: &str) -> AvbIoResult<u64> {
-        Ok(self
-            .gbl_ops
-            .partition_size(partition)
-            .or(Err(AvbIoError::Io))?
-            .ok_or(AvbIoError::NoSuchPartition)?)
-    }
-}
-
-/// A helper function for converting `CStr` to `str`
-fn cstr_to_str<E>(s: &CStr, err: E) -> Result<&str, E> {
-    Ok(s.to_str().or(Err(err))?)
-}
-
-impl<'a, 'b, T: GblOps<'b>> AvbOps<'a> for GblZirconBootAvbOps<'a, T> {
-    fn read_from_partition(
-        &mut self,
-        partition: &CStr,
-        offset: i64,
-        buffer: &mut [u8],
-    ) -> AvbIoResult<usize> {
-        let part_str = cstr_to_str(partition, AvbIoError::NoSuchPartition)?;
-        let partition_size = SafeNum::from(self.partition_size(part_str)?);
-        let read_off = match offset < 0 {
-            true => partition_size - offset.abs(),
-            _ => SafeNum::from(offset),
-        };
-        let read_sz = partition_size - read_off;
-        let read_off = read_off.try_into().map_err(|_| AvbIoError::Io)?;
-        let read_sz: usize = min(buffer.len(), read_sz.try_into().map_err(|_| AvbIoError::Io)?);
-        self.gbl_ops
-            .read_from_partition_sync(part_str, read_off, &mut buffer[..read_sz])
-            .map_err(|_| AvbIoError::Io)?;
-        Ok(read_sz)
-    }
-
-    fn get_preloaded_partition(&mut self, partition: &CStr) -> AvbIoResult<&'a [u8]> {
-        let part_str = cstr_to_str(partition, AvbIoError::NotImplemented)?;
-        Ok(self
-            .preloaded_partitions
-            .iter()
-            .find(|(name, _)| *name == part_str)
-            .ok_or(AvbIoError::NotImplemented)?
-            .1)
-    }
-
-    fn validate_vbmeta_public_key(
-        &mut self,
-        public_key: &[u8],
-        public_key_metadata: Option<&[u8]>,
-    ) -> AvbIoResult<bool> {
-        cert_validate_vbmeta_public_key(self, public_key, public_key_metadata)
-    }
-
-    fn read_rollback_index(&mut self, rollback_index_location: usize) -> AvbIoResult<u64> {
-        self.gbl_ops.avb_read_rollback_index(rollback_index_location)
-    }
-
-    fn write_rollback_index(
-        &mut self,
-        rollback_index_location: usize,
-        index: u64,
-    ) -> AvbIoResult<()> {
-        self.gbl_ops.avb_write_rollback_index(rollback_index_location, index)
-    }
-
-    fn read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
-        self.gbl_ops.avb_read_is_device_unlocked()
-    }
-
-    fn get_unique_guid_for_partition(&mut self, partition: &CStr) -> AvbIoResult<Uuid> {
-        // The ops is only used to check that a partition exists. GUID is not used.
-        self.partition_size(cstr_to_str(partition, AvbIoError::NoSuchPartition)?)?;
-        Ok(Uuid::nil())
-    }
-
-    fn get_size_of_partition(&mut self, partition: &CStr) -> AvbIoResult<u64> {
-        match self.get_preloaded_partition(partition) {
-            Ok(img) => Ok(img.len().try_into().unwrap()),
-            _ => {
-                let part_str = cstr_to_str(partition, AvbIoError::NoSuchPartition)?;
-                self.partition_size(part_str)
-            }
-        }
-    }
-
-    fn read_persistent_value(&mut self, _name: &CStr, _value: &mut [u8]) -> AvbIoResult<usize> {
-        // Fuchsia might need this in the future.
-        unimplemented!();
-    }
-
-    fn write_persistent_value(&mut self, _name: &CStr, _value: &[u8]) -> AvbIoResult<()> {
-        // Not needed by Fuchsia.
-        unreachable!();
-    }
-
-    fn erase_persistent_value(&mut self, _name: &CStr) -> AvbIoResult<()> {
-        // Not needed by Fuchsia.
-        unreachable!();
-    }
-
-    fn validate_public_key_for_partition(
-        &mut self,
-        _partition: &CStr,
-        _public_key: &[u8],
-        _public_key_metadata: Option<&[u8]>,
-    ) -> AvbIoResult<PublicKeyForPartitionInfo> {
-        // Not needed by Fuchsia.
-        unreachable!();
-    }
-
-    fn cert_ops(&mut self) -> Option<&mut dyn CertOps> {
-        Some(self)
-    }
-}
-
-impl<'a, T: GblOps<'a>> CertOps for GblZirconBootAvbOps<'_, T> {
-    fn read_permanent_attributes(
-        &mut self,
-        attributes: &mut CertPermanentAttributes,
-    ) -> AvbIoResult<()> {
-        self.gbl_ops.avb_cert_read_permanent_attributes(attributes)
-    }
-
-    fn read_permanent_attributes_hash(&mut self) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
-        self.gbl_ops.avb_cert_read_permanent_attributes_hash()
-    }
-
-    fn set_key_version(&mut self, rollback_index_location: usize, key_version: u64) {
-        // Checks if there is already an allocated slot for this location.
-        let existing = self
-            .key_versions
-            .iter_mut()
-            .find_map(|v| v.as_mut().filter(|(loc, _)| *loc == rollback_index_location));
-        match existing {
-            Some((_, val)) => *val = max(*val, key_version),
-            _ => {
-                // Finds an empty slot and stores the rollback index.
-                *self.key_versions.iter_mut().find(|v| v.is_none()).unwrap() =
-                    Some((rollback_index_location, key_version))
-            }
-        }
-    }
-
-    fn get_random(&mut self, bytes: &mut [u8]) -> AvbIoResult<()> {
-        unimplemented!()
-    }
-}
 
 /// Helper for getting the A/B/R suffix.
 fn slot_suffix(slot: Option<SlotIndex>) -> Option<&'static CStr> {
@@ -223,11 +52,7 @@ pub(crate) fn zircon_verify_kernel<'a, 'b>(
         // Verifies the kernel.
         let part = zircon_part_name(slot);
         let preloaded = [(part, &kernel[..])];
-        let mut avb_ops = GblZirconBootAvbOps {
-            gbl_ops,
-            preloaded_partitions: &preloaded[..],
-            key_versions: [None; AVB_ATX_NUM_KEY_VERSIONS],
-        };
+        let mut avb_ops = GblAvbOps::new(gbl_ops, &preloaded[..], true);
         // TODO(b/334962583): Supports optional additional partitions to verify.
         let verify_res = slot_verify(&mut avb_ops, &[c"zircon"], slot_suffix(slot), flag, mode);
         let verified_success = verify_res.is_ok();
@@ -304,54 +129,6 @@ mod test {
     // The cert test keys were both generated with rollback version 42.
     const TEST_CERT_PIK_VERSION: u64 = 42;
     const TEST_CERT_PSK_VERSION: u64 = 42;
-
-    #[test]
-    fn test_avb_ops_read_from_partition_positive_off() {
-        let mut storage = create_storage();
-        let partitions = storage.as_partition_block_devices();
-        let gbl_ops = &mut create_gbl_ops(&partitions);
-
-        let zircon_a = gbl_ops.copy_partition("zircon_a");
-
-        let mut avb_ops =
-            GblZirconBootAvbOps { gbl_ops, preloaded_partitions: &[], key_versions: [None, None] };
-        let mut out = vec![0u8; 512];
-        // Positive offset.
-        avb_ops.read_from_partition(c"zircon_a", 1, &mut out[..]).unwrap();
-        assert_eq!(out, zircon_a[1..][..out.len()]);
-    }
-
-    #[test]
-    fn test_avb_ops_read_from_partition_negative_off() {
-        let mut storage = create_storage();
-        let partitions = storage.as_partition_block_devices();
-        let gbl_ops = &mut create_gbl_ops(&partitions);
-
-        let zircon_a = gbl_ops.copy_partition("zircon_a");
-
-        let mut avb_ops =
-            GblZirconBootAvbOps { gbl_ops, preloaded_partitions: &[], key_versions: [None, None] };
-        let mut out = vec![0u8; 512];
-        // Negative offset.
-        avb_ops.read_from_partition(c"zircon_a", -1024, &mut out[..]).unwrap();
-        assert_eq!(out, zircon_a[zircon_a.len() - 1024..][..out.len()]);
-    }
-
-    #[test]
-    fn test_avb_ops_read_from_partition_partial_read() {
-        let mut storage = create_storage();
-        let partitions = storage.as_partition_block_devices();
-        let gbl_ops = &mut create_gbl_ops(&partitions);
-
-        let zircon_a = gbl_ops.copy_partition("zircon_a");
-
-        let mut avb_ops =
-            GblZirconBootAvbOps { gbl_ops, preloaded_partitions: &[], key_versions: [None, None] };
-        let mut out = vec![0u8; 512];
-        // Partial read.
-        avb_ops.read_from_partition(c"zircon_a", -256, &mut out[..]).unwrap();
-        assert_eq!(out[..256], zircon_a[zircon_a.len() - 256..]);
-    }
 
     #[test]
     fn test_verify_success() {

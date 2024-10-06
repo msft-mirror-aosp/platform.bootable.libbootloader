@@ -22,11 +22,12 @@ use crate::{
 use alloc::alloc::{alloc, handle_alloc_error, Layout};
 use core::{ffi::CStr, fmt::Write, mem::MaybeUninit, num::NonZeroUsize, slice::from_raw_parts_mut};
 use efi::{
-    efi_print, efi_println, protocol::gbl_efi_image_loading::GblImageLoadingProtocol, EfiEntry,
+    efi_print, efi_println, protocol::gbl_efi_image_loading::GblImageLoadingProtocol,
+    protocol::gbl_efi_os_configuration::GblOsConfigurationProtocol, EfiEntry,
 };
 use efi_types::{GblEfiImageInfo, PARTITION_NAME_LEN_U16};
 use fdt::Fdt;
-use liberror::Error;
+use liberror::{Error, Result};
 use libgbl::{
     ops::{AvbIoError, AvbIoResult, CertPermanentAttributes, ImageBuffer, SHA256_DIGEST_SIZE},
     partition::PartitionBlockDevice,
@@ -101,10 +102,7 @@ impl<'a> Ops<'a, '_> {
     // Allocated buffer is leaked intentionally. ImageBuffer is assumed to reference static memory.
     // ImageBuffer is not expected to be released, and is allocated to hold data necessary for next
     // boot stage (kernel boot). All allocated buffers are expected to be used by kernel.
-    fn allocate_image_buffer(
-        image_name: &str,
-        size: NonZeroUsize,
-    ) -> liberror::Result<ImageBuffer<'static>> {
+    fn allocate_image_buffer(image_name: &str, size: NonZeroUsize) -> Result<ImageBuffer<'static>> {
         const KERNEL_ALIGNMENT: usize = 2 * 1024 * 1024;
         const FDT_ALIGNMENT: usize = 8;
         const BOOTCMD_SIZE: usize = 16 * 1024;
@@ -174,9 +172,16 @@ where
         "\r\n"
     }
 
-    fn should_stop_in_fastboot(&mut self) -> Result<bool, Error> {
+    fn should_stop_in_fastboot(&mut self) -> Result<bool> {
         // TODO(b/349829690): also query GblSlotProtocol.get_boot_reason() for board-specific
         // fastboot triggers.
+
+        // TODO(b/366520234): Switch to use GblSlotProtocol.should_stop_in_fastboot once available.
+        match self.get_efi_fdt_prop("gbl", c"stop-in-fastboot") {
+            Some(v) => return Ok(*v.get(0).unwrap_or(&0) == 1),
+            _ => {}
+        }
+
         efi_println!(self.efi_entry, "Press Backspace to enter fastboot");
         let found = wait_key_stroke(
             self.efi_entry,
@@ -190,18 +195,23 @@ where
         found.or(Err(Error::Other(Some("wait for key stroke error"))))
     }
 
-    fn preboot(&mut self, _: BootImages) -> Result<(), Error> {
+    fn preboot(&mut self, _: BootImages) -> Result<()> {
         unimplemented!();
     }
 
-    fn partitions(&self) -> Result<&'b [PartitionBlockDevice<'b, Self::PartitionBlockIo>], Error> {
+    /// Reboots the system into the last set boot mode.
+    fn reboot(&mut self) {
+        self.efi_entry.system_table().runtime_services().cold_reset();
+    }
+
+    fn partitions(&self) -> Result<&'b [PartitionBlockDevice<'b, Self::PartitionBlockIo>]> {
         Ok(self.partitions)
     }
 
     fn zircon_add_device_zbi_items(
         &mut self,
         container: &mut ZbiContainer<&mut [u8]>,
-    ) -> Result<(), Error> {
+    ) -> Result<()> {
         // TODO(b/353272981): Switch to use OS configuration protocol once it is implemented on
         // existing platforms such as VIM3.
         Ok(match self.get_efi_fdt_prop("zircon", c"zbi-blob") {
@@ -276,6 +286,48 @@ where
         // TODO(b/353272981): once we've settled on the device tree UEFI protocol, use that
         // instead to provide a Cuttlefish-specific backend.
         Some(get_efi_fdt(&self.efi_entry)?.1)
+    }
+
+    fn fixup_os_commandline<'c>(
+        &mut self,
+        commandline: &CStr,
+        fixup_buffer: &'c mut [u8],
+    ) -> Result<Option<&'c str>> {
+        Ok(
+            match self
+                .efi_entry
+                .system_table()
+                .boot_services()
+                .find_first_and_open::<GblOsConfigurationProtocol>()
+            {
+                Ok(protocol) => {
+                    protocol.fixup_kernel_commandline(commandline, fixup_buffer)?;
+                    Some(CStr::from_bytes_until_nul(&fixup_buffer[..])?.to_str()?)
+                }
+                _ => None,
+            },
+        )
+    }
+
+    fn fixup_bootconfig<'c>(
+        &mut self,
+        bootconfig: &[u8],
+        fixup_buffer: &'c mut [u8],
+    ) -> Result<Option<&'c [u8]>> {
+        Ok(
+            match self
+                .efi_entry
+                .system_table()
+                .boot_services()
+                .find_first_and_open::<GblOsConfigurationProtocol>()
+            {
+                Ok(protocol) => {
+                    let fixup_size = protocol.fixup_bootconfig(bootconfig, fixup_buffer)?;
+                    Some(&fixup_buffer[..fixup_size])
+                }
+                _ => None,
+            },
+        )
     }
 }
 
