@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use crate::efi;
-use core::ffi::CStr;
 use efi::{
     protocol::{
         device_path::{DevicePathProtocol, DevicePathText, DevicePathToTextProtocol},
@@ -25,7 +24,6 @@ use efi::{
 };
 use efi_types::{EfiGuid, EfiInputKey};
 use fdt::FdtHeader;
-use liberror::Error;
 use libgbl::Result;
 
 pub const EFI_DTB_TABLE_GUID: EfiGuid =
@@ -87,11 +85,6 @@ pub fn efi_to_e820_mem_type(efi_mem_type: u32) -> u32 {
         efi_types::EFI_MEMORY_TYPE_PERSISTENT_MEMORY => boot::x86::E820_ADDRESS_TYPE_PMEM,
         v => panic!("Unmapped EFI memory type {v}"),
     }
-}
-
-/// A helper to convert a bytes slice containing a null-terminated string to `str`
-pub fn cstr_bytes_to_str(data: &[u8]) -> core::result::Result<&str, Error> {
-    Ok(CStr::from_bytes_until_nul(data)?.to_str()?)
 }
 
 /// Repetitively runs a closure until it signals completion or timeout.
