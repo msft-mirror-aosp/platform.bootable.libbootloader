@@ -15,27 +15,63 @@
 load("@gbl//toolchain:gbl_toolchain.bzl", "build_with_platform")
 load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@gbl_llvm_prebuilts//:info.bzl", "gbl_llvm_tool_path")
-load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 package(
     default_visibility = ["//visibility:public"],
 )
 
-rust_binary(
-    name = "main",
-    srcs = [
-        "src/android_boot.rs",
-        "src/avb.rs",
-        "src/efi_blocks.rs",
-        "src/error.rs",
-        "src/fastboot.rs",
-        "src/fuchsia_boot.rs",
-        "src/main.rs",
-        "src/net.rs",
-        "src/ops.rs",
-        "src/riscv64.rs",
-        "src/utils.rs",
+rust_library(
+    name = "libgbl_efi",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "gbl_efi",
+    rustc_flags = ANDROID_RUST_LINTS,
+    deps = [
+        "@avb",
+        "@gbl//libasync",
+        "@gbl//libasync:cyclic_executor",
+        "@gbl//libboot",
+        "@gbl//libefi",
+        "@gbl//libefi_types",
+        "@gbl//liberror",
+        "@gbl//libfastboot",
+        "@gbl//libfdt",
+        "@gbl//libgbl",
+        "@gbl//libsafemath",
+        "@gbl//libstorage",
+        "@gbl//third_party/libzbi",
+        "@smoltcp",
+        "@spin",
+        "@uuid",
+        "@zerocopy",
     ],
+)
+
+rust_test(
+    name = "test",
+    crate = ":libgbl_efi",
+    # TODO(b/355436086): mock out the rest of the libefi APIs and
+    # remove dead-code; for now it would require a lot of invasive
+    # code changes to selectively disable things on tests so this
+    # is worth it to keep things more readable.
+    rustc_flags = ANDROID_RUST_LINTS + [
+        "-A",
+        "dead-code",
+    ],
+    deps = [
+        "@gbl//libefi:mocks",
+        "@mockall",
+    ],
+)
+
+# The UEFI application target.
+#
+# Almost all logic should be in the libgbl_efi target; this contains only the
+# things that would prevent unittesting such as global allocation hooks or
+# target-specific compiler dependencies.
+rust_binary(
+    name = "app",
+    srcs = glob(["app/**/*.rs"]),
     linker_script = select(
         {
             "@gbl//toolchain:gbl_rust_elf_riscv64": "@gbl//efi/arch/riscv64:riscv64_efi.lds",
@@ -47,39 +83,15 @@ rust_binary(
         "panic=abort",
     ],
     deps = [
-        "@avb",
+        ":libgbl_efi",
         "@avb//:avb_crypto_ops_sha_impl_staticlib",
-        "@gbl//libasync",
-        "@gbl//libasync:cyclic_executor",
         "@gbl//libavb:sysdeps",
-        "@gbl//libboot",
-        "@gbl//libbootconfig",
-        "@gbl//libbootimg",
-        "@gbl//libdttable",
         "@gbl//libefi",
         "@gbl//libefi_types",
-        "@gbl//liberror",
-        "@gbl//libfastboot",
-        "@gbl//libfdt",
-        "@gbl//libgbl",
-        "@gbl//libmisc",
-        "@gbl//libsafemath",
-        "@gbl//libstorage",
-        "@gbl//third_party/libzbi",
-        "@smoltcp",
-        "@spin",
-        "@uuid",
-        "@zerocopy",
     ] + select(
         {
             "@gbl//toolchain:gbl_rust_elf_riscv64": [
                 "@gbl//efi/arch/riscv64:efi_arch_deps_riscv64",
-            ],
-            "@gbl//toolchain:gbl_rust_uefi_x86_64": [
-                "@gbl//efi/arch/x86_64:efi_arch_deps_x86_64",
-            ],
-            "@gbl//toolchain:gbl_rust_uefi_x86_32": [
-                "@gbl//efi/arch/x86:efi_arch_deps_x86",
             ],
             "//conditions:default": [],
         },
@@ -88,7 +100,7 @@ rust_binary(
 
 genrule(
     name = "gbl_efi",
-    srcs = [":main"],
+    srcs = [":app"],
     outs = ["gbl.efi"],
     cmd = select(
         {
@@ -101,7 +113,7 @@ genrule(
             # 1. `llvm-objcopy <elf image> -O binary <efi image>`
             # 2. `elf_static_relocation_checker <elf image> <efi image>`
             "@gbl//toolchain:gbl_rust_elf_riscv64": """
-            {} -O binary $(location @gbl//efi:main) $(OUTS) && \\
+            {} -O binary $(location @gbl//efi:app) $(OUTS) && \\
             $(location @gbl//libelf:elf_static_relocation_checker) $(SRCS) $(OUTS)
         """.format(
                 gbl_llvm_tool_path("llvm-objcopy"),

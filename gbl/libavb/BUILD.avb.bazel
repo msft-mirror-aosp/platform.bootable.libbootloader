@@ -64,7 +64,7 @@ cc_library(
         ".",
         "libavb/sha/",
     ],
-    deps = ["@gbl//libavb:gbl_deps"],
+    deps = ["@gbl//libc:headers"],
 )
 
 cc_library(
@@ -104,10 +104,12 @@ cc_library(
         "-g",
         "-DAVB_ENABLE_DEBUG",
         "-DAVB_COMPILATION",
+        # libavb uses more than 4K of stack space. This prevents the compiler from inserting
+        # _chkstk().
+        "-mstack-probe-size=8192",
     ],
     deps = [
         ":headers",
-        "@gbl//libavb:gbl_deps",
     ],
 )
 
@@ -125,7 +127,6 @@ cc_library(
     copts = ["-DAVB_COMPILATION"],
     deps = [
         ":headers",
-        "@gbl//libavb:gbl_deps",
     ],
 )
 

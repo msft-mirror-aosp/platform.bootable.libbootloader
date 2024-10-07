@@ -451,7 +451,9 @@ where
         NETWORK_TIMESTAMP.fetch_add(NETWORK_TIMESTAMP_UPDATE_PERIOD, Ordering::Relaxed);
     };
     let mut notify = EventNotify::new(Tpl::Callback, &mut notify_fn);
-    let timer = bs.create_event(EventType::TimerNotifySignal, Some(&mut notify))?;
+    // SAFETY: the notification callback never allocates, deallocates, or panics.
+    let timer =
+        unsafe { bs.create_event_with_notification(EventType::TimerNotifySignal, &mut notify) }?;
     bs.set_timer(
         &timer,
         EFI_TIMER_DELAY_TIMER_PERIODIC,
@@ -462,6 +464,16 @@ where
     let snp_dev = find_net_device(efi_entry)?;
     let snp = bs.open_protocol::<SimpleNetworkProtocol>(snp_dev)?;
     reset_simple_network(&snp)?;
+
+    // The TCP stack requires ICMP6 solicitation for discovery. Enable promiscuous mode so that all
+    // uni/multicast packets can be captured.
+    match snp.set_promiscuous_mode() {
+        Err(e) => efi_println!(
+            efi_entry,
+            "Warning: Failed to set promiscuous mode {e:?}. Device may be undiscoverable",
+        ),
+        _ => {}
+    }
 
     // Gets our MAC address and IPv6 address.
     // We can also consider getting this from vendor configuration.

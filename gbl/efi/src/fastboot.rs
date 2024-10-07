@@ -18,8 +18,8 @@
 // supported/unsupported features at the moment.
 
 use crate::{
-    efi_blocks::{find_block_devices, EfiBlockDeviceIo},
     net::{with_efi_network, EfiTcpSocket},
+    ops::Ops,
 };
 use alloc::vec::Vec;
 use core::{cmp::min, fmt::Write, future::Future, mem::take};
@@ -28,11 +28,14 @@ use efi::{
     protocol::{gbl_efi_fastboot_usb::GblFastbootUsbProtocol, Protocol},
     EfiEntry,
 };
-use fastboot::{process_next_command, run_tcp_session, CommandResult, TcpStream, Transport};
+use fastboot::{
+    process_next_command, run_tcp_session, CommandResult, FastbootImplementation, TcpStream,
+    Transport,
+};
 use gbl_async::{yield_now, YieldCounter};
 use gbl_cyclic_executor::CyclicExecutor;
 use liberror::{Error, Result};
-use libgbl::fastboot::{GblFastboot, GblFbResource, TasksExecutor};
+use libgbl::fastboot::{GblFastboot, TasksExecutor};
 use spin::{Mutex, MutexGuard};
 
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
@@ -178,11 +181,6 @@ impl<'a> TasksExecutor<'a> for EfiFbTaskExecutor<'a> {
     }
 }
 
-/// A convenient type alias of `GblFastboot` in the EFI context with all generics parameters
-/// resolved.
-type EfiGblFbImpl<'a, 'b, 'c, 'd> =
-    GblFastboot<'a, 'b, EfiFbTaskExecutor<'b>, &'c mut EfiBlockDeviceIo<'d>>;
-
 /// Waits until a shared resource protected by a mutex is acquired successfully.
 async fn lock<T>(resource: &Mutex<T>) -> MutexGuard<T> {
     loop {
@@ -198,7 +196,7 @@ async fn lock<T>(resource: &Mutex<T>) -> MutexGuard<T> {
 /// Task routine for Fastboot over USB.
 async fn fastboot_usb(
     efi_entry: &EfiEntry,
-    gbl_fb: &Mutex<&mut EfiGblFbImpl<'_, '_, '_, '_>>,
+    gbl_fb: &Mutex<&mut impl FastbootImplementation>,
     usb: &mut UsbTransport<'_>,
 ) {
     usb.set_io_yield_threshold(1024 * 1024); // 1MB
@@ -216,7 +214,7 @@ async fn fastboot_usb(
 /// Task routine for Fastboot over TCP.
 async fn fastboot_tcp(
     efi_entry: &EfiEntry,
-    gbl_fb: &Mutex<&mut EfiGblFbImpl<'_, '_, '_, '_>>,
+    gbl_fb: &Mutex<&mut impl FastbootImplementation>,
     socket: &mut EfiTcpSocket<'_, '_>,
 ) {
     socket.set_io_yield_threshold(1024 * 1024); // 1MB
@@ -253,14 +251,14 @@ async fn fastboot_tcp(
 }
 
 /// Spawns and runs Fastboot tasks.
-fn run_fastboot<'a>(
+fn run_fastboot(
     efi_entry: &EfiEntry,
-    gbl_fb: &mut GblFastboot<'_, 'a, EfiFbTaskExecutor<'a>, &mut EfiBlockDeviceIo>,
+    gbl_fb: &mut impl FastbootImplementation,
+    blk_io_executor: &EfiFbTaskExecutor,
     socket: Option<&mut EfiTcpSocket>,
     usb: Option<&mut UsbTransport>,
 ) -> Result<()> {
     assert!(socket.is_some() || usb.is_some());
-    let blk_io_executor = gbl_fb.blk_io_executor();
     let gbl_fb = gbl_fb.into();
     let mut task_executor: CyclicExecutor = Default::default();
     // Fastboot over USB task.
@@ -296,16 +294,15 @@ fn run_fastboot<'a>(
 }
 
 /// Runs Fastboot.
-pub fn fastboot(efi_entry: &EfiEntry) -> Result<()> {
+pub fn fastboot(efi_gbl_ops: &mut Ops) -> Result<()> {
+    let efi_entry = efi_gbl_ops.efi_entry;
+    efi_println!(efi_entry, "Entering fastboot mode...");
     // TODO(b/328786603): Figure out where to get download buffer size.
     let mut download_buffers = vec![vec![0u8; 512 * 1024 * 1024]; 2];
-    let mut gbl_fb_download_buffers =
-        download_buffers.iter_mut().map(|v| v.as_mut_slice()).collect::<Vec<_>>();
-    let mut blks = find_block_devices(efi_entry)?;
-    let mut gbl_fb_devs = blks.0.iter_mut().map(|v| v.as_gpt_dev().into()).collect::<Vec<_>>();
-    let shared_state = GblFbResource::new(&mut gbl_fb_devs[..], &mut gbl_fb_download_buffers[..]);
+    let download_buffers =
+        download_buffers.iter_mut().map(|v| v.as_mut_slice().into()).collect::<Vec<_>>();
     let blk_io_executor: EfiFbTaskExecutor = Default::default();
-    let gbl_fb = &mut GblFastboot::new(&blk_io_executor, &shared_state);
+    let gbl_fb = &mut GblFastboot::new(&blk_io_executor, efi_gbl_ops, &download_buffers);
 
     let mut usb = match init_usb(efi_entry) {
         Ok(v) => Some(v),
@@ -316,11 +313,11 @@ pub fn fastboot(efi_entry: &EfiEntry) -> Result<()> {
     };
 
     match with_efi_network(efi_entry, |socket| {
-        run_fastboot(efi_entry, gbl_fb, Some(socket), usb.as_mut())
+        run_fastboot(efi_entry, gbl_fb, &blk_io_executor, Some(socket), usb.as_mut())
     }) {
         Err(e) => {
             efi_println!(efi_entry, "Failed to start EFI network. {:?}.", e);
-            run_fastboot(efi_entry, gbl_fb, None, usb.as_mut())
+            run_fastboot(efi_entry, gbl_fb, &blk_io_executor, None, usb.as_mut())
         }
         v => v?,
     }

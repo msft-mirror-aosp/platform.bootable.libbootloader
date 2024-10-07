@@ -19,7 +19,8 @@ u-boot-mainline branch.
 
 load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
 load("@gbl//toolchain:gbl_workspace_util.bzl", "android_rust_prebuilts", "gbl_llvm_prebuilts")
-load("@kernel_toolchain_info//:dict.bzl", "CLANG_VERSION")
+
+_CLANG_VERSION = "r530567"
 
 def rust_crate_build_file(
         name,
@@ -97,13 +98,13 @@ def define_gbl_workspace(name = None):
 
     native.new_local_repository(
         name = "llvm_linux_x86_64_prebuilts",
-        path = "prebuilts/clang/host/linux-x86/clang-{}".format(CLANG_VERSION),
+        path = "prebuilts/clang/host/linux-x86/clang-{}".format(_CLANG_VERSION),
         build_file_content = "",
     )
 
     native.new_local_repository(
         name = "linux_x86_64_sysroot",
-        path = "build/kernel/build-tools",
+        path = "prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8",
         build_file_content = """exports_files(glob(["**/*"]))
 cc_library(
     name = "linux_x86_64_sysroot_include",
@@ -148,6 +149,12 @@ cc_library(
         name = "libfdt_c",
         path = "external/dtc/libfdt",
         build_file = "@gbl//libfdt:BUILD.libfdt_c.bazel",
+    )
+
+    native.new_local_repository(
+        name = "libufdt_c",
+        path = "external/libufdt",
+        build_file = "@gbl//libfdt:BUILD.libufdt_c.bazel",
     )
 
     native.new_local_repository(
@@ -356,6 +363,25 @@ cc_library(
         name = "termtree",
         path = "external/rust/crates/termtree",
         build_file_content = rust_crate_build_file("termtree"),
+    )
+
+    native.new_local_repository(
+        name = "zune_inflate",
+        path = "external/rust/crates/zune-inflate",
+        build_file_content = rust_crate_build_file(
+            "zune_inflate",
+            features = ["gzip"],
+        ),
+    )
+
+    native.new_local_repository(
+        name = "lz4_flex",
+        path = "external/rust/crates/lz4_flex",
+        build_file_content = rust_crate_build_file(
+            "lz4_flex",
+            features = ["safe-decode"],
+            rustc_flags = ["-A", "dead_code"],
+        ),
     )
 
     # Following are third party rust crates dependencies which already contain a

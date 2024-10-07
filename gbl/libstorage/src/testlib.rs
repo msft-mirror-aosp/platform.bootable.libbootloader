@@ -125,6 +125,11 @@ impl TestBlockDevice {
         )
         .unwrap()
     }
+
+    /// Creates an instance of `AsyncBlockDevice`
+    pub fn as_blk_dev(&mut self) -> AsyncBlockDevice<'_, &mut TestBlockIo> {
+        self.as_gpt_dev().into_blk_and_gpt().0
+    }
 }
 
 /// A description of the backing data store for a block device or partition.
@@ -287,7 +292,7 @@ impl<'a> TestBlockDeviceBuilder<'a> {
                 partitions_to_disk_data(&partitions, self.block_size as usize)
             }
         };
-        assert!(storage.len() % (self.block_size as usize) == 0);
+        assert_eq!(storage.len() % (self.block_size as usize), 0);
         let mut io = TestBlockIo::new(self.block_size, self.alignment, storage);
         let scratch_size = match self.scratch_size {
             Some(s) => s,

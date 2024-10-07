@@ -134,6 +134,18 @@ However, without these protocols GBL will be missing key features such as
 USB fastboot and verified boot, so production targets and more full-featured dev
 boards will need to implement them.
 
+### GblFastbootProtocol
+
+* [`GBL_EFI_FASTBOOT_PROTOCOL`](./gbl_efi_fastboot_protocol.md)
+* optional: enables custom fastboot functionality.
+
+Used to provide an interface for
+* Custom variables
+* OEM commands
+* Device lock/unlock controls
+* Lock-contingent partition permission information
+* User data erasure
+
 ### GblFastbootUsbProtocol
 
 * [`GBL_EFI_FASTBOOT_USB_PROTOCOL`](./GBL_EFI_FASTBOOT_USB_PROTOCOL.md)

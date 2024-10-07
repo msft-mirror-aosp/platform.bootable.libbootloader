@@ -20,11 +20,12 @@ readme_test(
     # Note: can't read files in subpackages, not sure how to add a dependency on all,
     # globbed, subpackages and all the rust_lib targets they contain.
     deps = [
-        "@gbl//efi:main",
+        "@gbl//efi:app",
+        "@gbl//efi:libgbl_efi",
         "@gbl//libavb:sysdeps",
         "@gbl//libboot",
-        "@gbl//libbootconfig",
         "@gbl//libbootimg",
+        "@gbl//libbootparams",
         "@gbl//libc",
         "@gbl//libefi",
         "@gbl//libefi_types",

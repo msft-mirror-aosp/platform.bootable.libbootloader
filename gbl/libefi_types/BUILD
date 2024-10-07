@@ -54,9 +54,9 @@ rust_bindgen(
         "--with-derive-default",
         "--with-derive-custom-struct=EfiMemoryDescriptor=AsBytes,FromBytes,FromZeroes",
         "--allowlist-type",
-        "(Efi.*)|(GblEfi.*)",
+        "(Efi.*)|(GblEfi.*)|(GBL_EFI_.*)",
         "--allowlist-var",
-        "PARTITION_NAME_LEN_U16",
+        "PARTITION_NAME_LEN_U16|EFI_.*",
         "--raw-line",
         """
 #![allow(non_camel_case_types)]

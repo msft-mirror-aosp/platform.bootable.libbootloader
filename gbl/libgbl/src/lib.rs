@@ -19,15 +19,17 @@
 //! The intended users of this library are firmware, bootloader, and bring-up teams at OEMs and SOC
 //! Vendors
 //!
-//! # Features
-//! * `alloc` - enables AVB ops related logic that relies on allocation and depends on allocation.
+//! This library is `no_std` as it is intended for use in bootloaders that typically will not
+//! support the Rust standard library. However, it does require `alloc` with a global allocator,
+//! currently used for:
+//! * libavb
+//! * kernel decompression
 
-// This code is intended for use in bootloaders that typically will not support
-// the Rust standard library
 #![cfg_attr(not(any(test, android_dylib)), no_std)]
 // TODO: b/312610985 - return warning for unused partitions
 #![allow(unused_variables, dead_code)]
 #![allow(async_fn_in_trait)]
+#![feature(associated_type_defaults)]
 // TODO: b/312608163 - Adding ZBI library usage to check dependencies
 extern crate avb;
 extern crate core;
@@ -38,17 +40,23 @@ extern crate zbi;
 use avb::{HashtreeErrorMode, SlotVerifyData, SlotVerifyError, SlotVerifyFlags};
 use core::ffi::CStr;
 
+pub mod android_boot;
+pub mod avb_ops; // TODO(b/363074091): make this private once we move Android boot into libgbl.
 pub mod boot_mode;
 pub mod boot_reason;
+pub mod decompress;
 pub mod error;
 pub mod fastboot;
 pub mod fuchsia_boot;
 pub mod ops;
-mod overlap;
+pub mod partition;
 
 /// The 'slots' module, containing types and traits for
 /// querying and modifying slotted boot behavior.
 pub mod slots;
+
+mod image_buffer;
+mod overlap;
 
 use slots::{BootTarget, BootToken, Cursor, OneShot, SuffixBytes, UnbootableReason};
 
@@ -57,7 +65,7 @@ pub use boot_mode::BootMode;
 pub use boot_reason::KnownBootReason;
 pub use error::{IntegrationError, Result};
 use liberror::Error;
-pub use ops::{AndroidBootImages, BootImages, DefaultGblOps, FuchsiaBootImages, GblAvbOps, GblOps};
+pub use ops::{AndroidBootImages, BootImages, FuchsiaBootImages, GblOps};
 
 use overlap::is_overlap;
 
@@ -165,7 +173,7 @@ pub fn get_images<'a: 'b, 'b: 'c, 'c, 'd>(
 /// GBL object that provides implementation of helpers for boot process.
 pub struct Gbl<'a, G>
 where
-    G: GblOps,
+    G: GblOps<'a>,
 {
     ops: &'a mut G,
     boot_token: Option<BootToken>,
@@ -173,7 +181,7 @@ where
 
 impl<'a, G> Gbl<'a, G>
 where
-    G: GblOps,
+    G: GblOps<'a>,
 {
     /// Returns a new [Gbl] object.
     ///
@@ -519,6 +527,7 @@ mod tests {
     extern crate avb_sysdeps;
     extern crate avb_test;
     use super::*;
+    use crate::ops::test::FakeGblOps;
     use avb::{CertPermanentAttributes, SlotVerifyError};
     use avb_test::{FakeVbmetaKey, TestOps};
     use std::{fs, path::Path};
@@ -603,7 +612,7 @@ mod tests {
 
     #[test]
     fn test_load_and_verify_image_success() {
-        let mut gbl_ops = DefaultGblOps {};
+        let mut gbl_ops = FakeGblOps::default();
         let mut gbl = Gbl::new(&mut gbl_ops);
         let mut avb_ops = test_avb_ops();
 
@@ -618,7 +627,7 @@ mod tests {
 
     #[test]
     fn test_load_and_verify_image_verification_error() {
-        let mut gbl_ops = DefaultGblOps {};
+        let mut gbl_ops = FakeGblOps::default();
         let mut gbl = Gbl::new(&mut gbl_ops);
         let mut avb_ops = test_avb_ops();
 
@@ -640,7 +649,7 @@ mod tests {
 
     #[test]
     fn test_load_and_verify_image_io_error() {
-        let mut gbl_ops = DefaultGblOps {};
+        let mut gbl_ops = FakeGblOps::default();
         let mut gbl = Gbl::new(&mut gbl_ops);
         let mut avb_ops = test_avb_ops();
 
@@ -658,7 +667,7 @@ mod tests {
 
     #[test]
     fn test_load_and_verify_image_with_cert_success() {
-        let mut gbl_ops = DefaultGblOps {};
+        let mut gbl_ops = FakeGblOps::default();
         let mut gbl = Gbl::new(&mut gbl_ops);
         let mut avb_ops = test_avb_cert_ops();
 
@@ -673,7 +682,7 @@ mod tests {
 
     #[test]
     fn test_load_and_verify_image_with_cert_permanent_attribute_mismatch_error() {
-        let mut gbl_ops = DefaultGblOps {};
+        let mut gbl_ops = FakeGblOps::default();
         let mut gbl = Gbl::new(&mut gbl_ops);
         let mut avb_ops = test_avb_cert_ops();
 

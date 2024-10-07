@@ -12,22 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use avb::{IoError, SlotVerifyError};
 use liberror::Error;
-use libgbl::composite_enum;
 use smoltcp::socket::tcp::{ListenError, RecvError, SendError};
-use zbi::ZbiError;
-
-composite_enum! {
-    /// A top level error type that consolidates errors from different libraries.
-    #[derive(Debug)]
-    pub enum GblEfiError {
-        AvbIoError(IoError),
-        SlotVerifyError(SlotVerifyError<'static>),
-        UnifiedError(Error),
-        ZbiError(ZbiError),
-    }
-}
 
 pub fn recv_to_unified(err: RecvError) -> Error {
     match err {
@@ -48,6 +34,3 @@ pub fn listen_to_unified(err: ListenError) -> Error {
         ListenError::Unaddressable => Error::Unaddressable,
     }
 }
-
-/// Top level error type.
-pub type Result<T> = core::result::Result<T, GblEfiError>;
