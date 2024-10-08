@@ -14,20 +14,22 @@
 
 //! Fastboot backend for libgbl.
 
-use crate::{partition::check_part_unique, GblOps};
+use crate::{gbl_print, gbl_println, partition::check_part_unique, GblOps};
 use core::{
     cmp::min,
     fmt::Write,
     future::Future,
     marker::PhantomData,
     mem::take,
+    ops::DerefMut,
     str::{from_utf8, Split},
 };
 use fastboot::{
-    next_arg, next_arg_u64, snprintf, CommandError, CommandResult, FastbootImplementation,
-    FormattedBytes, InfoSender, OkaySender, RebootMode, UploadBuilder, Uploader, VarInfoSender,
+    next_arg, next_arg_u64, process_next_command, run_tcp_session, snprintf, CommandError,
+    CommandResult, FastbootImplementation, FormattedBytes, InfoSender, OkaySender, RebootMode,
+    UploadBuilder, Uploader, VarInfoSender,
 };
-use gbl_async::yield_now;
+use gbl_async::{join, yield_now};
 use safemath::SafeNum;
 use spin::{Mutex, MutexGuard};
 
@@ -37,41 +39,47 @@ use vars::{fb_vars_get, fb_vars_get_all};
 pub(crate) mod sparse;
 use sparse::is_sparse_image;
 
+// Re-exports dependency types
+pub use fastboot::{TcpStream, Transport};
+
 /// `TasksExecutor` provides interfaces for spawning and scheduling async tasks.
 pub trait TasksExecutor<'a> {
     /// Spawns a new task.
     fn spawn_task(&self, task: impl Future<Output = ()> + 'a) -> CommandResult<()>;
+
+    /// Polls all pending tasks once.
+    fn poll_all(&self);
 }
 
 /// `GblFastboot` implements fastboot commands in the GBL context.
 ///
 /// # Lifetimes
-/// * `'a`: Lifetime of the `blk_io_executor` and `gbl_ops` objects borrowed.
-/// * `'b`: [GblOps] partition lifetime.
-/// * `'c`: Download buffer lifetime.
-/// * `'d`: Represents the lifetime of any data borrowed by the spawned tasks running on
-///     `blk_io_executor`. `'b` and `'c` will be constrained to outlive `d`.
-pub struct GblFastboot<'a, 'b, 'c, 'd, T, G> {
-    blk_io_executor: &'a T,
-    pub(crate) gbl_ops: &'a mut G,
-    download_buffers: &'c [Mutex<&'c mut [u8]>],
-    current_download_buffer: Option<MutexGuard<'c, &'c mut [u8]>>,
+/// * `'a`: [GblOps] partition lifetime.
+/// * `'b`: Download buffer lifetime.
+/// * `'c`: Represents the lifetime of any data borrowed by the spawned tasks running on
+///     `blk_io_executor`. `'a` and `'b` will be constrained to outlive `c`.
+/// * `'d`: Lifetime of the `blk_io_executor` and `gbl_ops` objects borrowed.
+pub struct GblFastboot<'a, 'b, 'c, 'd, G, D, T> {
+    blk_io_executor: &'d T,
+    pub(crate) gbl_ops: &'d mut G,
+    download_buffers: &'b [Mutex<D>],
+    current_download_buffer: Option<MutexGuard<'b, D>>,
     current_download_size: usize,
     enable_async_block_io: bool,
     default_block: Option<usize>,
     // Introduces marker type so that we can enforce constraint 'd <= min('b, 'c).
     // The constraint is expressed in the implementation block for the `FastbootImplementation`
     // trait.
-    _gbl_ops_parts_lifetime: PhantomData<&'b G>,
-    _blk_io_executor_context_lifetime: PhantomData<&'d T>,
+    _gbl_ops_parts_lifetime: PhantomData<&'a G>,
+    _blk_io_executor_context_lifetime: PhantomData<&'c T>,
 }
 
-impl<'a, 'b, 'c, T, G: GblOps<'b>> GblFastboot<'a, 'b, 'c, '_, T, G> {
+impl<'a, 'b, 'd, G: GblOps<'a>, D, T> GblFastboot<'a, 'b, '_, 'd, G, D, T> {
     /// Creates a new instance.
     pub fn new(
-        blk_io_executor: &'a T,
-        gbl_ops: &'a mut G,
-        download_buffers: &'c [Mutex<&'c mut [u8]>],
+        blk_io_executor: &'d T,
+        gbl_ops: &'d mut G,
+        download_buffers: &'b [Mutex<D>],
     ) -> Self {
         Self {
             blk_io_executor,
@@ -87,7 +95,7 @@ impl<'a, 'b, 'c, T, G: GblOps<'b>> GblFastboot<'a, 'b, 'c, '_, T, G> {
     }
 
     /// Returns the block IO task executor.
-    pub fn blk_io_executor(&self) -> &'a T {
+    pub fn blk_io_executor(&self) -> &'d T {
         self.blk_io_executor
     }
 
@@ -121,7 +129,7 @@ impl<'a, 'b, 'c, T, G: GblOps<'b>> GblFastboot<'a, 'b, 'c, '_, T, G> {
     }
 
     /// Checks and waits until a download buffer is allocated.
-    async fn ensure_download_buffer(&mut self) -> &mut [u8] {
+    async fn ensure_download_buffer(&mut self) -> &mut D {
         while self.current_download_buffer.is_none() {
             self.current_download_buffer = self.download_buffers.iter().find_map(|v| v.try_lock());
             match self.current_download_buffer.is_some() {
@@ -184,8 +192,11 @@ impl<'a, 'b, 'c, T, G: GblOps<'b>> GblFastboot<'a, 'b, 'c, '_, T, G> {
     }
 }
 
-impl<'b: 'd, 'c: 'd, 'd, T: TasksExecutor<'d>, G: GblOps<'b>> FastbootImplementation
-    for GblFastboot<'_, 'b, 'c, 'd, T, G>
+impl<'a: 'c, 'b: 'c, 'c, G, D, T> FastbootImplementation for GblFastboot<'a, 'b, 'c, '_, G, D, T>
+where
+    G: GblOps<'a>,
+    D: DerefMut<Target = [u8]> + 'b,
+    T: TasksExecutor<'c> + 'c,
 {
     async fn get_var(
         &mut self,
@@ -317,6 +328,81 @@ impl<'b: 'd, 'c: 'd, 'd, T: TasksExecutor<'d>, G: GblOps<'b>> FastbootImplementa
     }
 }
 
+/// `GblUsbTransport` defines transport interfaces for running GBL fastboot over USB.
+pub trait GblUsbTransport: Transport {
+    /// Checks whether there is a new USB packet.
+    fn has_packet(&mut self) -> bool;
+}
+
+/// `GblTcpStream` defines transport interfaces for running GBL fastboot over TCP.
+pub trait GblTcpStream: TcpStream {
+    /// Accepts a new TCP connection.
+    ///
+    /// If a connection is in progress, it should be aborted first.
+    ///
+    /// Returns true if a new connection is established, false otherwise.
+    fn accept_new(&mut self) -> bool;
+}
+
+/// Listens on the given USB and TCP channels and runs GBL fastboot.
+///
+/// # Args:
+///
+/// * `gbl_ops`: An instance of [GblOps].
+/// * `download_buffers`: An list of shared download buffers guarded by Mutex.
+/// * `task_executor`: An implementation of [TaskExecutor]
+/// * `usb`: An optional implementation of [GblUsbTransport].
+/// * `tcp`: An optional implementation of [GblTcpStream].
+///
+/// # Lifetimes
+/// * `'a`: Lifetime of [GblOps].
+/// * `'b`: Lifetime of `download_buffers`.
+/// * `'c`: Lifetime captured by `task_executor`
+pub async fn run_gbl_fastboot<'a: 'c, 'b: 'c, 'c>(
+    gbl_ops: &mut impl GblOps<'a>,
+    download_buffers: &'b [Mutex<impl DerefMut<Target = [u8]> + 'b>],
+    task_executor: &(impl TasksExecutor<'c> + 'c),
+    mut usb: Option<impl GblUsbTransport>,
+    mut tcp: Option<impl GblTcpStream>,
+) {
+    if usb.is_none() && tcp.is_none() {
+        gbl_println!(gbl_ops, "No USB or TCP found for GBL Fastboot");
+        return;
+    }
+
+    // The fastboot command loop task for interacting with the remote host.
+    let cmd_loop_task = async {
+        let mut gbl_fb = GblFastboot::new(task_executor, gbl_ops, download_buffers);
+        loop {
+            if let Some(v) = usb.as_mut() {
+                if v.has_packet() {
+                    let res = process_next_command(v, &mut gbl_fb).await;
+                    gbl_println!(gbl_fb.gbl_ops, "GBL Fastboot USB session completes: {:?}", res);
+                }
+            }
+
+            if let Some(v) = tcp.as_mut() {
+                if v.accept_new() {
+                    let res = run_tcp_session(v, &mut gbl_fb).await;
+                    gbl_println!(gbl_fb.gbl_ops, "GBL Fastboot TCP session completes: {:?}", res);
+                }
+            }
+
+            yield_now().await;
+        }
+    };
+
+    // [Task] spawned by GBL fastboot.
+    let gbl_fb_tasks = async {
+        loop {
+            task_executor.poll_all();
+            yield_now().await;
+        }
+    };
+
+    let _ = join(cmd_loop_task, gbl_fb_tasks).await;
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -324,12 +410,14 @@ mod test {
         ops::test::{FakeGblOps, FakeGblOpsStorage},
         partition::PartitionBlockDevice,
     };
-    use core::{cmp::max, pin::pin};
+    use core::{cmp::max, mem::size_of, pin::pin, str::from_utf8};
     use fastboot::{test_utils::TestUploadBuilder, MAX_RESPONSE_SIZE};
-    use gbl_async::{block_on, poll};
+    use gbl_async::{block_on, poll, poll_n_times};
     use gbl_cyclic_executor::CyclicExecutor;
     use gbl_storage_testlib::{BackingStore, TestBlockDeviceBuilder, TestBlockIo};
+    use liberror::Error;
     use spin::Mutex;
+    use std::{collections::VecDeque, io::Read};
 
     /// A test implementation of [InfoSender] and [OkaySender].
     #[derive(Default)]
@@ -358,11 +446,8 @@ mod test {
         }
     }
 
-    type TestGblFastboot<'a, 'b> =
-        GblFastboot<'a, 'b, 'b, 'b, TestGblFbExecutor<'b>, FakeGblOps<'b>>;
-
     /// Helper to test fastboot variable value.
-    fn check_var(gbl_fb: &mut TestGblFastboot<'_, '_>, var: &str, args: &str, expected: &str) {
+    fn check_var(gbl_fb: &mut impl FastbootImplementation, var: &str, args: &str, expected: &str) {
         let resp: TestResponder = Default::default();
         let mut out = vec![0u8; MAX_RESPONSE_SIZE];
         let val =
@@ -371,10 +456,9 @@ mod test {
     }
 
     /// A helper to set the download content.
-    fn set_download(gbl_fb: &mut TestGblFastboot, data: &[u8]) {
-        block_on(gbl_fb.ensure_download_buffer());
-        gbl_fb.current_download_buffer.as_mut().unwrap()[..data.len()].clone_from_slice(data);
-        gbl_fb.current_download_size = data.len();
+    fn set_download(gbl_fb: &mut impl FastbootImplementation, data: &[u8]) {
+        block_on(gbl_fb.get_download_buffer())[..data.len()].clone_from_slice(data);
+        block_on(gbl_fb.download_complete(data.len(), &TestResponder::default())).unwrap();
     }
 
     /// `TestGblFbExecutor` wraps a `CyclicExecutor` and implements `TasksExecutor` trait.
@@ -383,7 +467,11 @@ mod test {
 
     impl<'a> TasksExecutor<'a> for TestGblFbExecutor<'a> {
         fn spawn_task(&self, task: impl Future<Output = ()> + 'a) -> CommandResult<()> {
-            Ok(self.0.try_lock().unwrap().spawn_task(task))
+            Ok(self.0.lock().spawn_task(task))
+        }
+
+        fn poll_all(&self) {
+            self.0.lock().poll();
         }
     }
 
@@ -519,7 +607,7 @@ mod test {
 
     /// A helper for fetching partition from a `GblFastboot`
     fn fetch<EOff: core::fmt::Debug, ESz: core::fmt::Debug>(
-        fb: &mut TestGblFastboot,
+        fb: &mut impl FastbootImplementation,
         part: String,
         off: impl TryInto<u64, Error = EOff>,
         size: impl TryInto<u64, Error = ESz>,
@@ -565,7 +653,13 @@ mod test {
 
     /// A helper for testing raw block upload. It verifies that data read from block device
     /// `blk_id` in range [`off`, `off`+`size`) is the same as `disk[off..][..size]`
-    fn check_blk_upload(fb: &mut TestGblFastboot, blk_id: u64, off: u64, size: u64, disk: &[u8]) {
+    fn check_blk_upload(
+        fb: &mut impl FastbootImplementation,
+        blk_id: u64,
+        off: u64,
+        size: u64,
+        disk: &[u8],
+    ) {
         let expected = disk[off.try_into().unwrap()..][..size.try_into().unwrap()].to_vec();
         // offset/size as part of the partition string.
         let part = format!("/{:#x}/{:#x}/{:#x}", blk_id, off, size);
@@ -597,7 +691,7 @@ mod test {
     /// `part` at disk `blk_id` in range [`off`, `off`+`size`) is the same as
     /// `partition_data[off..][..size]`.
     fn check_part_upload(
-        fb: &mut TestGblFastboot,
+        fb: &mut impl FastbootImplementation,
         part: &str,
         off: u64,
         size: u64,
@@ -657,7 +751,7 @@ mod test {
     }
 
     /// A helper function to flash data to a partition
-    fn flash_part(fb: &mut TestGblFastboot, part: &str, data: &[u8]) {
+    fn flash_part(fb: &mut impl FastbootImplementation, part: &str, data: &[u8]) {
         // Prepare a download buffer.
         let dl_size = data.len();
         let download = data.to_vec();
@@ -668,7 +762,7 @@ mod test {
     }
 
     /// A helper for testing partition flashing.
-    fn check_flash_part(fb: &mut TestGblFastboot, part: &str, expected: &[u8]) {
+    fn check_flash_part(fb: &mut impl FastbootImplementation, part: &str, expected: &[u8]) {
         flash_part(fb, part, expected);
         // Also flashes bit-wise reversed version in case the initial content is the same.
         flash_part(fb, part, &flipped_bits(expected));
@@ -728,7 +822,7 @@ mod test {
     ///
     /// Returns the result and INFO strings.
     async fn oem(
-        fb: &mut TestGblFastboot<'_, '_>,
+        fb: &mut impl FastbootImplementation,
         oem_cmd: &str,
         resp: impl InfoSender,
     ) -> CommandResult<String> {
@@ -986,5 +1080,229 @@ mod test {
         assert!(poll(&mut reboot_fut).is_some());
         assert!((*resp.okay_sent.try_lock().unwrap()));
         assert_eq!(resp.info_messages.try_lock().unwrap()[2], "Rebooting...");
+    }
+
+    /// Generates a length prefixed byte sequence.
+    fn length_prefixed(data: &[u8]) -> Vec<u8> {
+        [&data.len().to_be_bytes()[..], data].concat()
+    }
+
+    /// Used for a test implementation of [GblUsbTransport] and [GblTcpStream].
+    #[derive(Default)]
+    struct TestListener {
+        usb_in_queue: VecDeque<Vec<u8>>,
+        usb_out_queue: VecDeque<Vec<u8>>,
+
+        tcp_in_queue: VecDeque<u8>,
+        tcp_out_queue: VecDeque<u8>,
+    }
+
+    /// A shared [TestListener].
+    #[derive(Default)]
+    struct SharedTestListener(Mutex<TestListener>);
+
+    impl SharedTestListener {
+        /// Locks the listener
+        fn lock(&self) -> MutexGuard<TestListener> {
+            self.0.try_lock().unwrap()
+        }
+
+        /// Adds packet to USB input
+        fn add_usb_input(&self, packet: &[u8]) {
+            self.lock().usb_in_queue.push_back(packet.into());
+        }
+
+        /// Adds bytes to input stream.
+        fn add_tcp_input(&self, data: &[u8]) {
+            self.lock().tcp_in_queue.append(&mut data.to_vec().into());
+        }
+
+        /// Adds a length pre-fixed bytes stream.
+        fn add_tcp_length_prefixed_input(&self, data: &[u8]) {
+            self.add_tcp_input(&length_prefixed(data));
+        }
+
+        /// Gets a copy of `Self::usb_out_queue`.
+        fn usb_out_queue(&self) -> VecDeque<Vec<u8>> {
+            self.lock().usb_out_queue.clone()
+        }
+
+        /// Gets a copy of `Self::tcp_out_queue`.
+        fn tcp_out_queue(&self) -> VecDeque<u8> {
+            self.lock().tcp_out_queue.clone()
+        }
+
+        /// A helper for decoding USB output packets as a string
+        fn dump_usb_out_queue(&self) -> String {
+            let mut res = String::from("");
+            for v in self.lock().usb_out_queue.iter() {
+                let v = String::from_utf8(v.clone()).unwrap_or(format!("{:?}", v));
+                res += format!("b\"{}\",\n", v).as_str();
+            }
+            res
+        }
+
+        /// A helper for decoding TCP output data as strings
+        fn dump_tcp_out_queue(&self) -> String {
+            let mut data = self.lock();
+            let mut v;
+            let (_, mut remains) = data.tcp_out_queue.make_contiguous().split_at(4);
+            let mut res = String::from("");
+            while !remains.is_empty() {
+                // Parses length-prefixed payload.
+                let (len, rest) = remains.split_first_chunk::<{ size_of::<u64>() }>().unwrap();
+                (v, remains) = rest.split_at(u64::from_be_bytes(*len).try_into().unwrap());
+                let s = String::from_utf8(v.to_vec()).unwrap_or(format!("{:?}", v));
+                res += format!("b\"{}\",\n", s).as_str();
+            }
+            res
+        }
+    }
+
+    impl Transport for &SharedTestListener {
+        async fn receive_packet(&mut self, out: &mut [u8]) -> Result<usize, Error> {
+            match self.lock().usb_in_queue.pop_front() {
+                Some(v) => Ok((&v[..]).read(out).unwrap()),
+                _ => Err(Error::Other(Some("No more data"))),
+            }
+        }
+
+        async fn send_packet(&mut self, packet: &[u8]) -> Result<(), Error> {
+            Ok(self.lock().usb_out_queue.push_back(packet.into()))
+        }
+    }
+
+    impl GblUsbTransport for &SharedTestListener {
+        fn has_packet(&mut self) -> bool {
+            !self.lock().usb_in_queue.is_empty()
+        }
+    }
+
+    impl TcpStream for &SharedTestListener {
+        async fn read_exact(&mut self, out: &mut [u8]) -> Result<(), Error> {
+            match self.lock().tcp_in_queue.read(out).unwrap() == out.len() {
+                true => Ok(()),
+                _ => Err(Error::Other(Some("No more data"))),
+            }
+        }
+
+        async fn write_exact(&mut self, data: &[u8]) -> Result<(), Error> {
+            Ok(self.lock().tcp_out_queue.append(&mut data.to_vec().into()))
+        }
+    }
+
+    impl GblTcpStream for &SharedTestListener {
+        fn accept_new(&mut self) -> bool {
+            !self.lock().tcp_in_queue.is_empty()
+        }
+    }
+
+    /// A helper to make an expected stream of USB output.
+    fn make_expected_usb_out(data: &[&[u8]]) -> VecDeque<Vec<u8>> {
+        VecDeque::from(data.iter().map(|v| v.to_vec()).collect::<Vec<_>>())
+    }
+
+    /// A helper to make an expected stream of TCP output.
+    fn make_expected_tcp_out(data: &[&[u8]]) -> VecDeque<u8> {
+        let mut res = VecDeque::<u8>::from(b"FB01".to_vec());
+        data.iter().for_each(|v| res.append(&mut length_prefixed(v).into()));
+        res
+    }
+
+    #[test]
+    fn test_run_gbl_fastboot() {
+        let mut test_data = TestData::new(128 * 1024, 2);
+        let (partitions, dl_buffers) = test_data.get();
+        let mut gbl_ops = FakeGblOps::new(&partitions);
+        let executor: TestGblFbExecutor = Default::default();
+        let listener: SharedTestListener = Default::default();
+        let (usb, tcp) = (&listener, &listener);
+        let mut fb_fut =
+            pin!(run_gbl_fastboot(&mut gbl_ops, &dl_buffers, &executor, Some(usb), Some(tcp)));
+
+        listener.add_usb_input(b"getvar:version-bootloader");
+        listener.add_tcp_input(b"FB01");
+        listener.add_tcp_length_prefixed_input(b"getvar:max-download-size");
+        // Polls enough number to times to make sure all commands are finished.
+        // Switch to send a `continue` command to end the entire session once available.
+        assert!(poll_n_times(&mut fb_fut, 100).is_none());
+
+        assert_eq!(
+            listener.usb_out_queue(),
+            make_expected_usb_out(&[b"OKAY1.0"]),
+            "\nActual USB output:\n{}",
+            listener.dump_usb_out_queue()
+        );
+
+        let tcp_out_queue = listener.lock().tcp_out_queue.clone();
+        assert_eq!(
+            listener.tcp_out_queue(),
+            make_expected_tcp_out(&[b"OKAY0x20000"]),
+            "\nActual TCP output:\n{}",
+            listener.dump_tcp_out_queue()
+        );
+    }
+
+    #[test]
+    fn test_run_gbl_fastboot_parallel_task() {
+        let mut test_data = TestData::new(128 * 1024, 2);
+        test_data.storage.add_raw_device("raw_0", [0u8; 4 * 1024]);
+        test_data.storage.add_raw_device("raw_1", [0u8; 8 * 1024]);
+        let (partitions, dl_buffers) = test_data.get();
+        let mut gbl_ops = FakeGblOps::new(&partitions);
+        let executor: TestGblFbExecutor = Default::default();
+        let listener: SharedTestListener = Default::default();
+        let (usb, tcp) = (&listener, &listener);
+        let mut fb_fut =
+            pin!(run_gbl_fastboot(&mut gbl_ops, &dl_buffers, &executor, Some(usb), Some(tcp)));
+
+        listener.add_usb_input(b"oem gbl-enable-async-block-io");
+        listener.add_usb_input(format!("download:{:#x}", 4 * 1024).as_bytes());
+        listener.add_usb_input(&[0x55u8; 4 * 1024]);
+        listener.add_usb_input(b"flash:raw_0");
+
+        listener.add_tcp_input(b"FB01");
+        listener.add_tcp_length_prefixed_input(format!("download:{:#x}", 8 * 1024).as_bytes());
+        listener.add_tcp_length_prefixed_input(&[0xaau8; 8 * 1024]);
+        listener.add_tcp_length_prefixed_input(b"flash:raw_1");
+
+        assert!(poll_n_times(&mut fb_fut, 100).is_none());
+
+        assert_eq!(
+            listener.usb_out_queue(),
+            make_expected_usb_out(&[
+                b"OKAY",
+                b"DATA00001000",
+                b"OKAY",
+                b"INFOAn IO task is launched. To sync manually, run \"oem gbl-sync-blocks\".",
+                b"OKAY",
+            ]),
+            "\nActual USB output:\n{}",
+            listener.dump_usb_out_queue()
+        );
+
+        assert_eq!(
+            listener.tcp_out_queue(),
+            make_expected_tcp_out(&[
+                b"DATA00002000",
+                b"OKAY",
+                b"INFOAn IO task is launched. To sync manually, run \"oem gbl-sync-blocks\".",
+                b"OKAY",
+            ]),
+            "\nActual TCP output:\n{}",
+            listener.dump_tcp_out_queue()
+        );
+
+        // Verifies flashed image on raw_0.
+        assert_eq!(
+            partitions[0].partition_io(None).unwrap().dev().io().storage,
+            [0x55u8; 4 * 1024]
+        );
+
+        // Verifies flashed image on raw_1.
+        assert_eq!(
+            partitions[1].partition_io(None).unwrap().dev().io().storage,
+            [0xaau8; 8 * 1024]
+        );
     }
 }
