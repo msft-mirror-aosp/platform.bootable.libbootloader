@@ -24,7 +24,7 @@ use crate::{
 use core::ffi::CStr;
 use core::{fmt::Write, num::NonZeroUsize, result::Result};
 use gbl_async::block_on;
-use gbl_storage::{BlockIoAsync, BlockIoNull};
+use gbl_storage::BlockIoAsync;
 
 // Re-exports of types from other dependencies that appear in the APIs of this library.
 pub use avb::{
@@ -76,7 +76,7 @@ where
 {
     /// Type that implements `BlockIoAsync` for the array of `PartitionBlockDevice` returned by]
     /// `partitions()`.
-    type PartitionBlockIo: BlockIoAsync = BlockIoNull;
+    type PartitionBlockIo: BlockIoAsync;
 
     /// Gets a console for logging messages.
     fn console_out(&mut self) -> Option<&mut dyn Write>;
