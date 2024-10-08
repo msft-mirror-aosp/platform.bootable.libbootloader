@@ -341,6 +341,10 @@ mod test {
         ) -> Result<Option<&'c [u8]>> {
             unimplemented!();
         }
+
+        fn fixup_device_tree(&mut self, _device_tree: &mut [u8]) -> Result<()> {
+            unimplemented!();
+        }
     }
 
     #[test]

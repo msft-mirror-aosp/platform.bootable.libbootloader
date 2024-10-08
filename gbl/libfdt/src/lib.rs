@@ -332,6 +332,12 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
     }
 }
 
+impl<T: AsMut<[u8]>> AsMut<[u8]> for Fdt<T> {
+    fn as_mut(&mut self) -> &mut [u8] {
+        self.0.as_mut()
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
