@@ -29,7 +29,6 @@
 // TODO: b/312610985 - return warning for unused partitions
 #![allow(unused_variables, dead_code)]
 #![allow(async_fn_in_trait)]
-#![feature(associated_type_defaults)]
 // TODO: b/312608163 - Adding ZBI library usage to check dependencies
 extern crate avb;
 extern crate core;
