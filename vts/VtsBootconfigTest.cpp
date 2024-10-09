@@ -22,11 +22,14 @@
 class VtsBootconfigTest : public testing::Test {};
 
 TEST_F(VtsBootconfigTest, ProcCmdlineAndroidbootTest) {
-  // This test only applies to devices launching with S(or greater) AND with
-  // kernel version 5.10(or greater)
-  bool kernel_support = android::bpf::isAtLeastKernelVersion(5, 10, 0);
-  if (std::stoi(android::base::GetProperty("ro.product.first_api_level", "0"))
-    < __ANDROID_API_S__ || !kernel_support) {
+  // This was supported in Android S with kernel version 5.10+, but really only
+  // required by Android T because Android still needs to support
+  // Android S devices that launched with 4.19 for as long as it supports
+  // Android S.
+  int first_api_level = android::base::GetIntProperty(
+        "ro.board.first_api_level",
+        android::base::GetIntProperty("ro.vendor.api_level", 1000000));
+  if (first_api_level < __ANDROID_API_T__) {
     GTEST_SKIP() << "Bootconfig requirements do not apply";
   }
 
