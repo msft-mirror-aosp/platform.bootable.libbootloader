@@ -68,7 +68,7 @@ pub fn fuchsia_boot_demo(efi_entry: EfiEntry) -> Result<()> {
         // The map is not used for now. We currently rely on UEFI firmware to pass memory map via
         // an raw zbi blob in device tree. Long term we want to support adding from EFI memory maps
         // if none is provided.
-        let item_size = zbi::ZbiContainer::parse(&mut _zbi_items[..])?.container_size();
+        let item_size = zbi::ZbiContainer::parse(&mut _zbi_items[..])?.container_size()?;
         let (_, remains) = _zbi_items.split_at_mut(item_size);
         let _ = efi::exit_boot_services(efi_entry, remains).unwrap();
         // SAFETY: The kernel has passed libavb verification or device is unlocked, in which case we
@@ -78,7 +78,7 @@ pub fn fuchsia_boot_demo(efi_entry: EfiEntry) -> Result<()> {
 
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
     {
-        let items_size = zbi::ZbiContainer::parse(&mut _zbi_items[..])?.container_size();
+        let items_size = zbi::ZbiContainer::parse(&mut _zbi_items[..])?.container_size()?;
         let (_, remains) = _zbi_items.split_at_mut(items_size);
         // `exit_boot_service` returnes EFI memory map that is used to derive and append MEM_CONFIG
         // items.
