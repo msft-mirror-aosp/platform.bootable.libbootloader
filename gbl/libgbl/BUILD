@@ -37,6 +37,7 @@ rust_library(
         "@gbl//libboot",
         "@gbl//libbootimg",
         "@gbl//libbootparams",
+        "@gbl//libdttable",
         "@gbl//liberror",
         "@gbl//libfastboot",
         "@gbl//libfdt",
