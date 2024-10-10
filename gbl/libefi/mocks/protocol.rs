@@ -170,6 +170,9 @@ pub mod gbl_efi_os_configuration {
                 bootconfig: &[u8],
                 fixup: &mut [u8]
             ) -> Result<usize>;
+
+            /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.fixup_device_tree()`
+            pub fn fixup_device_tree(&self, device_tree: &mut [u8]) -> Result<()>;
         }
     }
 

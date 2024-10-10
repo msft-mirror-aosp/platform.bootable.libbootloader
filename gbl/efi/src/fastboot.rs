@@ -22,7 +22,9 @@ use crate::{
     ops::Ops,
 };
 use alloc::vec::Vec;
-use core::{cmp::min, fmt::Write, future::Future, mem::take, sync::atomic::AtomicU64};
+use core::{
+    cell::RefCell, cmp::min, fmt::Write, future::Future, mem::take, sync::atomic::AtomicU64,
+};
 use efi::{
     efi_print, efi_println,
     protocol::{gbl_efi_fastboot_usb::GblFastbootUsbProtocol, Protocol},
@@ -173,11 +175,17 @@ fn init_usb(efi_entry: &EfiEntry) -> Result<UsbTransport> {
 /// `EfiFbTaskExecutor` implements the `TasksExecutor` trait used by GBL fastboot for scheduling
 /// disk IO tasks.
 #[derive(Default)]
-struct EfiFbTaskExecutor<'a>(Mutex<CyclicExecutor<'a>>);
+struct EfiFbTaskExecutor<'a>(RefCell<CyclicExecutor<'a>>);
 
 impl<'a> TasksExecutor<'a> for EfiFbTaskExecutor<'a> {
     fn spawn_task(&self, task: impl Future<Output = ()> + 'a) -> CommandResult<()> {
-        Ok(self.0.lock().spawn_task(task))
+        // The method is synchronous and we expect it to run in the same thread (enforced by
+        // `RefCell` not being Sync). Thus the borrow should always succeed.
+        Ok(self.0.borrow_mut().spawn_task(task))
+    }
+
+    fn poll_all(&self) {
+        self.0.borrow_mut().poll();
     }
 }
 
@@ -302,7 +310,7 @@ pub fn fastboot(efi_gbl_ops: &mut Ops) -> Result<()> {
     // Task for scheduling disk IO tasks spawned by Fastboot.
     task_executor.spawn_task(async {
         loop {
-            blk_io_executor.0.lock().poll();
+            blk_io_executor.poll_all();
             yield_now().await;
         }
     });
