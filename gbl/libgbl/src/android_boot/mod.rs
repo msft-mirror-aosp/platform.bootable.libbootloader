@@ -508,7 +508,12 @@ pub fn load_android_simple<'a, 'b>(
     })?;
     gbl_println!(ops, "final cmdline: \"{}\"", commandline_builder.as_str());
 
-    // Finalize FDT to actual used size.
+    // Make sure we provide an actual device tree size, so FW can calculate amount of space
+    // available for fixup.
+    fdt.shrink_to_fit()?;
+    // TODO(b/353272981): Make a copy of current device tree and verify provided fixup.
+    // TODO(b/353272981): Handle buffer too small
+    ops.fixup_device_tree(fdt.as_mut())?;
     fdt.shrink_to_fit()?;
 
     // Move the kernel backward as much as possible to preserve more space after it. This is
