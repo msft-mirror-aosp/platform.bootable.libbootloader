@@ -24,7 +24,7 @@ use crate::{
 use core::ffi::CStr;
 use core::{fmt::Write, num::NonZeroUsize, result::Result};
 use gbl_async::block_on;
-use gbl_storage::{BlockIoAsync, BlockIoNull};
+use gbl_storage::BlockIoAsync;
 
 // Re-exports of types from other dependencies that appear in the APIs of this library.
 pub use avb::{
@@ -76,7 +76,7 @@ where
 {
     /// Type that implements `BlockIoAsync` for the array of `PartitionBlockDevice` returned by]
     /// `partitions()`.
-    type PartitionBlockIo: BlockIoAsync = BlockIoNull;
+    type PartitionBlockIo: BlockIoAsync;
 
     /// Gets a console for logging messages.
     fn console_out(&mut self) -> Option<&mut dyn Write>;
@@ -261,6 +261,13 @@ where
         bootconfig: &[u8],
         fixup_buffer: &'c mut [u8],
     ) -> Result<Option<&'c [u8]>, Error>;
+
+    /// Provide writtable buffer of the device tree built by GBL.
+    ///
+    /// Modified device tree will be verified and used to boot a device. Refer to the behavior
+    /// specified for the corresponding UEFI interface:
+    /// https://cs.android.com/android/platform/superproject/main/+/main:bootable/libbootloader/gbl/docs/gbl_os_configuration_protocol.md
+    fn fixup_device_tree(&mut self, device_tree: &mut [u8]) -> Result<(), Error>;
 }
 
 /// Prints with `GblOps::console_out()`.
@@ -518,6 +525,10 @@ pub(crate) mod test {
             _bootconfig: &[u8],
             _fixup_buffer: &'c mut [u8],
         ) -> Result<Option<&'c [u8]>, Error> {
+            unimplemented!();
+        }
+
+        fn fixup_device_tree(&mut self, device_tree: &mut [u8]) -> Result<(), Error> {
             unimplemented!();
         }
     }

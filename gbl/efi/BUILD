@@ -39,10 +39,10 @@ rust_library(
         "@gbl//libgbl",
         "@gbl//libsafemath",
         "@gbl//libstorage",
-        "@gbl//third_party/libzbi",
         "@smoltcp",
         "@spin",
         "@uuid",
+        "@zbi",
         "@zerocopy",
     ],
 )
