@@ -18,11 +18,13 @@
 // supported/unsupported features at the moment.
 
 use crate::{
-    net::{with_efi_network, EfiTcpSocket},
+    net::{EfiGblNetwork, EfiTcpSocket},
     ops::Ops,
 };
 use alloc::vec::Vec;
-use core::{cmp::min, fmt::Write, future::Future, mem::take};
+use core::{
+    cell::RefCell, cmp::min, fmt::Write, future::Future, mem::take, sync::atomic::AtomicU64,
+};
 use efi::{
     efi_print, efi_println,
     protocol::{gbl_efi_fastboot_usb::GblFastbootUsbProtocol, Protocol},
@@ -173,11 +175,17 @@ fn init_usb(efi_entry: &EfiEntry) -> Result<UsbTransport> {
 /// `EfiFbTaskExecutor` implements the `TasksExecutor` trait used by GBL fastboot for scheduling
 /// disk IO tasks.
 #[derive(Default)]
-struct EfiFbTaskExecutor<'a>(Mutex<CyclicExecutor<'a>>);
+struct EfiFbTaskExecutor<'a>(RefCell<CyclicExecutor<'a>>);
 
 impl<'a> TasksExecutor<'a> for EfiFbTaskExecutor<'a> {
     fn spawn_task(&self, task: impl Future<Output = ()> + 'a) -> CommandResult<()> {
-        Ok(self.0.lock().spawn_task(task))
+        // The method is synchronous and we expect it to run in the same thread (enforced by
+        // `RefCell` not being Sync). Thus the borrow should always succeed.
+        Ok(self.0.borrow_mut().spawn_task(task))
+    }
+
+    fn poll_all(&self) {
+        self.0.borrow_mut().poll();
     }
 }
 
@@ -218,7 +226,6 @@ async fn fastboot_tcp(
     socket: &mut EfiTcpSocket<'_, '_>,
 ) {
     socket.set_io_yield_threshold(1024 * 1024); // 1MB
-    let mut listen_start_timestamp = EfiTcpSocket::timestamp(0);
     loop {
         // Acquires the lock before proceeding to handle network. This reduces interference to the
         // Fastboot USB task which maybe in the middle of a download. `lock()` internally yields
@@ -239,8 +246,7 @@ async fn fastboot_tcp(
         }
         // Reset once in a while in case a remote client disconnects in the middle of
         // TCP handshake and leaves the socket in a half open state.
-        if reset_socket || EfiTcpSocket::timestamp(listen_start_timestamp) > DEFAULT_TIMEOUT_MS {
-            listen_start_timestamp = EfiTcpSocket::timestamp(0);
+        if reset_socket || socket.time_since_last_listen() > DEFAULT_TIMEOUT_MS {
             if let Err(e) = socket.listen(FASTBOOT_TCP_PORT) {
                 efi_println!(efi_entry, "TCP listen error: {:?}", e);
             }
@@ -248,49 +254,6 @@ async fn fastboot_tcp(
         // Necessary because our executor uses cooperative scheduling.
         yield_now().await;
     }
-}
-
-/// Spawns and runs Fastboot tasks.
-fn run_fastboot(
-    efi_entry: &EfiEntry,
-    gbl_fb: &mut impl FastbootImplementation,
-    blk_io_executor: &EfiFbTaskExecutor,
-    socket: Option<&mut EfiTcpSocket>,
-    usb: Option<&mut UsbTransport>,
-) -> Result<()> {
-    assert!(socket.is_some() || usb.is_some());
-    let gbl_fb = gbl_fb.into();
-    let mut task_executor: CyclicExecutor = Default::default();
-    // Fastboot over USB task.
-    match usb {
-        Some(v) => {
-            efi_println!(efi_entry, "Started Fastboot over USB.");
-            task_executor.spawn_task(fastboot_usb(efi_entry, &gbl_fb, v));
-        }
-        _ => {}
-    }
-    // Fastboot over TCP task.
-    match socket {
-        Some(v) => {
-            efi_println!(efi_entry, "Started Fastboot over TCP");
-            efi_println!(efi_entry, "IP address:");
-            v.interface().ip_addrs().iter().for_each(|v| {
-                efi_println!(efi_entry, "\t{}", v.address());
-            });
-            task_executor.spawn_task(fastboot_tcp(efi_entry, &gbl_fb, v));
-        }
-        _ => {}
-    }
-    // Task for scheduling disk IO tasks spawned by Fastboot.
-    task_executor.spawn_task(async {
-        loop {
-            blk_io_executor.0.lock().poll();
-            yield_now().await;
-        }
-    });
-    // Run all tasks.
-    task_executor.run();
-    Ok(())
 }
 
 /// Runs Fastboot.
@@ -304,21 +267,54 @@ pub fn fastboot(efi_gbl_ops: &mut Ops) -> Result<()> {
     let blk_io_executor: EfiFbTaskExecutor = Default::default();
     let gbl_fb = &mut GblFastboot::new(&blk_io_executor, efi_gbl_ops, &download_buffers);
 
-    let mut usb = match init_usb(efi_entry) {
-        Ok(v) => Some(v),
-        Err(e) => {
-            efi_println!(efi_entry, "Failed to start Fastboot over USB. {:?}.", e);
-            None
-        }
-    };
+    // Scans USB.
+    let mut usb = init_usb(efi_entry)
+        .inspect_err(|e| efi_println!(efi_entry, "Failed to start Fastboot over USB. {:?}.", e))
+        .ok();
 
-    match with_efi_network(efi_entry, |socket| {
-        run_fastboot(efi_entry, gbl_fb, &blk_io_executor, Some(socket), usb.as_mut())
-    }) {
-        Err(e) => {
-            efi_println!(efi_entry, "Failed to start EFI network. {:?}.", e);
-            run_fastboot(efi_entry, gbl_fb, &blk_io_executor, None, usb.as_mut())
-        }
-        v => v?,
+    // Scans TCP.
+    let ts = AtomicU64::new(0);
+    let mut net: EfiGblNetwork = Default::default();
+    let mut socket = net
+        .init(efi_entry, &ts)
+        .inspect_err(|e| efi_println!(efi_entry, "Failed to start EFI network. {:?}.", e))
+        .ok();
+
+    if usb.is_none() && socket.is_none() {
+        return Err(Error::Unsupported);
     }
+
+    // Prepares various fastboot tasks.
+    let gbl_fb = gbl_fb.into();
+    let mut task_executor: CyclicExecutor = Default::default();
+    // Fastboot over USB task.
+    match usb {
+        Some(ref mut v) => {
+            efi_println!(efi_entry, "Started Fastboot over USB.");
+            task_executor.spawn_task(fastboot_usb(efi_entry, &gbl_fb, v));
+        }
+        _ => {}
+    }
+    // Fastboot over TCP task.
+    match socket {
+        Some(ref mut v) => {
+            efi_println!(efi_entry, "Started Fastboot over TCP");
+            efi_println!(efi_entry, "IP address:");
+            v.interface().ip_addrs().iter().for_each(|v| {
+                efi_println!(efi_entry, "\t{}", v.address());
+            });
+            task_executor.spawn_task(fastboot_tcp(efi_entry, &gbl_fb, v));
+        }
+        _ => {}
+    }
+    // Task for scheduling disk IO tasks spawned by Fastboot.
+    task_executor.spawn_task(async {
+        loop {
+            blk_io_executor.poll_all();
+            yield_now().await;
+        }
+    });
+    // Run all tasks.
+    task_executor.run();
+    Ok(())
 }

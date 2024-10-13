@@ -178,10 +178,12 @@ mod test {
         slots::{Bootability, Cursor, RecoveryTarget, UnbootableReason},
         BootImages, Gbl, GblOps, Result as GblResult,
     };
+    use gbl_storage::BlockIoNull;
     use gbl_storage_testlib::TestBlockDevice;
     use libgbl::ops::ImageBuffer;
     // TODO(b/350526796): use ptr.is_aligned() when Rust 1.79 is in Android
     use std::{
+        ffi::CStr,
         fmt::Write,
         mem::align_of,
         num::NonZeroUsize,
@@ -247,6 +249,8 @@ mod test {
     where
         Self: 'a,
     {
+        type PartitionBlockIo = BlockIoNull;
+
         fn console_out(&mut self) -> Option<&mut dyn Write> {
             unimplemented!();
         }
@@ -322,6 +326,26 @@ mod test {
         }
 
         fn get_custom_device_tree(&mut self) -> Option<&'a [u8]> {
+            unimplemented!();
+        }
+
+        fn fixup_os_commandline<'c>(
+            &mut self,
+            _commandline: &CStr,
+            _fixup_buffer: &'c mut [u8],
+        ) -> Result<Option<&'c str>> {
+            unimplemented!();
+        }
+
+        fn fixup_bootconfig<'c>(
+            &mut self,
+            _bootconfig: &[u8],
+            _fixup_buffer: &'c mut [u8],
+        ) -> Result<Option<&'c [u8]>> {
+            unimplemented!();
+        }
+
+        fn fixup_device_tree(&mut self, _device_tree: &mut [u8]) -> Result<()> {
             unimplemented!();
         }
     }

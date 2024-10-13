@@ -19,20 +19,20 @@
 extern crate alloc;
 extern crate libc;
 
-use alloc::vec::Vec;
+use arrayvec::ArrayVec;
 use core::ffi::{c_int, CStr};
 use core::mem::size_of;
 use core::slice::{from_raw_parts, from_raw_parts_mut};
-
+use liberror::{Error, Result};
 use libfdt_bindgen::{
     fdt_add_subnode_namelen, fdt_del_node, fdt_get_property, fdt_header, fdt_move, fdt_setprop,
     fdt_setprop_placeholder, fdt_strerror, fdt_subnode_offset_namelen,
 };
 use libufdt_bindgen::ufdt_apply_multioverlay;
-
-use liberror::{Error, Result};
-
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
+
+const MAXIMUM_OVERLAYS_TO_APPLY: usize = 16;
+const MAXIMUM_OVERLAYS_ERROR_MSG: &str = "At most 16 overlays are supported to apply at a time";
 
 /// Convert libfdt_c error code to Result
 fn map_result(code: c_int) -> Result<c_int> {
@@ -298,8 +298,13 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
     pub fn multioverlay_apply(&mut self, overlays: &[&[u8]]) -> Result<()> {
         self.shrink_to_fit()?;
 
-        // Have to allocate vector to convert input fat references into the raw pointers
-        let pointers: Vec<_> = overlays.iter().map(|&slice| slice.as_ptr()).collect();
+        if overlays.len() > MAXIMUM_OVERLAYS_TO_APPLY {
+            return Err(Error::Other(Some(MAXIMUM_OVERLAYS_ERROR_MSG)));
+        }
+
+        // Convert input fat references into the raw pointers.
+        let pointers: ArrayVec<_, MAXIMUM_OVERLAYS_TO_APPLY> =
+            overlays.iter().map(|&slice| slice.as_ptr()).collect();
 
         // SAFETY: The `ufdt_apply_multioverlay` function guarantees that `self.0` is accessed
         // within the specified length boundaries. The `pointers` are non-null and are accessed
@@ -329,6 +334,12 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
             };
         }
         Ok(curr)
+    }
+}
+
+impl<T: AsMut<[u8]>> AsMut<[u8]> for Fdt<T> {
+    fn as_mut(&mut self) -> &mut [u8] {
+        self.0.as_mut()
     }
 }
 
@@ -628,6 +639,21 @@ mod test {
         assert!(
             fdt.multioverlay_apply(&[&overlay_wrong_path[..]]).is_err(),
             "expected the problem is catched when applying overlay with wrong target path"
+        );
+    }
+
+    #[test]
+    fn test_fdt_multioverlay_apply_maximum_amount_of_overlays_handled() {
+        let init = include_bytes!("../test/data/base.dtb").to_vec();
+        let too_many_overlays = &[&[] as &[u8]; MAXIMUM_OVERLAYS_TO_APPLY + 1];
+
+        let mut fdt_buf = vec![0u8; init.len()];
+        let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
+
+        assert_eq!(
+            fdt.multioverlay_apply(too_many_overlays),
+            Err(Error::Other(Some(MAXIMUM_OVERLAYS_ERROR_MSG))),
+            "too many overlays isn't handled"
         );
     }
 }

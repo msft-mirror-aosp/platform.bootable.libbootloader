@@ -21,6 +21,7 @@
 
 use core::{
     future::Future,
+    ops::DerefMut,
     pin::{pin, Pin},
     ptr::null,
     task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
@@ -57,7 +58,9 @@ pub fn block_on<O>(fut: impl Future<Output = O>) -> O {
 /// Polls a Future.
 ///
 /// Returns Some(_) if ready, None otherwise.
-pub fn poll<F: Future<Output = O> + ?Sized, O>(fut: &mut Pin<&mut F>) -> Option<O> {
+pub fn poll<O, F: Future<Output = O> + ?Sized>(
+    fut: &mut Pin<impl DerefMut<Target = F>>,
+) -> Option<O> {
     // SAFETY:
     // * All methods for noop_raw_waker() are either noop or have no shared state. Thus they are
     //   thread-safe.
@@ -67,6 +70,14 @@ pub fn poll<F: Future<Output = O> + ?Sized, O>(fut: &mut Pin<&mut F>) -> Option<
         Poll::Pending => None,
         Poll::Ready(res) => Some(res),
     }
+}
+
+/// Polls the given future for up to `n` times.
+pub fn poll_n_times<O, F: Future<Output = O> + ?Sized>(
+    fut: &mut Pin<impl DerefMut<Target = F>>,
+    n: usize,
+) -> Option<O> {
+    (0..n).find_map(|_| poll(fut))
 }
 
 /// `Yield` implements a simple API for yielding control once to the executor.
@@ -151,6 +162,22 @@ where
         out_rhs = poll(fut_rhs);
     }
     (out_lhs, out_rhs)
+}
+
+/// Runs a [Future] and checks and asserts that it returns eventually.
+pub async fn assert_return<O>(fut: impl Future<Output = O>) -> O {
+    struct Returned(bool);
+
+    impl Drop for Returned {
+        fn drop(&mut self) {
+            assert!(self.0)
+        }
+    }
+
+    let mut flag = Returned(false);
+    let res = fut.await;
+    flag.0 = true;
+    res
 }
 
 #[cfg(test)]
@@ -241,5 +268,19 @@ mod test {
         let (lhs, rhs) = poll(&mut select_fut).unwrap();
         assert!(lhs.is_some());
         assert!(rhs.is_none());
+    }
+
+    #[test]
+    fn test_assert_return() {
+        // Finishes. No assert.
+        block_on(assert_return(async { yield_now().await }));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_assert_return_panics() {
+        let mut fut = pin!(assert_return(async { yield_now().await }));
+        // Need one more poll to finish. Thus it should panic when going out of scope.
+        assert!(poll(&mut fut).is_none());
     }
 }

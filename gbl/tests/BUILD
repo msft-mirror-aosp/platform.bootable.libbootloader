@@ -20,8 +20,8 @@ test_suite(
         "@gbl//libabr:libabr_tests",
         "@gbl//libasync:cyclic_executor_test",
         "@gbl//libasync:libasync_test",
-        "@gbl//libbootconfig:libbootconfig_test",
         "@gbl//libbootimg:libbootimg_test",
+        "@gbl//libbootparams:test",
         "@gbl//libc:libc_test",
         "@gbl//libdttable:libdttable_test",
         "@gbl//libefi:libefi_test",
@@ -37,6 +37,6 @@ test_suite(
         "@gbl//libstorage:libstorage_test",
         "@gbl//libstorage:libstorage_testlib_test",
         "@gbl//libutils:test",
-        "@gbl//third_party/libzbi:libzbi_test",
+        "@zbi//:zbi_test",
     ],
 )

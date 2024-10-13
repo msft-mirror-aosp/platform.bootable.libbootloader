@@ -59,7 +59,7 @@ fn aligned_offset(buffer: &[u8], alignment: usize) -> Result<usize> {
 ///
 /// Returns a tuple of used subslice and unused subslice
 fn zbi_split_unused_buffer(zbi: &mut [u8]) -> GblResult<(&mut [u8], &mut [u8])> {
-    Ok(zbi.split_at_mut(ZbiContainer::parse(&zbi[..])?.container_size()))
+    Ok(zbi.split_at_mut(ZbiContainer::parse(&zbi[..])?.container_size()?))
 }
 
 /// Relocates a ZBI kernel to a different buffer.
@@ -72,7 +72,7 @@ pub fn relocate_kernel(kernel: &[u8], dest: &mut [u8]) -> GblResult<()> {
     }
 
     let kernel = ZbiContainer::parse(&kernel[..])?;
-    let kernel_item = kernel.is_bootable()?;
+    let kernel_item = kernel.get_bootable_kernel_item()?;
     let hdr = kernel_item.header;
     // Creates a new ZBI kernel item at the destination.
     let mut relocated = ZbiContainer::new(&mut dest[..])?;

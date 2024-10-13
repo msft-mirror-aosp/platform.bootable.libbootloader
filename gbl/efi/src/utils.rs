@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::efi;
-use core::ffi::CStr;
+use ::efi::EfiMemoryAttributesTable;
 use efi::{
     protocol::{
         device_path::{DevicePathProtocol, DevicePathText, DevicePathToTextProtocol},
@@ -89,11 +89,6 @@ pub fn efi_to_e820_mem_type(efi_mem_type: u32) -> u32 {
     }
 }
 
-/// A helper to convert a bytes slice containing a null-terminated string to `str`
-pub fn cstr_bytes_to_str(data: &[u8]) -> core::result::Result<&str, Error> {
-    Ok(CStr::from_bytes_until_nul(data)?.to_str()?)
-}
-
 /// Repetitively runs a closure until it signals completion or timeout.
 ///
 /// * If `f` returns `Ok(R)`, an `Ok(Some(R))` is returned immediately.
@@ -135,4 +130,34 @@ pub fn wait_key_stroke(
         }
     })?
     .unwrap_or(Ok(false))
+}
+
+// Converts an EFI memory type to a zbi_mem_range_t type.
+pub fn efi_to_zbi_mem_range_type(efi_mem_type: u32) -> u32 {
+    match efi_mem_type {
+        efi_types::EFI_MEMORY_TYPE_LOADER_CODE
+        | efi_types::EFI_MEMORY_TYPE_LOADER_DATA
+        | efi_types::EFI_MEMORY_TYPE_BOOT_SERVICES_CODE
+        | efi_types::EFI_MEMORY_TYPE_BOOT_SERVICES_DATA
+        | efi_types::EFI_MEMORY_TYPE_CONVENTIONAL_MEMORY => zbi::zbi_format::ZBI_MEM_TYPE_RAM,
+        _ => zbi::zbi_format::ZBI_MEM_TYPE_RESERVED,
+    }
+}
+
+/// Find Memory attributes from EFI configuration_table
+#[allow(unused)]
+pub fn get_efi_mem_attr<'a>(entry: &'a EfiEntry) -> Option<EfiMemoryAttributesTable<'static>> {
+    entry.system_table().configuration_table().and_then(|config_tables| {
+        config_tables
+            .iter()
+            .find_map(|&table| {
+                // SAFETY:
+                // `table` is valid EFI Configuration table provided by EFI
+                match unsafe { EfiMemoryAttributesTable::new(table) } {
+                    Err(Error::NotFound) => None,
+                    other => Some(other.ok()),
+                }
+            })
+            .flatten()
+    })
 }
