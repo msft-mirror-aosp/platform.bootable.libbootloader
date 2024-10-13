@@ -77,7 +77,7 @@ rust_library(
         ":x86_bootparam_defs",
         "@gbl//liberror",
         "@gbl//libsafemath",
-        "@gbl//third_party/libzbi",
+        "@zbi",
         "@zerocopy",
     ] + select({
         "@gbl//toolchain:gbl_rust_uefi_aarch64": [

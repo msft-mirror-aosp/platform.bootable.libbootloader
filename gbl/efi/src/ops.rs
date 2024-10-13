@@ -329,6 +329,19 @@ where
             },
         )
     }
+
+    fn fixup_device_tree(&mut self, device_tree: &mut [u8]) -> Result<()> {
+        if let Ok(protocol) = self
+            .efi_entry
+            .system_table()
+            .boot_services()
+            .find_first_and_open::<GblOsConfigurationProtocol>()
+        {
+            protocol.fixup_device_tree(device_tree)?;
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
