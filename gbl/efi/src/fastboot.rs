@@ -221,8 +221,7 @@ pub fn fastboot(efi_gbl_ops: &mut Ops) -> Result<()> {
         .ok();
     let tcp = tcp.as_mut().map(|v| EfiFastbootTcpTransport::new(v));
 
-    let sz = 512 * 1024 * 1024;
-    let download_buffers = [vec![0u8; sz].into(), vec![0u8; sz].into()];
+    let download_buffers = vec![vec![0u8; 512 * 1024 * 1024]; 2].into();
     let blk_io_executor: EfiFbTaskExecutor = Default::default();
     block_on(run_gbl_fastboot(efi_gbl_ops, &download_buffers, &blk_io_executor, usb, tcp));
     Ok(())
