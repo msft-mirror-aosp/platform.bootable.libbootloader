@@ -53,6 +53,7 @@ rust_bindgen(
         "--with-derive-partialeq",
         "--with-derive-default",
         "--with-derive-custom-struct=EfiMemoryDescriptor=AsBytes,FromBytes,FromZeroes",
+        "--with-derive-custom-struct=EfiMemoryAttributesTableHeader=AsBytes,FromBytes,FromZeroes",
         "--allowlist-type",
         "(Efi.*)|(GblEfi.*)|(GBL_EFI_.*)",
         "--allowlist-var",
