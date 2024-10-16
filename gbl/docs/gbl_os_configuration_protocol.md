@@ -49,7 +49,7 @@ typedef struct _GBL_EFI_OS_CONFIGURATION_PROTOCOL {
   UINT64                            Revision;
   GBL_EFI_FIXUP_KERNEL_COMMAND_LINE FixupKernelCommandline;
   GBL_EFI_FIXUP_BOOTCONFIG          FixupBootConfig;
-  GBL_EFI_BUILD_DEVICE_TREE         BuildDeviceTree;
+  GBL_EFI_SELECT_DEVICE_TREES       SelectDeviceTrees;
   GBL_EFI_FIXUP_DEVICE_TREE         FixupDeviceTree;
   GBL_EFI_FIXUP_ZBI                 FixupZbi;
 } GBL_EFI_OS_CONFIGURATION_PROTOCOL;
@@ -69,9 +69,9 @@ Applies kernel commandline fixups. See
 #### FixupBootConfig
 Applies bootconfig fixups. See [`FixupBootConfig()`](#FixupBootConfig).
 
-#### BuildDeviceTree
+#### SelectDeviceTrees
 Select components such as base device tree, overlays to build the final device tree.
-See [`BuildDeviceTree()`](#BuildDeviceTree).
+See [`SelectDeviceTrees()`](#SelectDeviceTrees).
 
 #### FixupDeviceTree
 Applies device tree fixups. See [`FixupDeviceTree()`](#FixupDeviceTree).
@@ -136,7 +136,7 @@ GBL will call this function after loading and verifying the base kernel command
 line, to give the device an opportunity to supply some of the runtime fixups.
 
 Since the device tree selection affects the base kernel command line, GBL will
-call `BuildDeviceTree` first before calling `FixupKernelCommandline`.
+call `SelectDeviceTrees` first before calling `FixupKernelCommandline`.
 
 #### Security
 
@@ -237,7 +237,7 @@ This function's security guidelines are exactly identical to
 This function's status return codes are exactly identical to
 [`FixupKernelCommandline`](#FixupKernelCommandline); see those docs for details.
 
-## GBL_EFI_OS_CONFIGURATION_PROTOCOL.BuildDeviceTree() {#BuildDeviceTree}
+## GBL_EFI_OS_CONFIGURATION_PROTOCOL.SelectDeviceTrees() {#SelectDeviceTrees}
 
 ### Summary
 
@@ -268,16 +268,14 @@ typedef struct {
 typedef struct {
   GBL_EFI_DEVICE_TREE_METADATA Metadata;
   // base device tree / overlay buffer (guaranteed to be 8-bytes aligned),
-  // cannot be NULL
+  // cannot be NULL. Device tree size can be identified by the header totalsize field.
   CONST VOID *DeviceTree;
-  UINTN DeviceTreeBytes;
-  // NULL by default; expected to be set to the FDT header within the provided
-  // DeviceTree buffer if it is to be picked by GBL. Remains NULL if not
-  // contributing to the final device tree.
-  VOID *Chosen;
+  // Indicates whether this device tree (or overlay) must be included in the
+  // final device tree. Set to true by a FW if this component must be used
+  BOOLEAN Selected;
 } GBL_EFI_VERIFIED_DEVICE_TREE;
 
-typedef EFI_STATUS (EFIAPI *GBL_EFI_BUILD_DEVICE_TREE)(
+typedef EFI_STATUS (EFIAPI *GBL_EFI_SELECT_DEVICE_TREES)(
   IN GBL_EFI_OS_CONFIGURATION_PROTOCOL *This,
   IN OUT GBL_EFI_VERIFIED_DEVICE_TREE  *DeviceTrees,
   IN UINTN                             NumDeviceTrees
@@ -298,15 +296,9 @@ Pointer to an array of base device trees and overlays for selection. Base device
 overlays are differentiated by the `GBL_EFI_DEVICE_TREE_METADATA.Source` field (`BOOT`,
 `VENDOR_BOOT`, `DTB` for base device trees, and `DTBO` for overlays).
 
-Selection is made by setting `GBL_EFI_VERIFIED_DEVICE_TREE.Chosen` to the FDT header within the
-provided `GBL_EFI_VERIFIED_DEVICE_TREE.DeviceTree` buffer. In the typical case, the device tree
-is selected by setting `GBL_EFI_VERIFIED_DEVICE_TREE.Chosen` to the start of the provided device
-tree, like so: `Chosen = DeviceTree`. Selection by offset is also supported in cases where the
-Android partition format is not properly followed (e.g., providing multiple device trees as part
-of the `vendor_boot` device tree field).
-
-Setting `Chosen` to an incorrect FDT header or outside the provided `DeviceTree` will cause GBL
-to fail to boot.
+Selection is made by setting `GBL_EFI_VERIFIED_DEVICE_TREE.Selected` to `TRUE`. Selecting
+multiple or zero base device trees will cause GBL to fail to boot. Selecting multiple or
+zero overlays are supported.
 
 #### NumDeviceTrees [in]
 
