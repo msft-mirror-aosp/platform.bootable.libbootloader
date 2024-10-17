@@ -21,7 +21,6 @@ use core::{
     future::Future,
     marker::PhantomData,
     mem::take,
-    ops::DerefMut,
     str::{from_utf8, Split},
 };
 use fastboot::{
@@ -31,13 +30,19 @@ use fastboot::{
 };
 use gbl_async::{join, yield_now};
 use safemath::SafeNum;
-use spin::{Mutex, MutexGuard};
 
 mod vars;
 use vars::{fb_vars_get, fb_vars_get_all};
 
 pub(crate) mod sparse;
 use sparse::is_sparse_image;
+
+mod shared;
+pub use shared::Shared;
+
+mod buffer_pool;
+pub use buffer_pool::BufferPool;
+use buffer_pool::ScopedBuffer;
 
 // Re-exports dependency types
 pub use fastboot::{TcpStream, Transport};
@@ -59,11 +64,11 @@ pub trait TasksExecutor<'a> {
 /// * `'c`: Represents the lifetime of any data borrowed by the spawned tasks running on
 ///     `blk_io_executor`. `'a` and `'b` will be constrained to outlive `c`.
 /// * `'d`: Lifetime of the `blk_io_executor` and `gbl_ops` objects borrowed.
-pub struct GblFastboot<'a, 'b, 'c, 'd, G, D, T> {
-    blk_io_executor: &'d T,
+struct GblFastboot<'a, 'b, 'c, 'd, G, D: BufferPool, T> {
     pub(crate) gbl_ops: &'d mut G,
-    download_buffers: &'b [Mutex<D>],
-    current_download_buffer: Option<MutexGuard<'b, D>>,
+    blk_io_executor: &'d T,
+    buffer_pool: &'b Shared<D>,
+    current_download_buffer: Option<ScopedBuffer<'b, D>>,
     current_download_size: usize,
     enable_async_block_io: bool,
     default_block: Option<usize>,
@@ -74,17 +79,13 @@ pub struct GblFastboot<'a, 'b, 'c, 'd, G, D, T> {
     _blk_io_executor_context_lifetime: PhantomData<&'c T>,
 }
 
-impl<'a, 'b, 'd, G: GblOps<'a>, D, T> GblFastboot<'a, 'b, '_, 'd, G, D, T> {
+impl<'a, 'b, 'd, G: GblOps<'a>, D: BufferPool, T> GblFastboot<'a, 'b, '_, 'd, G, D, T> {
     /// Creates a new instance.
-    pub fn new(
-        blk_io_executor: &'d T,
-        gbl_ops: &'d mut G,
-        download_buffers: &'b [Mutex<D>],
-    ) -> Self {
+    fn new(blk_io_executor: &'d T, gbl_ops: &'d mut G, buffer_pool: &'b Shared<D>) -> Self {
         Self {
             blk_io_executor,
             gbl_ops,
-            download_buffers,
+            buffer_pool,
             current_download_buffer: None,
             current_download_size: 0,
             enable_async_block_io: false,
@@ -95,7 +96,7 @@ impl<'a, 'b, 'd, G: GblOps<'a>, D, T> GblFastboot<'a, 'b, '_, 'd, G, D, T> {
     }
 
     /// Returns the block IO task executor.
-    pub fn blk_io_executor(&self) -> &'d T {
+    fn blk_io_executor(&self) -> &'d T {
         self.blk_io_executor
     }
 
@@ -126,18 +127,6 @@ impl<'a, 'b, 'd, G: GblOps<'a>, D, T> GblFastboot<'a, 'b, '_, 'd, G, D, T> {
         let window_size = window_size.unwrap_or((part_sz - window_offset).try_into()?);
         u64::try_from(part_sz - window_size - window_offset)?;
         Ok((part, blk_id, window_offset, window_size))
-    }
-
-    /// Checks and waits until a download buffer is allocated.
-    async fn ensure_download_buffer(&mut self) -> &mut D {
-        while self.current_download_buffer.is_none() {
-            self.current_download_buffer = self.download_buffers.iter().find_map(|v| v.try_lock());
-            match self.current_download_buffer.is_some() {
-                true => break,
-                _ => yield_now().await,
-            }
-        }
-        self.current_download_buffer.as_mut().unwrap()
     }
 
     /// Waits for all block devices to be ready.
@@ -195,7 +184,7 @@ impl<'a, 'b, 'd, G: GblOps<'a>, D, T> GblFastboot<'a, 'b, '_, 'd, G, D, T> {
 impl<'a: 'c, 'b: 'c, 'c, G, D, T> FastbootImplementation for GblFastboot<'a, 'b, 'c, '_, G, D, T>
 where
     G: GblOps<'a>,
-    D: DerefMut<Target = [u8]> + 'b,
+    D: BufferPool,
     T: TasksExecutor<'c> + 'c,
 {
     async fn get_var(
@@ -213,7 +202,10 @@ where
     }
 
     async fn get_download_buffer(&mut self) -> &mut [u8] {
-        self.ensure_download_buffer().await
+        if self.current_download_buffer.is_none() {
+            self.current_download_buffer = Some(self.buffer_pool.allocate_async().await);
+        }
+        self.current_download_buffer.as_mut().unwrap()
     }
 
     async fn download_complete(
@@ -269,7 +261,7 @@ where
         let partitions = self.gbl_ops.partitions()?;
         let mut part_io = partitions[blk_idx].wait_partition_io(part).await?.sub(start, sz)?;
         part_io.last_err()?;
-        let buffer = self.ensure_download_buffer().await;
+        let buffer = self.get_download_buffer().await;
         let end = u64::try_from(SafeNum::from(offset) + size)?;
         let mut curr = offset;
         responder
@@ -360,7 +352,7 @@ pub trait GblTcpStream: TcpStream {
 /// * `'c`: Lifetime captured by `task_executor`
 pub async fn run_gbl_fastboot<'a: 'c, 'b: 'c, 'c>(
     gbl_ops: &mut impl GblOps<'a>,
-    download_buffers: &'b [Mutex<impl DerefMut<Target = [u8]> + 'b>],
+    buffer_pool: &'b Shared<impl BufferPool>,
     task_executor: &(impl TasksExecutor<'c> + 'c),
     mut usb: Option<impl GblUsbTransport>,
     mut tcp: Option<impl GblTcpStream>,
@@ -372,7 +364,7 @@ pub async fn run_gbl_fastboot<'a: 'c, 'b: 'c, 'c>(
 
     // The fastboot command loop task for interacting with the remote host.
     let cmd_loop_task = async {
-        let mut gbl_fb = GblFastboot::new(task_executor, gbl_ops, download_buffers);
+        let mut gbl_fb = GblFastboot::new(task_executor, gbl_ops, buffer_pool);
         loop {
             if let Some(v) = usb.as_mut() {
                 if v.has_packet() {
@@ -416,7 +408,7 @@ mod test {
     use gbl_cyclic_executor::CyclicExecutor;
     use gbl_storage_testlib::{BackingStore, TestBlockDeviceBuilder, TestBlockIo};
     use liberror::Error;
-    use spin::Mutex;
+    use spin::{Mutex, MutexGuard};
     use std::{collections::VecDeque, io::Read};
 
     /// A test implementation of [InfoSender] and [OkaySender].
@@ -493,11 +485,8 @@ mod test {
         }
 
         /// Creates an array of `PartitionBlockDevice` and fastboot download buffers.
-        fn get(&mut self) -> (Vec<PartitionBlockDevice<&mut TestBlockIo>>, Vec<Mutex<&mut [u8]>>) {
-            (
-                self.storage.as_partition_block_devices(),
-                self.download.iter_mut().map(|v| (&mut v[..]).into()).collect::<Vec<_>>(),
-            )
+        fn get(&mut self) -> (Vec<PartitionBlockDevice<&mut TestBlockIo>>, Shared<&mut [Vec<u8>]>) {
+            (self.storage.as_partition_block_devices(), (&mut self.download[..]).into())
         }
     }
 
