@@ -27,27 +27,27 @@ pub(crate) trait Variable {
     ///
     /// Return Ok(Some(`size`)) where `size` is the number of bytes written to `out`. Return
     /// `Ok(None)` if the variable is not supported.
-    async fn get<'a, T>(
+    async fn get<'a, P, F>(
         &self,
-        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, T>,
+        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
         name: &str,
         args: Split<'_, char>,
         out: &mut [u8],
     ) -> Result<Option<usize>, CommandError>;
 
     /// Iterates and calls `f` on all values/arguments combinations.
-    async fn get_all<'a, T>(
+    async fn get_all<'a, P, F>(
         &self,
-        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, T>,
+        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
         responder: &mut impl VarInfoSender,
     ) -> Result<(), CommandError>;
 }
 
-// Constant fastboot variableGblFbResource,101
+// Constant fastboot variable
 impl Variable for (&'static str, &'static str) {
-    async fn get<'a, T>(
+    async fn get<'a, P, F>(
         &self,
-        _: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, T>,
+        _: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
         name: &str,
         _: Split<'_, char>,
         out: &mut [u8],
@@ -55,9 +55,9 @@ impl Variable for (&'static str, &'static str) {
         Ok((name == self.0).then_some(snprintf!(out, "{}", self.1).len()))
     }
 
-    async fn get_all<'a, T>(
+    async fn get_all<'a, P, F>(
         &self,
-        _: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, T>,
+        _: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
         responder: &mut impl VarInfoSender,
     ) -> Result<(), CommandError> {
         responder.send_var_info(self.0, &[], self.1).await
@@ -73,9 +73,9 @@ pub(crate) struct Partition {}
 const PARTITION_SIZE: &str = "partition-size";
 const PARTITION_TYPE: &str = "partition-type";
 impl Variable for Partition {
-    async fn get<'a, T>(
+    async fn get<'a, P, F>(
         &self,
-        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, T>,
+        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
         name: &str,
         mut args: Split<'_, char>,
         out: &mut [u8],
@@ -88,9 +88,9 @@ impl Variable for Partition {
         })
     }
 
-    async fn get_all<'a, T>(
+    async fn get_all<'a, P, F>(
         &self,
-        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, T>,
+        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
         responder: &mut impl VarInfoSender,
     ) -> Result<(), CommandError> {
         // Though any sub range of a GPT partition or raw block counts as a partition in GBL
@@ -129,9 +129,9 @@ const BLOCK_SIZE: &str = "block-size";
 const BLOCK_DEVICE_STATUS: &str = "status";
 
 impl Variable for BlockDevice {
-    async fn get<'a, T>(
+    async fn get<'a, P, F>(
         &self,
-        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, T>,
+        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
         name: &str,
         mut args: Split<'_, char>,
         out: &mut [u8],
@@ -159,9 +159,9 @@ impl Variable for BlockDevice {
         })
     }
 
-    async fn get_all<'a, T>(
+    async fn get_all<'a, P, F>(
         &self,
-        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, T>,
+        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
         responder: &mut impl VarInfoSender,
     ) -> Result<(), CommandError> {
         let mut val = [0u8; 32];
@@ -203,9 +203,9 @@ pub(crate) struct DefaultBlock {}
 const DEFAULT_BLOCK: &str = "gbl-default-block";
 
 impl Variable for DefaultBlock {
-    async fn get<'a, T>(
+    async fn get<'a, P, F>(
         &self,
-        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, T>,
+        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
         name: &str,
         _: Split<'_, char>,
         out: &mut [u8],
@@ -222,9 +222,9 @@ impl Variable for DefaultBlock {
         })
     }
 
-    async fn get_all<'a, T>(
+    async fn get_all<'a, P, F>(
         &self,
-        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, T>,
+        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
         responder: &mut impl VarInfoSender,
     ) -> Result<(), CommandError> {
         let mut val = [0u8; 32];
@@ -245,7 +245,7 @@ macro_rules! fb_vars_api {
         ///
         /// The macro simply generates `var.get()` calls for each variable. i.e.:
         ///
-        ///   pub(crate) async fn fb_vars_get<'a, T>(
+        ///   pub(crate) async fn fb_vars_get<'a, P, F>(
         ///       gbl_fb: &mut GblFastboot<...>,
         ///       name: &str,
         ///       args: Split<'_, char>,
@@ -263,8 +263,8 @@ macro_rules! fb_vars_api {
         ///
         ///       Ok(None)
         ///   }
-        pub(crate) async fn fb_vars_get<'a, T>(
-            gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, T>,
+        pub(crate) async fn fb_vars_get<'a, P, F> (
+            gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
             name: &str,
             args: Split<'_, char>,
             out: &mut [u8],
@@ -277,7 +277,7 @@ macro_rules! fb_vars_api {
         ///
         /// The macro simply generates `var.get_all()` calls for each variable.
         ///
-        ///   pub(crate) async fn fb_vars_get_all<'a, T>(
+        ///   pub(crate) async fn fb_vars_get_all<'a, P, F>(
         ///       gbl_fb: &mut GblFastboot<...>,
         ///       responder: &mut impl VarInfoSender,
         ///   ) -> Result<(), CommandError> {
@@ -287,8 +287,8 @@ macro_rules! fb_vars_api {
         ///       Partition {}.get_all(gbl_fb, responder).await?;
         ///       Ok(())
         ///   }
-        pub(crate) async fn fb_vars_get_all<'a, T>(
-            gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, T>,
+        pub(crate) async fn fb_vars_get_all<'a, P, F>(
+            gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
             responder: &mut impl VarInfoSender,
         ) -> Result<(), CommandError> {
             fb_vars_get_all_body!(gbl_fb, responder, $($vars),*);
