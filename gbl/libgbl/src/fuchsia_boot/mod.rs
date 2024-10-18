@@ -196,8 +196,15 @@ pub fn zircon_load_verify<'a, 'b>(
     // Relocates the kernel to the tail to reserved extra memory that the kernel may require.
     let (zbi_items, relocated) = relocate_to_tail(&mut load[..])?;
 
+    let mut zbi_container = ZbiContainer::parse(&mut zbi_items[..])?;
     // Appends device specific ZBI items.
-    ops.zircon_add_device_zbi_items(&mut ZbiContainer::parse(&mut zbi_items[..])?)?;
+    ops.zircon_add_device_zbi_items(&mut zbi_container)?;
+
+    // Appends staged bootloader file if present.
+    match ops.get_zbi_bootloader_files_buffer_aligned().map(|v| ZbiContainer::parse(v)) {
+        Some(Ok(v)) => zbi_container.extend(&v)?,
+        _ => {}
+    }
 
     Ok((zbi_items, relocated))
 }
@@ -421,6 +428,14 @@ mod test {
         container.create_entry_with_payload(ZbiType::CmdLine, 0, ZbiFlags::default(), cmd).unwrap();
     }
 
+    /// Helper to append a command line ZBI item to a ZBI container
+    pub(crate) fn append_zbi_file(zbi: &mut [u8], payload: &[u8]) {
+        let mut container = ZbiContainer::parse(zbi).unwrap();
+        container
+            .create_entry_with_payload(ZbiType::BootloaderFile, 0, ZbiFlags::default(), payload)
+            .unwrap();
+    }
+
     /// Helper for testing `zircon_load_verify`.
     fn test_load_verify(
         ops: &mut FakeGblOps,
@@ -475,6 +490,8 @@ mod test {
         append_cmd_line(&mut expected_zbi_items, FakeGblOps::ADDED_ZBI_COMMANDLINE_CONTENTS);
         append_cmd_line(&mut expected_zbi_items, b"vb_prop_0=val\0");
         append_cmd_line(&mut expected_zbi_items, b"vb_prop_1=val\0");
+        append_zbi_file(&mut expected_zbi_items, FakeGblOps::TEST_BOOTLOADER_FILE_1);
+        append_zbi_file(&mut expected_zbi_items, FakeGblOps::TEST_BOOTLOADER_FILE_2);
         test_load_verify(&mut ops, None, &expected_zbi_items, &expected_kernel);
     }
 
@@ -493,6 +510,8 @@ mod test {
         append_cmd_line(&mut expected_zbi_items, b"vb_prop_0=val\0");
         append_cmd_line(&mut expected_zbi_items, b"vb_prop_1=val\0");
         append_cmd_line(&mut expected_zbi_items, slot_item.as_bytes());
+        append_zbi_file(&mut expected_zbi_items, FakeGblOps::TEST_BOOTLOADER_FILE_1);
+        append_zbi_file(&mut expected_zbi_items, FakeGblOps::TEST_BOOTLOADER_FILE_2);
         test_load_verify(ops, Some(slot), &expected_zbi_items, &expected_kernel);
     }
 
@@ -567,6 +586,8 @@ mod test {
             &mut expected_zbi_items,
             format!("zvb.current_slot={}", char::from(slot)).as_bytes(),
         );
+        append_zbi_file(&mut expected_zbi_items, FakeGblOps::TEST_BOOTLOADER_FILE_1);
+        append_zbi_file(&mut expected_zbi_items, FakeGblOps::TEST_BOOTLOADER_FILE_2);
         (zbi, load_buffer, expected_zbi_items, expected_kernel)
     }
 
@@ -730,5 +751,23 @@ mod test {
         }
         // Tests that load falls back to R eventually.
         expect_load_verify_abr_ok(&mut ops, SlotIndex::R, "zircon-r");
+    }
+
+    #[test]
+    fn test_zircon_load_verify_no_bootloader_file() {
+        let mut storage = create_storage();
+        let partitions = storage.as_partition_block_devices();
+        let mut ops = create_gbl_ops(&partitions);
+        ops.get_zbi_bootloader_files_buffer().unwrap().fill(0);
+
+        let zbi = &read_test_data(ZIRCON_SLOTLESS_ZBI_FILE);
+        let expected_kernel = AlignedBuffer::new_with_data(zbi, ZBI_ALIGNMENT_USIZE);
+        // Adds extra bytes for device ZBI items.
+        let mut expected_zbi_items = AlignedBuffer::new(zbi.len() + 1024, ZBI_ALIGNMENT_USIZE);
+        expected_zbi_items[..zbi.len()].clone_from_slice(zbi);
+        append_cmd_line(&mut expected_zbi_items, FakeGblOps::ADDED_ZBI_COMMANDLINE_CONTENTS);
+        append_cmd_line(&mut expected_zbi_items, b"vb_prop_0=val\0");
+        append_cmd_line(&mut expected_zbi_items, b"vb_prop_1=val\0");
+        test_load_verify(&mut ops, None, &expected_zbi_items, &expected_kernel);
     }
 }
