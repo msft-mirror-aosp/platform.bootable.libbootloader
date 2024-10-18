@@ -22,7 +22,8 @@ use crate::{
 use alloc::alloc::{alloc, handle_alloc_error, Layout};
 use core::{ffi::CStr, fmt::Write, mem::MaybeUninit, num::NonZeroUsize, slice::from_raw_parts_mut};
 use efi::{
-    efi_print, efi_println, protocol::gbl_efi_image_loading::GblImageLoadingProtocol,
+    efi_print, efi_println, protocol::dt_fixup::DtFixupProtocol,
+    protocol::gbl_efi_image_loading::GblImageLoadingProtocol,
     protocol::gbl_efi_os_configuration::GblOsConfigurationProtocol, EfiEntry,
 };
 use efi_types::{GblEfiImageInfo, PARTITION_NAME_LEN_U16};
@@ -331,13 +332,10 @@ where
     }
 
     fn fixup_device_tree(&mut self, device_tree: &mut [u8]) -> Result<()> {
-        if let Ok(protocol) = self
-            .efi_entry
-            .system_table()
-            .boot_services()
-            .find_first_and_open::<GblOsConfigurationProtocol>()
+        if let Ok(protocol) =
+            self.efi_entry.system_table().boot_services().find_first_and_open::<DtFixupProtocol>()
         {
-            protocol.fixup_device_tree(device_tree)?;
+            protocol.fixup(device_tree)?;
         }
 
         Ok(())
