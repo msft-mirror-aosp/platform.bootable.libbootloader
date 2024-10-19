@@ -209,6 +209,14 @@ impl<'a, T: AsRef<[u8]> + 'a> Fdt<T> {
 
 /// APIs when data can be modified.
 impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
+    /// Creates a new mut [Fdt] wrapping the contents of `init`.
+    pub fn new_mut(init: T) -> Result<Self> {
+        let mut fdt = Fdt::new(init)?;
+        let new_size: u32 = fdt.as_mut().len().try_into().or(Err(Error::Other(None)))?;
+        fdt.header_mut()?.set_totalsize(new_size);
+        Ok(fdt)
+    }
+
     /// Creates a mutable [Fdt] copied from `init`.
     pub fn new_from_init(mut fdt: T, init: &[u8]) -> Result<Self> {
         fdt_check_header(init)?;
