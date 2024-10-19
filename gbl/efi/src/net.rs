@@ -32,7 +32,7 @@ use smoltcp::{
     iface::{Config, Interface, SocketSet, SocketStorage},
     phy,
     phy::{Device, DeviceCapabilities, Medium},
-    socket::tcp,
+    socket::tcp::{Socket, SocketBuffer, State},
     time::Instant,
     wire::{EthernetAddress, IpAddress, IpCidr, Ipv6Address},
 };
@@ -316,6 +316,11 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
         Ok(())
     }
 
+    // Checks if the socket is listening or performing handshake.
+    pub fn is_listening_or_handshaking(&mut self) -> bool {
+        matches!(self.get_socket().state(), State::Listen | State::SynReceived)
+    }
+
     /// Returns the amount of time elapsed since last call to `Self::listen()`. If `listen()` has
     /// never been called, `u64::MAX` is returned.
     pub fn time_since_last_listen(&mut self) -> u64 {
@@ -334,16 +339,16 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
     }
 
     /// Gets a reference to the smoltcp socket object.
-    pub fn get_socket(&mut self) -> &mut tcp::Socket<'b> {
+    pub fn get_socket(&mut self) -> &mut Socket<'b> {
         // We only consider single socket use case for now.
         assert_eq!(self.socket_set.iter().count(), 1);
         let handle = self.socket_set.iter().next().unwrap().0;
-        self.socket_set.get_mut::<tcp::Socket>(handle)
+        self.socket_set.get_mut::<Socket>(handle)
     }
 
     /// Checks whether a socket is closed.
     fn is_closed(&mut self) -> bool {
-        return !self.get_socket().is_open() || self.get_socket().state() == tcp::State::CloseWait;
+        return !self.get_socket().is_open() || self.get_socket().state() == State::CloseWait;
     }
 
     /// Sets the maximum number of bytes to read or write before a force await.
@@ -543,9 +548,9 @@ impl<'a, 'b, 'c> EfiGblNetworkInternal<'a, 'b, 'c> {
         // Creates sockets.
         let mut socket_set = SocketSet::new(&mut self.socket_storage[..]);
         // Creates a TCP socket for fastboot over TCP.
-        let tx_socket_buffer = tcp::SocketBuffer::new(&mut self.tx_buffer[..]);
-        let rx_socket_buffer = tcp::SocketBuffer::new(&mut self.rx_buffer[..]);
-        let tcp_socket = tcp::Socket::new(rx_socket_buffer, tx_socket_buffer);
+        let tx_socket_buffer = SocketBuffer::new(&mut self.tx_buffer[..]);
+        let rx_socket_buffer = SocketBuffer::new(&mut self.rx_buffer[..]);
+        let tcp_socket = Socket::new(rx_socket_buffer, tx_socket_buffer);
         let _ = socket_set.add(tcp_socket);
         Ok(EfiTcpSocket {
             efi_entry: self.efi_entry,
