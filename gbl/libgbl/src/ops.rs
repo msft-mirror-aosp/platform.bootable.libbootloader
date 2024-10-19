@@ -266,7 +266,8 @@ where
     ///
     /// Modified device tree will be verified and used to boot a device. Refer to the behavior
     /// specified for the corresponding UEFI interface:
-    /// https://cs.android.com/android/platform/superproject/main/+/main:bootable/libbootloader/gbl/docs/gbl_os_configuration_protocol.md
+    /// https://cs.android.com/android/platform/superproject/main/+/main:bootable/libbootloader/gbl/docs/efi_protocols.md
+    /// https://github.com/U-Boot-EFI/EFI_DT_FIXUP_PROTOCOL
     fn fixup_device_tree(&mut self, device_tree: &mut [u8]) -> Result<(), Error>;
 }
 
