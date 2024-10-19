@@ -35,6 +35,7 @@ use fastboot::{
     UploadBuilder, Uploader, VarInfoSender,
 };
 use gbl_async::{join, yield_now};
+use liberror::Error;
 use safemath::SafeNum;
 
 mod vars;
@@ -294,6 +295,11 @@ where
         }
     }
 
+    async fn r#continue(&mut self, mut resp: impl InfoSender) -> CommandResult<()> {
+        resp.send_info("Syncing storage...").await?;
+        Ok(self.sync_all_blocks().await?)
+    }
+
     async fn oem<'s>(
         &mut self,
         cmd: &str,
@@ -386,30 +392,41 @@ where
         }
         let tasks = self.tasks();
         // The fastboot command loop task for interacting with the remote host.
+        let cmd_loop_end = Shared::from(false);
         let cmd_loop_task = async {
             loop {
                 if let Some(v) = usb.as_mut() {
                     if v.has_packet() {
-                        let res = process_next_command(v, self).await;
-                        gbl_println!(self.gbl_ops, "GBL Fastboot USB session completes: {:?}", res);
+                        let res = match process_next_command(v, self).await {
+                            Ok(true) => break,
+                            v => v,
+                        };
+                        if res.is_err() {
+                            gbl_println!(self.gbl_ops, "GBL Fastboot USB session error: {:?}", res);
+                        }
                     }
                 }
 
                 if let Some(v) = tcp.as_mut() {
                     if v.accept_new() {
-                        let res = run_tcp_session(v, self).await;
-                        gbl_println!(self.gbl_ops, "GBL Fastboot TCP session completes: {:?}", res);
+                        let res = match run_tcp_session(v, self).await {
+                            Ok(()) => break,
+                            v => v,
+                        };
+                        if res.is_err_and(|e| e != Error::Disconnected) {
+                            gbl_println!(self.gbl_ops, "GBL Fastboot TCP session error: {:?}", res);
+                        }
                     }
                 }
 
                 yield_now().await;
             }
+            *cmd_loop_end.borrow_mut() = true;
         };
 
         // Schedules [Task] spawned by GBL fastboot.
         let gbl_fb_tasks = async {
-            loop {
-                tasks.borrow_mut().poll_all();
+            while tasks.borrow_mut().poll_all() > 0 || !*cmd_loop_end.borrow_mut() {
                 yield_now().await;
             }
         };
@@ -1186,6 +1203,35 @@ mod test {
         assert_eq!(resp.info_messages.try_lock().unwrap()[2], "Rebooting...");
     }
 
+    #[test]
+    fn test_continue_sync_all_blocks() {
+        let mut test_data = TestData::new(128 * 1024, 2);
+        test_data.storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
+        let (partitions, dl_buffers) = test_data.get();
+        let mut gbl_ops = FakeGblOps::new(&partitions);
+        let tasks = vec![].into();
+        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, Task::run, &tasks, &dl_buffers);
+        let tasks = gbl_fb.tasks();
+        let resp: TestResponder = Default::default();
+
+        block_on(oem(&mut gbl_fb, "gbl-enable-async-block-io", &resp)).unwrap();
+
+        // Flashes "boot_a".
+        let expect_boot_a = flipped_bits(include_bytes!("../../../libstorage/test/boot_a.bin"));
+        set_download(&mut gbl_fb, expect_boot_a.as_slice());
+        block_on(gbl_fb.flash("boot_a", &resp)).unwrap();
+        // Performs a continue.
+        let mut continue_fut = pin!(gbl_fb.r#continue(&resp));
+        // There is a pending flash task. Continue should wait.
+        assert!(poll(&mut continue_fut).is_none());
+        assert!(!(*resp.okay_sent.try_lock().unwrap()));
+        assert_eq!(resp.info_messages.try_lock().unwrap()[1], "Syncing storage...");
+        // Schedules the disk IO tasks to completion.
+        tasks.borrow_mut().run();
+        // The continue can now complete.
+        assert!(poll(&mut continue_fut).is_some());
+    }
+
     /// Generates a length prefixed byte sequence.
     fn length_prefixed(data: &[u8]) -> Vec<u8> {
         [&data.len().to_be_bytes()[..], data].concat()
@@ -1321,15 +1367,12 @@ mod test {
         let mut gbl_ops = FakeGblOps::new(&partitions);
         let listener: SharedTestListener = Default::default();
         let (usb, tcp) = (&listener, &listener);
-        let mut fb_fut =
-            pin!(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp)));
 
         listener.add_usb_input(b"getvar:version-bootloader");
         listener.add_tcp_input(b"FB01");
         listener.add_tcp_length_prefixed_input(b"getvar:max-download-size");
-        // Polls enough number to times to make sure all commands are finished.
-        // Switch to send a `continue` command to end the entire session once available.
-        assert!(poll_n_times(&mut fb_fut, 100).is_none());
+        listener.add_tcp_length_prefixed_input(b"continue");
+        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp)));
 
         assert_eq!(
             listener.usb_out_queue(),
@@ -1341,7 +1384,7 @@ mod test {
         let tcp_out_queue = listener.lock().tcp_out_queue.clone();
         assert_eq!(
             listener.tcp_out_queue(),
-            make_expected_tcp_out(&[b"OKAY0x20000"]),
+            make_expected_tcp_out(&[b"OKAY0x20000", b"INFOSyncing storage...", b"OKAY"]),
             "\nActual TCP output:\n{}",
             listener.dump_tcp_out_queue()
         );
