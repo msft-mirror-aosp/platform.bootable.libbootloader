@@ -104,7 +104,7 @@ impl Drop for EfiNetworkDevice<'_> {
             // SAFETY:
             // Each pointer is created by `Box::new()` in `EfiNetworkDevice::new()`. Thus the
             // pointer is valid and layout matches.
-            let _ = unsafe { Box::from_raw(v) };
+            drop(unsafe { Box::<[u8; ETHERNET_FRAME_SIZE]>::from_raw(*v) });
         });
     }
 }
@@ -297,7 +297,7 @@ fn ll_mac_ip6_addr_from_efi_mac(mac: EfiMacAddress) -> (EthernetAddress, IpAddre
 
 /// `EfiTcpSocket` groups together necessary components for performing TCP.
 pub struct EfiTcpSocket<'a, 'b> {
-    efi_entry: &'a EfiEntry,
+    pub(crate) efi_entry: &'a EfiEntry,
     efi_net_dev: &'b mut EfiNetworkDevice<'a>,
     interface: Interface,
     socket_set: SocketSet<'b>,

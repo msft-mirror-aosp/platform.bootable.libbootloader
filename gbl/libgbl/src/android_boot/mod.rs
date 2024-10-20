@@ -471,7 +471,7 @@ pub fn load_android_simple<'a, 'b>(
             ops.read_from_partition_sync(part, offset, &mut fdt_buffer[..size])?;
         }
     };
-    let mut fdt = Fdt::new(fdt_buffer)?;
+    let mut fdt = Fdt::new_mut(fdt_buffer)?;
 
     // Add ramdisk range to FDT
     let ramdisk_addr: u64 =
