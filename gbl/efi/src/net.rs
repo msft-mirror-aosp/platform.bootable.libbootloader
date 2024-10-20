@@ -104,7 +104,7 @@ impl Drop for EfiNetworkDevice<'_> {
             // SAFETY:
             // Each pointer is created by `Box::new()` in `EfiNetworkDevice::new()`. Thus the
             // pointer is valid and layout matches.
-            let _ = unsafe { Box::from_raw(v) };
+            drop(unsafe { Box::<[u8; ETHERNET_FRAME_SIZE]>::from_raw(*v) });
         });
     }
 }

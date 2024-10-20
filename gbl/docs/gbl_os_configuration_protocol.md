@@ -7,16 +7,16 @@ apply runtime fixups to data passed into the OS.
 
 ### Summary
 
-This protocol provides a mechanism for the EFI firmware to update OS
+This protocol provides a mechanism for the EFI firmware to build and update OS
 configuration data:
 
-* kernel commandline
-* bootconfig
-* devicetree
+* device tree (select components to build the final one)
+* kernel commandline (append fixups)
+* bootconfig (append fixups)
 
 GBL will load and verify the base data from disk, and then call these protocol
 functions to give the firmware a chance to construct and adjust the data as needed
-for the particular device.
+for the particular device. Device tree fixup is handled by `EFI_DT_FIXUP` protocol.
 
 If no runtime modifications are necessary, this protocol may be left
 unimplemented.
@@ -50,7 +50,6 @@ typedef struct _GBL_EFI_OS_CONFIGURATION_PROTOCOL {
   GBL_EFI_FIXUP_KERNEL_COMMAND_LINE FixupKernelCommandline;
   GBL_EFI_FIXUP_BOOTCONFIG          FixupBootConfig;
   GBL_EFI_SELECT_DEVICE_TREES       SelectDeviceTrees;
-  GBL_EFI_FIXUP_DEVICE_TREE         FixupDeviceTree;
   GBL_EFI_FIXUP_ZBI                 FixupZbi;
 } GBL_EFI_OS_CONFIGURATION_PROTOCOL;
 ```
@@ -72,9 +71,6 @@ Applies bootconfig fixups. See [`FixupBootConfig()`](#FixupBootConfig).
 #### SelectDeviceTrees
 Select components such as base device tree, overlays to build the final device tree.
 See [`SelectDeviceTrees()`](#SelectDeviceTrees).
-
-#### FixupDeviceTree
-Applies device tree fixups. See [`FixupDeviceTree()`](#FixupDeviceTree).
 
 #### FixupZbi
 Applies ZBI fixups (Fuchsia kernels only). See [`FixupZbi()`](#FixupZbi).
@@ -320,73 +316,6 @@ If more than one or no base device trees are selected, GBL will fail to boot.
 | ----------------------- | ----------------------------------------------------------------------- |
 | `EFI_SUCCESS`           | Base device tree, overlays has been selected.                           |
 | `EFI_INVALID_PARAMETER` | A parameter is invalid. For example, incorrect device trees, alignment. |
-
-## GBL_EFI_OS_CONFIGURATION_PROTOCOL.FixupDeviceTree() {#FixupDeviceTree}
-
-### Summary
-
-Inspect the final device tree and apply required fixups.
-
-### Prototype
-
-```c
-typedef EFI_STATUS (EFIAPI *GBL_EFI_FIXUP_DEVICE_TREE)(
-  IN GBL_EFI_OS_CONFIGURATION_PROTOCOL *This,
-  IN OUT VOID                          *DeviceTree,
-  IN OUT UINTN                         *DeviceTreeBufferSize
-  );
-```
-
-### Parameters
-
-Ownership of all the parameters is loaned only for the duration of the function call, and
-must not be retained by the protocol after returning.
-
-#### This
-A pointer to the `GBL_EFI_OS_CONFIGURATION_PROTOCOL` instance.
-
-#### DeviceTree [in, out]
-
-Pointer to the buffer with the device tree built by GBL. Firmware is allowed to modify
-it by applying fixups with the following restrictions:
-
-* on return, the data must be a valid device tree. Including the FDT header with the updated
-  `totalsize` field to let GBL identify a new device tree size.
-* result data must never exceed the provided `DeviceTreeBufferSize`
-* security restrictions mentioned below
-
-#### DeviceTreeBufferSize [in, out]
-
-On function call, this points to the buffer size provided by `DeviceTree`. An implementation
-is allowed to update the provided device tree up to this size.
-
-If the buffer is not large enough to fit the fixups, the function should update
-`DeviceTreeBufferSize` with the required size (including both device tree and fixups) and
-return `EFI_BUFFER_TOO_SMALL`; GBL will then allocate a larger buffer, discard all
-modifications and repeat the `FixupDeviceTree` call.
-
-### Description
-
-When the device tree is built from the artifacts (`boot`, `vendor_boot`, `dtb`, `dtbo`), some
-fixups (which can only be determined at run-time) may need to be applied by the firmware
-implementation. To allow this, GBL provides a read/write pointer to the device tree it built
-throught `FixupDeviceTree`. GBL will verify the applied changes and fail to boot if any of the
-security limitations (noted below) are violated. The error message will be communicated through
-UEFI log.
-
-
-#### Security
-
-TODO(b/353272981): add device tree fixup limitations
-
-#### Status Codes Returned
-
-|                         |                                                                                          |
-| ----------------------- | ---------------------------------------------------------------------------------------- |
-| `EFI_SUCCESS`           | Device tree fixup has been applied.                                                      |
-| `EFI_INVALID_PARAMETER` | A parameter is invalid. For example, incorrect device trees, alignment.                  |
-| `EFI_BUFFER_TOO_SMALL`  | The buffer is too small; `DeviceTreeBufferSize` has been updated with the required size. |
-| `EFI_DEVICE_ERROR`      | Internal error while applying device tree fixup.                                         |
 
 ## GBL_EFI_OS_CONFIGURATION_PROTOCOL.FixupZbi() {#FixupZbi}
 

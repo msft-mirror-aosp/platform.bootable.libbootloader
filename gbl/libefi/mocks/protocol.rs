@@ -179,3 +179,19 @@ pub mod gbl_efi_os_configuration {
     /// Map to the libefi name so code under test can just use one name.
     pub type GblOsConfigurationProtocol = MockGblOsConfigurationProtocol;
 }
+
+/// Mock dt_fixup protocol.
+pub mod dt_fixup {
+    use super::*;
+
+    mock! {
+        /// Mock [efi::DtFixupProtocol].
+        pub DtFixupProtocol {
+            /// Wraps `EFI_DT_FIXUP_PROTOCOL.fixup()`
+            pub fn fixup(&self, device_tree: &mut [u8]) -> Result<()>;
+        }
+    }
+
+    /// Map to the libefi name so code under test can just use one name.
+    pub type DtFixupProtocol = MockDtFixupProtocol;
+}
