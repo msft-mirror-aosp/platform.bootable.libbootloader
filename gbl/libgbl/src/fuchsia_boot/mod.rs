@@ -35,7 +35,10 @@ const MISC_PARTITION: &str = "misc";
 const ABR_PARTITION_ALIASES: &[&str] = &[DURABLE_BOOT_PARTITION, MISC_PARTITION];
 
 /// Helper function to find partition given a list of possible aliases.
-fn find_part_aliases<'a, 'b>(ops: &mut impl GblOps<'a>, aliases: &'b [&str]) -> Result<&'b str> {
+fn find_part_aliases<'a, 'b>(
+    ops: &mut (impl GblOps<'a> + ?Sized),
+    aliases: &'b [&str],
+) -> Result<&'b str> {
     Ok(*aliases
         .iter()
         .find(|v| matches!(ops.partition_size(v), Ok(Some(_))))
@@ -43,9 +46,9 @@ fn find_part_aliases<'a, 'b>(ops: &mut impl GblOps<'a>, aliases: &'b [&str]) -> 
 }
 
 /// `GblAbrOps` wraps an object implementing `GblOps` and implements the `abr::Ops` trait.
-struct GblAbrOps<'a, T>(&'a mut T);
+pub(crate) struct GblAbrOps<'a, T: ?Sized>(pub &'a mut T);
 
-impl<'b, T: GblOps<'b>> AbrOps for GblAbrOps<'_, T> {
+impl<'b, T: GblOps<'b> + ?Sized> AbrOps for GblAbrOps<'_, T> {
     fn read_abr_metadata(&mut self, out: &mut [u8]) -> Result<()> {
         let part = find_part_aliases(self.0, &ABR_PARTITION_ALIASES)?;
         self.0.read_from_partition_sync(part, 0, out)
