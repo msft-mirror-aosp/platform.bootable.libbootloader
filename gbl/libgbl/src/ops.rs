@@ -301,7 +301,6 @@ pub(crate) mod test {
     use avb::{CertOps, Ops};
     use avb_test::TestOps as AvbTestOps;
     use gbl_storage_testlib::{TestBlockDevice, TestBlockDeviceBuilder, TestBlockIo};
-    use safemath::SafeNum;
     use zbi::{ZbiFlags, ZbiType};
 
     /// Backing storage for [FakeGblOps].
@@ -335,18 +334,9 @@ pub(crate) mod test {
 
         /// Adds a raw partition block device.
         pub fn add_raw_device(&mut self, name: &'static str, data: impl AsRef<[u8]>) {
-            self.raw_devices.push((name, data.as_ref().into()))
-        }
-
-        /// Similar to [add_raw_device] but pads `data` with zeros up to the next
-        /// [TestBlockDeviceBuilder::DEFAULT_BLOCK_SIZE].
-        pub(crate) fn add_raw_device_padded(&mut self, name: &'static str, mut data: Vec<u8>) {
-            let padded_size = SafeNum::from(data.len())
-                .round_up(TestBlockDeviceBuilder::DEFAULT_BLOCK_SIZE)
-                .try_into()
-                .unwrap();
-            data.resize(padded_size, 0);
-            self.add_raw_device(name, data);
+            let dev =
+                TestBlockDeviceBuilder::new().set_data(data.as_ref()).set_block_size(1).build();
+            self.raw_devices.push((name, dev))
         }
 
         /// Returns a vector of [PartitionBlockDevice]s wrapping the added devices.

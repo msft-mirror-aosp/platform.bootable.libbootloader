@@ -37,14 +37,13 @@ const PAGE_SIZE: u64 = 4096;
 /// Check if the disk GPT layout is a Fuchsia device layout.
 pub fn is_fuchsia_gpt(efi_entry: &EfiEntry) -> Result<()> {
     let mut gpt_devices = find_block_devices(&efi_entry)?;
-    let partitions: [&[&str]; 8] = [
-        &["zircon_a"],
-        &["zircon_b"],
-        &["zircon_r"],
+    let partitions: &[&[&str]] = &[
+        &["zircon_a", "zircon-a"],
+        &["zircon_b", "zircon-b"],
+        &["zircon_r", "zircon-r"],
         &["vbmeta_a"],
         &["vbmeta_b"],
         &["vbmeta_r"],
-        &["fvm"],
         &["misc", "durable_boot"],
     ];
     if !partitions
