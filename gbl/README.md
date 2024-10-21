@@ -110,6 +110,47 @@ configurations:
        -device virtio-blk-device,drive=blk0
    ```
 
+### Boot Fuchsia on emulator
+
+1. Make sure Fuchsia target pass control to GBL.
+
+   Set path to GBL binary here: [fuchsia/src/firmware/gigaboot/cpp/backends.gni : gigaboot_gbl_efi_app](https://cs.opensource.google/fuchsia/fuchsia/+/main:src/firmware/gigaboot/cpp/backends.gni;l=25?q=gigaboot_gbl_efi_app)
+
+   E.g. in `fuchsia/src/firmware/gigaboot/cpp/backends.gni`:
+   ```
+   $ cat ./fuchsia/src/firmware/gigaboot/cpp/backends.gni
+   ...
+   declare_args() {
+      ...
+      gigaboot_gbl_efi_app = "<path to EFI image>/gbl_x86_64.efi"
+   }
+   ```
+
+   Or in `fx set`:
+   ```
+   fx set core.x64 --args=gigaboot_gbl_efi_app='"<path to EFI image>/gbl_x86_64.efi"'
+   ```
+
+2. Build: (this has to be done every time if EFI app changes)
+
+   `fx build`
+
+3. Rename partitions. (this has to be done every time after build)
+
+   This is temporary fix to match partition names to what is expected by GBL.
+
+   ```
+   parted ./out/default/obj/build/images/disk.raw name 2 zircon_a
+   parted ./out/default/obj/build/images/disk.raw name 4 zircon_b
+   parted ./out/default/obj/build/images/disk.raw name 6 zircon_r
+   ```
+
+4. Run emulator in UEFI mode with raw disk
+
+   ```
+   fx qemu -a x64 --uefi --disktype=nvme -D ./out/default/obj/build/images/disk.raw
+   ```
+
 ## EFI Protocols
 
 List of EFI protocols used by GBL and a brief description of each [here](./docs/efi_protocols.md).
