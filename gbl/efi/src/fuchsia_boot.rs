@@ -65,7 +65,7 @@ pub fn fuchsia_boot_demo(efi_entry: EfiEntry) -> Result<()> {
     let (_zbi_items, _kernel, slot) = {
         let mut blks = find_block_devices(&efi_entry)?;
         let partitions = &blks.as_gbl_parts()?;
-        let mut ops = Ops { efi_entry: &efi_entry, partitions };
+        let mut ops = Ops::new(&efi_entry, partitions);
         // Checks whether to enter fastboot mode.
         if zircon_check_enter_fastboot(&mut ops) {
             fastboot(&mut ops)?;
