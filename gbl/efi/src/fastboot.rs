@@ -66,7 +66,7 @@ impl GblTcpStream for EfiFastbootTcpTransport<'_, '_, '_> {
         // If not connected but it's been `DEFAULT_TIMEOUT_MS`, restart listening in case the remote
         // client disconnects in the middle of TCP handshake and leaves the socket in a half open
         // state.
-        if !self.socket.get_socket().is_listening()
+        if !self.socket.is_listening_or_handshaking()
             || (!self.socket.check_active()
                 && self.socket.time_since_last_listen() > DEFAULT_TIMEOUT_MS)
         {
