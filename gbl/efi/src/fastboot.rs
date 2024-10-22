@@ -21,20 +21,17 @@ use crate::{
     net::{EfiGblNetwork, EfiTcpSocket},
     ops::Ops,
 };
-use alloc::vec::Vec;
-use core::{
-    cell::RefCell, cmp::min, fmt::Write, future::Future, mem::take, sync::atomic::AtomicU64,
-};
+use alloc::{boxed::Box, vec::Vec};
+use core::{cmp::min, fmt::Write, future::Future, mem::take, pin::Pin, sync::atomic::AtomicU64};
 use efi::{
     efi_print, efi_println,
     protocol::{gbl_efi_fastboot_usb::GblFastbootUsbProtocol, Protocol},
     EfiEntry,
 };
-use fastboot::{CommandResult, TcpStream, Transport};
+use fastboot::{TcpStream, Transport};
 use gbl_async::{block_on, YieldCounter};
-use gbl_cyclic_executor::CyclicExecutor;
 use liberror::{Error, Result};
-use libgbl::fastboot::{run_gbl_fastboot, GblTcpStream, GblUsbTransport, TasksExecutor};
+use libgbl::fastboot::{run_gbl_fastboot, GblTcpStream, GblUsbTransport, PinFutContainer};
 
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 const FASTBOOT_TCP_PORT: u16 = 5554;
@@ -69,7 +66,7 @@ impl GblTcpStream for EfiFastbootTcpTransport<'_, '_, '_> {
         // If not connected but it's been `DEFAULT_TIMEOUT_MS`, restart listening in case the remote
         // client disconnects in the middle of TCP handshake and leaves the socket in a half open
         // state.
-        if !self.socket.get_socket().is_listening()
+        if !self.socket.is_listening_or_handshaking()
             || (!self.socket.check_active()
                 && self.socket.time_since_last_listen() > DEFAULT_TIMEOUT_MS)
         {
@@ -180,20 +177,22 @@ fn init_usb(efi_entry: &EfiEntry) -> Result<UsbTransport> {
     }
 }
 
-/// `EfiFbTaskExecutor` implements the `TasksExecutor` trait used by GBL fastboot for scheduling
-/// disk IO tasks.
+// Wrapper of vector of pinned futures.
 #[derive(Default)]
-struct EfiFbTaskExecutor<'a>(RefCell<CyclicExecutor<'a>>);
+struct VecPinFut<'a>(Vec<Pin<Box<dyn Future<Output = ()> + 'a>>>);
 
-impl<'a> TasksExecutor<'a> for EfiFbTaskExecutor<'a> {
-    fn spawn_task(&self, task: impl Future<Output = ()> + 'a) -> CommandResult<()> {
-        // The method is synchronous and we expect it to run in the same thread (enforced by
-        // `RefCell` not being Sync). Thus the borrow should always succeed.
-        Ok(self.0.borrow_mut().spawn_task(task))
+impl<'a> PinFutContainer<'a> for VecPinFut<'a> {
+    fn add_with<F: Future<Output = ()> + 'a>(&mut self, f: impl FnOnce() -> F) {
+        self.0.push(Box::pin(f()));
     }
 
-    fn poll_all(&self) {
-        self.0.borrow_mut().poll();
+    fn for_each_remove_if(
+        &mut self,
+        mut cb: impl FnMut(&mut Pin<&mut (dyn Future<Output = ()> + 'a)>) -> bool,
+    ) {
+        for idx in (0..self.0.len()).rev() {
+            cb(&mut self.0[idx].as_mut()).then(|| self.0.swap_remove(idx));
+        }
     }
 }
 
@@ -222,7 +221,6 @@ pub fn fastboot(efi_gbl_ops: &mut Ops) -> Result<()> {
     let tcp = tcp.as_mut().map(|v| EfiFastbootTcpTransport::new(v));
 
     let download_buffers = vec![vec![0u8; 512 * 1024 * 1024]; 2].into();
-    let blk_io_executor: EfiFbTaskExecutor = Default::default();
-    block_on(run_gbl_fastboot(efi_gbl_ops, &download_buffers, &blk_io_executor, usb, tcp));
+    block_on(run_gbl_fastboot(efi_gbl_ops, &download_buffers, VecPinFut::default(), usb, tcp));
     Ok(())
 }
