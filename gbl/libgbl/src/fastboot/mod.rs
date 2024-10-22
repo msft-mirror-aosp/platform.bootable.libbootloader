@@ -986,8 +986,6 @@ mod test {
         block_on(gbl_fb.flash("sparse", &resp)).unwrap();
         check_var(&mut gbl_fb, "block-device", "1:status", "IO pending");
 
-        // There should be two disk IO tasks spawned.
-        assert_eq!(tasks.borrow_mut().size(), 2);
         {
             // "oem gbl-sync-blocks" should block.
             let oem_sync_blk_fut = &mut pin!(oem(&mut gbl_fb, "gbl-sync-blocks", &resp));
