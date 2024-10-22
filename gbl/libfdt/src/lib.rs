@@ -304,11 +304,15 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
     /// Wrapper/equivalent of ufdt_apply_multioverlay.
     /// It extend current FDT buffer by applying passed overlays.
     pub fn multioverlay_apply(&mut self, overlays: &[&[u8]]) -> Result<()> {
-        self.shrink_to_fit()?;
-
+        // Avoid shrinking device tree or doing any other actions in case nothing to apply.
+        if overlays.is_empty() {
+            return Ok(());
+        }
         if overlays.len() > MAXIMUM_OVERLAYS_TO_APPLY {
             return Err(Error::Other(Some(MAXIMUM_OVERLAYS_ERROR_MSG)));
         }
+
+        self.shrink_to_fit()?;
 
         // Convert input fat references into the raw pointers.
         let pointers: ArrayVec<_, MAXIMUM_OVERLAYS_TO_APPLY> =
@@ -348,6 +352,12 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
 impl<T: AsMut<[u8]>> AsMut<[u8]> for Fdt<T> {
     fn as_mut(&mut self) -> &mut [u8] {
         self.0.as_mut()
+    }
+}
+
+impl<T: AsRef<[u8]>> AsRef<[u8]> for Fdt<T> {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
     }
 }
 
