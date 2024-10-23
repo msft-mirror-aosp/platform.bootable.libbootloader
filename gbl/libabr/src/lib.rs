@@ -112,6 +112,17 @@ impl From<SlotIndex> for c_uint {
     }
 }
 
+// Implement conversion to char
+impl From<SlotIndex> for char {
+    fn from(_val: SlotIndex) -> Self {
+        match _val {
+            SlotIndex::A => 'a',
+            SlotIndex::B => 'b',
+            SlotIndex::R => 'r',
+        }
+    }
+}
+
 // Implement conversion from c_uint for C interfaces.
 impl TryFrom<c_uint> for SlotIndex {
     type Error = Error;

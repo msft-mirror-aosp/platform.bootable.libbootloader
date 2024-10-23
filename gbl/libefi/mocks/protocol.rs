@@ -21,7 +21,7 @@ use crate::{DeviceHandle, MOCK_EFI};
 use core::ffi::CStr;
 use core::fmt::Write;
 use efi::protocol::gbl_efi_image_loading::EfiImageBuffer;
-use efi_types::{EfiInputKey, GblEfiImageInfo, GblEfiPartitionName};
+use efi_types::{EfiInputKey, GblEfiImageInfo, GblEfiPartitionName, GblEfiVerifiedDeviceTree};
 use liberror::Result;
 use mockall::mock;
 
@@ -168,11 +168,14 @@ pub mod gbl_efi_os_configuration {
             pub fn fixup_bootconfig(
                 &self,
                 bootconfig: &[u8],
-                fixup: &mut [u8]
+                fixup: &mut [u8],
             ) -> Result<usize>;
 
-            /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.fixup_device_tree()`
-            pub fn fixup_device_tree(&self, device_tree: &mut [u8]) -> Result<()>;
+            /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.select_device_trees()`
+            pub fn select_device_trees(
+                &self,
+                components: &mut [GblEfiVerifiedDeviceTree],
+            ) -> Result<()>;
         }
     }
 
