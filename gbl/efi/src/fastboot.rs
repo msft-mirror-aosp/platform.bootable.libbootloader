@@ -66,7 +66,7 @@ impl GblTcpStream for EfiFastbootTcpTransport<'_, '_, '_> {
         // If not connected but it's been `DEFAULT_TIMEOUT_MS`, restart listening in case the remote
         // client disconnects in the middle of TCP handshake and leaves the socket in a half open
         // state.
-        if !self.socket.get_socket().is_listening()
+        if !self.socket.is_listening_or_handshaking()
             || (!self.socket.check_active()
                 && self.socket.time_since_last_listen() > DEFAULT_TIMEOUT_MS)
         {
@@ -74,6 +74,9 @@ impl GblTcpStream for EfiFastbootTcpTransport<'_, '_, '_> {
                 .socket
                 .listen(FASTBOOT_TCP_PORT)
                 .inspect_err(|e| efi_println!(efi_entry, "TCP listen error: {:?}", e));
+
+            // TODO(b/368647237): Enable only in Fuchsia context.
+            self.socket.broadcast_fuchsia_fastboot_mdns();
         } else if self.socket.check_active() {
             self.socket.set_io_yield_threshold(1024 * 1024); // 1MB
             let remote = self.socket.get_socket().remote_endpoint().unwrap();
