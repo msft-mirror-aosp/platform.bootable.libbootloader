@@ -43,6 +43,7 @@ pub mod avb_ops; // TODO(b/363074091): make this private once we move Android bo
 pub mod boot_mode;
 pub mod boot_reason;
 pub mod decompress;
+pub mod device_tree;
 pub mod error;
 pub mod fastboot;
 pub mod fuchsia_boot;

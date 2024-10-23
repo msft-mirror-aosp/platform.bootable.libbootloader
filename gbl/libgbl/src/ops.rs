@@ -34,6 +34,7 @@ pub use avb::{
 use liberror::Error;
 pub use zbi::{ZbiContainer, ZBI_ALIGNMENT_USIZE};
 
+use super::device_tree;
 use super::slots;
 
 /// `AndroidBootImages` contains references to loaded images for booting Android.
@@ -275,6 +276,17 @@ where
         bootconfig: &[u8],
         fixup_buffer: &'c mut [u8],
     ) -> Result<Option<&'c [u8]>, Error>;
+
+    /// Selects from device tree components to build the final one.
+    ///
+    /// Provided components registry must be used to select one device tree (none is not allowed),
+    /// and any number of overlays. Refer to the behavior specified for the corresponding UEFI
+    /// interface:
+    /// https://cs.android.com/android/platform/superproject/main/+/main:bootable/libbootloader/gbl/docs/gbl_os_configuration_protocol.md
+    fn select_device_trees(
+        &mut self,
+        components: &mut device_tree::DeviceTreeComponentsRegistry,
+    ) -> Result<(), Error>;
 
     /// Provide writtable buffer of the device tree built by GBL.
     ///
@@ -556,6 +568,13 @@ pub(crate) mod test {
         }
 
         fn fixup_device_tree(&mut self, device_tree: &mut [u8]) -> Result<(), Error> {
+            unimplemented!();
+        }
+
+        fn select_device_trees(
+            &mut self,
+            components: &mut device_tree::DeviceTreeComponentsRegistry,
+        ) -> Result<(), Error> {
             unimplemented!();
         }
     }
