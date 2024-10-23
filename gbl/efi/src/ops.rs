@@ -23,16 +23,26 @@ use alloc::{
     alloc::{alloc, handle_alloc_error, Layout},
     vec::Vec,
 };
+use arrayvec::ArrayVec;
 use core::{ffi::CStr, fmt::Write, mem::MaybeUninit, num::NonZeroUsize, slice::from_raw_parts_mut};
 use efi::{
     efi_print, efi_println, protocol::dt_fixup::DtFixupProtocol,
     protocol::gbl_efi_image_loading::GblImageLoadingProtocol,
     protocol::gbl_efi_os_configuration::GblOsConfigurationProtocol, EfiEntry,
 };
-use efi_types::{GblEfiImageInfo, PARTITION_NAME_LEN_U16};
+use efi_types::{
+    GblEfiDeviceTreeMetadata, GblEfiImageInfo, GblEfiVerifiedDeviceTree,
+    GBL_EFI_DEVICE_TREE_SOURCE_BOOT, GBL_EFI_DEVICE_TREE_SOURCE_DTB,
+    GBL_EFI_DEVICE_TREE_SOURCE_DTBO, GBL_EFI_DEVICE_TREE_SOURCE_VENDOR_BOOT,
+    PARTITION_NAME_LEN_U16,
+};
 use fdt::Fdt;
 use liberror::{Error, Result};
 use libgbl::{
+    device_tree::{
+        DeviceTreeComponent, DeviceTreeComponentSource, DeviceTreeComponentsRegistry,
+        MAXIMUM_DEVICE_TREE_COMPONENTS,
+    },
     ops::{AvbIoError, AvbIoResult, CertPermanentAttributes, ImageBuffer, SHA256_DIGEST_SIZE},
     partition::PartitionBlockDevice,
     slots::{BootToken, Cursor},
@@ -41,6 +51,30 @@ use libgbl::{
 use safemath::SafeNum;
 use zbi::ZbiContainer;
 use zerocopy::AsBytes;
+
+fn dt_component_to_efi_dt(component: &DeviceTreeComponent) -> GblEfiVerifiedDeviceTree {
+    let metadata = match component.source {
+        DeviceTreeComponentSource::Dtb(m) | DeviceTreeComponentSource::Dtbo(m) => m,
+        _ => Default::default(),
+    };
+
+    GblEfiVerifiedDeviceTree {
+        metadata: GblEfiDeviceTreeMetadata {
+            source: match component.source {
+                DeviceTreeComponentSource::Boot => GBL_EFI_DEVICE_TREE_SOURCE_BOOT,
+                DeviceTreeComponentSource::VendorBoot => GBL_EFI_DEVICE_TREE_SOURCE_VENDOR_BOOT,
+                DeviceTreeComponentSource::Dtb(_) => GBL_EFI_DEVICE_TREE_SOURCE_DTB,
+                DeviceTreeComponentSource::Dtbo(_) => GBL_EFI_DEVICE_TREE_SOURCE_DTBO,
+            },
+            id: metadata.id,
+            rev: metadata.rev,
+            custom: metadata.custom,
+            reserved: Default::default(),
+        },
+        device_tree: component.dt.as_ptr() as _,
+        selected: component.selected,
+    }
+}
 
 pub struct Ops<'a, 'b> {
     pub efi_entry: &'a EfiEntry,
@@ -360,6 +394,50 @@ where
         }
 
         Ok(())
+    }
+
+    fn select_device_trees(
+        &mut self,
+        components_registry: &mut DeviceTreeComponentsRegistry,
+    ) -> Result<()> {
+        match self
+            .efi_entry
+            .system_table()
+            .boot_services()
+            .find_first_and_open::<GblOsConfigurationProtocol>()
+        {
+            Ok(protocol) => {
+                // Protocol detected, convert to UEFI types.
+                let mut uefi_components: ArrayVec<_, MAXIMUM_DEVICE_TREE_COMPONENTS> =
+                    components_registry
+                        .components()
+                        .map(|component| dt_component_to_efi_dt(component))
+                        .collect();
+
+                protocol.select_device_trees(&mut uefi_components[..])?;
+
+                // Propagate selections to the components_registry.
+                components_registry
+                    .components_mut()
+                    .zip(uefi_components.iter_mut())
+                    .enumerate()
+                    .for_each(|(index, (component, uefi_component))| {
+                        if uefi_component.selected {
+                            efi_println!(
+                                self.efi_entry,
+                                "Device tree component at index {} got selected by UEFI call. \
+                                Source: {}",
+                                index,
+                                component.source
+                            );
+                        }
+                        component.selected = uefi_component.selected;
+                    });
+
+                Ok(())
+            }
+            _ => components_registry.autoselect(),
+        }
     }
 }
 
