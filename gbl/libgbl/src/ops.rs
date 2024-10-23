@@ -25,13 +25,14 @@ use core::ffi::CStr;
 use core::{fmt::Write, num::NonZeroUsize, result::Result};
 use gbl_async::block_on;
 use gbl_storage::BlockIoAsync;
+use libutils::aligned_subslice;
 
 // Re-exports of types from other dependencies that appear in the APIs of this library.
 pub use avb::{
     CertPermanentAttributes, IoError as AvbIoError, IoResult as AvbIoResult, SHA256_DIGEST_SIZE,
 };
 use liberror::Error;
-pub use zbi::ZbiContainer;
+pub use zbi::{ZbiContainer, ZBI_ALIGNMENT_USIZE};
 
 use super::slots;
 
@@ -167,6 +168,19 @@ where
         &mut self,
         container: &mut ZbiContainer<&mut [u8]>,
     ) -> Result<(), Error>;
+
+    /// Gets a buffer for staging bootloader file from fastboot.
+    ///
+    /// Fuchsia uses bootloader file for staging SSH key in development flow.
+    ///
+    /// Returns `None` if the platform does not intend to support it.
+    fn get_zbi_bootloader_files_buffer(&mut self) -> Option<&mut [u8]>;
+
+    /// Gets the aligned part of buffer returned by `get_zbi_bootloader_files_buffer()` according to
+    /// ZBI alignment requirement.
+    fn get_zbi_bootloader_files_buffer_aligned(&mut self) -> Option<&mut [u8]> {
+        aligned_subslice(self.get_zbi_bootloader_files_buffer()?, ZBI_ALIGNMENT_USIZE).ok()
+    }
 
     // TODO(b/334962570): figure out how to plumb ops-provided hash implementations into
     // libavb. The tricky part is that libavb hashing APIs are global with no way to directly
@@ -373,6 +387,9 @@ pub(crate) mod test {
 
         /// Value returned by `should_stop_in_fastboot`.
         pub stop_in_fastboot: Option<Result<bool, Error>>,
+
+        /// For returned by `fn get_zbi_bootloader_files_buffer()`
+        pub zbi_bootloader_files_buffer: Vec<u8>,
     }
 
     /// Print `console_out` output, which can be useful for debugging.
@@ -387,9 +404,24 @@ pub(crate) mod test {
         /// single commandline ZBI item with these contents; if necessary we can generalize this
         /// later and allow tests to configure the ZBI modifications.
         pub const ADDED_ZBI_COMMANDLINE_CONTENTS: &'static [u8] = b"test_zbi_item";
+        pub const TEST_BOOTLOADER_FILE_1: &'static [u8] = b"\x06test_1foo";
+        pub const TEST_BOOTLOADER_FILE_2: &'static [u8] = b"\x06test_2bar";
 
         pub fn new(partitions: &'a [PartitionBlockDevice<'a, &'a mut TestBlockIo>]) -> Self {
-            Self { partitions, ..Default::default() }
+            let mut res = Self {
+                partitions,
+                zbi_bootloader_files_buffer: vec![0u8; 32 * 1024],
+                ..Default::default()
+            };
+            let mut container =
+                ZbiContainer::new(res.get_zbi_bootloader_files_buffer_aligned().unwrap()).unwrap();
+            for ele in [Self::TEST_BOOTLOADER_FILE_1, Self::TEST_BOOTLOADER_FILE_2] {
+                container
+                    .create_entry_with_payload(ZbiType::BootloaderFile, 0, ZbiFlags::default(), ele)
+                    .unwrap();
+            }
+
+            res
         }
 
         /// Copies an entire partition contents into a vector.
@@ -445,6 +477,10 @@ pub(crate) mod test {
                 )
                 .unwrap();
             Ok(())
+        }
+
+        fn get_zbi_bootloader_files_buffer(&mut self) -> Option<&mut [u8]> {
+            Some(self.zbi_bootloader_files_buffer.as_mut_slice())
         }
 
         fn do_fastboot<B: gbl_storage::AsBlockDevice>(

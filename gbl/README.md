@@ -6,7 +6,7 @@ can be loaded directly from the firmware.
 
 ## Get source tree and build
 
-To succesfully get and build the tree your machine must have the following dependencies installed:
+To successfully get and build the tree your machine must have the following dependencies installed:
 
 ```
 # repo to work with android repositories (https://source.android.com/docs/setup/reference/repo)
@@ -50,7 +50,7 @@ cvd start --android_efi_loader=<path to the EFI image> ...
 ```
 
 The above uses the same setting as a normal `cvd start` run, except that
-insted of booting Android directly, the emulator first hands off to the EFI
+instead of booting Android directly, the emulator first hands off to the EFI
 application, which will take over booting android.
 
 Note: For x86 platform, use the EFI image built for `x86_32`.
@@ -80,7 +80,7 @@ configurations:
    sudo apt-get install qemu-system ovmf u-boot-qemu
    ```
 
-1. Depending on the target achitecture you want to run:
+1. Depending on the target architecture you want to run:
 
    For `x86_64`:
    ```
@@ -135,17 +135,7 @@ configurations:
 
    `fx build`
 
-3. Rename partitions. (this has to be done every time after build)
-
-   This is temporary fix to match partition names to what is expected by GBL.
-
-   ```
-   parted ./out/default/obj/build/images/disk.raw name 2 zircon_a
-   parted ./out/default/obj/build/images/disk.raw name 4 zircon_b
-   parted ./out/default/obj/build/images/disk.raw name 6 zircon_r
-   ```
-
-4. Run emulator in UEFI mode with raw disk
+3. Run emulator in UEFI mode with raw disk
 
    ```
    fx qemu -a x64 --uefi --disktype=nvme -D ./out/default/obj/build/images/disk.raw

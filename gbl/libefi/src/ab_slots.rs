@@ -275,6 +275,10 @@ mod test {
             unimplemented!();
         }
 
+        fn get_zbi_bootloader_files_buffer(&mut self) -> Option<&mut [u8]> {
+            None
+        }
+
         fn do_fastboot<B: gbl_storage::AsBlockDevice>(&self, _: &mut Cursor<B>) -> GblResult<()> {
             unimplemented!();
         }
