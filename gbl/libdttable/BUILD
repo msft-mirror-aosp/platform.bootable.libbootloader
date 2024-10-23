@@ -79,8 +79,7 @@ rust_library(
 rust_test(
     name = "libdttable_test",
     compile_data = [
-        "@gbl//libdttable/test:dttable.img",
-        "@gbl//libdttable/test:corrupted_dttable.img",
+        "@gbl//libdttable/test/data:all",
     ],
     crate = ":libdttable",
     rustc_flags = ANDROID_RUST_LINTS,

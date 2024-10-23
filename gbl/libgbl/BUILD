@@ -65,6 +65,8 @@ rust_test(
     crate = ":libgbl",
     crate_features = ["uuid"],
     data = [
+        "@gbl//libdttable/test/data:all",
+        "@gbl//libfdt/test/data:all",
         "@gbl//libgbl/testdata:cert_metadata.bin",
         "@gbl//libgbl/testdata:cert_permanent_attributes.bad.bin",
         "@gbl//libgbl/testdata:cert_permanent_attributes.bad.hash",
