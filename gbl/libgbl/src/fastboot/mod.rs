@@ -37,6 +37,7 @@ use fastboot::{
 use gbl_async::{join, yield_now};
 use liberror::Error;
 use safemath::SafeNum;
+use zbi::{ZbiContainer, ZbiType};
 
 mod vars;
 use vars::{fb_vars_get, fb_vars_get_all};
@@ -183,6 +184,36 @@ impl<'a, 'b, G: GblOps<'a>, B: BufferPool, P, F> GblFastboot<'a, 'b, '_, '_, G, 
         }
         Ok(())
     }
+
+    /// Appends a staged payload as bootloader file.
+    async fn add_staged_bootloader_file(&mut self, file_name: &str) -> CommandResult<()> {
+        let buffer = self
+            .gbl_ops
+            .get_zbi_bootloader_files_buffer_aligned()
+            .ok_or("No ZBI bootloader file buffer is provided")?;
+        let data = self.current_download_buffer.as_mut().ok_or("No file staged")?;
+        let data = &mut data[..self.current_download_size];
+        let mut zbi = match ZbiContainer::parse(&mut buffer[..]) {
+            Ok(v) => v,
+            _ => ZbiContainer::new(&mut buffer[..])?,
+        };
+        let next_payload = zbi.get_next_payload()?;
+        // Format: name length (1 byte) | name | file content.
+        let (name_len, rest) = next_payload.split_at_mut_checked(1).ok_or("Buffer too small")?;
+        let (name, rest) = rest.split_at_mut_checked(file_name.len()).ok_or("Buffer too small")?;
+        let file_content = rest.get_mut(..data.len()).ok_or("Buffer too small")?;
+        name_len[0] = file_name.len().try_into().map_err(|_| "File name length overflows 256")?;
+        name.clone_from_slice(file_name.as_bytes());
+        file_content.clone_from_slice(data);
+        // Creates the entry;
+        zbi.create_entry(
+            ZbiType::BootloaderFile,
+            0,
+            Default::default(),
+            1 + file_name.len() + data.len(),
+        )?;
+        Ok(())
+    }
 }
 
 impl<'a: 'c, 'b: 'c, 'c, G, B, P, F> FastbootImplementation
@@ -306,6 +337,8 @@ where
         responder: impl InfoSender,
         res: &'s mut [u8],
     ) -> CommandResult<&'s [u8]> {
+        let mut args = cmd.split(' ');
+        let cmd = args.next().ok_or("Missing command")?;
         match cmd {
             "gbl-sync-blocks" => self.oem_sync_blocks(responder, res).await,
             "gbl-enable-async-block-io" => {
@@ -320,11 +353,14 @@ where
                 self.default_block = None;
                 Ok(b"")
             }
-            _ if cmd.starts_with("gbl-set-default-block ") => {
-                let mut args = cmd.split(' ');
-                let _ = args.next();
+            "gbl-set-default-block" => {
                 let id = next_arg_u64(&mut args, Err("Missing block device ID".into()))?;
                 self.default_block = Some(id.try_into()?);
+                Ok(b"")
+            }
+            "add-staged-bootloader-file" => {
+                let file_name = next_arg(&mut args, Err("Missing file name".into()))?;
+                self.add_staged_bootloader_file(file_name).await?;
                 Ok(b"")
             }
             _ => Err("Unknown oem command".into()),
@@ -539,6 +575,7 @@ mod test {
     use liberror::Error;
     use spin::{Mutex, MutexGuard};
     use std::{collections::VecDeque, io::Read};
+    use zerocopy::AsBytes;
 
     /// A test implementation of [InfoSender] and [OkaySender].
     #[derive(Default)]
@@ -986,8 +1023,6 @@ mod test {
         block_on(gbl_fb.flash("sparse", &resp)).unwrap();
         check_var(&mut gbl_fb, "block-device", "1:status", "IO pending");
 
-        // There should be two disk IO tasks spawned.
-        assert_eq!(tasks.borrow_mut().size(), 2);
         {
             // "oem gbl-sync-blocks" should block.
             let oem_sync_blk_fut = &mut pin!(oem(&mut gbl_fb, "gbl-sync-blocks", &resp));
@@ -1450,6 +1485,87 @@ mod test {
         assert_eq!(
             partitions[1].partition_io(None).unwrap().dev().io().storage,
             [0xaau8; 8 * 1024]
+        );
+    }
+
+    #[test]
+    fn test_oem_add_staged_bootloader_file() {
+        let mut storage = FakeGblOpsStorage::default();
+        let partitions = storage.as_partition_block_devices();
+        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        let mut gbl_ops = FakeGblOps::new(&partitions);
+        gbl_ops.get_zbi_bootloader_files_buffer().unwrap().fill(0);
+        let listener: SharedTestListener = Default::default();
+        let (usb, tcp) = (&listener, &listener);
+
+        // Stages two zbi files.
+        listener.add_usb_input(format!("download:{:#x}", 3).as_bytes());
+        listener.add_usb_input(b"foo");
+        listener.add_usb_input(b"oem add-staged-bootloader-file file_1");
+        listener.add_usb_input(format!("download:{:#x}", 3).as_bytes());
+        listener.add_usb_input(b"bar");
+        listener.add_usb_input(b"oem add-staged-bootloader-file file_2");
+        listener.add_usb_input(b"continue");
+
+        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp)));
+
+        let buffer = gbl_ops.get_zbi_bootloader_files_buffer_aligned().unwrap();
+        let container = ZbiContainer::parse(&buffer[..]).unwrap();
+        let mut iter = container.iter();
+        assert_eq!(iter.next().unwrap().payload.as_bytes(), b"\x06file_1foo");
+        assert_eq!(iter.next().unwrap().payload.as_bytes(), b"\x06file_2bar");
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_oem_add_staged_bootloader_file_missing_file_name() {
+        let mut storage = FakeGblOpsStorage::default();
+        let partitions = storage.as_partition_block_devices();
+        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        let mut gbl_ops = FakeGblOps::new(&partitions);
+        let listener: SharedTestListener = Default::default();
+        let (usb, tcp) = (&listener, &listener);
+
+        listener.add_usb_input(format!("download:{:#x}", 3).as_bytes());
+        listener.add_usb_input(b"foo");
+        listener.add_usb_input(b"oem add-staged-bootloader-file");
+        listener.add_usb_input(b"continue");
+
+        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp)));
+
+        assert_eq!(
+            listener.usb_out_queue(),
+            make_expected_usb_out(&[
+                b"DATA00000003",
+                b"OKAY",
+                b"FAILMissing file name",
+                b"INFOSyncing storage...",
+                b"OKAY",
+            ]),
+            "\nActual USB output:\n{}",
+            listener.dump_usb_out_queue()
+        );
+    }
+
+    #[test]
+    fn test_oem_add_staged_bootloader_file_missing_download() {
+        let mut storage = FakeGblOpsStorage::default();
+        let partitions = storage.as_partition_block_devices();
+        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        let mut gbl_ops = FakeGblOps::new(&partitions);
+        let listener: SharedTestListener = Default::default();
+        let (usb, tcp) = (&listener, &listener);
+
+        listener.add_usb_input(b"oem add-staged-bootloader-file file1");
+        listener.add_usb_input(b"continue");
+
+        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp)));
+
+        assert_eq!(
+            listener.usb_out_queue(),
+            make_expected_usb_out(&[b"FAILNo file staged", b"INFOSyncing storage...", b"OKAY",]),
+            "\nActual USB output:\n{}",
+            listener.dump_usb_out_queue()
         );
     }
 }

@@ -19,7 +19,10 @@ use crate::{
     efi_blocks::EfiBlockDeviceIo,
     utils::{get_efi_fdt, wait_key_stroke},
 };
-use alloc::alloc::{alloc, handle_alloc_error, Layout};
+use alloc::{
+    alloc::{alloc, handle_alloc_error, Layout},
+    vec::Vec,
+};
 use core::{ffi::CStr, fmt::Write, mem::MaybeUninit, num::NonZeroUsize, slice::from_raw_parts_mut};
 use efi::{
     efi_print, efi_println, protocol::dt_fixup::DtFixupProtocol,
@@ -42,9 +45,18 @@ use zerocopy::AsBytes;
 pub struct Ops<'a, 'b> {
     pub efi_entry: &'a EfiEntry,
     pub partitions: &'b [PartitionBlockDevice<'b, &'b mut EfiBlockDeviceIo<'a>>],
+    pub zbi_bootloader_files_buffer: Vec<u8>,
 }
 
-impl<'a> Ops<'a, '_> {
+impl<'a, 'b> Ops<'a, 'b> {
+    /// Creates a new instance of [Ops]
+    pub fn new(
+        efi_entry: &'a EfiEntry,
+        partitions: &'b [PartitionBlockDevice<'b, &'b mut EfiBlockDeviceIo<'a>>],
+    ) -> Self {
+        Self { efi_entry, partitions, zbi_bootloader_files_buffer: Default::default() }
+    }
+
     /// Gets the property of an FDT node from EFI FDT.
     ///
     /// Returns `None` if fail to get the node
@@ -221,6 +233,15 @@ where
         })
     }
 
+    fn get_zbi_bootloader_files_buffer(&mut self) -> Option<&mut [u8]> {
+        // Switches to use get_image_buffer once available.
+        const DEFAULT_SIZE: usize = 4096;
+        if self.zbi_bootloader_files_buffer.is_empty() {
+            self.zbi_bootloader_files_buffer.resize(DEFAULT_SIZE, 0);
+        }
+        Some(self.zbi_bootloader_files_buffer.as_mut_slice())
+    }
+
     fn do_fastboot<B: gbl_storage::AsBlockDevice>(&self, _: &mut Cursor<B>) -> GblResult<()> {
         unimplemented!();
     }
@@ -355,7 +376,7 @@ mod test {
         mock_efi.con_out.expect_write_str().with(eq("foo bar")).return_const(Ok(()));
         let installed = mock_efi.install();
 
-        let mut ops = Ops { efi_entry: installed.entry(), partitions: &[] };
+        let mut ops = Ops::new(installed.entry(), &[]);
 
         assert!(write!(&mut ops, "{} {}", "foo", "bar").is_ok());
     }
