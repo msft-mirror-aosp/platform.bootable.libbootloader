@@ -14,12 +14,17 @@
 
 //! Android boot support.
 
-use crate::{avb_ops::GblAvbOps, gbl_print, gbl_println, GblOps, IntegrationError, Result};
+use crate::{
+    avb_ops::GblAvbOps,
+    device_tree::{DeviceTreeComponentSource, DeviceTreeComponentsRegistry, FDT_ALIGNMENT},
+    gbl_print, gbl_println, GblOps, IntegrationError, Result,
+};
 use arrayvec::ArrayVec;
 use avb::{slot_verify, HashtreeErrorMode, Ops as _, SlotVerifyFlags};
 use bootimg::{BootImage, VendorImageHeader};
 use bootparams::{bootconfig::BootConfigBuilder, commandline::CommandlineBuilder};
 use core::{ffi::CStr, fmt::Write};
+use dttable::DtTableImage;
 use fdt::Fdt;
 use liberror::Error;
 use libutils::aligned_subslice;
@@ -34,8 +39,6 @@ use crate::decompress::decompress_kernel;
 pub const BOOTARGS_PROP: &CStr = c"bootargs";
 /// Linux kernel requires 2MB alignment.
 const KERNEL_ALIGNMENT: usize = 2 * 1024 * 1024;
-/// libfdt requires FDT buffer to be 8-byte aligned.
-const FDT_ALIGNMENT: usize = 8;
 
 /// A helper to convert a bytes slice containing a null-terminated string to `str`
 fn cstr_bytes_to_str(data: &[u8]) -> core::result::Result<&str, Error> {
@@ -215,6 +218,8 @@ pub fn load_android_simple<'a, 'b>(
     let boot_mode = bcb.boot_mode()?;
     gbl_println!(ops, "boot mode from BCB: {}", boot_mode);
 
+    // TODO(b/370317273): use high level abstraction over boot to avoid working
+    // with offsets on application level.
     // Parse boot header.
     let (boot_header_buffer, load) = load.split_at_mut(PAGE_SIZE);
     ops.read_from_partition_sync("boot_a", 0, boot_header_buffer)?;
@@ -232,6 +237,8 @@ pub fn load_android_simple<'a, 'b>(
     gbl_println!(ops, "boot ramdisk size: {}", boot_ramdisk_size);
     gbl_println!(ops, "boot dtb size: {}", boot_dtb_size);
 
+    // TODO(b/370317273): use high level abstraction over vendor_boot to avoid working
+    // with offsets on application level.
     // Parse vendor boot header.
     let (vendor_boot_header_buffer, load) = load.split_at_mut(PAGE_SIZE);
     let vendor_boot_header;
@@ -259,12 +266,54 @@ pub fn load_android_simple<'a, 'b>(
 
     let (dtbo_buffer, load) = match ops.partition_size("dtbo_a") {
         Ok(Some(sz)) => {
-            let (dtbo_buffer, load) =
-                aligned_subslice(load, FDT_ALIGNMENT)?.split_at_mut(sz.try_into().unwrap());
+            let (dtbo_buffer, load) = load.split_at_mut(sz.try_into().unwrap());
             ops.read_from_partition_sync("dtbo_a", 0, dtbo_buffer)?;
             (Some(dtbo_buffer), load)
         }
         _ => (None, load),
+    };
+
+    let mut components: DeviceTreeComponentsRegistry<'a> = DeviceTreeComponentsRegistry::new();
+    let load = match dtbo_buffer {
+        Some(ref dtbo_buffer) => {
+            let dtbo_table = DtTableImage::from_bytes(dtbo_buffer)?;
+            components.append_from_dtbo(&dtbo_table, load)?
+        }
+        _ => load,
+    };
+
+    // First: check for custom FDT (Cuttlefish).
+    let load = if ops.get_custom_device_tree().is_none() {
+        // Second: "vendor_boot" FDT.
+        let (source, part, offset, size) = if vendor_dtb_size > 0 {
+            // DTB is located after the header and ramdisk (aligned).
+            let offset = (SafeNum::from(vendor_hdr_size) + SafeNum::from(vendor_ramdisk_size))
+                .round_up(vendor_page_size)
+                .try_into()
+                .map_err(Error::from)?;
+            (DeviceTreeComponentSource::VendorBoot, "vendor_boot_a", offset, vendor_dtb_size)
+        // Third: "boot" FDT.
+        } else if boot_dtb_size > 0 {
+            // DTB is located after the header, kernel, ramdisk, and second images (aligned).
+            let mut offset = SafeNum::from(kernel_hdr_size);
+            for image_size in [kernel_size, boot_ramdisk_size, boot_second_size] {
+                offset += SafeNum::from(image_size).round_up(kernel_hdr_size);
+            }
+            (
+                DeviceTreeComponentSource::Boot,
+                "boot_a",
+                offset.try_into().map_err(Error::from)?,
+                boot_dtb_size,
+            )
+        } else {
+            return Err(Error::NoFdt.into());
+        };
+
+        let (fdt_buffer, load) = aligned_subslice(load, FDT_ALIGNMENT)?.split_at_mut(size);
+        ops.read_from_partition_sync(part, offset, fdt_buffer)?;
+        components.append(ops, source, fdt_buffer, load)?
+    } else {
+        load
     };
 
     // Parse init_boot header
@@ -436,42 +485,21 @@ pub fn load_android_simple<'a, 'b>(
     // Use the remaining load buffer for the FDT.
     let (ramdisk_load_buffer, load) =
         load.split_at_mut(ramdisk_load_curr.try_into().map_err(Error::from)?);
-    let fdt_buffer = aligned_subslice(load, FDT_ALIGNMENT)?;
 
-    // TODO(b/353272981): for now we have a hardcoded priority order of DT sources to check, but
-    // the goal is to provide all DTBs and DTBOs to [GblOps] and let it select which ones to use.
-    match ops.get_custom_device_tree() {
-        // First: check for custom FDT (Cuttlefish).
-        Some(custom_fdt) => {
-            gbl_println!(ops, "Using custom FDT");
-            fdt_buffer[..custom_fdt.len()].copy_from_slice(custom_fdt);
-        }
-        None => {
-            // Second: "vendor_boot" FDT.
-            let (part, offset, size) = if vendor_dtb_size > 0 {
-                // DTB is located after the header and ramdisk (aligned).
-                let offset = (SafeNum::from(vendor_hdr_size) + SafeNum::from(vendor_ramdisk_size))
-                    .round_up(vendor_page_size)
-                    .try_into()
-                    .map_err(Error::from)?;
-                ("vendor_boot_a", offset, vendor_dtb_size)
-            // Third: "boot" FDT.
-            } else if boot_dtb_size > 0 {
-                // DTB is located after the header, kernel, ramdisk, and second images (aligned).
-                let mut offset = SafeNum::from(kernel_hdr_size);
-                for image_size in [kernel_size, boot_ramdisk_size, boot_second_size] {
-                    offset += SafeNum::from(image_size).round_up(kernel_hdr_size);
-                }
-                ("boot_a", offset.try_into().map_err(Error::from)?, boot_dtb_size)
-            } else {
-                return Err(Error::NoFdt.into());
-            };
-
-            gbl_println!(ops, "Using FDT from {} (offset = {}, size = {})", part, offset, size);
-            ops.read_from_partition_sync(part, offset, &mut fdt_buffer[..size])?;
-        }
+    let (base, overlays): (&[u8], &[&[u8]]) = if let Some(custom_fdt) = ops.get_custom_device_tree()
+    {
+        (custom_fdt, &[])
+    } else {
+        ops.select_device_trees(&mut components)?;
+        components.selected()?
     };
-    let mut fdt = Fdt::new_mut(fdt_buffer)?;
+
+    let fdt_buffer = aligned_subslice(load, FDT_ALIGNMENT)?;
+    let mut fdt = Fdt::new_from_init(fdt_buffer, base)?;
+
+    gbl_println!(ops, "Applying {} overlays", overlays.len());
+    fdt.multioverlay_apply(overlays)?;
+    gbl_println!(ops, "Overlays applied");
 
     // Add ramdisk range to FDT
     let ramdisk_addr: u64 =
