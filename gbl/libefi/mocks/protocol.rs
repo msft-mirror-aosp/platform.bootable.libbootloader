@@ -17,12 +17,13 @@
 //! The structure of these sub-modules must match the libefi structure so that the code can refer
 //! to either one using the same path.
 
+use crate::{DeviceHandle, MOCK_EFI};
+use core::ffi::CStr;
 use core::fmt::Write;
-use efi_types::EfiInputKey;
+use efi::protocol::gbl_efi_image_loading::EfiImageBuffer;
+use efi_types::{EfiInputKey, GblEfiImageInfo, GblEfiPartitionName, GblEfiVerifiedDeviceTree};
 use liberror::Result;
 use mockall::mock;
-
-use crate::{DeviceHandle, MOCK_EFI};
 
 /// Mock device_path module.
 pub mod device_path {
@@ -121,4 +122,79 @@ pub mod simple_text_output {
     /// While this mock itself isn't necessarily thread-local, passing through to the thread-local
     /// state is our primary use case, so we just disallow [Send] entirely.
     impl !Send for MockSimpleTextOutputProtocol {}
+}
+
+/// Mock image_loading protocol.
+pub mod gbl_efi_image_loading {
+    use super::*;
+
+    mock! {
+        /// Mock [efi::ImageLoadingProtocol].
+        pub GblImageLoadingProtocol {
+            /// Returns [EfiImageBuffer] matching `gbl_image_info`
+            pub fn get_buffer(&self, gbl_image_info: &GblEfiImageInfo) -> Result<EfiImageBuffer>;
+
+            /// Returns number of partitions to be provided via `get_verify_partitions()`, and thus
+            /// expected size of `partition_name` slice.
+            pub fn get_verify_partitions_count(&self) -> Result<usize>;
+
+            /// Returns number of partition names written to `partition_name` slice.
+            pub fn get_verify_partitions(
+                &self,
+                partition_names: &mut [GblEfiPartitionName]
+            ) -> Result<usize>;
+        }
+    }
+
+    /// Map to the libefi name so code under test can just use one name.
+    pub type GblImageLoadingProtocol = MockGblImageLoadingProtocol;
+}
+
+/// Mock os_configuration protocol.
+pub mod gbl_efi_os_configuration {
+    use super::*;
+
+    mock! {
+        /// Mock [efi::OsConfigurationProtocol].
+        pub GblOsConfigurationProtocol {
+            /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.fixup_kernel_commandline()`
+            pub fn fixup_kernel_commandline(
+                &self,
+                commandline: &CStr,
+                fixup: &[u8],
+            ) -> Result<()>;
+
+            /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.fixup_bootconfig()`
+            pub fn fixup_bootconfig(
+                &self,
+                bootconfig: &[u8],
+                fixup: &mut [u8],
+            ) -> Result<usize>;
+
+            /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.select_device_trees()`
+            pub fn select_device_trees(
+                &self,
+                components: &mut [GblEfiVerifiedDeviceTree],
+            ) -> Result<()>;
+        }
+    }
+
+    /// Map to the libefi name so code under test can just use one name.
+    pub type GblOsConfigurationProtocol = MockGblOsConfigurationProtocol;
+}
+
+/// Mock dt_fixup protocol.
+pub mod dt_fixup {
+    use super::*;
+
+    mock! {
+        /// Mock [efi::DtFixupProtocol].
+        pub DtFixupProtocol {
+            /// Wraps `EFI_DT_FIXUP_PROTOCOL.fixup()`
+            pub fn fixup(&self, device_tree: &mut [u8]) -> Result<()>;
+        }
+    }
+
+    /// Map to the libefi name so code under test can just use one name.
+    pub type DtFixupProtocol = MockDtFixupProtocol;
 }

@@ -187,6 +187,23 @@ impl<T: BlockIoAsync> BlockIoAsync for &mut T {
     }
 }
 
+/// An implementation of `BlockIoAsync` of where all required methods are `unimplemented!()`
+pub struct BlockIoNull {}
+
+impl BlockIoAsync for BlockIoNull {
+    fn info(&mut self) -> BlockInfo {
+        unimplemented!();
+    }
+
+    async fn read_blocks(&mut self, _: u64, _: &mut [u8]) -> Result<()> {
+        unimplemented!();
+    }
+
+    async fn write_blocks(&mut self, _: u64, _: &mut [u8]) -> Result<()> {
+        unimplemented!();
+    }
+}
+
 /// `BlockIoSync` provide interfaces for synchronous read and write.
 pub trait BlockIoSync {
     /// Gets the `BlockInfo` for this block device
@@ -522,12 +539,6 @@ pub fn alignment_scratch_size(info: BlockInfo) -> Result<usize> {
         v => v,
     };
     ((SafeNum::from(info.alignment) - 1) * 2 + block_alignment).try_into().map_err(Into::into)
-}
-
-/// Gets a subslice of the given slice with aligned address according to `alignment`
-fn aligned_subslice(buffer: &mut [u8], alignment: u64) -> Result<&mut [u8]> {
-    let addr = SafeNum::from(buffer.as_ptr() as usize);
-    Ok(&mut buffer[(addr.round_up(alignment) - addr).try_into()?..])
 }
 
 /// `AsyncBlockDevice` provides APIs for asynchronous read/write of raw block or GPT partitions.
