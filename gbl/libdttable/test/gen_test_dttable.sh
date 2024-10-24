@@ -17,14 +17,15 @@
 set -e
 
 readonly SCRIPT_DIR=`cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd`
+readonly DATA_DIR="${SCRIPT_DIR}/data/"
 readonly TMP_DIR=`mktemp -d`
 
 dtc -I dts -O dtb -o ${TMP_DIR}/a.dtb ${SCRIPT_DIR}/a.dts
 dtc -I dts -O dtb -o ${TMP_DIR}/b.dtb ${SCRIPT_DIR}/b.dts
 
-echo "corrupted dttable" > ${SCRIPT_DIR}/corrupted_dttable.img
+echo "corrupted dttable" > ${DATA_DIR}/corrupted_dttable.img
 
 # mkdtboimg is built by cd aosp/system/libufdt/utils && mm
-mkdtboimg create ${SCRIPT_DIR}/dttable.img \
+mkdtboimg create ${DATA_DIR}/dttable.img \
         --id=0x2 --rev=0x0 ${TMP_DIR}/b.dtb \
         --id=0x1 --rev=0x0 ${TMP_DIR}/a.dtb

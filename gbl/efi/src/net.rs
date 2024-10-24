@@ -12,8 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::error::{listen_to_unified, recv_to_unified, send_to_unified};
-use crate::utils::{get_device_path, loop_with_timeout};
+use crate::{
+    error::{listen_to_unified, recv_to_unified, send_to_unified},
+    utils::{get_device_path, loop_with_timeout},
+};
 use alloc::{boxed::Box, vec::Vec};
 use core::{
     fmt::Write,
@@ -28,13 +30,18 @@ use efi::{
 use efi_types::{EfiEvent, EfiMacAddress, EFI_TIMER_DELAY_TIMER_PERIODIC};
 use gbl_async::{yield_now, YieldCounter};
 use liberror::{Error, Result};
+use libgbl::fastboot::fuchsia_fastboot_mdns_packet;
 use smoltcp::{
     iface::{Config, Interface, SocketSet, SocketStorage},
     phy,
     phy::{Device, DeviceCapabilities, Medium},
-    socket::tcp,
+    socket::{
+        tcp::{Socket as TcpSocket, SocketBuffer, State},
+        udp::{PacketBuffer, Socket as UdpSocket, UdpMetadata},
+    },
+    storage::PacketMetadata,
     time::Instant,
-    wire::{EthernetAddress, IpAddress, IpCidr, Ipv6Address},
+    wire::{EthernetAddress, IpAddress, IpCidr, IpListenEndpoint, Ipv6Address},
 };
 
 /// Ethernet frame size for frame pool.
@@ -104,7 +111,7 @@ impl Drop for EfiNetworkDevice<'_> {
             // SAFETY:
             // Each pointer is created by `Box::new()` in `EfiNetworkDevice::new()`. Thus the
             // pointer is valid and layout matches.
-            let _ = unsafe { Box::from_raw(v) };
+            drop(unsafe { Box::<[u8; ETHERNET_FRAME_SIZE]>::from_raw(*v) });
         });
     }
 }
@@ -305,6 +312,7 @@ pub struct EfiTcpSocket<'a, 'b> {
     last_listen_timestamp: Option<u64>,
     _time_update_event: Event<'a, 'b>,
     timestamp: &'b AtomicU64,
+    fuchsia_fastboot_mdns_packet: Vec<u8>,
 }
 
 impl<'a, 'b> EfiTcpSocket<'a, 'b> {
@@ -314,6 +322,11 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
         self.get_socket().listen(port).map_err(listen_to_unified)?;
         self.last_listen_timestamp = Some(self.timestamp(0));
         Ok(())
+    }
+
+    // Checks if the socket is listening or performing handshake.
+    pub fn is_listening_or_handshaking(&mut self) -> bool {
+        matches!(self.get_socket().state(), State::Listen | State::SynReceived)
     }
 
     /// Returns the amount of time elapsed since last call to `Self::listen()`. If `listen()` has
@@ -334,16 +347,15 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
     }
 
     /// Gets a reference to the smoltcp socket object.
-    pub fn get_socket(&mut self) -> &mut tcp::Socket<'b> {
+    pub fn get_socket(&mut self) -> &mut TcpSocket<'b> {
         // We only consider single socket use case for now.
-        assert_eq!(self.socket_set.iter().count(), 1);
         let handle = self.socket_set.iter().next().unwrap().0;
-        self.socket_set.get_mut::<tcp::Socket>(handle)
+        self.socket_set.get_mut::<TcpSocket>(handle)
     }
 
     /// Checks whether a socket is closed.
     fn is_closed(&mut self) -> bool {
-        return !self.get_socket().is_open() || self.get_socket().state() == tcp::State::CloseWait;
+        return !self.get_socket().is_open() || self.get_socket().state() == State::CloseWait;
     }
 
     /// Sets the maximum number of bytes to read or write before a force await.
@@ -439,6 +451,30 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
     fn instant(&self) -> Instant {
         to_smoltcp_instant(self.timestamp(0))
     }
+
+    /// Broadcasts Fuchsia Fastboot MDNS service once.
+    pub fn broadcast_fuchsia_fastboot_mdns(&mut self) {
+        const MDNS_PORT: u16 = 5353;
+        const IP6_BROADCAST_ADDR: &[u8] =
+            &[0xFF, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFB];
+        let ip6_broadcast = Ipv6Address::from_bytes(&IP6_BROADCAST_ADDR[..]);
+        let meta =
+            UdpMetadata { endpoint: (ip6_broadcast, MDNS_PORT).into(), meta: Default::default() };
+        let handle = self.socket_set.iter().nth(1).unwrap().0;
+        let socket = self.socket_set.get_mut::<UdpSocket>(handle);
+        if !socket.is_open() {
+            match socket.bind(IpListenEndpoint { addr: None, port: MDNS_PORT }) {
+                Err(e) => efi_println!(self.efi_entry, "bind error: {:?}", e),
+                _ => {}
+            }
+        }
+        if socket.can_send() {
+            match socket.send_slice(&self.fuchsia_fastboot_mdns_packet, meta) {
+                Err(e) => efi_println!(self.efi_entry, "UDP send error: {:?}", e),
+                _ => {}
+            }
+        }
+    }
 }
 
 /// Returns a smoltcp time `Instant` value from a u64 timestamp.
@@ -456,9 +492,13 @@ fn to_smoltcp_instant(ts: u64) -> Instant {
 /// * `'c`: Lifetime of [AtomicU64] borrowed.
 struct EfiGblNetworkInternal<'a, 'b, 'c> {
     efi_entry: &'a EfiEntry,
-    tx_buffer: Vec<u8>,
-    rx_buffer: Vec<u8>,
-    socket_storage: [SocketStorage<'b>; 1],
+    tcp_tx_buffer: Vec<u8>,
+    tcp_rx_buffer: Vec<u8>,
+    udp_tx_payload_buffer: Vec<u8>,
+    udp_rx_payload_buffer: Vec<u8>,
+    udp_tx_metadata_buffer: Vec<PacketMetadata<UdpMetadata>>,
+    udp_rx_metadata_buffer: Vec<PacketMetadata<UdpMetadata>>,
+    socket_storage: [SocketStorage<'b>; 2],
     efi_net_dev: EfiNetworkDevice<'a>,
     timestamp: &'c AtomicU64,
     notify_fn: Option<Box<dyn FnMut(EfiEvent) + Sync + 'c>>,
@@ -488,8 +528,12 @@ impl<'a, 'b, 'c> EfiGblNetworkInternal<'a, 'b, 'c> {
 
         Ok(Self {
             efi_entry,
-            tx_buffer: vec![0u8; SOCKET_TX_RX_BUFFER],
-            rx_buffer: vec![0u8; SOCKET_TX_RX_BUFFER],
+            tcp_tx_buffer: vec![0u8; SOCKET_TX_RX_BUFFER],
+            tcp_rx_buffer: vec![0u8; SOCKET_TX_RX_BUFFER],
+            udp_tx_payload_buffer: vec![0u8; ETHERNET_FRAME_SIZE],
+            udp_rx_payload_buffer: vec![0u8; ETHERNET_FRAME_SIZE],
+            udp_tx_metadata_buffer: vec![PacketMetadata::EMPTY; 1],
+            udp_rx_metadata_buffer: vec![PacketMetadata::EMPTY; 1],
             socket_storage: Default::default(),
             // Allocates 7(chosen randomly) extra TX frames. Revisits if it is not enough.
             efi_net_dev: EfiNetworkDevice::new(snp, 7, &efi_entry),
@@ -540,13 +584,34 @@ impl<'a, 'b, 'c> EfiGblNetworkInternal<'a, 'b, 'c> {
         );
         interface.update_ip_addrs(|ip_addrs| ip_addrs.push(IpCidr::new(ll_ip6_addr, 64)).unwrap());
 
+        // Generates Fuchsia Fastboot MDNS packet.
+        let eth_mac = ll_mac.as_bytes();
+        let fuchsia_node_name = format!(
+            "fuchsia-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}",
+            eth_mac[0], eth_mac[1], eth_mac[2], eth_mac[3], eth_mac[4], eth_mac[5]
+        );
+        let fuchsia_fastboot_mdns_packet =
+            fuchsia_fastboot_mdns_packet(fuchsia_node_name.as_str(), ll_ip6_addr.as_bytes())?
+                .into();
+
         // Creates sockets.
         let mut socket_set = SocketSet::new(&mut self.socket_storage[..]);
         // Creates a TCP socket for fastboot over TCP.
-        let tx_socket_buffer = tcp::SocketBuffer::new(&mut self.tx_buffer[..]);
-        let rx_socket_buffer = tcp::SocketBuffer::new(&mut self.rx_buffer[..]);
-        let tcp_socket = tcp::Socket::new(rx_socket_buffer, tx_socket_buffer);
+        let tx_socket_buffer = SocketBuffer::new(&mut self.tcp_tx_buffer[..]);
+        let rx_socket_buffer = SocketBuffer::new(&mut self.tcp_rx_buffer[..]);
+        let tcp_socket = TcpSocket::new(rx_socket_buffer, tx_socket_buffer);
         let _ = socket_set.add(tcp_socket);
+        // Creates a UDP socket for MDNS broadcast.
+        let udp_tx_packet_buffer = PacketBuffer::new(
+            &mut self.udp_tx_metadata_buffer[..],
+            &mut self.udp_tx_payload_buffer[..],
+        );
+        let udp_rx_packet_buffer = PacketBuffer::new(
+            &mut self.udp_rx_metadata_buffer[..],
+            &mut self.udp_rx_payload_buffer[..],
+        );
+        let udp_socket = UdpSocket::new(udp_rx_packet_buffer, udp_tx_packet_buffer);
+        let _ = socket_set.add(udp_socket);
         Ok(EfiTcpSocket {
             efi_entry: self.efi_entry,
             efi_net_dev: &mut self.efi_net_dev,
@@ -556,6 +621,7 @@ impl<'a, 'b, 'c> EfiGblNetworkInternal<'a, 'b, 'c> {
             last_listen_timestamp: None,
             _time_update_event,
             timestamp: self.timestamp,
+            fuchsia_fastboot_mdns_packet,
         })
     }
 }
