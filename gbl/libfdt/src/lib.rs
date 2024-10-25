@@ -31,6 +31,8 @@ use libfdt_bindgen::{
 use libufdt_bindgen::ufdt_apply_multioverlay;
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 
+/// Fdt header structure size.
+pub const FDT_HEADER_SIZE: usize = size_of::<FdtHeader>();
 const MAXIMUM_OVERLAYS_TO_APPLY: usize = 16;
 const MAXIMUM_OVERLAYS_ERROR_MSG: &str = "At most 16 overlays are supported to apply at a time";
 
@@ -124,7 +126,7 @@ impl FdtHeader {
         fdt_check_header(buffer)?;
 
         Ok(Ref::<_, FdtHeader>::new_from_prefix(buffer)
-            .ok_or(Error::BufferTooSmall(Some(size_of::<FdtHeader>())))?
+            .ok_or(Error::BufferTooSmall(Some(FDT_HEADER_SIZE)))?
             .0
             .into_ref())
     }
@@ -134,7 +136,7 @@ impl FdtHeader {
         fdt_check_header(buffer)?;
 
         Ok(Ref::<_, FdtHeader>::new_from_prefix(buffer)
-            .ok_or(Error::BufferTooSmall(Some(size_of::<FdtHeader>())))?
+            .ok_or(Error::BufferTooSmall(Some(FDT_HEADER_SIZE)))?
             .0
             .into_mut())
     }
@@ -148,7 +150,7 @@ impl FdtHeader {
         // SAFETY: By safety requirement of this function, `ptr` points to a valid FDT and remains
         // valid when in use.
         unsafe {
-            let header_bytes = from_raw_parts(ptr, size_of::<FdtHeader>());
+            let header_bytes = from_raw_parts(ptr, FDT_HEADER_SIZE);
             let header = Self::from_bytes_ref(header_bytes)?;
             Ok((header, from_raw_parts(ptr, header.totalsize())))
         }
