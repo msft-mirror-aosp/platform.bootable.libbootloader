@@ -311,9 +311,7 @@ pub fn load_android_simple<'a, 'b>(
 
         let (fdt_buffer, load) = aligned_subslice(load, FDT_ALIGNMENT)?.split_at_mut(size);
         ops.read_from_partition_sync(part, offset, fdt_buffer)?;
-        components.append(source, fdt_buffer)?;
-
-        load
+        components.append(ops, source, fdt_buffer, load)?
     } else {
         load
     };
