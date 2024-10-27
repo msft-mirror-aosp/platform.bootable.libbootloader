@@ -17,7 +17,7 @@
 use crate::efi_call;
 use crate::protocol::{Protocol, ProtocolInfo};
 use core::ffi::CStr;
-use efi_types::{EfiGuid, GblEfiOsConfigurationProtocol};
+use efi_types::{EfiGuid, GblEfiOsConfigurationProtocol, GblEfiVerifiedDeviceTree};
 use liberror::{Error, Result};
 
 /// `GBL_EFI_OS_CONFIGURATION_PROTOCOL` implementation.
@@ -88,22 +88,19 @@ impl Protocol<'_, GblOsConfigurationProtocol> {
         Ok(fixup_size)
     }
 
-    /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.fixup_device_tree()`.
-    pub fn fixup_device_tree(&self, device_tree: &mut [u8]) -> Result<()> {
-        let mut buffer_size = device_tree.len();
-
+    /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.select_device_trees()`.
+    pub fn select_device_trees(&self, components: &mut [GblEfiVerifiedDeviceTree]) -> Result<()> {
         // SAFETY:
         // * `self.interface()?` guarantees self.interface is non-null and points to a valid object
         //   established by `Protocol::new()`.
-        // * `device_tree` is non-null buffer available for write, used only within the call.
-        // * `buffer_size` is non-null usize buffer available for write, used only within the call.
+        // * `components` is non-null buffer available for write, used only within the call.
+        // * `components_len` is non-null usize buffer, used only within the call.
         unsafe {
             efi_call!(
-                @bufsize buffer_size,
-                self.interface()?.fixup_device_tree,
+                self.interface()?.select_device_trees,
                 self.interface,
-                device_tree.as_mut_ptr() as _,
-                &mut buffer_size
+                components.as_mut_ptr() as _,
+                components.len(),
             )?;
         }
 
@@ -119,7 +116,7 @@ mod test {
     use efi_types::{
         EfiStatus, EFI_STATUS_BUFFER_TOO_SMALL, EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_SUCCESS,
     };
-    use std::{ffi::c_void, ffi::CStr, slice};
+    use std::{ffi::CStr, slice};
 
     #[test]
     fn fixup_kernel_commandline_no_op() {
@@ -404,72 +401,34 @@ mod test {
     }
 
     #[test]
-    fn fixup_device_tree_updated() {
-        // Don't check actual FDT content for simplicity.
-        const DEVICE_TREE_BUFFER: &[u8] = b"this_is_device_tree";
-        const UPDATED_DEVICE_TREE_BUFFER: &[u8] = b"this_is_device_trie";
-
-        // C callback implementation to modify provided FDT to UPDATED_DEVICE_TREE_BUFFER.
-        unsafe extern "C" fn c_modify(
+    fn select_device_trees_selected() {
+        // C callback implementation to select first component.
+        unsafe extern "C" fn c_select_first(
             _: *mut GblEfiOsConfigurationProtocol,
-            device_tree: *mut c_void,
-            buffer_size: *mut usize,
+            device_trees: *mut GblEfiVerifiedDeviceTree,
+            num: usize,
         ) -> EfiStatus {
-            // SAFETY:
-            // * `device_tree` is a valid pointer to the writtable buffer at least `buffer_size`
-            // size.
-            // * `buffer_size` is a valid pointer to usize.
-            let fdt_buffer =
-                unsafe { slice::from_raw_parts_mut(device_tree as *mut u8, *buffer_size) };
-            assert_eq!(fdt_buffer, DEVICE_TREE_BUFFER);
+            assert_eq!(num, 1);
 
-            fdt_buffer.copy_from_slice(UPDATED_DEVICE_TREE_BUFFER);
+            // SAFETY:
+            // * device_trees is non-null buffer available for write.
+            unsafe {
+                (*device_trees).selected = true;
+            }
 
             EFI_STATUS_SUCCESS
         }
 
         let c_interface = GblEfiOsConfigurationProtocol {
-            fixup_device_tree: Some(c_modify),
+            select_device_trees: Some(c_select_first),
             ..Default::default()
         };
 
         run_test_with_mock_protocol(c_interface, |os_config_protocol| {
-            let mut fdt_buffer: Vec<u8> = DEVICE_TREE_BUFFER.to_vec();
+            let device_trees = &mut [GblEfiVerifiedDeviceTree::default()];
 
-            assert!(os_config_protocol.fixup_device_tree(&mut fdt_buffer[..]).is_ok());
-            assert_eq!(&fdt_buffer[..], UPDATED_DEVICE_TREE_BUFFER);
-        });
-    }
-
-    #[test]
-    fn fixup_device_tree_fixup_buffer_too_small() {
-        const EXPECTED_REQUESTED_FIXUP_SIZE: usize = 256;
-        // C callback implementation to return an error.
-        unsafe extern "C" fn c_error(
-            _: *mut GblEfiOsConfigurationProtocol,
-            _: *mut c_void,
-            buffer_size: *mut usize,
-        ) -> EfiStatus {
-            // SAFETY:
-            // * `buffer_size` is a valid pointer to writtable usize buffer.
-            unsafe {
-                *buffer_size = EXPECTED_REQUESTED_FIXUP_SIZE;
-            }
-            EFI_STATUS_BUFFER_TOO_SMALL
-        }
-
-        let c_interface = GblEfiOsConfigurationProtocol {
-            fixup_device_tree: Some(c_error),
-            ..Default::default()
-        };
-
-        run_test_with_mock_protocol(c_interface, |os_config_protocol| {
-            let mut fdt_buffer = [0u8; 128];
-
-            assert_eq!(
-                os_config_protocol.fixup_device_tree(&mut fdt_buffer[..]),
-                Err(Error::BufferTooSmall(Some(EXPECTED_REQUESTED_FIXUP_SIZE))),
-            );
+            assert!(os_config_protocol.select_device_trees(device_trees).is_ok());
+            assert!(device_trees[0].selected);
         });
     }
 }

@@ -6,7 +6,7 @@ can be loaded directly from the firmware.
 
 ## Get source tree and build
 
-To succesfully get and build the tree your machine must have the following dependencies installed:
+To successfully get and build the tree your machine must have the following dependencies installed:
 
 ```
 # repo to work with android repositories (https://source.android.com/docs/setup/reference/repo)
@@ -50,7 +50,7 @@ cvd start --android_efi_loader=<path to the EFI image> ...
 ```
 
 The above uses the same setting as a normal `cvd start` run, except that
-insted of booting Android directly, the emulator first hands off to the EFI
+instead of booting Android directly, the emulator first hands off to the EFI
 application, which will take over booting android.
 
 Note: For x86 platform, use the EFI image built for `x86_32`.
@@ -80,7 +80,7 @@ configurations:
    sudo apt-get install qemu-system ovmf u-boot-qemu
    ```
 
-1. Depending on the target achitecture you want to run:
+1. Depending on the target architecture you want to run:
 
    For `x86_64`:
    ```
@@ -108,6 +108,37 @@ configurations:
        -bios /usr/lib/u-boot/qemu-riscv64/u-boot.bin \
        -drive format=raw,file=fat:rw:/tmp/esp,id=blk0 \
        -device virtio-blk-device,drive=blk0
+   ```
+
+### Boot Fuchsia on emulator
+
+1. Make sure Fuchsia target pass control to GBL.
+
+   Set path to GBL binary here: [fuchsia/src/firmware/gigaboot/cpp/backends.gni : gigaboot_gbl_efi_app](https://cs.opensource.google/fuchsia/fuchsia/+/main:src/firmware/gigaboot/cpp/backends.gni;l=25?q=gigaboot_gbl_efi_app)
+
+   E.g. in `fuchsia/src/firmware/gigaboot/cpp/backends.gni`:
+   ```
+   $ cat ./fuchsia/src/firmware/gigaboot/cpp/backends.gni
+   ...
+   declare_args() {
+      ...
+      gigaboot_gbl_efi_app = "<path to EFI image>/gbl_x86_64.efi"
+   }
+   ```
+
+   Or in `fx set`:
+   ```
+   fx set core.x64 --args=gigaboot_gbl_efi_app='"<path to EFI image>/gbl_x86_64.efi"'
+   ```
+
+2. Build: (this has to be done every time if EFI app changes)
+
+   `fx build`
+
+3. Run emulator in UEFI mode with raw disk
+
+   ```
+   fx qemu -a x64 --uefi --disktype=nvme -D ./out/default/obj/build/images/disk.raw
    ```
 
 ## EFI Protocols

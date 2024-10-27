@@ -73,11 +73,6 @@ typedef struct GblEfiOsConfigurationProtocol {
   EfiStatus (*select_device_trees)(struct GblEfiOsConfigurationProtocol* self,
                                    GblEfiVerifiedDeviceTree* device_trees,
                                    size_t num_device_trees);
-
-  // Applies required fixups to the final device tree.
-  EfiStatus (*fixup_device_tree)(struct GblEfiOsConfigurationProtocol* self,
-                                 void* device_tree,
-                                 size_t* device_tree_buffer_size);
 } GblEfiOsConfigurationProtocol;
 
 #endif  //__GBL_OS_CONFIGURATION_PROTOCOL_H__
