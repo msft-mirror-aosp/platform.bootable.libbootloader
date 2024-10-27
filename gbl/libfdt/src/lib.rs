@@ -31,6 +31,8 @@ use libfdt_bindgen::{
 use libufdt_bindgen::ufdt_apply_multioverlay;
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 
+/// Fdt header structure size.
+pub const FDT_HEADER_SIZE: usize = size_of::<FdtHeader>();
 const MAXIMUM_OVERLAYS_TO_APPLY: usize = 16;
 const MAXIMUM_OVERLAYS_ERROR_MSG: &str = "At most 16 overlays are supported to apply at a time";
 
@@ -53,12 +55,17 @@ fn map_result_libufdt(code: c_int) -> Result<c_int> {
     }
 }
 
-/// Check header and verified that totalsize does not exceed buffer size.
-fn fdt_check_header(fdt: &[u8]) -> Result<()> {
+/// Check header.
+fn fdt_check_header(header: &[u8]) -> Result<()> {
     // SAFETY:
-    // `fdt_check_header` is only access the memory pointed to by `fdt` during this call and
-    // not store the pointer for later use. `fdt` remains valid for the duration of this call.
-    map_result(unsafe { libfdt_bindgen::fdt_check_header(fdt.as_ptr() as *const _) })?;
+    // `fdt_check_header` is only access the memory pointed to by `header` during this call and
+    // not store the pointer for later use. `header` remains valid for the duration of this call.
+    map_result(unsafe { libfdt_bindgen::fdt_check_header(header.as_ptr() as *const _) })?;
+    Ok(())
+}
+
+/// Check header and verified that totalsize does not exceed buffer size.
+fn fdt_check_buffer(fdt: &[u8]) -> Result<()> {
     match FdtHeader::from_bytes_ref(fdt)?.totalsize() <= fdt.len() {
         true => Ok(()),
         _ => Err(Error::InvalidInput),
@@ -116,16 +123,20 @@ impl FdtHeader {
 
     /// Cast a bytes into a reference of FDT header
     pub fn from_bytes_ref(buffer: &[u8]) -> Result<&FdtHeader> {
+        fdt_check_header(buffer)?;
+
         Ok(Ref::<_, FdtHeader>::new_from_prefix(buffer)
-            .ok_or(Error::BufferTooSmall(Some(size_of::<FdtHeader>())))?
+            .ok_or(Error::BufferTooSmall(Some(FDT_HEADER_SIZE)))?
             .0
             .into_ref())
     }
 
     /// Cast a bytes into a mutable reference of FDT header.
     pub fn from_bytes_mut(buffer: &mut [u8]) -> Result<&mut FdtHeader> {
+        fdt_check_header(buffer)?;
+
         Ok(Ref::<_, FdtHeader>::new_from_prefix(buffer)
-            .ok_or(Error::BufferTooSmall(Some(size_of::<FdtHeader>())))?
+            .ok_or(Error::BufferTooSmall(Some(FDT_HEADER_SIZE)))?
             .0
             .into_mut())
     }
@@ -139,8 +150,7 @@ impl FdtHeader {
         // SAFETY: By safety requirement of this function, `ptr` points to a valid FDT and remains
         // valid when in use.
         unsafe {
-            map_result(libfdt_bindgen::fdt_check_header(ptr as *const _))?;
-            let header_bytes = from_raw_parts(ptr, size_of::<FdtHeader>());
+            let header_bytes = from_raw_parts(ptr, FDT_HEADER_SIZE);
             let header = Self::from_bytes_ref(header_bytes)?;
             Ok((header, from_raw_parts(ptr, header.totalsize())))
         }
@@ -154,7 +164,7 @@ pub struct Fdt<T>(T);
 impl<'a, T: AsRef<[u8]> + 'a> Fdt<T> {
     /// Creates a new [Fdt] wrapping the contents of `init`.
     pub fn new(init: T) -> Result<Self> {
-        fdt_check_header(init.as_ref())?;
+        fdt_check_buffer(init.as_ref())?;
         Ok(Fdt(init))
     }
 
@@ -219,7 +229,7 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
 
     /// Creates a mutable [Fdt] copied from `init`.
     pub fn new_from_init(mut fdt: T, init: &[u8]) -> Result<Self> {
-        fdt_check_header(init)?;
+        fdt_check_buffer(init)?;
         // SAFETY: API from libfdt_c.
         map_result(unsafe {
             fdt_move(
@@ -304,11 +314,15 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
     /// Wrapper/equivalent of ufdt_apply_multioverlay.
     /// It extend current FDT buffer by applying passed overlays.
     pub fn multioverlay_apply(&mut self, overlays: &[&[u8]]) -> Result<()> {
-        self.shrink_to_fit()?;
-
+        // Avoid shrinking device tree or doing any other actions in case nothing to apply.
+        if overlays.is_empty() {
+            return Ok(());
+        }
         if overlays.len() > MAXIMUM_OVERLAYS_TO_APPLY {
             return Err(Error::Other(Some(MAXIMUM_OVERLAYS_ERROR_MSG)));
         }
+
+        self.shrink_to_fit()?;
 
         // Convert input fat references into the raw pointers.
         let pointers: ArrayVec<_, MAXIMUM_OVERLAYS_TO_APPLY> =
@@ -351,9 +365,19 @@ impl<T: AsMut<[u8]>> AsMut<[u8]> for Fdt<T> {
     }
 }
 
+impl<T: AsRef<[u8]>> AsRef<[u8]> for Fdt<T> {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+
+    // Fdt is required to be 8 bytes aligned. Buffer to test alignment-related logic.
+    #[repr(align(8))]
+    struct AlignedBytes<const N: usize>([u8; N]);
 
     /// Checks to verify `overlay_*_by_path`/`overlay_*_by_reference` are successfully applied
     fn check_overlays_are_applied(fdt: &[u8]) {
@@ -505,6 +529,28 @@ mod test {
         let payload = fdt.set_property_placeholder("/new-node", c"custom", data.len()).unwrap();
         payload.clone_from_slice(&data[..]);
         assert_eq!(fdt.get_property("/new-node", c"custom").unwrap().to_vec(), data);
+    }
+
+    #[test]
+    fn test_header_from_bytes() {
+        let init = include_bytes!("../test/data/base.dtb").to_vec();
+        let header = FdtHeader::from_bytes_ref(&init[..]).unwrap();
+
+        assert_eq!(header.totalsize(), init.len());
+    }
+
+    #[test]
+    fn test_header_from_bytes_wrong_alignment() {
+        let init = include_bytes!("../test/data/base.dtb").to_vec();
+
+        const HEADER_SIZE: usize = size_of::<FdtHeader>();
+        let mut bytes = AlignedBytes([0u8; HEADER_SIZE + 1]);
+
+        // Guaranteed not to be 8 bytes aligned.
+        let (_, unaligned) = bytes.0.split_at_mut(1);
+        unaligned.copy_from_slice(&init[..HEADER_SIZE]);
+
+        assert!(FdtHeader::from_bytes_ref(unaligned).is_err());
     }
 
     #[test]
