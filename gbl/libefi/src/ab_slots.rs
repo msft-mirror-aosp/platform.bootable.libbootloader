@@ -180,7 +180,7 @@ mod test {
     };
     use gbl_storage::BlockIoNull;
     use gbl_storage_testlib::TestBlockDevice;
-    use libgbl::ops::ImageBuffer;
+    use libgbl::{device_tree::DeviceTreeComponentsRegistry, ops::ImageBuffer};
     // TODO(b/350526796): use ptr.is_aligned() when Rust 1.79 is in Android
     use std::{
         ffi::CStr,
@@ -275,6 +275,10 @@ mod test {
             unimplemented!();
         }
 
+        fn get_zbi_bootloader_files_buffer(&mut self) -> Option<&mut [u8]> {
+            None
+        }
+
         fn do_fastboot<B: gbl_storage::AsBlockDevice>(&self, _: &mut Cursor<B>) -> GblResult<()> {
             unimplemented!();
         }
@@ -346,6 +350,13 @@ mod test {
         }
 
         fn fixup_device_tree(&mut self, _device_tree: &mut [u8]) -> Result<()> {
+            unimplemented!();
+        }
+
+        fn select_device_trees(
+            &mut self,
+            _components: &mut DeviceTreeComponentsRegistry,
+        ) -> Result<()> {
             unimplemented!();
         }
     }
