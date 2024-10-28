@@ -711,6 +711,34 @@ impl<'a> GptCache<'a> {
     }
 }
 
+/// Updates GPT on a block device.
+pub(crate) async fn update_gpt(
+    io: &mut impl BlockIoAsync,
+    scratch: &mut [u8],
+    mbr_primary: &mut [u8],
+    gpt_cache: &mut GptCache<'_>,
+) -> Result<()> {
+    let blk_sz: usize = io.info().block_size.try_into()?;
+    let header = mbr_primary
+        .get(blk_sz..)
+        .map(|v| v.get(..blk_sz))
+        .flatten()
+        .ok_or(Error::BufferTooSmall(Some(blk_sz * 2)))?;
+    let header = Ref::<_, GptHeader>::new_from_prefix(header).unwrap().0.into_ref();
+    check_header(io, gpt_cache.info.max_entries, &header, true)?;
+    let entries_off: usize = (SafeNum::from(blk_sz) * header.entries).try_into()?;
+    let entries_size: usize =
+        (SafeNum::from(header.entries_count) * header.entries_size).try_into().unwrap();
+    let entries = mbr_primary
+        .get(entries_off..)
+        .map(|v| v.get(..entries_size))
+        .flatten()
+        .ok_or(Error::BufferTooSmall(Some(entries_off + entries_size)))?;
+    check_entries(&header, entries)?;
+    write_async(io, 0, mbr_primary, scratch).await?;
+    gpt_cache.load_and_sync(io, scratch).await?.res()
+}
+
 /// Checks if a read/write range into a GPT partition overflows and returns the range's absolute
 /// offset in the block device.
 pub(crate) fn check_gpt_rw_params(
@@ -1083,6 +1111,80 @@ pub(crate) mod test {
         // Load a bad GPT. Validate that the valid state is reset.
         assert!(dev.sync_gpt().is_err());
         assert!(gpt(&mut dev).find_partition("").is_err());
+    }
+
+    #[test]
+    fn test_update_gpt() {
+        let disk_orig = include_bytes!("../test/gpt_test_1.bin");
+        let mut disk = disk_orig.to_vec();
+        // Erases all GPT headers.
+        disk[512..][..512].fill(0);
+        disk.last_chunk_mut::<512>().unwrap().fill(0);
+
+        let mut dev = TestBlockDeviceBuilder::new().set_data(&disk).build();
+        let (mut dev, mut gpt) = dev.as_gpt_dev().into_blk_and_gpt();
+
+        assert_ne!(dev.io().storage, disk_orig);
+        let mut mbr_primary = disk_orig[..34 * 512].to_vec();
+        block_on(dev.update_gpt(&mut mbr_primary, &mut gpt)).unwrap();
+        assert_eq!(dev.io().storage, disk_orig);
+    }
+
+    #[test]
+    fn test_update_gpt_buffer_truncated() {
+        let mut disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
+        let mut dev = TestBlockDeviceBuilder::new().set_data(&disk).build();
+        let (mut dev, mut gpt) = dev.as_gpt_dev().into_blk_and_gpt();
+
+        // Less than 1 MBR block.
+        assert_eq!(
+            block_on(dev.update_gpt(&mut disk[..511], &mut gpt)),
+            Err(Error::BufferTooSmall(Some(1024)))
+        );
+
+        // Less than MBR + GPT header.
+        assert_eq!(
+            block_on(dev.update_gpt(&mut disk[..1023], &mut gpt)),
+            Err(Error::BufferTooSmall(Some(1024)))
+        );
+
+        // Less than MBR + GPT header + entries.
+        assert_eq!(
+            block_on(dev.update_gpt(&mut disk[..34 * 512 - 1], &mut gpt)),
+            Err(Error::BufferTooSmall(Some(34 * 512)))
+        );
+    }
+
+    #[test]
+    fn test_update_gpt_check_header_fail() {
+        let disk = include_bytes!("../test/gpt_test_1.bin");
+        let mut dev = TestBlockDeviceBuilder::new()
+            .set_data(include_bytes!("../test/gpt_test_1.bin"))
+            .build();
+        let (mut dev, mut gpt) = dev.as_gpt_dev().into_blk_and_gpt();
+        let mut mbr_primary = disk[..34 * 512].to_vec();
+        // Corrupts the first byte of the GPT header.
+        mbr_primary[512] = !mbr_primary[512];
+        assert_eq!(
+            block_on(dev.update_gpt(&mut mbr_primary, &mut gpt)),
+            Err(Error::GptError(GptError::IncorrectMagic(0x54524150204946BA)))
+        );
+    }
+
+    #[test]
+    fn test_update_gpt_check_entries_fail() {
+        let disk = include_bytes!("../test/gpt_test_1.bin");
+        let mut dev = TestBlockDeviceBuilder::new()
+            .set_data(include_bytes!("../test/gpt_test_1.bin"))
+            .build();
+        let (mut dev, mut gpt) = dev.as_gpt_dev().into_blk_and_gpt();
+        let mut mbr_primary = disk[..34 * 512].to_vec();
+        // Corrupts the first byte of the entries.
+        mbr_primary[1024] = !mbr_primary[1024];
+        assert_eq!(
+            block_on(dev.update_gpt(&mut mbr_primary, &mut gpt)),
+            Err(Error::GptError(GptError::IncorrectEntriesCrc))
+        );
     }
 
     #[test]
