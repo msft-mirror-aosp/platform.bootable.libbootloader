@@ -18,7 +18,9 @@ use crate::fastboot::sparse::{is_sparse_image, write_sparse_image, SparseRawWrit
 use core::mem::swap;
 use fastboot::CommandError;
 use gbl_async::yield_now;
-use gbl_storage::{AsyncBlockDevice, BlockInfo, BlockIoAsync, GptCache, Partition as GptPartition};
+use gbl_storage::{
+    AsyncBlockDevice, BlockInfo, BlockIoAsync, GptCache, GptSyncResult, Partition as GptPartition,
+};
 use liberror::Error;
 use safemath::SafeNum;
 use spin::mutex::{Mutex, MutexGuard};
@@ -196,16 +198,16 @@ impl<'a, B: BlockIoAsync> PartitionBlockDevice<'a, B> {
     ///
     /// # Returns
     ///
-    /// * Returns `Ok(true)` if partition type is GPT and sync is successful.
-    /// * Returns `Ok(false)` if partition type is not GPT.
+    /// * Returns `Ok(Some(sync_res))` if partition type is GPT and disk access is successful, where
+    ///  `sync_res` contains the GPT verification and restoration result.
+    /// * Returns `Ok(None)` if partition type is not GPT.
     /// * Returns `Err` in other cases.
-    pub async fn sync_gpt(&mut self) -> Result<bool, Error> {
+    pub async fn sync_gpt(&mut self) -> Result<Option<GptSyncResult>, Error> {
         match &mut self.partitions {
-            PartitionTable::Raw(name, _) => Ok(false),
+            PartitionTable::Raw(name, _) => Ok(None),
             PartitionTable::Gpt(ref mut gpt) => {
                 let mut blk = self.blk.try_lock().ok_or(Error::NotReady)?;
-                blk.0.sync_gpt(gpt).await?;
-                Ok(true)
+                Ok(Some(blk.0.sync_gpt(gpt).await?))
             }
         }
     }
@@ -402,7 +404,7 @@ pub(crate) mod test {
     fn test_find_partition_gpt() {
         let mut gpt = (&include_bytes!("../../libstorage/test/gpt_test_1.bin")[..]).into();
         let mut gpt = as_gpt_part(&mut gpt);
-        assert!(block_on(gpt.sync_gpt()).unwrap());
+        assert_eq!(block_on(gpt.sync_gpt()).unwrap(), Some(GptSyncResult::BothValid));
 
         let boot_a = gpt.find_partition(Some("boot_a")).unwrap();
         assert_eq!(boot_a.name().unwrap(), "boot_a");
@@ -467,7 +469,7 @@ pub(crate) mod test {
         let disk = include_bytes!("../../libstorage/test/gpt_test_1.bin");
         let mut gpt = (&disk[..]).into();
         let mut gpt = as_gpt_part(&mut gpt);
-        assert!(block_on(gpt.sync_gpt()).unwrap());
+        assert_eq!(block_on(gpt.sync_gpt()).unwrap(), Some(GptSyncResult::BothValid));
 
         let expect_boot_a = include_bytes!("../../libstorage/test/boot_a.bin");
         test_part_read(&gpt, Some("boot_a"), expect_boot_a, 1, 1024);
@@ -515,7 +517,7 @@ pub(crate) mod test {
     fn test_write_partition_gpt() {
         let mut gpt = (&include_bytes!("../../libstorage/test/gpt_test_1.bin")[..]).into();
         let mut gpt = as_gpt_part(&mut gpt);
-        assert!(block_on(gpt.sync_gpt()).unwrap());
+        assert_eq!(block_on(gpt.sync_gpt()).unwrap(), Some(GptSyncResult::BothValid));
         test_part_write(&gpt, Some("boot_a"), 1, 1024);
         test_part_write(&gpt, Some("boot_b"), 1, 1024);
         test_part_write(&gpt, None, 1, 1024);
@@ -534,7 +536,7 @@ pub(crate) mod test {
         let disk = include_bytes!("../../libstorage/test/gpt_test_1.bin");
         let mut gpt = (&disk[..]).into();
         let mut gpt = as_gpt_part(&mut gpt);
-        assert!(block_on(gpt.sync_gpt()).unwrap());
+        assert_eq!(block_on(gpt.sync_gpt()).unwrap(), Some(GptSyncResult::BothValid));
 
         let mut part_io = gpt.partition_io(Some("boot_a")).unwrap();
         assert!(block_on(part_io.read(BOOT_A_END, &mut vec![0u8; 1])).is_err());
@@ -560,7 +562,7 @@ pub(crate) mod test {
         let disk = include_bytes!("../../libstorage/test/gpt_test_1.bin");
         let mut gpt = (&disk[..]).into();
         let mut gpt = as_gpt_part(&mut gpt);
-        assert!(block_on(gpt.sync_gpt()).unwrap());
+        assert_eq!(block_on(gpt.sync_gpt()).unwrap(), Some(GptSyncResult::BothValid));
         assert!(gpt.partition_io(Some("boot_a")).unwrap().sub(0, BOOT_A_SZ + 1).is_err());
         assert!(gpt.partition_io(Some("boot_a")).unwrap().sub(1, BOOT_A_SZ).is_err());
 
