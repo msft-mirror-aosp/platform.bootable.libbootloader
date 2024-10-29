@@ -60,10 +60,10 @@ pub enum GptError {
         first: u64,
         /// The value of last usable block in the GPT header.
         last: u64,
-        /// Expected range inclusive
+        /// Expected range inclusive.
         range: (u64, u64),
     },
-    /// Partition range is invalid
+    /// Partition range is invalid.
     InvalidPartitionRange {
         /// Partition index (1-based).
         idx: usize,
@@ -107,12 +107,12 @@ pub enum GptError {
         /// The expected size.
         expect: usize,
     },
-    /// Zero partition type GUID
+    /// Zero partition type GUID.
     ZeroPartitionTypeGUID {
         /// Partition index (1-based).
         idx: usize,
     },
-    /// Zero partition unique GUID
+    /// Zero partition unique GUID.
     ZeroPartitionUniqueGUID {
         /// Partition index (1-based).
         idx: usize,
