@@ -158,12 +158,8 @@ pub fn find_block_devices(efi_entry: &EfiEntry) -> Result<EfiMultiBlockDevices, 
         // TODO(b/357688291): Support raw partition based on device path info.
         let mut blk = EfiBlockDevice::new_gpt(blk_io)?;
         match block_on(blk.as_gbl_part()?.sync_gpt()) {
-            Ok(true) => {
-                efi_println!(efi_entry, "Block #{}: GPT detected", idx);
-            }
-            Err(e) => {
-                efi_println!(efi_entry, "Block #{}: Failed to find GPT. {:?}", idx, e);
-            }
+            Ok(Some(v)) => efi_println!(efi_entry, "Block #{idx} GPT sync result: {v}"),
+            Err(e) => efi_println!(efi_entry, "Block #{idx} error while syncing GPT: {e}"),
             _ => {}
         };
         block_devices.push(blk);
