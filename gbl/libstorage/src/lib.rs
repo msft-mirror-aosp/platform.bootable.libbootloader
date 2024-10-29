@@ -621,6 +621,24 @@ impl<'a, T: BlockIoAsync> AsyncBlockDevice<'a, T> {
         gpt_cache.load_and_sync(&mut self.io, self.scratch).await
     }
 
+    /// Updates GPT to the block device and sync primary and secondary GPT.
+    ///
+    /// # Args
+    ///
+    /// * `mbr_primary`: A buffer containing the MBR block, primary GPT header and entries.
+    /// * `gpt_cache`: The GPT cache to update.
+    ///
+    /// # Returns
+    ///
+    /// * Return `Ok(())` if new GPT is valid and device is updated and synced successfully.
+    pub async fn update_gpt(
+        &mut self,
+        mbr_primary: &mut [u8],
+        gpt_cache: &mut GptCache<'_>,
+    ) -> Result<()> {
+        gpt::update_gpt(&mut self.io, self.scratch, mbr_primary, gpt_cache).await
+    }
+
     /// Reads a GPT partition on a block device
     ///
     /// # Args
