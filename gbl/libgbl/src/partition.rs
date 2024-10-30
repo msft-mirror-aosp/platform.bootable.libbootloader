@@ -217,18 +217,20 @@ impl<'a, B: BlockIoAsync> PartitionBlockDevice<'a, B> {
     /// # Args
     ///
     /// * `mbr_primary`: A buffer containing the MBR block, primary GPT header and entries.
+    /// * `resize`: If set to true, the method updates the value of last usable block in the header
+    ///   and the extends last partition to cover the rest of the storage.
     ///
     /// # Returns
     ///
     /// * Return `Err(Error::NotReady)` if device is busy.
     /// * Return `Err(Error::Unsupported)` if partition type is not GPT.
     /// * Return `Ok(())` new GPT is valid and device is updated and synced successfully.
-    pub async fn update_gpt(&self, mbr_primary: &mut [u8]) -> Result<(), Error> {
+    pub async fn update_gpt(&self, mbr_primary: &mut [u8], resize: bool) -> Result<(), Error> {
         match self.partitions.try_lock().ok_or(Error::NotReady)?.deref_mut() {
             PartitionTable::Raw(name, _) => Err(Error::Unsupported),
             PartitionTable::Gpt(ref mut gpt) => {
                 let mut blk = self.blk.try_lock().ok_or(Error::NotReady)?;
-                blk.0.update_gpt(mbr_primary, gpt).await
+                blk.0.update_gpt(mbr_primary, resize, gpt).await
             }
         }
     }
