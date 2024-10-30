@@ -98,7 +98,8 @@ impl Variable for Partition {
         let partitions = gbl_fb.gbl_ops.partitions()?;
         let mut size_str = [0u8; 32];
         for (idx, blk) in partitions.iter().enumerate() {
-            for ptn in blk.partition_iter() {
+            for ptn_idx in 0..blk.num_partitions().unwrap_or(0) {
+                let ptn = blk.get_partition_by_idx(ptn_idx)?;
                 let sz: u64 = ptn.size()?;
                 let part = ptn.name()?;
                 // Assumes max partition name length of 72 plus max u64 hex string length 18.
