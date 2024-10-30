@@ -626,6 +626,8 @@ impl<'a, T: BlockIoAsync> AsyncBlockDevice<'a, T> {
     /// # Args
     ///
     /// * `mbr_primary`: A buffer containing the MBR block, primary GPT header and entries.
+    /// * `resize`: If set to true, the method updates the value of last usable block in the header
+    ///   and the extends last partition to cover the rest of the storage.
     /// * `gpt_cache`: The GPT cache to update.
     ///
     /// # Returns
@@ -634,9 +636,10 @@ impl<'a, T: BlockIoAsync> AsyncBlockDevice<'a, T> {
     pub async fn update_gpt(
         &mut self,
         mbr_primary: &mut [u8],
+        resize: bool,
         gpt_cache: &mut GptCache<'_>,
     ) -> Result<()> {
-        gpt::update_gpt(&mut self.io, self.scratch, mbr_primary, gpt_cache).await
+        gpt::update_gpt(&mut self.io, self.scratch, mbr_primary, resize, gpt_cache).await
     }
 
     /// Reads a GPT partition on a block device
