@@ -440,27 +440,6 @@ pub fn load_android_simple<'a, 'b>(
             Ok(vendor_bootconfig_size as usize)
         })?;
     }
-    // Check if there is a device specific bootconfig partition.
-    // TODO(b/353272981): Implement cuttlefish-specific u-boot os_configuration implementation
-    //                    to handle this.
-    match ops.partition_size("bootconfig") {
-        Ok(Some(sz)) => {
-            bootconfig_builder.add_with(|_, out| {
-                // For proof-of-concept only, we just load as much as possible and figure out the
-                // actual bootconfig string length after. This however, can introduce large amount
-                // of unnecessary disk access. In real implementation, we might want to either read
-                // page by page or find way to know the actual length first.
-                let max_size = core::cmp::min(sz.try_into().unwrap(), out.len());
-                ops.read_from_partition_sync("bootconfig", 0, &mut out[..max_size])?;
-                // Compute the actual config string size. The config is a null-terminated string.
-                Ok(CStr::from_bytes_until_nul(&out[..])
-                    .or(Err(Error::InvalidInput))?
-                    .to_bytes()
-                    .len())
-            })?;
-        }
-        _ => {}
-    }
 
     // TODO(b/353272981): Handle buffer too small
     bootconfig_builder.add_with(|bytes, out| {
