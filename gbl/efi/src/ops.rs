@@ -276,15 +276,11 @@ where
         Some(self.zbi_bootloader_files_buffer.as_mut_slice())
     }
 
-    fn do_fastboot<B: gbl_storage::AsBlockDevice>(&self, _: &mut Cursor<B>) -> GblResult<()> {
-        unimplemented!();
-    }
-
-    fn load_slot_interface<'c, B: gbl_storage::AsBlockDevice>(
+    fn load_slot_interface<'c>(
         &'c mut self,
-        _: &'c mut B,
+        _: &'c mut dyn FnMut(&mut [u8]) -> Result<()>,
         _: BootToken,
-    ) -> GblResult<Cursor<'c, B>> {
+    ) -> GblResult<Cursor<'c>> {
         unimplemented!();
     }
 

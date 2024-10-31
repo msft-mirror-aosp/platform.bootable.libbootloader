@@ -60,7 +60,7 @@ impl TestBlockIo {
     }
 }
 
-impl BlockIoAsync for TestBlockIo {
+impl BlockIo for TestBlockIo {
     /// Returns a `BlockInfo` for the block device.
     fn info(&mut self) -> BlockInfo {
         BlockInfo {
@@ -97,18 +97,14 @@ pub struct TestBlockDevice {
     pub io: TestBlockIo,
     /// In-memory backing store.
     pub scratch: Vec<u8>,
+    /// Buffer for creating GPT cache.
+    pub gpt_buffer: Vec<u8>,
     max_gpt_entries: u64,
 }
 
 impl From<&[u8]> for TestBlockDevice {
     fn from(data: &[u8]) -> Self {
         TestBlockDeviceBuilder::new().set_data(data).build()
-    }
-}
-
-impl AsBlockDevice for TestBlockDevice {
-    fn with(&mut self, f: &mut dyn FnMut(&mut dyn BlockIoSync, &mut [u8], u64)) {
-        f(&mut self.io, &mut self.scratch[..], self.max_gpt_entries)
     }
 }
 
@@ -119,19 +115,12 @@ impl Default for TestBlockDevice {
 }
 
 impl TestBlockDevice {
-    /// Creates an instance of `AsyncGptDevice`
-    pub fn as_gpt_dev(&mut self) -> AsyncGptDevice<'_, &mut TestBlockIo> {
-        AsyncGptDevice::<&mut TestBlockIo>::new_from_monotonic_buffer(
-            &mut self.io,
-            &mut self.scratch[..],
-            self.max_gpt_entries,
+    /// Creates an instance of [AsyncBlockDevice] and uninitialized [GptCache].
+    pub fn new_blk_and_gpt(&mut self) -> (AsyncBlockDevice<'_, &mut TestBlockIo>, GptCache<'_>) {
+        (
+            AsyncBlockDevice::new(&mut self.io, &mut self.scratch).unwrap(),
+            GptCache::new(self.max_gpt_entries, &mut self.gpt_buffer).unwrap(),
         )
-        .unwrap()
-    }
-
-    /// Creates an instance of `AsyncBlockDevice`
-    pub fn as_blk_dev(&mut self) -> AsyncBlockDevice<'_, &mut TestBlockIo> {
-        self.as_gpt_dev().into_blk_and_gpt().0
     }
 }
 
@@ -180,7 +169,6 @@ pub struct TestBlockDeviceBuilder<'a> {
     max_gpt_entries: u64,
     alignment: u64,
     disk_description: DiskDescription<'a>,
-    scratch_size: Option<usize>,
 }
 
 impl<'a> TestBlockDeviceBuilder<'a> {
@@ -200,7 +188,6 @@ impl<'a> TestBlockDeviceBuilder<'a> {
             disk_description: DiskDescription::Disk(BackingStore::Size(
                 (Self::DEFAULT_BLOCK_SIZE * 32) as usize,
             )),
-            scratch_size: None,
         }
     }
 
@@ -274,17 +261,6 @@ impl<'a> TestBlockDeviceBuilder<'a> {
         self
     }
 
-    /// Customize the size of the block device's scratch buffer.
-    /// The default size is a known safe minimum calculated when `build()` is called.
-    ///
-    /// Note: Too small a scratch buffer will generate errors.
-    ///       Unless a test is specifically interested in a non-default
-    ///       scratch size, it's better to rely on the default size.
-    pub fn set_scratch_size(mut self, scratch_size: usize) -> Self {
-        self.scratch_size = Some(scratch_size);
-        self
-    }
-
     /// Consumes the builder and generates a TestBlockDevice
     /// with the desired customizations.
     pub fn build(self) -> TestBlockDevice {
@@ -297,17 +273,9 @@ impl<'a> TestBlockDeviceBuilder<'a> {
         };
         assert_eq!(storage.len() % (self.block_size as usize), 0);
         let mut io = TestBlockIo::new(self.block_size, self.alignment, storage);
-        let scratch_size = match self.scratch_size {
-            Some(s) => s,
-            None => {
-                required_scratch_size(BlockIoSync::info(&mut io), self.max_gpt_entries).unwrap()
-            }
-        };
-        TestBlockDevice {
-            io,
-            scratch: vec![0u8; scratch_size],
-            max_gpt_entries: self.max_gpt_entries,
-        }
+        let scratch = vec![0u8; scratch_size(&mut io).unwrap()];
+        let gpt_buffer = vec![0u8; GptCache::required_buffer_size(self.max_gpt_entries).unwrap()];
+        TestBlockDevice { io, scratch, gpt_buffer, max_gpt_entries: self.max_gpt_entries }
     }
 }
 
@@ -434,19 +402,10 @@ fn partitions_to_disk_data(
     store
 }
 
-/// Simple RAM based multi-block device used for unit tests.
-pub struct TestMultiBlockDevices(pub Vec<TestBlockDevice>);
-
-impl TestMultiBlockDevices {
-    /// Creates a vector of `AsyncGptDevice`;
-    pub fn as_gpt_devs(&mut self) -> Vec<AsyncGptDevice<&mut TestBlockIo>> {
-        self.0.iter_mut().map(|v| v.as_gpt_dev()).collect::<Vec<_>>()
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
+    use gbl_async::block_on;
 
     #[test]
     fn test_builder_partitions() {
@@ -457,11 +416,11 @@ mod test {
             .add_partition("clam", BackingStore::Size(28))
             .build();
 
-        block_dev.sync_gpt().unwrap();
-        assert!(block_dev.read_gpt_partition("squid", 0, actual.as_mut_slice()).is_ok());
+        let (mut blk, mut gpt) = block_dev.new_blk_and_gpt();
+        block_on(blk.sync_gpt(&mut gpt)).unwrap();
+        block_on(blk.read_gpt_partition(&mut gpt, "squid", 0, &mut actual)).unwrap();
         assert_eq!(actual, data);
-
-        assert!(block_dev.read_gpt_partition("clam", 0, actual.as_mut_slice()).is_ok());
+        block_on(blk.read_gpt_partition(&mut gpt, "clam", 0, &mut actual)).unwrap();
         assert_eq!(actual, [0u8; 8]);
     }
 }
