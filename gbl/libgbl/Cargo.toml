@@ -25,7 +25,6 @@ default = []
 alloc = []
 
 [dependencies]
-zbi = {version = "0.1", path = "../third_party/libzbi"}
 gbl_storage = {version = "0.1", path = "../libstorage"}
 spin = "0.9"
 static_assertions = "0"

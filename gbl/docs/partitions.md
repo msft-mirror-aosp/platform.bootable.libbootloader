@@ -47,5 +47,9 @@ two schemes of partition:
    using its corresponding GPT partition name in the context of booting and
    fastboot.
 
-Because partitions are identified by their names in fastboot. They cannot
-contain character `":"`.
+GBL fastboot implementation introduces a special syntax
+`<part>/<storage id>/<offset>/<size>` for specifying arbitrary subranges of a
+partition on one of the potentially multiple storage devices. Thus the
+partition name cannot contain character `'/'`. The name `gpt` is reserved for
+flashing GPT partition table and thus should not be used as partition name.
+See this [doc](./gbl_fastboot.md) for more details.
