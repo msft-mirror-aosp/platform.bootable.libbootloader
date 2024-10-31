@@ -28,6 +28,7 @@ To build the EFI application:
 ```
 ./tools/bazel run //bootable/libbootloader:gbl_efi_dist --extra_toolchains=@gbl//toolchain:all
 ```
+
 The above builds the EFI application for all of `x86_64`, `x86_32`, `aarch64`
 and `riscv64` platforms.
 
@@ -36,6 +37,39 @@ To run the set of unit tests:
 ```
 ./tools/bazel test @gbl//tests --extra_toolchains=@gbl//toolchain:all
 ```
+
+## IDE Setup
+
+For rust development, we recommend use VSCode + rust-analyzer plugin.
+
+rust-analyzer requires `rust-project.json` to work properly. Luckily, bazel has
+support for generating `rust-project.json`:
+
+```
+# Currently ./tools/bazel must be in PATH for this target to build.
+PATH=$PATH:~/android/uefi-gbl-mainline/tools/
+
+./tools/bazel run @rules_rust//tools/rust_analyzer:gen_rust_project --norepository_disable_download @gbl//efi/...
+```
+
+`@gbl//efi/...` is the target to generate rust project for, here it means
+"everything under @gbl//efi/ directory" . Omitting the target specifier would
+result in analyzing "@/..." , which would most likely fail due to some obscure
+reason. Should targets get moved around in the future, this path spec also need
+to be updated.
+
+After generating `rust-project.json`, you would notice that your IDE still
+doesn't offer auto completion. This is because some source file paths pointing
+to bazel-output dir, and you are most likely editing source files in
+`bootable/libbootloader/gbl`. In addition, the generated rust-project.json sets
+"cfg=test" for all targets, which causes certain dependency graph to resolve
+incorrectly. To fix this, run
+
+```
+python3 bootable/libbootloader/gbl/rewrite_rust_project_path.py rust-project.json
+```
+
+And reload your IDE.
 
 ## Run the EFI application
 
