@@ -1,4 +1,4 @@
-# Copyright (C) 2023 The Android Open Source Project
+# Copyright (C) 2024 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,23 +15,22 @@
 load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
-package(
-    default_visibility = ["//visibility:public"],
-)
-
 rust_library(
-    name = "libbootconfig",
-    srcs = ["src/lib.rs"],
-    crate_name = "bootconfig",
+    name = "libutils",
+    srcs = [
+        "src/lib.rs",
+    ],
     edition = "2021",
     rustc_flags = ANDROID_RUST_LINTS,
+    visibility = ["//visibility:public"],
     deps = [
         "@gbl//liberror",
+        "@gbl//libsafemath",
     ],
 )
 
 rust_test(
-    name = "libbootconfig_test",
-    crate = ":libbootconfig",
+    name = "test",
+    crate = ":libutils",
     rustc_flags = ANDROID_RUST_LINTS,
 )

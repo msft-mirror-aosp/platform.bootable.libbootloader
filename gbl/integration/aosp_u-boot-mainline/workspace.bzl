@@ -374,6 +374,22 @@ cc_library(
         ),
     )
 
+    native.new_local_repository(
+        name = "lz4_flex",
+        path = "external/rust/crates/lz4_flex",
+        build_file_content = rust_crate_build_file(
+            "lz4_flex",
+            features = ["safe-decode"],
+            rustc_flags = ["-A", "dead_code"],
+        ),
+    )
+
+    native.new_local_repository(
+        name = "zbi",
+        path = "prebuilts/fuchsia_sdk/",
+        build_file = "//prebuilts/fuchsia_sdk:BUILD.zbi.bazel",
+    )
+
     # Following are third party rust crates dependencies which already contain a
     # BUILD file that we can use as-is without any modification.
 
