@@ -34,6 +34,7 @@ rust_library(
         "@gbl//libasync",
         "@gbl//liberror",
         "@gbl//libsafemath",
+        "@gbl//libutils",
         "@zerocopy",
     ],
 )

@@ -163,6 +163,9 @@ mock! {
         /// Returns a [MockBootServices].
         pub fn boot_services(&self) -> MockBootServices;
 
+        /// Returns a [MockRuntimeServices].
+        pub fn runtime_services(&self) -> MockRuntimeServices;
+
         /// Returns a [MockSimpleTextOutputProtocol]. This is a singleton protocol which is
         /// always-open, as opposed to most protocols which need to be opened explicitly.
         pub fn con_out(&self) -> Result<MockSimpleTextOutputProtocol>;
@@ -232,6 +235,17 @@ mock! {
 }
 /// Map to the libefi name so code under test can just use one name.
 pub type Event = MockEvent;
+
+mock! {
+    /// Mock [efi::RuntimeServices].
+    pub RuntimeServices {
+        /// Performs a cold reset.
+        pub fn cold_reset(&self);
+    }
+}
+
+/// Map to the libefi name so code under test can just use one name.
+pub type RuntimeServices = MockRuntimeServices;
 
 #[cfg(test)]
 pub mod test {
