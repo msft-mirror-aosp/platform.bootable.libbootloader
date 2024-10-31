@@ -87,7 +87,6 @@ impl GptHeader {
     }
 
     /// Updates entries and header crc according to the given entries buffer.
-    #[cfg(test)]
     fn update_entries_crc(&mut self, entries: &[u8]) {
         let size = SafeNum::from(self.entries_count) * self.entries_size;
         self.entries_crc = crc32(&entries[..size.try_into().unwrap()]);
@@ -116,8 +115,7 @@ fn check_header(
     let blk_sz = io.info().block_size;
 
     // GPT spec requires that at least 128 entries worth of space be reserved.
-    let min_reserved_entries_blk =
-        SafeNum::from(GPT_MAX_NUM_ENTRIES) * size_of::<GptEntry>() / blk_sz;
+    let min_reserved_entries_blk = SafeNum::from(GPT_MAX_NUM_ENTRIES_SIZE) / blk_sz;
     // Minimum space needed: 2 * (header + entries) + MBR.
     let min_disk_blks: u64 = ((min_reserved_entries_blk + 1) * 2 + 1).try_into().unwrap();
     if min_disk_blks > u64::try_from(num_blks).unwrap() {
@@ -302,6 +300,7 @@ const GPT_CRC32_OFFSET: usize = 16;
 const GPT_ENTRY_ALIGNMENT: u64 = align_of::<GptEntry>() as u64;
 const GPT_ENTRY_SIZE: u64 = size_of::<GptEntry>() as u64;
 const GPT_MAX_NUM_ENTRIES: u64 = 128;
+const GPT_MAX_NUM_ENTRIES_SIZE: u64 = GPT_MAX_NUM_ENTRIES * GPT_ENTRY_SIZE;
 const GPT_HEADER_SIZE: u64 = size_of::<GptHeader>() as u64; // 92 bytes.
 const GPT_HEADER_SIZE_PADDED: u64 =
     (GPT_HEADER_SIZE + GPT_ENTRY_ALIGNMENT - 1) / GPT_ENTRY_ALIGNMENT * GPT_ENTRY_ALIGNMENT;
@@ -555,7 +554,7 @@ impl<'a> GptCache<'a> {
     /// Return the list of GPT entries.
     ///
     /// If the object does not contain a valid GPT, the method returns Error.
-    fn entries(&self) -> Result<&[GptEntry]> {
+    pub fn entries(&self) -> Result<&[GptEntry]> {
         self.check_valid()?;
         Ok(&Ref::<_, [GptEntry]>::new_slice(&self.primary_entries[..]).unwrap().into_slice()
             [..usize::try_from(self.info.num_valid_entries()?)?])
@@ -712,29 +711,55 @@ impl<'a> GptCache<'a> {
 }
 
 /// Updates GPT on a block device.
+///
+/// # Args
+///
+/// * `io`: An implementation of [BlockIoAsync]
+/// * `scratch`: Scratch buffer for unaligned read write.
+/// * `mbr_primary`: A buffer containing the MBR block, primary GPT header and entries.
+/// * `resize`: If set to true, the method updates the value of last usable block in the header and
+///   the extends last partition to cover the rest of the storage.
+/// * `gpt_cache`: The output [GptCache] to update.
 pub(crate) async fn update_gpt(
     io: &mut impl BlockIoAsync,
     scratch: &mut [u8],
     mbr_primary: &mut [u8],
+    resize: bool,
     gpt_cache: &mut GptCache<'_>,
 ) -> Result<()> {
     let blk_sz: usize = io.info().block_size.try_into()?;
-    let header = mbr_primary
-        .get(blk_sz..)
-        .map(|v| v.get(..blk_sz))
+    let (header, remain) = mbr_primary
+        .get_mut(blk_sz..)
+        .map(|v| v.split_at_mut_checked(blk_sz))
         .flatten()
         .ok_or(Error::BufferTooSmall(Some(blk_sz * 2)))?;
-    let header = Ref::<_, GptHeader>::new_from_prefix(header).unwrap().0.into_ref();
+    let header = Ref::<_, GptHeader>::new_from_prefix(&mut header[..]).unwrap().0.into_mut();
     check_header(io, gpt_cache.info.max_entries, &header, true)?;
-    let entries_off: usize = (SafeNum::from(blk_sz) * header.entries).try_into()?;
+    // Computes entries offset in bytes relative to `remain`
+    let entries_off: usize = ((SafeNum::from(header.entries) - 2) * blk_sz).try_into().unwrap();
     let entries_size: usize =
         (SafeNum::from(header.entries_count) * header.entries_size).try_into().unwrap();
-    let entries = mbr_primary
-        .get(entries_off..)
-        .map(|v| v.get(..entries_size))
+    let entries = remain
+        .get_mut(entries_off..)
+        .map(|v| v.get_mut(..entries_size))
         .flatten()
-        .ok_or(Error::BufferTooSmall(Some(entries_off + entries_size)))?;
+        .ok_or(Error::BufferTooSmall(Some(2 * blk_sz + entries_off + entries_size)))?;
     check_entries(&header, entries)?;
+
+    if resize {
+        // Extends last usable block to maximum. Reserves only secondary GPT header and entries.
+        let entries_blk = SafeNum::from(GPT_MAX_NUM_ENTRIES_SIZE) / blk_sz;
+        header.last = (SafeNum::from(io.info().num_blocks) - entries_blk - 2).try_into().unwrap();
+        // Updates the last entry to cover the rest of the storage.
+        let gpt_entries =
+            Ref::<_, [GptEntry]>::new_slice(&mut entries[..]).unwrap().into_mut_slice();
+        gpt_entries.iter_mut().filter(|e| !e.is_null()).last().map(|v| v.last = header.last);
+        header.update_entries_crc(entries);
+        // Re-verifies everything.
+        check_header(io, gpt_cache.info.max_entries, &header, true).unwrap();
+        check_entries(&header, entries).unwrap();
+    }
+
     write_async(io, 0, mbr_primary, scratch).await?;
     gpt_cache.load_and_sync(io, scratch).await?.res()
 }
@@ -1126,8 +1151,37 @@ pub(crate) mod test {
 
         assert_ne!(dev.io().storage, disk_orig);
         let mut mbr_primary = disk_orig[..34 * 512].to_vec();
-        block_on(dev.update_gpt(&mut mbr_primary, &mut gpt)).unwrap();
+        block_on(dev.update_gpt(&mut mbr_primary, false, &mut gpt)).unwrap();
         assert_eq!(dev.io().storage, disk_orig);
+    }
+
+    #[test]
+    fn test_update_gpt_resize() {
+        let disk_orig = include_bytes!("../test/gpt_test_1.bin");
+        let mut disk = disk_orig.to_vec();
+        // Erases all GPT headers.
+        disk[512..][..512].fill(0);
+        disk.last_chunk_mut::<512>().unwrap().fill(0);
+        // Doubles the disk size.
+        disk.resize(disk_orig.len() * 2, 0);
+
+        let mut dev = TestBlockDeviceBuilder::new().set_data(&disk).build();
+        let (mut dev, mut gpt) = dev.as_gpt_dev().into_blk_and_gpt();
+
+        assert_ne!(dev.io().storage, disk_orig);
+        let mut mbr_primary = disk_orig[..34 * 512].to_vec();
+        block_on(dev.update_gpt(&mut mbr_primary, true, &mut gpt)).unwrap();
+        let expected_last =
+            (u64::try_from(disk.len()).unwrap() - GPT_MAX_NUM_ENTRIES_SIZE - 512) / 512 - 1;
+
+        let (primary, secondary) = dev.io().storage.split_last_chunk_mut::<512>().unwrap();
+        let primary_hdr = GptHeader::from_bytes(&mut primary[512..]);
+        let secondary_hdr = GptHeader::from_bytes(secondary);
+        // Header's last usable block is updated.
+        assert_eq!({ primary_hdr.last }, expected_last);
+        assert_eq!({ secondary_hdr.last }, expected_last);
+        // Last entry is extended.
+        assert_eq!(gpt.entries().unwrap()[1].last, expected_last);
     }
 
     #[test]
@@ -1138,19 +1192,19 @@ pub(crate) mod test {
 
         // Less than 1 MBR block.
         assert_eq!(
-            block_on(dev.update_gpt(&mut disk[..511], &mut gpt)),
+            block_on(dev.update_gpt(&mut disk[..511], false, &mut gpt)),
             Err(Error::BufferTooSmall(Some(1024)))
         );
 
         // Less than MBR + GPT header.
         assert_eq!(
-            block_on(dev.update_gpt(&mut disk[..1023], &mut gpt)),
+            block_on(dev.update_gpt(&mut disk[..1023], false, &mut gpt)),
             Err(Error::BufferTooSmall(Some(1024)))
         );
 
         // Less than MBR + GPT header + entries.
         assert_eq!(
-            block_on(dev.update_gpt(&mut disk[..34 * 512 - 1], &mut gpt)),
+            block_on(dev.update_gpt(&mut disk[..34 * 512 - 1], false, &mut gpt)),
             Err(Error::BufferTooSmall(Some(34 * 512)))
         );
     }
@@ -1166,7 +1220,7 @@ pub(crate) mod test {
         // Corrupts the first byte of the GPT header.
         mbr_primary[512] = !mbr_primary[512];
         assert_eq!(
-            block_on(dev.update_gpt(&mut mbr_primary, &mut gpt)),
+            block_on(dev.update_gpt(&mut mbr_primary, false, &mut gpt)),
             Err(Error::GptError(GptError::IncorrectMagic(0x54524150204946BA)))
         );
     }
@@ -1182,7 +1236,7 @@ pub(crate) mod test {
         // Corrupts the first byte of the entries.
         mbr_primary[1024] = !mbr_primary[1024];
         assert_eq!(
-            block_on(dev.update_gpt(&mut mbr_primary, &mut gpt)),
+            block_on(dev.update_gpt(&mut mbr_primary, false, &mut gpt)),
             Err(Error::GptError(GptError::IncorrectEntriesCrc))
         );
     }
