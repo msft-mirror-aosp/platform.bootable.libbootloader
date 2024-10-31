@@ -261,7 +261,7 @@ impl MetadataBytes for BootloaderControl {
     }
 }
 
-impl super::private::SlotGet for SlotBlock<'_, BootloaderControl> {
+impl super::private::SlotGet for SlotBlock<BootloaderControl> {
     fn get_slot_by_number(&self, number: usize) -> Result<Slot, Error> {
         let lower_ascii_suffixes = ('a'..='z').map(Suffix);
         let control = self.get_data();
@@ -281,7 +281,7 @@ impl super::private::SlotGet for SlotBlock<'_, BootloaderControl> {
     }
 }
 
-impl Manager for SlotBlock<'_, BootloaderControl> {
+impl Manager for SlotBlock<BootloaderControl> {
     fn slots_iter(&self) -> SlotIterator {
         SlotIterator::new(self)
     }
@@ -376,8 +376,8 @@ impl Manager for SlotBlock<'_, BootloaderControl> {
 
     fn clear_oneshot_status(&mut self) {}
 
-    fn write_back(&mut self, block_dev: &mut dyn gbl_storage::AsBlockDevice) {
-        self.sync_to_disk(block_dev)
+    fn write_back(&mut self, persist: &mut dyn FnMut(&mut [u8]) -> Result<(), Error>) {
+        self.sync_to_disk(persist)
     }
 }
 
