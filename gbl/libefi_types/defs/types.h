@@ -40,6 +40,24 @@ typedef struct EfiGuid {
   uint8_t data4[8];
 } EfiGuid;
 
+typedef struct EfiMemoryAttributesTableHeader {
+  uint32_t version;
+  uint32_t number_of_entries;
+  uint32_t descriptor_size;
+  uint32_t reserved;
+} EfiMemoryAttributesTableHeader;
+
+typedef enum EFI_MEMORY_ATTRIBUTE : uint64_t {
+  EMA_UC = 0x0000000000000001, /* uncached */
+  EMA_WC = 0x0000000000000002, /* write-coalescing */
+  EMA_WT = 0x0000000000000004, /* write-through */
+  EMA_WB = 0x0000000000000008, /* write-back */
+  EMA_WP = 0x0000000000001000, /* write-protect */
+  EMA_RP = 0x0000000000002000, /* read-protect */
+  EMA_XP = 0x0000000000004000, /* execute-protect */
+  EMA_RUNTIME = 0x8000000000000000,
+} EfiMemoryAttribute;
+
 typedef struct EfiMemoryDescriptor {
   uint32_t memory_type;
   uint32_t padding;
@@ -78,7 +96,7 @@ typedef struct EfiCapsuleHeader {
 
 typedef void (*EfiEventNotify)(EfiEvent event, void* ctx);
 
-typedef enum EFI_EVENT_TYPE: uint32_t {
+typedef enum EFI_EVENT_TYPE : uint32_t {
   TIMER = 0x80000000,
   RUNTIME = 0x40000000,
   NOTIFY_WAIT = 0x00000100,
@@ -87,14 +105,18 @@ typedef enum EFI_EVENT_TYPE: uint32_t {
   SIGNAL_VIRTUAL_ADDRESS_CHANGE = 0x60000202,
 } EfiEventType;
 
-typedef enum EFI_TPL: size_t {
+typedef enum EFI_TPL : size_t {
   APPLICATION = 4,
   CALLBACK = 8,
   NOTIFY = 16,
   HIGH_LEVEL = 31,
 } EfiTpl;
 
-typedef enum EFI_TIMER_DELAY { TIMER_CANCEL, TIMER_PERIODIC, TIMER_RELATIVE } EfiTimerDelay;
+typedef enum EFI_TIMER_DELAY {
+  TIMER_CANCEL,
+  TIMER_PERIODIC,
+  TIMER_RELATIVE
+} EfiTimerDelay;
 
 typedef enum {
   RESERVED_MEMORY_TYPE,

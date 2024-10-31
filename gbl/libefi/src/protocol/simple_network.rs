@@ -18,7 +18,11 @@ use crate::efi_call;
 use crate::protocol::{Protocol, ProtocolInfo};
 use core::ffi::c_void;
 use core::ptr::null_mut;
-use efi_types::{EfiGuid, EfiMacAddress, EfiSimpleNetworkMode, EfiSimpleNetworkProtocol};
+use efi_types::{
+    EfiGuid, EfiMacAddress, EfiSimpleNetworkMode, EfiSimpleNetworkProtocol,
+    EFI_SIMPLE_NETWORK_RECEIVE_PROMISCUOUS, EFI_SIMPLE_NETWORK_RECEIVE_PROMISCUOUS_MULTICAST,
+    EFI_SIMPLE_NETWORK_RECEIVE_UNICAST,
+};
 use liberror::{Error, Result};
 
 /// EFI_SIMPLE_NETWORK_PROTOCOL
@@ -70,6 +74,32 @@ impl<'a> Protocol<'a, SimpleNetworkProtocol> {
     pub fn shutdown(&self) -> Result<()> {
         // SAFETY: See safety reasoning of `start()`.
         unsafe { efi_call!(self.interface()?.shutdown, self.interface) }
+    }
+
+    /// Wrapper of `EFI_SIMPLE_NETWORK.ReceiveFilters()`
+    pub fn receive_filters(
+        &self,
+        enable: u32,
+        disable: u32,
+        reset_mcast_filter: bool,
+        mcast_filter: &mut [EfiMacAddress],
+    ) -> Result<()> {
+        // SAFETY:
+        // `self.interface()?` guarantees to return a valid object pointer as established by
+        // `Protocol::new()`.
+        // `self.interface` outlives the call and will not be retained.
+        // `mcast_filter` is for input only. It outlives the call and will not be retained.
+        unsafe {
+            efi_call!(
+                self.interface()?.receive_filters,
+                self.interface,
+                enable,
+                disable,
+                reset_mcast_filter,
+                mcast_filter.len(),
+                mcast_filter.as_mut_ptr()
+            )
+        }
     }
 
     /// Wrapper of `EFI_SIMPLE_NETWORK.GetStatus()`
@@ -162,6 +192,18 @@ impl<'a> Protocol<'a, SimpleNetworkProtocol> {
     pub fn mode(&self) -> Result<EfiSimpleNetworkMode> {
         // SAFETY: Non-null pointer from UEFI interface points to valid object.
         unsafe { self.interface()?.mode.as_ref() }.ok_or(Error::NotFound).copied()
+    }
+
+    /// Sets to promiscuous mode to receive all packets over the network.
+    pub fn set_promiscuous_mode(&self) -> Result<()> {
+        self.receive_filters(
+            EFI_SIMPLE_NETWORK_RECEIVE_UNICAST
+                | EFI_SIMPLE_NETWORK_RECEIVE_PROMISCUOUS
+                | EFI_SIMPLE_NETWORK_RECEIVE_PROMISCUOUS_MULTICAST,
+            0,
+            false,
+            &mut [],
+        )
     }
 }
 

@@ -23,14 +23,56 @@
 
 #include "types.h"
 
+typedef enum GBL_EFI_DEVICE_TREE_SOURCE {
+  BOOT,
+  VENDOR_BOOT,
+  DTBO,
+  DTB
+} GblEfiDeviceTreeSource;
+
+typedef struct {
+  // GblDeviceTreeSource
+  uint32_t source;
+  // Values are zeroed and must not be used in case of BOOT / VENDOR_BOOT source
+  uint32_t id;
+  uint32_t rev;
+  uint32_t custom[4];
+  // Make sure GblDeviceTreeMetadata size is 8-bytes aligned. Also reserved for
+  // the future cases
+  uint32_t reserved;
+} GblEfiDeviceTreeMetadata;
+
+typedef struct {
+  GblEfiDeviceTreeMetadata metadata;
+  // Base device tree / overlay buffer (guaranteed to be 8-bytes aligned),
+  // cannot be NULL. Device tree size can be identified by the header totalsize
+  // field
+  const void* device_tree;
+  // Indicates whether this device tree (or overlay) must be included in the
+  // final device tree. Set to true by a FW if this component must be used
+  bool selected;
+} GblEfiVerifiedDeviceTree;
+
+// Warning: API is UNSTABLE
+// Documentation:
+// https://cs.android.com/android/platform/superproject/main/+/main:bootable/libbootloader/gbl/docs/gbl_os_configuration_protocol.md
 typedef struct GblEfiOsConfigurationProtocol {
   uint64_t revision;
+
+  // Generates fixups for the kernel command line built by GBL.
   EfiStatus (*fixup_kernel_commandline)(
-      struct GblEfiOsConfigurationProtocol* self, char8_t* data,
-      size_t* buffer_size);
+      struct GblEfiOsConfigurationProtocol* self, const char8_t* command_line,
+      char8_t* fixup, size_t* fixup_buffer_size);
+
+  // Generates fixups for the bootconfig built by GBL.
   EfiStatus (*fixup_bootconfig)(struct GblEfiOsConfigurationProtocol* self,
-                                char8_t* data, size_t* buffer_size);
-  // TODO(b/353272981): remaining fields.
+                                const char8_t* bootconfig, size_t size,
+                                char8_t* fixup, size_t* fixup_buffer_size);
+
+  // Selects which device trees and overlays to use from those loaded by GBL.
+  EfiStatus (*select_device_trees)(struct GblEfiOsConfigurationProtocol* self,
+                                   GblEfiVerifiedDeviceTree* device_trees,
+                                   size_t num_device_trees);
 } GblEfiOsConfigurationProtocol;
 
 #endif  //__GBL_OS_CONFIGURATION_PROTOCOL_H__

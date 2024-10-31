@@ -1,4 +1,4 @@
-# Copyright (C) 2023 The Android Open Source Project
+# Copyright (C) 2024 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,19 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@gbl//toolchain:gbl_toolchain.bzl", "link_static_cc_library")
-
-package(
-    default_visibility = ["//visibility:public"],
-)
-
-cc_library(
-    name = "lib_efi_arch_deps_x86_64",
-    srcs = ["deps.S"],
+filegroup(
+    name = "all",
+    srcs = glob(["**/*"]),
     visibility = ["//visibility:public"],
-)
-
-link_static_cc_library(
-    name = "efi_arch_deps_x86_64",
-    cc_library = ":lib_efi_arch_deps_x86_64",
 )

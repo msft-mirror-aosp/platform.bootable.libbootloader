@@ -19,8 +19,11 @@ use gbl_async::yield_now;
 pub use gbl_storage::*;
 use liberror::{Error, Result};
 use safemath::SafeNum;
-use std::collections::{BTreeMap, VecDeque};
-use zerocopy::AsBytes;
+use std::{
+    collections::{BTreeMap, VecDeque},
+    mem::size_of,
+};
+use zerocopy::{AsBytes, FromZeroes};
 
 /// Helper `gbl_storage::BlockIoSync` struct for TestBlockDevice.
 pub struct TestBlockIo {
@@ -292,7 +295,7 @@ impl<'a> TestBlockDeviceBuilder<'a> {
                 partitions_to_disk_data(&partitions, self.block_size as usize)
             }
         };
-        assert!(storage.len() % (self.block_size as usize) == 0);
+        assert_eq!(storage.len() % (self.block_size as usize), 0);
         let mut io = TestBlockIo::new(self.block_size, self.alignment, storage);
         let scratch_size = match self.scratch_size {
             Some(s) => s,
@@ -343,11 +346,8 @@ fn partitions_to_disk_data(
 ) -> Vec<u8> {
     let gpt_max_entries = 128;
     assert!(partitions.len() <= gpt_max_entries);
-    let entry_blocks: u64 = ((SafeNum::from(partitions.len()) * std::mem::size_of::<GptEntry>())
-        .round_up(block_size)
-        / block_size)
-        .try_into()
-        .unwrap();
+    let entry_blocks =
+        u64::try_from(SafeNum::from(gpt_max_entries) * size_of::<GptEntry>() / block_size).unwrap();
     let mut block = entry_blocks
         + 1  // Protective MBR
         + 1 // Primary GPT header
@@ -357,25 +357,26 @@ fn partitions_to_disk_data(
     let mut header = GptHeader {
         magic: GPT_MAGIC,
         current: 1,
-        size: std::mem::size_of::<GptHeader>() as u32,
+        size: size_of::<GptHeader>() as u32,
         first: block,
         entries: 2,
         entries_count: std::cmp::min(partitions.len(), gpt_max_entries) as u32,
-        entries_size: std::mem::size_of::<GptEntry>() as u32,
+        entries_size: size_of::<GptEntry>() as u32,
         ..Default::default()
     };
 
     // Define gpt entry structures
-    let entries: Vec<GptEntry> = partitions
+    let mut entries: Vec<GptEntry> = partitions
         .iter()
+        .enumerate()
         .take(gpt_max_entries)
-        .map(|(k, v)| {
+        .map(|(idx, (k, v))| {
             let last = (SafeNum::from(v.size()).round_up(block_size) / block_size + block - 1)
                 .try_into()
                 .unwrap();
             let mut entry = GptEntry {
-                part_type: Default::default(),
-                guid: Default::default(),
+                part_type: [(idx + 1) as u8; GPT_GUID_LEN],
+                guid: [(idx + 1) as u8; GPT_GUID_LEN],
                 first: block,
                 last,
                 flags: 0,
@@ -403,6 +404,7 @@ fn partitions_to_disk_data(
     add_blocks(&mut store, header.as_bytes(), block_size);
 
     // Primary entries
+    entries.resize(gpt_max_entries, GptEntry::new_zeroed());
     for e in &entries {
         store.extend(e.as_bytes());
     }
@@ -455,7 +457,7 @@ mod test {
             .add_partition("clam", BackingStore::Size(28))
             .build();
 
-        assert!(block_dev.sync_gpt().is_ok());
+        block_dev.sync_gpt().unwrap();
         assert!(block_dev.read_gpt_partition("squid", 0, actual.as_mut_slice()).is_ok());
         assert_eq!(actual, data);
 

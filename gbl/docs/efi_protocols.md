@@ -121,6 +121,28 @@ to specify their own custom fastboot triggers.
 Used for logging and debugging. Implementations must provide this protocol, but
 the functions may be no-ops.
 
+## Community Protocols
+
+Protocols defined by a community and used across the ecosystem, but not officially
+part of the UEFI specification. None of these protocols are required.
+
+### DtFixupProtocol
+
+* original [proposal](https://github.com/U-Boot-EFI/EFI_DT_FIXUP_PROTOCOL)
+* [upstream](https://github.com/u-boot/u-boot/blob/master/include/efi_dt_fixup.h)
+* optional: allows FW to modify the final device tree
+
+This protocol allows the firmware (FW) to inspect the final device tree and apply
+necessary fixups.
+
+GBL will validate the applied changes and prevent booting if any of the security
+limitations (listed below) are violated. Any errors will be reported through the
+UEFI log.
+
+TODO (b/353272981): Add limitations
+
+This protocol was proposed by U-Boot and is currently used by the Kernel UEFI stub.
+
 ## GBL Custom Protocols
 
 These protocols are defined by GBL to provide specific functionality that is
@@ -133,6 +155,18 @@ any firmware modifications and still get some basic booting functionality.
 However, without these protocols GBL will be missing key features such as
 USB fastboot and verified boot, so production targets and more full-featured dev
 boards will need to implement them.
+
+### GblFastbootProtocol
+
+* [`GBL_EFI_FASTBOOT_PROTOCOL`](./gbl_efi_fastboot_protocol.md)
+* optional: enables custom fastboot functionality.
+
+Used to provide an interface for
+* Custom variables
+* OEM commands
+* Device lock/unlock controls
+* Lock-contingent partition permission information
+* User data erasure
 
 ### GblFastbootUsbProtocol
 

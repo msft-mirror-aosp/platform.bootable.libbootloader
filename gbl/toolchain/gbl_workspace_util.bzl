@@ -127,7 +127,7 @@ gbl_llvm_prebuilts = repository_rule(
 
 # The current rust version used by GBL. This needs to be manually updated when new version of
 # prebuilts is uploaded to https://android.googlesource.com/platform/prebuilts/rust/
-GBL_RUST_VERSION = "1.77.1.p1"
+GBL_RUST_VERSION = "1.81.0"
 
 def _android_rust_prebuilts_impl(repo_ctx):
     """Assemble a rust toolchain repo from the Android rust prebuilts repo.

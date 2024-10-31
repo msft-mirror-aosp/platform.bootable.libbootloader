@@ -12,8 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-package(
-    default_visibility = ["//visibility:public"],
+load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "libutils",
+    srcs = [
+        "src/lib.rs",
+    ],
+    edition = "2021",
+    rustc_flags = ANDROID_RUST_LINTS,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@gbl//liberror",
+        "@gbl//libsafemath",
+    ],
 )
 
-exports_files(glob(["**/*"]))
+rust_test(
+    name = "test",
+    crate = ":libutils",
+    rustc_flags = ANDROID_RUST_LINTS,
+)

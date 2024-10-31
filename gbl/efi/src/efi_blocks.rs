@@ -21,11 +21,9 @@ use efi::{
 };
 use efi_types::EfiBlockIoMedia;
 use gbl_async::block_on;
-use gbl_storage::{AsyncBlockDevice, AsyncGptDevice, BlockInfo, BlockIoAsync, GptCache};
+use gbl_storage::{AsyncBlockDevice, BlockInfo, BlockIoAsync, GptCache};
 use liberror::Error;
-use libgbl::partition::{
-    check_part_unique, read_unique_partition, Partition, PartitionBlockDevice,
-};
+use libgbl::partition::{check_part_unique, Partition, PartitionBlockDevice};
 use safemath::SafeNum;
 
 /// `EfiBlockDeviceIo` wraps a EFI `BlockIoProtocol` or `BlockIo2Protocol` and implements the
@@ -76,11 +74,6 @@ impl BlockIoAsync for EfiBlockDeviceIo<'_> {
     }
 }
 
-/// Type alias for `AsyncBlockDevice` that uses `&mut EfiBlockDeviceIo` as IO.
-pub type EfiAsyncBlockDevice<'a, 'b> = AsyncBlockDevice<'b, &'b mut EfiBlockDeviceIo<'a>>;
-/// Type alias for `AsyncGptDevice` that uses `&mut EfiBlockDeviceIo` as IO.
-pub type EfiAsyncGptDevice<'a, 'b> = AsyncGptDevice<'b, &'b mut EfiBlockDeviceIo<'a>>;
-
 const MAX_GPT_ENTRIES: u64 = 128;
 
 /// `PartitionInfoBuffer` manages the buffer for raw partition name or GPT partition table.
@@ -101,7 +94,8 @@ impl<'a> EfiBlockDevice<'a> {
     ///
     /// The API allocates scratch and GPT buffer from heap.
     pub fn new_gpt(mut io: EfiBlockDeviceIo<'a>) -> Result<Self, Error> {
-        let scratch_size = SafeNum::from(EfiAsyncBlockDevice::required_scratch_size(&mut io)?);
+        let scratch_size =
+            SafeNum::from(AsyncBlockDevice::<EfiBlockDeviceIo>::required_scratch_size(&mut io)?);
         let mut gpt_buf = vec![0u8; GptCache::required_buffer_size(MAX_GPT_ENTRIES)?];
         // Initializes GPT buffer.
         let _ = GptCache::from_uninit(MAX_GPT_ENTRIES, &mut gpt_buf)?;
@@ -123,15 +117,6 @@ impl<'a> EfiBlockDevice<'a> {
             }
         })
     }
-
-    /// Creates an instance of `EfiAsyncGptDevice`.
-    // TODO(b/357688291): Remove once we switch to `PartitionBlockDevice` and `GblOps`.
-    pub fn as_gpt_dev(&mut self) -> Result<EfiAsyncGptDevice<'a, '_>, Error> {
-        let PartitionInfoBuffer::Gpt(ref mut buf) = &mut self.partition;
-        let blk = AsyncBlockDevice::new(&mut self.io, &mut self.scratch)?;
-        let gpt = GptCache::from_existing(buf).unwrap();
-        Ok(EfiAsyncGptDevice::new(blk, gpt))
-    }
 }
 
 /// `EfiMultiBlockDevices` wraps a vector of `EfiBlockDevice`.
@@ -147,31 +132,6 @@ impl<'a> EfiMultiBlockDevices<'a> {
             res.push(ele.as_gbl_part()?)
         }
         Ok(res)
-    }
-
-    /// Checks uniqueness of and reads from a GPT partition
-    // TODO(b/357688291): Remove once we switch to GblOps for read/writing partitions.
-    pub async fn read_gpt_partition(
-        &mut self,
-        part: &str,
-        off: u64,
-        out: &mut [u8],
-    ) -> Result<(), Error> {
-        // This is not very efficient because `as_gbl_parts()` allocates temporaray memory for array
-        // of `PartitionBlockDevice`. Ideally, we want to create the array once and re-use it. This
-        // will be done once we switch to GblOps for reading/writing partition.
-        read_unique_partition(&self.as_gbl_parts()?, part, off, out).await
-    }
-
-    /// Checks uniqueness of and reads from a GPT partition synchronously.
-    // TODO(b/357688291): Remove once we switch to GblOps for read/writing partitions.
-    pub fn read_gpt_partition_sync(
-        &mut self,
-        part: &str,
-        off: u64,
-        out: &mut [u8],
-    ) -> Result<(), Error> {
-        block_on(self.read_gpt_partition(part, off, out))
     }
 
     /// Finds a partition.
@@ -198,12 +158,8 @@ pub fn find_block_devices(efi_entry: &EfiEntry) -> Result<EfiMultiBlockDevices, 
         // TODO(b/357688291): Support raw partition based on device path info.
         let mut blk = EfiBlockDevice::new_gpt(blk_io)?;
         match block_on(blk.as_gbl_part()?.sync_gpt()) {
-            Ok(true) => {
-                efi_println!(efi_entry, "Block #{}: GPT detected", idx);
-            }
-            Err(e) => {
-                efi_println!(efi_entry, "Block #{}: Failed to find GPT. {:?}", idx, e);
-            }
+            Ok(Some(v)) => efi_println!(efi_entry, "Block #{idx} GPT sync result: {v}"),
+            Err(e) => efi_println!(efi_entry, "Block #{idx} error while syncing GPT: {e}"),
             _ => {}
         };
         block_devices.push(blk);
