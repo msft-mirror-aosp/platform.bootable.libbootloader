@@ -122,6 +122,7 @@ rust_library(
         ":libfdt_sysdeps_static",
         ":libufdt_bindgen",
         ":libufdt_c_static",
+        "@arrayvec",
         "@gbl//libc",
         "@gbl//liberror",
         "@gbl//libsafemath",
