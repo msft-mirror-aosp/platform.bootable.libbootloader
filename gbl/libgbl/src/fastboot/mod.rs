@@ -108,7 +108,61 @@ struct GblFastboot<'a, 'b, 'c, 'd, G: GblOps<'a>, B: BufferPool, P, F> {
 }
 
 impl<'a, 'b, G: GblOps<'a>, B: BufferPool, P, F> GblFastboot<'a, 'b, '_, '_, G, B, P, F> {
-    /// Parses and checkds the partition argument and returns the partition name, block device
+    /// Extracts the next argument and verifies that it is a valid block device ID if present.
+    ///
+    /// # Returns
+    ///
+    /// * Returns `Ok(Some(blk_id))` if next argument is present and is a valid block device ID.
+    /// * Returns `None` if next argument is not available and there are more than one block
+    ///   devices.
+    /// * Returns `Err(())` if next argument is present but is an invalid block device ID.
+    fn check_next_arg_blk_id<'s>(
+        &self,
+        args: &mut impl Iterator<Item = &'s str>,
+    ) -> CommandResult<Option<usize>> {
+        let devs = self.gbl_ops.partitions()?;
+        let blk_id = match next_arg_u64(args)? {
+            Some(v) => {
+                let v = usize::try_from(v)?;
+                // Checks out of range.
+                devs.get(v).ok_or("Invalid block ID")?;
+                Some(v)
+            }
+            _ => None,
+        };
+        let blk_id = blk_id.or(self.default_block);
+        let blk_id = blk_id.or((devs.len() == 1).then_some(0));
+        Ok(blk_id)
+    }
+
+    /// Parses and checks the argument for "fastboot flash gpt/<blk_idx>/"resize".
+    ///
+    /// # Returns
+    ///
+    /// * Returns `Ok(Some((blk_idx, resize)))` if command is a GPT flashing command.
+    /// * Returns `Ok(None)` if command is not a GPT flashing command.
+    /// * Returns `Err()` otherwise.
+    pub(crate) fn parse_flash_gpt_args(&self, part: &str) -> CommandResult<Option<(usize, bool)>> {
+        // Syntax: flash gpt/<blk_idx>/"resize"
+        let devs = self.gbl_ops.partitions()?;
+        let mut args = part.split('/');
+        if next_arg(&mut args).filter(|v| *v == FLASH_GPT_PART).is_none() {
+            return Ok(None);
+        }
+        // Parses block device ID.
+        let blk_id = self
+            .check_next_arg_blk_id(&mut args)?
+            .ok_or("Block ID is required for flashing GPT")?;
+        // Parses resize option.
+        let resize = match next_arg(&mut args) {
+            Some("resize") => true,
+            Some(_) => return Err("Unknown argument".into()),
+            _ => false,
+        };
+        Ok(Some((blk_id, resize)))
+    }
+
+    /// Parses and checks the partition argument and returns the partition name, block device
     /// index, start offset and size.
     pub(crate) fn parse_partition<'s>(
         &self,
@@ -117,26 +171,17 @@ impl<'a, 'b, G: GblOps<'a>, B: BufferPool, P, F> GblFastboot<'a, 'b, '_, '_, G, 
         let devs = self.gbl_ops.partitions()?;
         let mut args = part.split('/');
         // Parses partition name.
-        let part = next_arg(&mut args, Err("".into())).ok();
+        let part = next_arg(&mut args);
         // Parses block device ID.
-        let blk_id = next_arg_u64(&mut args, Err("".into())).ok();
-        let blk_id = blk_id.map(|v| usize::try_from(v)).transpose()?;
-        let blk_id = blk_id.or(self.default_block);
-
-        // Reserved "gpt" for flashing GPT partition.
-        if part == Some(FLASH_GPT_PART) {
-            let blk_id = blk_id.ok_or("Block ID is required for flashing GPT")?;
-            return Ok((part, blk_id, 0, 0));
-        }
-
+        let blk_id = self.check_next_arg_blk_id(&mut args)?;
         // Parses sub window offset.
-        let window_offset = next_arg_u64(&mut args, Ok(0))?;
+        let window_offset = next_arg_u64(&mut args)?.unwrap_or(0);
         // Parses sub window size.
-        let window_size = next_arg_u64(&mut args, Err("".into())).ok();
+        let window_size = next_arg_u64(&mut args)?;
         // Checks and resolves blk_id and partition size
         let (blk_id, partition) = match blk_id {
             None => check_part_unique(devs, part.ok_or("Must provide a partition")?)?,
-            Some(v) => (v, devs.get(v).ok_or("Invalid block ID")?.find_partition(part)?),
+            Some(v) => (v, devs[v].find_partition(part)?),
         };
         let part_sz = SafeNum::from(partition.size()?);
         let window_size = window_size.unwrap_or((part_sz - window_offset).try_into()?);
@@ -270,20 +315,21 @@ where
     }
 
     async fn flash(&mut self, part: &str, mut responder: impl InfoSender) -> CommandResult<()> {
-        let (part, blk_idx, start, sz) = self.parse_partition(part)?;
         let partitions = self.gbl_ops.partitions()?;
 
-        if part == Some(FLASH_GPT_PART) {
+        // Checks if we are flashing new GPT partition table
+        if let Some((blk_idx, resize)) = self.parse_flash_gpt_args(part)? {
             partitions[blk_idx].wait_partition_io(None).await?.last_err()?;
             let (mut gpt, size) = self.take_download().ok_or("No GPT downloaded")?;
             responder.send_info("Updating GPT...").await?;
-            return match partitions[blk_idx].update_gpt(&mut gpt[..size]).await {
+            return match partitions[blk_idx].update_gpt(&mut gpt[..size], resize).await {
                 Err(Error::NotReady) => panic!("Should not be busy"),
                 Err(Error::Unsupported) => Err("Block device is not for GPT".into()),
                 v => Ok(v?),
             };
         }
 
+        let (part, blk_idx, start, sz) = self.parse_partition(part)?;
         let part_io = partitions[blk_idx].wait_partition_io(part).await?.sub(start, sz)?;
         part_io.last_err()?;
         let (download_buffer, data_size) = self.take_download().ok_or("No download")?;
@@ -380,7 +426,9 @@ where
                 Ok(b"")
             }
             "gbl-set-default-block" => {
-                let id = next_arg_u64(&mut args, Err("Missing block device ID".into()))?;
+                let id = next_arg_u64(&mut args)?.ok_or("Missing block device ID")?;
+                let id = usize::try_from(id)?;
+                self.gbl_ops.partitions()?.get(id).ok_or("Out of range")?;
                 self.default_block = Some(id.try_into()?);
                 responder
                     .send_formatted_info(|f| write!(f, "Default block device: {id:#x}").unwrap())
@@ -388,7 +436,7 @@ where
                 Ok(b"")
             }
             "add-staged-bootloader-file" => {
-                let file_name = next_arg(&mut args, Err("Missing file name".into()))?;
+                let file_name = next_arg(&mut args).ok_or("Missing file name")?;
                 self.add_staged_bootloader_file(file_name).await?;
                 Ok(b"")
             }
@@ -1281,6 +1329,8 @@ mod test {
         assert!(block_on(oem(&mut gbl_fb, "gbl-set-default-block ", &resp)).is_err());
         // Invalid block device ID.
         assert!(block_on(oem(&mut gbl_fb, "gbl-set-default-block zzz", &resp)).is_err());
+        // Out of range block device ID. (We've added no block device).
+        assert!(block_on(oem(&mut gbl_fb, "gbl-set-default-block 0", &resp)).is_err());
     }
 
     #[test]
@@ -1770,6 +1820,80 @@ mod test {
     }
 
     #[test]
+    fn test_oem_update_gpt_resize() {
+        let disk_orig = include_bytes!("../../../libstorage/test/gpt_test_1.bin");
+        let mut disk = disk_orig.to_vec();
+        // Doubles the size of the disk
+        disk.resize(disk_orig.len() * 2, 0);
+
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
+        storage.add_gpt_device(&disk);
+        let partitions = storage.as_partition_block_devices();
+        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        let mut gbl_ops = FakeGblOps::new(&partitions);
+        let listener: SharedTestListener = Default::default();
+        let (usb, tcp) = (&listener, &listener);
+
+        // Checks current size of last partition `boot_b`.
+        listener.add_usb_input(b"getvar:partition-size:boot_b");
+        // Sets a default block.
+        listener.add_usb_input(b"oem gbl-set-default-block 1");
+        let gpt = &disk_orig[..34 * 512];
+        listener.add_usb_input(format!("download:{:#x}", gpt.len()).as_bytes());
+        listener.add_usb_input(gpt);
+        // No need to specify block device index
+        listener.add_usb_input(b"flash:gpt//resize");
+        // Checks updated size of last partition `boot_b`.
+        listener.add_usb_input(b"getvar:partition-size:boot_b");
+        listener.add_usb_input(b"continue");
+
+        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp)));
+
+        assert_eq!(
+            listener.usb_out_queue(),
+            make_expected_usb_out(&[
+                b"OKAY0x3000",
+                b"INFODefault block device: 0x1",
+                b"OKAY",
+                b"DATA00004400",
+                b"OKAY",
+                b"INFOUpdating GPT...",
+                b"OKAY",
+                b"OKAY0x15a00",
+                b"INFOSyncing storage...",
+                b"OKAY",
+            ]),
+            "\nActual USB output:\n{}",
+            listener.dump_usb_out_queue()
+        );
+    }
+
+    #[test]
+    fn test_oem_update_gpt_no_downloaded_gpt() {
+        let disk = include_bytes!("../../../libstorage/test/gpt_test_1.bin");
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_gpt_device(&disk);
+        let partitions = storage.as_partition_block_devices();
+        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        let mut gbl_ops = FakeGblOps::new(&partitions);
+        let listener: SharedTestListener = Default::default();
+        let (usb, tcp) = (&listener, &listener);
+
+        listener.add_usb_input(b"flash:gpt/0");
+        listener.add_usb_input(b"continue");
+
+        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp)));
+
+        assert_eq!(
+            listener.usb_out_queue(),
+            make_expected_usb_out(&[b"FAILNo GPT downloaded", b"INFOSyncing storage...", b"OKAY",]),
+            "\nActual USB output:\n{}",
+            listener.dump_usb_out_queue()
+        );
+    }
+
+    #[test]
     fn test_oem_update_gpt_bad_gpt() {
         let disk = include_bytes!("../../../libstorage/test/gpt_test_1.bin");
         let mut storage = FakeGblOpsStorage::default();
@@ -1809,6 +1933,7 @@ mod test {
         let disk_orig = include_bytes!("../../../libstorage/test/gpt_test_1.bin");
         let mut storage = FakeGblOpsStorage::default();
         storage.add_gpt_device(&disk_orig);
+        storage.add_gpt_device(&disk_orig);
         let partitions = storage.as_partition_block_devices();
         let buffers = vec![vec![0u8; 128 * 1024]; 2];
         let mut gbl_ops = FakeGblOps::new(&partitions);
@@ -1820,6 +1945,10 @@ mod test {
         listener.add_usb_input(gpt);
         // Missing block device ID.
         listener.add_usb_input(b"flash:gpt");
+        // Out of range block device ID.
+        listener.add_usb_input(b"flash:gpt/2");
+        // Invalid option.
+        listener.add_usb_input(b"flash:gpt/0/invalid-arg");
         listener.add_usb_input(b"continue");
         block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp)));
 
@@ -1829,6 +1958,8 @@ mod test {
                 b"DATA00004400",
                 b"OKAY",
                 b"FAILBlock ID is required for flashing GPT",
+                b"FAILInvalid block ID",
+                b"FAILUnknown argument",
                 b"INFOSyncing storage...",
                 b"OKAY",
             ]),
