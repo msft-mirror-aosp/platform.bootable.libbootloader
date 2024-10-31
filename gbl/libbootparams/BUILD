@@ -20,19 +20,18 @@ package(
 )
 
 rust_library(
-    name = "aarch64",
+    name = "libbootparams",
     srcs = glob(["src/**/*.rs"]),
-    crate_name = "gbl_efi_aarch64",
+    crate_name = "bootparams",
+    edition = "2021",
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
-        "@gbl//libefi",
         "@gbl//liberror",
-        "@zune_inflate",
     ],
 )
 
 rust_test(
     name = "test",
-    crate = ":aarch64",
+    crate = ":libbootparams",
     rustc_flags = ANDROID_RUST_LINTS,
 )

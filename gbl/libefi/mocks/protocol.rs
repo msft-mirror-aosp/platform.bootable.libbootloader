@@ -18,9 +18,10 @@
 //! to either one using the same path.
 
 use crate::{DeviceHandle, MOCK_EFI};
+use core::ffi::CStr;
 use core::fmt::Write;
 use efi::protocol::gbl_efi_image_loading::EfiImageBuffer;
-use efi_types::{EfiInputKey, GblEfiImageInfo, GblEfiPartitionName};
+use efi_types::{EfiInputKey, GblEfiImageInfo, GblEfiPartitionName, GblEfiVerifiedDeviceTree};
 use liberror::Result;
 use mockall::mock;
 
@@ -147,4 +148,53 @@ pub mod gbl_efi_image_loading {
 
     /// Map to the libefi name so code under test can just use one name.
     pub type GblImageLoadingProtocol = MockGblImageLoadingProtocol;
+}
+
+/// Mock os_configuration protocol.
+pub mod gbl_efi_os_configuration {
+    use super::*;
+
+    mock! {
+        /// Mock [efi::OsConfigurationProtocol].
+        pub GblOsConfigurationProtocol {
+            /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.fixup_kernel_commandline()`
+            pub fn fixup_kernel_commandline(
+                &self,
+                commandline: &CStr,
+                fixup: &[u8],
+            ) -> Result<()>;
+
+            /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.fixup_bootconfig()`
+            pub fn fixup_bootconfig(
+                &self,
+                bootconfig: &[u8],
+                fixup: &mut [u8],
+            ) -> Result<usize>;
+
+            /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.select_device_trees()`
+            pub fn select_device_trees(
+                &self,
+                components: &mut [GblEfiVerifiedDeviceTree],
+            ) -> Result<()>;
+        }
+    }
+
+    /// Map to the libefi name so code under test can just use one name.
+    pub type GblOsConfigurationProtocol = MockGblOsConfigurationProtocol;
+}
+
+/// Mock dt_fixup protocol.
+pub mod dt_fixup {
+    use super::*;
+
+    mock! {
+        /// Mock [efi::DtFixupProtocol].
+        pub DtFixupProtocol {
+            /// Wraps `EFI_DT_FIXUP_PROTOCOL.fixup()`
+            pub fn fixup(&self, device_tree: &mut [u8]) -> Result<()>;
+        }
+    }
+
+    /// Map to the libefi name so code under test can just use one name.
+    pub type DtFixupProtocol = MockDtFixupProtocol;
 }

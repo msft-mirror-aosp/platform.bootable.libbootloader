@@ -97,6 +97,7 @@ rust_library(
         "socket",
         "socket-tcp",
         "socket-icmp",
+        "socket-udp",
     ],
     crate_root = "src/crate_root.rs",
     data = [
