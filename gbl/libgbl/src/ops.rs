@@ -371,12 +371,14 @@ pub(crate) mod test {
             // Convert GPT devices.
             for device in self.gpt_devices.iter_mut() {
                 let (gpt_blk, gpt) = device.new_blk_and_gpt();
-                parts.push(PartitionBlockDevice::new_gpt(gpt_blk, gpt));
+                parts.push(PartitionBlockDevice::new_gpt(gpt_blk.as_borrowed(), gpt));
             }
             // Convert raw devices.
             for (name, device) in self.raw_devices.iter_mut() {
-                parts
-                    .push(PartitionBlockDevice::new_raw(device.new_blk_and_gpt().0, name).unwrap());
+                parts.push(
+                    PartitionBlockDevice::new_raw(device.new_blk_and_gpt().0.as_borrowed(), name)
+                        .unwrap(),
+                );
             }
             block_on(sync_gpt(&mut parts[..])).unwrap();
             parts
