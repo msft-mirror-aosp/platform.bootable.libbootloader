@@ -20,7 +20,7 @@
 #[rustfmt::skip]
 mod bootimg;
 pub use bootimg::*;
-pub use bootimg_private as defs;
+pub use bootimg_bindgen as defs;
 
 use liberror::Error;
 

@@ -22,7 +22,7 @@ use core::{
 use fastboot::CommandError;
 use gbl_async::yield_now;
 use gbl_storage::{
-    AsyncBlockDevice, BlockInfo, BlockIoAsync, GptCache, GptSyncResult, Partition as GptPartition,
+    AsyncBlockDevice, BlockInfo, BlockIo, GptCache, GptSyncResult, Partition as GptPartition,
 };
 use liberror::Error;
 use safemath::SafeNum;
@@ -91,7 +91,7 @@ impl BlockStatus {
 
 /// Represents a block device that contains either GPT partitions or a single whole raw storage
 /// partition.
-pub struct PartitionBlockDevice<'a, B: BlockIoAsync> {
+pub struct PartitionBlockDevice<'a, B: BlockIo> {
     // Contains an `AsyncBlockDevice` for block IO and `Result` to track the most recent error.
     // Wraps in `Mutex` as it will be used in parallel fastboot task.
     //
@@ -108,7 +108,7 @@ pub struct PartitionBlockDevice<'a, B: BlockIoAsync> {
     info_cache: BlockInfo,
 }
 
-impl<'a, B: BlockIoAsync> PartitionBlockDevice<'a, B> {
+impl<'a, B: BlockIo> PartitionBlockDevice<'a, B> {
     /// Creates a new instance as a GPT device.
     pub fn new_gpt(mut blk: AsyncBlockDevice<'a, B>, gpt: GptCache<'a>) -> Self {
         let info_cache = blk.io().info();
@@ -237,13 +237,13 @@ impl<'a, B: BlockIoAsync> PartitionBlockDevice<'a, B> {
 }
 
 /// `PartitionIo` provides read/write APIs to a partition.
-pub struct PartitionIo<'a, 'b, B: BlockIoAsync> {
+pub struct PartitionIo<'a, 'b, B: BlockIo> {
     blk: MutexGuard<'b, (AsyncBlockDevice<'a, B>, Result<(), Error>)>,
     part_start: u64,
     part_end: u64,
 }
 
-impl<'a, B: BlockIoAsync> PartitionIo<'a, '_, B> {
+impl<'a, B: BlockIo> PartitionIo<'a, '_, B> {
     /// Returns the size of the partition.
     pub fn size(&self) -> u64 {
         // Corrects by construction. Should not fail.
@@ -330,7 +330,7 @@ impl<'a, B: BlockIoAsync> PartitionIo<'a, '_, B> {
 }
 
 // Implements `SparseRawWriter` for tuple (<flash offset>, <block device>)
-impl<B: BlockIoAsync> SparseRawWriter for (u64, &mut AsyncBlockDevice<'_, B>) {
+impl<B: BlockIo> SparseRawWriter for (u64, &mut AsyncBlockDevice<'_, B>) {
     async fn write(&mut self, off: u64, data: &mut [u8]) -> Result<(), CommandError> {
         Ok(self.1.write((SafeNum::from(off) + self.0).try_into()?, data).await?)
     }
@@ -340,7 +340,7 @@ impl<B: BlockIoAsync> SparseRawWriter for (u64, &mut AsyncBlockDevice<'_, B>) {
 ///
 /// Returns a pair `(<block device index>, `Partition`)` if the partition exists and is unique.
 pub fn check_part_unique<'a>(
-    devs: &[PartitionBlockDevice<'a, impl BlockIoAsync>],
+    devs: &[PartitionBlockDevice<'a, impl BlockIo>],
     part: &str,
 ) -> Result<(usize, Partition<'a>), Error> {
     let mut filtered = devs
@@ -356,7 +356,7 @@ pub fn check_part_unique<'a>(
 
 /// Checks that a partition is unique among all block devices and reads from it.
 pub async fn read_unique_partition(
-    devs: &'_ [PartitionBlockDevice<'_, impl BlockIoAsync>],
+    devs: &'_ [PartitionBlockDevice<'_, impl BlockIo>],
     part: &str,
     off: u64,
     out: &mut [u8],
@@ -366,7 +366,7 @@ pub async fn read_unique_partition(
 
 /// Checks that a partition is unique among all block devices and writes to it.
 pub async fn write_unique_partition(
-    devs: &'_ [PartitionBlockDevice<'_, impl BlockIoAsync>],
+    devs: &'_ [PartitionBlockDevice<'_, impl BlockIo>],
     part: &str,
     off: u64,
     data: &mut [u8],
@@ -375,9 +375,7 @@ pub async fn write_unique_partition(
 }
 
 /// Syncs all GPT type partition devices.
-pub async fn sync_gpt(
-    devs: &'_ mut [PartitionBlockDevice<'_, impl BlockIoAsync>],
-) -> Result<(), Error> {
+pub async fn sync_gpt(devs: &'_ mut [PartitionBlockDevice<'_, impl BlockIo>]) -> Result<(), Error> {
     for ele in &mut devs[..] {
         ele.sync_gpt().await?;
     }
@@ -412,14 +410,14 @@ pub(crate) mod test {
         test_blk: &'a mut TestBlockDevice,
         name: &'a str,
     ) -> PartitionBlockDevice<'a, &'a mut TestBlockIo> {
-        PartitionBlockDevice::new_raw(test_blk.as_blk_dev(), name).unwrap()
+        PartitionBlockDevice::new_raw(test_blk.new_blk_and_gpt().0, name).unwrap()
     }
 
     /// A helper to convert a `TestBlockDevice` into a gpt partition device.
     pub fn as_gpt_part<'a>(
         test_blk: &'a mut TestBlockDevice,
     ) -> PartitionBlockDevice<'a, &'a mut TestBlockIo> {
-        let (gpt_blk, gpt) = test_blk.as_gpt_dev().into_blk_and_gpt();
+        let (gpt_blk, gpt) = test_blk.new_blk_and_gpt();
         PartitionBlockDevice::new_gpt(gpt_blk, gpt)
     }
 
@@ -470,7 +468,7 @@ pub(crate) mod test {
     ///
     /// Tests that the content read at `off..off+sz` is the same as `part_content[off..off+sz]`.
     fn test_part_read(
-        blk: &PartitionBlockDevice<impl BlockIoAsync>,
+        blk: &PartitionBlockDevice<impl BlockIo>,
         part: Option<&str>,
         part_content: &[u8],
         off: u64,
@@ -513,7 +511,7 @@ pub(crate) mod test {
 
     /// A helper for testing partition write.
     fn test_part_write(
-        blk: &PartitionBlockDevice<impl BlockIoAsync>,
+        blk: &PartitionBlockDevice<impl BlockIo>,
         part: Option<&str>,
         off: u64,
         sz: u64,
@@ -701,7 +699,7 @@ pub(crate) mod test {
     /// It verifies that data read from partition `part` at offset `off` is the same as
     /// `part_content[off..off+sz]`.
     fn check_read_partition(
-        devs: &[PartitionBlockDevice<impl BlockIoAsync>],
+        devs: &[PartitionBlockDevice<impl BlockIo>],
         part: &str,
         part_content: &[u8],
         off: u64,
@@ -746,7 +744,7 @@ pub(crate) mod test {
 
     /// A test helper for `write_unique_partition`
     fn check_write_partition(
-        devs: &[PartitionBlockDevice<impl BlockIoAsync>],
+        devs: &[PartitionBlockDevice<impl BlockIo>],
         part: &str,
         off: u64,
         sz: u64,
