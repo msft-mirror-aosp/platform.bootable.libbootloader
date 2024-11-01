@@ -234,12 +234,12 @@ where
     ///
     /// * `Ok(Cursor)` - Cursor object that manages a Manager
     /// * `Err(Error)` - on failure
-    pub fn load_slot_interface<B: gbl_storage::AsBlockDevice>(
+    pub fn load_slot_interface(
         &'a mut self,
-        block_device: &'a mut B,
-    ) -> Result<Cursor<'a, B>> {
+        persist: &'a mut dyn FnMut(&mut [u8]) -> core::result::Result<(), Error>,
+    ) -> Result<Cursor<'a>> {
         let boot_token = self.boot_token.take().ok_or(Error::OperationProhibited)?;
-        self.ops.load_slot_interface::<B>(block_device, boot_token)
+        self.ops.load_slot_interface(persist, boot_token)
     }
 
     /// Info Load
@@ -384,13 +384,13 @@ where
     /// * `Err(Error)` - on failure
     // Nevertype could be used here when it is stable https://github.com/serde-rs/serde/issues/812
     #[allow(clippy::too_many_arguments)]
-    pub fn load_verify_boot<'b: 'c, 'c, 'd: 'b, B: gbl_storage::AsBlockDevice>(
+    pub fn load_verify_boot<'b: 'c, 'c, 'd: 'b>(
         &mut self,
         avb_ops: &mut impl avb::Ops<'b>,
         partitions_to_verify: &[&CStr],
         partitions_ram_map: &'d mut [PartitionRamMap<'b, 'c>],
         slot_verify_flags: SlotVerifyFlags,
-        slot_cursor: Cursor<B>,
+        slot_cursor: Cursor,
         kernel_load_buffer: &mut [u8],
         ramdisk_load_buffer: &mut [u8],
         fdt: &mut [u8],
@@ -433,7 +433,7 @@ where
         false
     }
 
-    fn lvb_inner<'b: 'c, 'c, 'd: 'b, 'e, B: gbl_storage::AsBlockDevice>(
+    fn lvb_inner<'b: 'c, 'c, 'd: 'b, 'e>(
         &mut self,
         avb_ops: &mut impl avb::Ops<'b>,
         ramdisk: &mut Ramdisk,
@@ -441,18 +441,10 @@ where
         partitions_to_verify: &[&CStr],
         partitions_ram_map: &'d mut [PartitionRamMap<'b, 'c>],
         slot_verify_flags: SlotVerifyFlags,
-        mut slot_cursor: Cursor<B>,
+        slot_cursor: Cursor,
     ) -> Result<(KernelImage<'e>, BootToken)> {
-        let mut oneshot_status = slot_cursor.ctx.get_oneshot_status();
+        let oneshot_status = slot_cursor.ctx.get_oneshot_status();
         slot_cursor.ctx.clear_oneshot_status();
-
-        if oneshot_status == Some(OneShot::Bootloader) {
-            match self.ops.do_fastboot(&mut slot_cursor) {
-                Ok(_) => oneshot_status = slot_cursor.ctx.get_oneshot_status(),
-                Err(IntegrationError::UnificationError(Error::NotImplemented)) => (),
-                Err(e) => return Err(e),
-            }
-        }
 
         let boot_target = match oneshot_status {
             None | Some(OneShot::Bootloader) => slot_cursor.ctx.get_boot_target()?,

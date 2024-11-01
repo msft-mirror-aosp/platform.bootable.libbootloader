@@ -24,7 +24,7 @@ use crate::{
 use core::ffi::CStr;
 use core::{fmt::Write, num::NonZeroUsize, result::Result};
 use gbl_async::block_on;
-use gbl_storage::BlockIoAsync;
+use gbl_storage::BlockIo;
 use libutils::aligned_subslice;
 
 // Re-exports of types from other dependencies that appear in the APIs of this library.
@@ -76,9 +76,9 @@ pub trait GblOps<'a>
 where
     Self: 'a,
 {
-    /// Type that implements `BlockIoAsync` for the array of `PartitionBlockDevice` returned by]
+    /// Type that implements `BlockIo` for the array of `PartitionBlockDevice` returned by]
     /// `partitions()`.
-    type PartitionBlockIo: BlockIoAsync;
+    type PartitionBlockIo: BlockIo;
 
     /// Gets a console for logging messages.
     fn console_out(&mut self) -> Option<&mut dyn Write>;
@@ -191,19 +191,17 @@ where
     // reference to [GblOps], which may restrict implementations.
     // fn new_digest(&self) -> Option<Self::Context>;
 
-    /// Callback for when fastboot mode is requested.
-    // Nevertype could be used here when it is stable https://github.com/serde-rs/serde/issues/812
-    fn do_fastboot<B: gbl_storage::AsBlockDevice>(
-        &self,
-        cursor: &mut slots::Cursor<B>,
-    ) -> GblResult<()>;
-
     /// Load and initialize a slot manager and return a cursor over the manager on success.
-    fn load_slot_interface<'b, B: gbl_storage::AsBlockDevice>(
+    ///
+    /// # Args
+    ///
+    /// * `persist`: A user provided closure for persisting a given slot metadata bytes to storage.
+    /// * `boot_token`: A [slots::BootToken].
+    fn load_slot_interface<'b>(
         &'b mut self,
-        block_device: &'b mut B,
+        persist: &'b mut dyn FnMut(&mut [u8]) -> Result<(), Error>,
         boot_token: slots::BootToken,
-    ) -> GblResult<slots::Cursor<'b, B>>;
+    ) -> GblResult<slots::Cursor<'b>>;
 
     // The following is a selective subset of the interfaces in `avb::Ops` and `avb::CertOps` needed
     // by GBL's usage of AVB. The rest of the APIs are either not relevant to or are implemented and
@@ -372,12 +370,13 @@ pub(crate) mod test {
             let mut parts = Vec::default();
             // Convert GPT devices.
             for device in self.gpt_devices.iter_mut() {
-                let (gpt_blk, gpt) = device.as_gpt_dev().into_blk_and_gpt();
+                let (gpt_blk, gpt) = device.new_blk_and_gpt();
                 parts.push(PartitionBlockDevice::new_gpt(gpt_blk, gpt));
             }
             // Convert raw devices.
             for (name, device) in self.raw_devices.iter_mut() {
-                parts.push(PartitionBlockDevice::new_raw(device.as_blk_dev(), name).unwrap());
+                parts
+                    .push(PartitionBlockDevice::new_raw(device.new_blk_and_gpt().0, name).unwrap());
             }
             block_on(sync_gpt(&mut parts[..])).unwrap();
             parts
@@ -495,18 +494,11 @@ pub(crate) mod test {
             Some(self.zbi_bootloader_files_buffer.as_mut_slice())
         }
 
-        fn do_fastboot<B: gbl_storage::AsBlockDevice>(
-            &self,
-            cursor: &mut slots::Cursor<B>,
-        ) -> GblResult<()> {
-            unimplemented!();
-        }
-
-        fn load_slot_interface<'b, B: gbl_storage::AsBlockDevice>(
+        fn load_slot_interface<'b>(
             &'b mut self,
-            block_device: &'b mut B,
+            persist: &'b mut dyn FnMut(&mut [u8]) -> Result<(), Error>,
             boot_token: slots::BootToken,
-        ) -> GblResult<slots::Cursor<'b, B>> {
+        ) -> GblResult<slots::Cursor<'b>> {
             unimplemented!();
         }
 
