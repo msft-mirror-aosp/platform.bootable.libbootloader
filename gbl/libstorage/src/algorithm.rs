@@ -34,7 +34,7 @@ async fn read_aligned_offset_and_buffer(
     scratch: &mut [u8],
 ) -> Result<()> {
     let block_size = SafeNum::from(io.info().block_size);
-    debug_assert!(is_aligned(offset.into(), block_size)?);
+    debug_assert!(is_aligned(offset, block_size)?);
     debug_assert!(is_buffer_aligned(out, io.info().alignment)?);
 
     let aligned_read: usize = SafeNum::from(out.len()).round_down(block_size).try_into()?;
@@ -69,7 +69,7 @@ async fn read_aligned_buffer(
 ) -> Result<()> {
     debug_assert!(is_buffer_aligned(out, io.info().alignment)?);
 
-    if is_aligned(offset.into(), io.info().block_size.into())? {
+    if is_aligned(offset, io.info().block_size)? {
         return read_aligned_offset_and_buffer(io, offset, out, scratch).await;
     }
     let offset = SafeNum::from(offset);
@@ -188,7 +188,7 @@ async fn write_aligned_offset_and_buffer(
     data: &mut [u8],
     scratch: &mut [u8],
 ) -> Result<()> {
-    debug_assert!(is_aligned(offset.into(), io.info().block_size.into())?);
+    debug_assert!(is_aligned(offset, io.info().block_size)?);
     debug_assert!(is_buffer_aligned(data, io.info().alignment)?);
 
     let aligned_write: usize =
@@ -241,7 +241,7 @@ async fn write_aligned_buffer(
     debug_assert!(is_buffer_aligned(data, io.info().alignment)?);
 
     let offset = SafeNum::from(offset);
-    if is_aligned(offset, io.info().block_size.into())? {
+    if is_aligned(offset, io.info().block_size)? {
         return write_aligned_offset_and_buffer(io, offset.try_into()?, data, scratch).await;
     }
 
