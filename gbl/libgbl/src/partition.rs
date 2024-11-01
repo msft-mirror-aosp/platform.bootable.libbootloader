@@ -21,9 +21,7 @@ use core::{
 };
 use fastboot::CommandError;
 use gbl_async::yield_now;
-use gbl_storage::{
-    AsyncBlockDevice, BlockInfo, BlockIo, GptCache, GptSyncResult, Partition as GptPartition,
-};
+use gbl_storage::{BlockInfo, BlockIo, Disk, GptCache, GptSyncResult, Partition as GptPartition};
 use liberror::Error;
 use safemath::SafeNum;
 use spin::mutex::{Mutex, MutexGuard};
@@ -92,7 +90,7 @@ impl BlockStatus {
 /// Represents a block device that contains either GPT partitions or a single whole raw storage
 /// partition.
 pub struct PartitionBlockDevice<'a, B: BlockIo> {
-    // Contains an `AsyncBlockDevice` for block IO and `Result` to track the most recent error.
+    // Contains a `Disk` for block IO and `Result` to track the most recent error.
     // Wraps in `Mutex` as it will be used in parallel fastboot task.
     //
     // `blk` and `partitions` are separately guarded because we need to get partition info for
@@ -103,20 +101,20 @@ pub struct PartitionBlockDevice<'a, B: BlockIo> {
     // Failure to lock returns Error. No method returns a locked `partitions` to the caller.
     // Thus there won't be two callers locking one of the resource and blocking each other on
     // acquiring the other one.
-    blk: Mutex<(AsyncBlockDevice<'a, B>, Result<(), Error>)>,
+    blk: Mutex<(Disk<B, &'a mut [u8]>, Result<(), Error>)>,
     partitions: Mutex<PartitionTable<'a>>,
     info_cache: BlockInfo,
 }
 
 impl<'a, B: BlockIo> PartitionBlockDevice<'a, B> {
     /// Creates a new instance as a GPT device.
-    pub fn new_gpt(mut blk: AsyncBlockDevice<'a, B>, gpt: GptCache<'a>) -> Self {
+    pub fn new_gpt(mut blk: Disk<B, &'a mut [u8]>, gpt: GptCache<'a>) -> Self {
         let info_cache = blk.io().info();
         Self { blk: (blk, Ok(())).into(), info_cache, partitions: PartitionTable::Gpt(gpt).into() }
     }
 
     /// Creates a new instance as a raw storage partition.
-    pub fn new_raw(mut blk: AsyncBlockDevice<'a, B>, name: &'a str) -> Result<Self, Error> {
+    pub fn new_raw(mut blk: Disk<B, &'a mut [u8]>, name: &'a str) -> Result<Self, Error> {
         let info_cache = blk.io().info();
         Ok(Self {
             blk: (blk, Ok(())).into(),
@@ -180,7 +178,7 @@ impl<'a, B: BlockIo> PartitionBlockDevice<'a, B> {
     /// Get total number of partitions.
     pub fn num_partitions(&self) -> Result<usize, Error> {
         match self.partitions.try_lock().ok_or(Error::NotReady)?.deref() {
-            PartitionTable::Raw(name, _) => Ok(1),
+            PartitionTable::Raw(_, _) => Ok(1),
             PartitionTable::Gpt(gpt) => gpt.num_partitions(),
         }
     }
@@ -204,7 +202,7 @@ impl<'a, B: BlockIo> PartitionBlockDevice<'a, B> {
     /// * Returns `Err` in other cases.
     pub async fn sync_gpt(&self) -> Result<Option<GptSyncResult>, Error> {
         match self.partitions.try_lock().ok_or(Error::NotReady)?.deref_mut() {
-            PartitionTable::Raw(name, _) => Ok(None),
+            PartitionTable::Raw(_, _) => Ok(None),
             PartitionTable::Gpt(ref mut gpt) => {
                 let mut blk = self.blk.try_lock().ok_or(Error::NotReady)?;
                 Ok(Some(blk.0.sync_gpt(gpt).await?))
@@ -227,7 +225,7 @@ impl<'a, B: BlockIo> PartitionBlockDevice<'a, B> {
     /// * Return `Ok(())` new GPT is valid and device is updated and synced successfully.
     pub async fn update_gpt(&self, mbr_primary: &mut [u8], resize: bool) -> Result<(), Error> {
         match self.partitions.try_lock().ok_or(Error::NotReady)?.deref_mut() {
-            PartitionTable::Raw(name, _) => Err(Error::Unsupported),
+            PartitionTable::Raw(_, _) => Err(Error::Unsupported),
             PartitionTable::Gpt(ref mut gpt) => {
                 let mut blk = self.blk.try_lock().ok_or(Error::NotReady)?;
                 blk.0.update_gpt(mbr_primary, resize, gpt).await
@@ -238,7 +236,7 @@ impl<'a, B: BlockIo> PartitionBlockDevice<'a, B> {
 
 /// `PartitionIo` provides read/write APIs to a partition.
 pub struct PartitionIo<'a, 'b, B: BlockIo> {
-    blk: MutexGuard<'b, (AsyncBlockDevice<'a, B>, Result<(), Error>)>,
+    blk: MutexGuard<'b, (Disk<B, &'a mut [u8]>, Result<(), Error>)>,
     part_start: u64,
     part_end: u64,
 }
@@ -251,7 +249,7 @@ impl<'a, B: BlockIo> PartitionIo<'a, '_, B> {
     }
 
     /// Gets the block device.
-    pub fn dev(&mut self) -> &mut AsyncBlockDevice<'a, B> {
+    pub fn dev(&mut self) -> &mut Disk<B, &'a mut [u8]> {
         &mut self.blk.0
     }
 
@@ -330,7 +328,7 @@ impl<'a, B: BlockIo> PartitionIo<'a, '_, B> {
 }
 
 // Implements `SparseRawWriter` for tuple (<flash offset>, <block device>)
-impl<B: BlockIo> SparseRawWriter for (u64, &mut AsyncBlockDevice<'_, B>) {
+impl<B: BlockIo> SparseRawWriter for (u64, &mut Disk<B, &mut [u8]>) {
     async fn write(&mut self, off: u64, data: &mut [u8]) -> Result<(), CommandError> {
         Ok(self.1.write((SafeNum::from(off) + self.0).try_into()?, data).await?)
     }
@@ -410,7 +408,7 @@ pub(crate) mod test {
         test_blk: &'a mut TestBlockDevice,
         name: &'a str,
     ) -> PartitionBlockDevice<'a, &'a mut TestBlockIo> {
-        PartitionBlockDevice::new_raw(test_blk.new_blk_and_gpt().0, name).unwrap()
+        PartitionBlockDevice::new_raw(test_blk.new_blk_and_gpt().0.as_borrowed(), name).unwrap()
     }
 
     /// A helper to convert a `TestBlockDevice` into a gpt partition device.
@@ -418,7 +416,7 @@ pub(crate) mod test {
         test_blk: &'a mut TestBlockDevice,
     ) -> PartitionBlockDevice<'a, &'a mut TestBlockIo> {
         let (gpt_blk, gpt) = test_blk.new_blk_and_gpt();
-        PartitionBlockDevice::new_gpt(gpt_blk, gpt)
+        PartitionBlockDevice::new_gpt(gpt_blk.as_borrowed(), gpt)
     }
 
     #[test]

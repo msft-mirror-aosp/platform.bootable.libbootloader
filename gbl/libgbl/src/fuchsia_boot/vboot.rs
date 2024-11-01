@@ -172,7 +172,7 @@ mod test {
             ops.avb_ops.rollbacks,
             [
                 (1, 2),
-                (usize::try_from(AVB_CERT_PSK_VERSION_LOCATION).unwrap(), TEST_CERT_PIK_VERSION),
+                (usize::try_from(AVB_CERT_PSK_VERSION_LOCATION).unwrap(), TEST_CERT_PSK_VERSION),
                 (usize::try_from(AVB_CERT_PIK_VERSION_LOCATION).unwrap(), TEST_CERT_PIK_VERSION)
             ]
             .into()
