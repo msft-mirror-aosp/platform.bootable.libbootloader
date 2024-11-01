@@ -46,10 +46,7 @@ rust-analyzer requires `rust-project.json` to work properly. Luckily, bazel has
 support for generating `rust-project.json`:
 
 ```
-# Currently ./tools/bazel must be in PATH for this target to build.
-PATH=$PATH:~/android/uefi-gbl-mainline/tools/
-
-./tools/bazel run @rules_rust//tools/rust_analyzer:gen_rust_project --norepository_disable_download @gbl//efi/...
+./tools/bazel run @rules_rust//tools/rust_analyzer:gen_rust_project --norepository_disable_download -- --bazel ./tools/bazel @gbl//efi/...
 ```
 
 `@gbl//efi/...` is the target to generate rust project for, here it means
