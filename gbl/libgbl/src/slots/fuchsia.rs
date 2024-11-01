@@ -604,7 +604,7 @@ mod test {
         const OFFSET: u64 = 2112; // Deliberately wrong to test propagation of parameter.
         let mut block_dev: TestBlockDevice =
             include_bytes!("../../testdata/writeback_test_disk.bin").as_slice().into();
-        let (mut blk, mut gpt) = block_dev.new_blk_and_gpt();
+        let (blk, mut gpt) = block_dev.new_blk_and_gpt();
         block_on(blk.sync_gpt(&mut gpt)).unwrap();
         let mut sb: SlotBlock<AbrData> = Default::default();
         let mut read_buffer: [u8; size_of::<AbrData>()] = Default::default();
@@ -637,7 +637,7 @@ mod test {
         const OFFSET: u64 = 2112; // Deliberately wrong to test propagation of parameter.
         let mut block_dev: TestBlockDevice =
             include_bytes!("../../testdata/writeback_test_disk.bin").as_slice().into();
-        let (mut blk, mut gpt) = block_dev.new_blk_and_gpt();
+        let (blk, mut gpt) = block_dev.new_blk_and_gpt();
         block_on(blk.sync_gpt(&mut gpt)).unwrap();
         let mut read_buffer: [u8; size_of::<AbrData>()] = Default::default();
 

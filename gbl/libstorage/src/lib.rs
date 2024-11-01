@@ -18,6 +18,7 @@
 #![cfg_attr(not(test), no_std)]
 #![allow(async_fn_in_trait)]
 
+use core::{cmp::max, ops::DerefMut};
 use liberror::{Error, Result};
 use safemath::SafeNum;
 
@@ -30,6 +31,9 @@ pub use gpt::{
 
 mod algorithm;
 pub use algorithm::{read_async, write_async};
+
+pub mod ram_block;
+pub use ram_block::RamBlockIo;
 
 /// `BlockInfo` contains information for a block device.
 #[derive(Clone, Copy, Debug)]
@@ -118,14 +122,14 @@ impl BlockIo for BlockIoNull {
 
 /// Check if `value` is aligned to (multiples of) `alignment`
 /// It can fail if the remainider calculation fails overflow check.
-pub fn is_aligned(value: SafeNum, alignment: SafeNum) -> Result<bool> {
-    Ok(u64::try_from(value % alignment)? == 0)
+pub fn is_aligned(value: impl Into<SafeNum>, alignment: impl Into<SafeNum>) -> Result<bool> {
+    Ok(u64::try_from(value.into() % alignment.into())? == 0)
 }
 
 /// Check if `buffer` address is aligned to `alignment`
 /// It can fail if the remainider calculation fails overflow check.
 pub fn is_buffer_aligned(buffer: &[u8], alignment: u64) -> Result<bool> {
-    is_aligned((buffer.as_ptr() as usize).into(), alignment.into())
+    is_aligned(buffer.as_ptr() as usize, alignment)
 }
 
 /// Check read/write range and calculate offset in number of blocks.
@@ -133,7 +137,7 @@ fn check_range(info: BlockInfo, offset: u64, buffer: &[u8]) -> Result<SafeNum> {
     let offset: SafeNum = offset.into();
     let block_size: SafeNum = info.block_size.into();
     debug_assert!(is_aligned(offset, block_size)?, "{:?}, {:?}", offset, block_size);
-    debug_assert!(is_aligned(buffer.len().into(), block_size)?);
+    debug_assert!(is_aligned(buffer.len(), block_size)?);
     debug_assert!(is_buffer_aligned(buffer, info.alignment)?);
     let blk_offset = offset / block_size;
     let blk_count = SafeNum::from(buffer.len()) / block_size;
@@ -154,14 +158,15 @@ pub fn scratch_size(io: &mut impl BlockIo) -> Result<usize> {
     Ok(((SafeNum::from(info.alignment) - 1) * 2 + block_alignment).try_into()?)
 }
 
-/// `AsyncBlockDevice` provides APIs for asynchronous read/write of raw block or GPT partitions.
-pub struct AsyncBlockDevice<'a, T: BlockIo> {
+/// `Disk` contains a BlockIO and scratch buffer and provides APIs for reading/writing with
+/// arbitrary ranges and alignment.
+pub struct Disk<T, S> {
     io: T,
-    scratch: &'a mut [u8],
+    scratch: S,
 }
 
-impl<'a, T: BlockIo> AsyncBlockDevice<'a, T> {
-    /// Creates a new instance with the given IO, scratch buffer and maximum GPT entries.
+impl<T: BlockIo, S: DerefMut<Target = [u8]>> Disk<T, S> {
+    /// Creates a new instance with the given IO and scratch buffer.
     ///
     /// * The scratch buffer is internally used for handling partial block read/write and unaligned
     ///   input/output user buffers.
@@ -170,15 +175,45 @@ impl<'a, T: BlockIo> AsyncBlockDevice<'a, T> {
     ///   `BlockInfo::block_size`. It can be computed using the helper API `scratch_size()`. If the
     ///   block device has no alignment requirement, i.e. both alignment and block size are 1, the
     ///   total required scratch size is 0.
-    pub fn new(mut io: T, scratch: &'a mut [u8]) -> Result<Self> {
-        let scratch_size = scratch_size(&mut io)?;
-        match scratch.len() < scratch_size {
-            true => Err(Error::BufferTooSmall(Some(scratch_size))),
+    pub fn new(mut io: T, scratch: S) -> Result<Self> {
+        let sz = scratch_size(&mut io)?;
+        match scratch.len() < sz {
+            true => Err(Error::BufferTooSmall(Some(sz))),
             _ => Ok(Self { io, scratch }),
         }
     }
 
-    /// Returns the IO
+    /// Same as `Self::new()` but allocates the necessary scratch buffer.
+    ///
+    /// T must implement Extend<u8> and Default. It should typically be a vector like type.
+    ///
+    /// Allocation is done by extending T one element at a time. In most cases, we don't expect
+    /// block size or alignment to be large values and this is only done once. thus this should be
+    /// low cost. However if that is not the case, it is recommended to use `Self::new()` with
+    /// pre-allocated scratch buffer.
+    pub fn new_alloc_scratch(mut io: T) -> Result<Self>
+    where
+        S: Extend<u8> + Default,
+    {
+        let mut scratch = S::default();
+        // Extends the scratch buffer to the required size.
+        // Can call `extend_reserve()` first once it becomes stable.
+        (0..max(scratch.len(), scratch_size(&mut io)?) - scratch.len())
+            .for_each(|_| scratch.extend([0u8]));
+        Self::new(io, scratch)
+    }
+
+    /// Creates a `Disk<&mut T, &mut [u8]>` instance that borrows the internal fields.
+    pub fn as_borrowed(&mut self) -> Disk<&mut T, &mut [u8]> {
+        Disk::new(&mut self.io, &mut self.scratch[..]).unwrap()
+    }
+
+    /// Gets the [BlockInfo]
+    pub fn block_info(&mut self) -> BlockInfo {
+        self.io.info()
+    }
+
+    /// Gets the underlying BlockIo implementation.
     pub fn io(&mut self) -> &mut T {
         &mut self.io
     }
@@ -190,8 +225,8 @@ impl<'a, T: BlockIo> AsyncBlockDevice<'a, T> {
     /// * `offset`: Offset in number of bytes.
     /// * `out`: Buffer to store the read data.
     /// * Returns success when exactly `out.len()` number of bytes are read.
-    pub async fn read(&mut self, offset: u64, data: &mut [u8]) -> Result<()> {
-        read_async(&mut self.io, offset, data, self.scratch).await
+    pub async fn read(&mut self, offset: u64, out: &mut [u8]) -> Result<()> {
+        read_async(&mut self.io, offset, out, &mut self.scratch).await
     }
 
     /// Writes data to the device.
@@ -200,12 +235,12 @@ impl<'a, T: BlockIo> AsyncBlockDevice<'a, T> {
     ///
     /// * `offset`: Offset in number of bytes.
     /// * `data`: Data to write.
-    /// * The API enables an optimization which temporarily changes `data` layout internally and
-    ///   reduces the number of calls to `Self::write_blocks()` down to O(1) regardless of input's
-    ///   alignment. This is the recommended usage.
+    ///
+    /// # Returns
+    ///
     /// * Returns success when exactly `data.len()` number of bytes are written.
     pub async fn write(&mut self, offset: u64, data: &mut [u8]) -> Result<()> {
-        write_async(&mut self.io, offset, data, self.scratch).await
+        write_async(&mut self.io, offset, data, &mut self.scratch).await
     }
 
     /// Loads and syncs GPT from a block device.
@@ -218,7 +253,7 @@ impl<'a, T: BlockIo> AsyncBlockDevice<'a, T> {
     ///   verification and restoration result.
     /// * Returns Err() if disk IO encounters errors.
     pub async fn sync_gpt(&mut self, gpt_cache: &mut GptCache<'_>) -> Result<GptSyncResult> {
-        gpt_cache.load_and_sync(&mut self.io, self.scratch).await
+        gpt_cache.load_and_sync(&mut self.io, &mut self.scratch).await
     }
 
     /// Updates GPT to the block device and sync primary and secondary GPT.
@@ -239,7 +274,7 @@ impl<'a, T: BlockIo> AsyncBlockDevice<'a, T> {
         resize: bool,
         gpt_cache: &mut GptCache<'_>,
     ) -> Result<()> {
-        gpt::update_gpt(&mut self.io, self.scratch, mbr_primary, resize, gpt_cache).await
+        gpt::update_gpt(&mut self.io, &mut self.scratch, mbr_primary, resize, gpt_cache).await
     }
 
     /// Reads a GPT partition on a block device
@@ -292,11 +327,9 @@ impl<'a, T: BlockIo> AsyncBlockDevice<'a, T> {
 
 #[cfg(test)]
 mod test {
+    use super::*;
     use core::mem::size_of;
     use gbl_async::block_on;
-    use gbl_storage_testlib::{
-        scratch_size, AsyncBlockDevice, TestBlockDeviceBuilder, TestBlockIo,
-    };
     use safemath::SafeNum;
 
     #[derive(Debug)]
@@ -356,68 +389,48 @@ mod test {
     /// Analysis is similar for `fn write_async()`.
     const READ_WRITE_BLOCKS_UPPER_BOUND: usize = 6;
 
+    // Type alias of the [Disk] type used by unittests.
+    type TestDisk = Disk<RamBlockIo<Vec<u8>>, Vec<u8>>;
+
     fn read_test_helper(case: &TestCase) {
         let data = (0..case.storage_size).map(|v| v as u8).collect::<Vec<_>>();
-        let mut blk = TestBlockDeviceBuilder::new()
-            .set_alignment(case.alignment)
-            .set_block_size(case.block_size)
-            .set_data(&data)
-            .build();
+        let ram_blk = RamBlockIo::new(case.alignment, case.block_size, data);
+        let mut disk = TestDisk::new_alloc_scratch(ram_blk).unwrap();
         // Make an aligned buffer. A misaligned version is created by taking a sub slice that
         // starts at an unaligned offset. Because of this we need to allocate
         // `case.misalignment` more to accommodate it.
         let mut aligned_buf = AlignedBuffer::new(case.alignment, case.rw_size + case.misalignment);
-        let misalignment = SafeNum::from(case.misalignment);
-        let out = &mut aligned_buf.get()
-            [misalignment.try_into().unwrap()..(misalignment + case.rw_size).try_into().unwrap()];
-        block_on(blk.new_blk_and_gpt().0.read(case.rw_offset, out)).unwrap();
-        let rw_offset = SafeNum::from(case.rw_offset);
-        assert_eq!(
-            out.to_vec(),
-            blk.io.storage
-                [rw_offset.try_into().unwrap()..(rw_offset + case.rw_size).try_into().unwrap()]
-                .to_vec(),
-            "Failed. Test case {:?}",
-            case,
-        );
-
-        assert!(blk.io.num_reads <= READ_WRITE_BLOCKS_UPPER_BOUND);
+        let misalignment = usize::try_from(case.misalignment).unwrap();
+        let rw_sz = usize::try_from(case.rw_size).unwrap();
+        let out = &mut aligned_buf.get()[misalignment..][..rw_sz];
+        block_on(disk.read(case.rw_offset, out)).unwrap();
+        let rw_off = usize::try_from(case.rw_offset).unwrap();
+        assert_eq!(out, &disk.io().storage()[rw_off..][..rw_sz], "Failed. Test case {:?}", case);
+        assert!(disk.io().num_reads <= READ_WRITE_BLOCKS_UPPER_BOUND);
     }
 
     fn write_test_helper(
         case: &TestCase,
-        mut write_func: impl FnMut(&mut AsyncBlockDevice<'_, &mut TestBlockIo>, u64, &mut [u8]),
+        mut write_func: impl FnMut(&mut TestDisk, u64, &mut [u8]),
     ) {
         let data = (0..case.storage_size).map(|v| v as u8).collect::<Vec<_>>();
-        let mut blk = TestBlockDeviceBuilder::new()
-            .set_alignment(case.alignment)
-            .set_block_size(case.block_size)
-            .set_data(&data)
-            .build();
         // Write a reverse version of the current data.
-        let rw_offset = SafeNum::from(case.rw_offset);
-        let mut expected = blk.io.storage
-            [rw_offset.try_into().unwrap()..(rw_offset + case.rw_size).try_into().unwrap()]
-            .to_vec();
+        let rw_off = usize::try_from(case.rw_offset).unwrap();
+        let rw_sz = usize::try_from(case.rw_size).unwrap();
+        let mut expected = data[rw_off..][..rw_sz].to_vec();
         expected.reverse();
+        let ram_blk = RamBlockIo::new(case.alignment, case.block_size, data);
+        let mut disk = TestDisk::new_alloc_scratch(ram_blk).unwrap();
         // Make an aligned buffer. A misaligned version is created by taking a sub slice that
         // starts at an unaligned offset. Because of this we need to allocate
         // `case.misalignment` more to accommodate it.
-        let misalignment = SafeNum::from(case.misalignment);
         let mut aligned_buf = AlignedBuffer::new(case.alignment, case.rw_size + case.misalignment);
-        let data = &mut aligned_buf.get()
-            [misalignment.try_into().unwrap()..(misalignment + case.rw_size).try_into().unwrap()];
+        let misalignment = usize::try_from(case.misalignment).unwrap();
+        let data = &mut aligned_buf.get()[misalignment..][..rw_sz];
         data.clone_from_slice(&expected);
-        write_func(&mut blk.new_blk_and_gpt().0, case.rw_offset, data);
-        let rw_offset = SafeNum::from(case.rw_offset);
-        assert_eq!(
-            expected,
-            blk.io.storage
-                [rw_offset.try_into().unwrap()..(rw_offset + case.rw_size).try_into().unwrap()]
-                .to_vec(),
-            "Failed. Test case {:?}",
-            case,
-        );
+        write_func(&mut disk, case.rw_offset, data);
+        let written = &disk.io().storage()[rw_off..][..rw_sz];
+        assert_eq!(expected, written, "Failed. Test case {:?}", case);
         // Check that input is not modified.
         assert_eq!(expected, data, "Input is modified. Test case {:?}", case,);
     }
@@ -696,49 +709,45 @@ mod test {
 
     #[test]
     fn test_no_alignment_require_zero_size_scratch() {
-        let mut io = TestBlockIo::new(1, 1, vec![]);
+        let mut io = RamBlockIo::new(1, 1, vec![]);
         assert_eq!(scratch_size(&mut io).unwrap(), 0);
     }
 
     #[test]
     fn test_scratch_too_small() {
-        let mut io = TestBlockIo::new(512, 512, vec![]);
-        let mut scratch = vec![0u8; scratch_size(&mut io).unwrap() - 1];
-        assert!(AsyncBlockDevice::new(&mut io, &mut scratch).is_err());
+        let mut io = RamBlockIo::new(512, 512, vec![]);
+        let scratch = vec![0u8; scratch_size(&mut io).unwrap() - 1];
+        assert!(TestDisk::new(io, scratch).is_err());
     }
 
     #[test]
     fn test_read_overflow() {
-        let mut io = TestBlockIo::new(512, 512, vec![0u8; 512]);
-        let mut scratch = vec![0u8; scratch_size(&mut io).unwrap()];
-        let mut blk = AsyncBlockDevice::new(&mut io, &mut scratch).unwrap();
-        assert!(block_on(blk.read(512, &mut vec![0u8; 1])).is_err());
-        assert!(block_on(blk.read(0, &mut vec![0u8; 513])).is_err());
+        let io = RamBlockIo::new(512, 512, vec![0u8; 512]);
+        let mut disk = TestDisk::new_alloc_scratch(io).unwrap();
+        assert!(block_on(disk.read(512, &mut vec![0u8; 1])).is_err());
+        assert!(block_on(disk.read(0, &mut vec![0u8; 513])).is_err());
     }
 
     #[test]
     fn test_read_arithmetic_overflow() {
-        let mut io = TestBlockIo::new(512, 512, vec![0u8; 512]);
-        let mut scratch = vec![0u8; scratch_size(&mut io).unwrap()];
-        let mut blk = AsyncBlockDevice::new(&mut io, &mut scratch).unwrap();
-        assert!(block_on(blk.read(u64::MAX, &mut vec![0u8; 1])).is_err());
+        let io = RamBlockIo::new(512, 512, vec![0u8; 512]);
+        let mut disk = TestDisk::new_alloc_scratch(io).unwrap();
+        assert!(block_on(disk.read(u64::MAX, &mut vec![0u8; 1])).is_err());
     }
 
     #[test]
     fn test_write_overflow() {
-        let mut io = TestBlockIo::new(512, 512, vec![0u8; 512]);
-        let mut scratch = vec![0u8; scratch_size(&mut io).unwrap()];
-        let mut blk = AsyncBlockDevice::new(&mut io, &mut scratch).unwrap();
-        assert!(block_on(blk.write(512, &mut vec![0u8; 1])).is_err());
-        assert!(block_on(blk.write(0, &mut vec![0u8; 513])).is_err());
+        let io = RamBlockIo::new(512, 512, vec![0u8; 512]);
+        let mut disk = TestDisk::new_alloc_scratch(io).unwrap();
+        assert!(block_on(disk.write(512, &mut vec![0u8; 1])).is_err());
+        assert!(block_on(disk.write(0, &mut vec![0u8; 513])).is_err());
     }
 
     #[test]
     fn test_write_arithmetic_overflow() {
-        let mut io = TestBlockIo::new(512, 512, vec![0u8; 512]);
-        let mut scratch = vec![0u8; scratch_size(&mut io).unwrap()];
-        let mut blk = AsyncBlockDevice::new(&mut io, &mut scratch).unwrap();
-        assert!(block_on(blk.write(u64::MAX, &mut vec![0u8; 1])).is_err());
+        let io = RamBlockIo::new(512, 512, vec![0u8; 512]);
+        let mut disk = TestDisk::new_alloc_scratch(io).unwrap();
+        assert!(block_on(disk.write(u64::MAX, &mut vec![0u8; 1])).is_err());
     }
 
     #[test]
