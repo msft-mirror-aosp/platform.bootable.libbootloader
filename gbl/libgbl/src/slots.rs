@@ -405,7 +405,7 @@ pub trait Manager: private::SlotGet {
     /// This is useful for partition based slot setups,
     /// where we do not write back every interaction in order to coalesce writes
     /// and preserve disk lifetime.
-    fn write_back(&mut self, persist: &mut dyn FnMut(&mut [u8]) -> Result<(), Error>) {}
+    fn write_back(&mut self, _: &mut dyn FnMut(&mut [u8]) -> Result<(), Error>) {}
 }
 
 /// RAII helper object for coalescing changes.

@@ -27,7 +27,6 @@
 
 #![cfg_attr(not(any(test, android_dylib)), no_std)]
 // TODO: b/312610985 - return warning for unused partitions
-#![allow(unused_variables, dead_code)]
 #![allow(async_fn_in_trait)]
 extern crate avb;
 extern crate core;
@@ -64,7 +63,7 @@ pub use boot_mode::BootMode;
 pub use boot_reason::KnownBootReason;
 pub use error::{IntegrationError, Result};
 use liberror::Error;
-pub use ops::{AndroidBootImages, BootImages, FuchsiaBootImages, GblOps};
+pub use ops::GblOps;
 
 use overlap::is_overlap;
 
@@ -83,12 +82,10 @@ pub struct PartitionRamMap<'b, 'c> {
     /// Optional memory region to load partitions.
     /// If it's not provided default values will be used.
     pub address: Option<&'c mut [u8]>,
-
-    loaded: bool,
-    verified: bool,
 }
 
 /// Boot Image in memory
+#[allow(dead_code)]
 pub struct BootImage<'a>(&'a mut [u8]);
 
 /// Vendor Boot Image in memory
@@ -98,19 +95,21 @@ pub struct VendorBootImage<'a>(&'a mut [u8]);
 pub struct InitBootImage<'a>(&'a mut [u8]);
 
 /// Kernel Image in memory
+#[allow(dead_code)]
 pub struct KernelImage<'a>(&'a mut [u8]);
 
 /// Ramdisk in memory
 pub struct Ramdisk<'a>(&'a mut [u8]);
 /// Bootconfig in memory
+#[allow(dead_code)]
 pub struct Bootconfig<'a>(&'a mut [u8]);
 /// DTB in memory
+#[allow(dead_code)]
 pub struct Dtb<'a>(&'a mut [u8]);
 
 /// Create Boot Image from corresponding partition for `partitions_ram_map` and `avb_descriptors`
 /// lists
 pub fn get_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
-    verified_data: &mut SlotVerifyData<'d>,
     partitions_ram_map: &'a mut [PartitionRamMap<'b, 'c>],
 ) -> (Option<BootImage<'c>>, &'a mut [PartitionRamMap<'b, 'c>]) {
     match partitions_ram_map.len() {
@@ -125,7 +124,6 @@ pub fn get_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
 /// Create Vendor Boot Image from corresponding partition for `partitions_ram_map` and
 /// `avb_descriptors` lists
 pub fn get_vendor_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
-    verified_data: &mut SlotVerifyData<'d>,
     partitions_ram_map: &'a mut [PartitionRamMap<'b, 'c>],
 ) -> (Option<VendorBootImage<'c>>, &'a mut [PartitionRamMap<'b, 'c>]) {
     match partitions_ram_map.len() {
@@ -139,7 +137,6 @@ pub fn get_vendor_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
 
 /// Create Init Boot Image from corresponding partition for `partitions` and `avb_descriptors` lists
 pub fn get_init_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
-    verified_data: &mut SlotVerifyData<'d>,
     partitions_ram_map: &'a mut [PartitionRamMap<'b, 'c>],
 ) -> (Option<InitBootImage<'c>>, &'a mut [PartitionRamMap<'b, 'c>]) {
     match partitions_ram_map.len() {
@@ -153,7 +150,6 @@ pub fn get_init_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
 
 /// Create separate image types from [avb::Descriptor]
 pub fn get_images<'a: 'b, 'b: 'c, 'c, 'd>(
-    verified_data: &mut SlotVerifyData<'d>,
     partitions_ram_map: &'a mut [PartitionRamMap<'b, 'c>],
 ) -> (
     Option<BootImage<'c>>,
@@ -161,11 +157,9 @@ pub fn get_images<'a: 'b, 'b: 'c, 'c, 'd>(
     Option<VendorBootImage<'c>>,
     &'a mut [PartitionRamMap<'b, 'c>],
 ) {
-    let (boot_image, partitions_ram_map) = get_boot_image(verified_data, partitions_ram_map);
-    let (init_boot_image, partitions_ram_map) =
-        get_init_boot_image(verified_data, partitions_ram_map);
-    let (vendor_boot_image, partitions_ram_map) =
-        get_vendor_boot_image(verified_data, partitions_ram_map);
+    let (boot_image, partitions_ram_map) = get_boot_image(partitions_ram_map);
+    let (init_boot_image, partitions_ram_map) = get_init_boot_image(partitions_ram_map);
+    let (vendor_boot_image, partitions_ram_map) = get_vendor_boot_image(partitions_ram_map);
     (boot_image, init_boot_image, vendor_boot_image, partitions_ram_map)
 }
 
@@ -178,6 +172,8 @@ where
     boot_token: Option<BootToken>,
 }
 
+// TODO(b/312610985): Investigate whether to deprecate this and remove this allow.
+#[allow(unused_variables)]
 impl<'a, G> Gbl<'a, G>
 where
     G: GblOps<'a>,
@@ -451,7 +447,7 @@ where
             Some(OneShot::Continue(recovery)) => BootTarget::Recovery(recovery),
         };
 
-        let mut verify_data = self
+        let verify_data = self
             .load_and_verify_image(
                 avb_ops,
                 partitions_to_verify,
@@ -478,8 +474,7 @@ where
                 e
             })?;
 
-        let (boot_image, init_boot_image, vendor_boot_image, _) =
-            get_images(&mut verify_data, partitions_ram_map);
+        let (boot_image, init_boot_image, vendor_boot_image, _) = get_images(partitions_ram_map);
         let boot_image = boot_image.ok_or(Error::MissingImage)?;
         let vendor_boot_image = vendor_boot_image.ok_or(Error::MissingImage)?;
         let init_boot_image = init_boot_image.ok_or(Error::MissingImage)?;
