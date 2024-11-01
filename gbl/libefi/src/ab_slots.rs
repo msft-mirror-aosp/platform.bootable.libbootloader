@@ -176,7 +176,7 @@ mod test {
         ops::{AvbIoResult, CertPermanentAttributes, SHA256_DIGEST_SIZE},
         partition::PartitionBlockDevice,
         slots::{Bootability, Cursor, RecoveryTarget, UnbootableReason},
-        BootImages, Gbl, GblOps, Result as GblResult,
+        Gbl, GblOps, Result as GblResult,
     };
     use gbl_storage::BlockIoNull;
     use libgbl::{device_tree::DeviceTreeComponentsRegistry, ops::ImageBuffer};
@@ -255,10 +255,6 @@ mod test {
         }
 
         fn should_stop_in_fastboot(&mut self) -> Result<bool> {
-            unimplemented!();
-        }
-
-        fn preboot(&mut self, _: BootImages) -> Result<()> {
             unimplemented!();
         }
 
