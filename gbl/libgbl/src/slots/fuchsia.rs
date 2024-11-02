@@ -433,7 +433,6 @@ mod test {
     #[test]
     fn test_slot_mark_tried_recovery() {
         let mut sb: SlotBlock<AbrData> = Default::default();
-        let recovery_tgt = BootTarget::Recovery(RecoveryTarget::Dedicated);
         assert!(sb.set_slot_unbootable('a'.into(), UnbootableReason::UserRequested).is_ok());
         assert!(sb.set_slot_unbootable('b'.into(), UnbootableReason::UserRequested).is_ok());
         assert_eq!(sb.mark_boot_attempt(), Ok(BootToken(())));

@@ -71,6 +71,8 @@ const DEFAULT_RETRIES: u8 = 7;
 #[derive(Copy, Clone, Debug, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
 struct SlotMetaData(u16);
 
+#[allow(dead_code)]
+#[allow(missing_docs)]
 impl SlotMetaData {
     const PRIORITY_MASK: u16 = 0b1111;
     const PRIORITY_OFFSET: u16 = 0;
@@ -136,6 +138,8 @@ impl Default for SlotMetaData {
 #[repr(C, packed)]
 struct ControlBits(u16);
 
+#[allow(dead_code)]
+#[allow(missing_docs)]
 impl ControlBits {
     const NB_SLOT_MASK: u16 = 0b111;
     const NB_SLOT_OFFSET: u16 = 0;
