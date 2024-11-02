@@ -80,7 +80,7 @@ impl Variable for Partition {
         mut args: Split<'_, char>,
         out: &mut [u8],
     ) -> Result<Option<usize>, CommandError> {
-        let (_, _, start, sz) = gbl_fb.parse_partition(args.next().ok_or("Missing var")?)?;
+        let (_, _, _, sz) = gbl_fb.parse_partition(args.next().ok_or("Missing var")?)?;
         Ok(match name {
             PARTITION_SIZE => Some(snprintf!(out, "{:#x}", sz).len()),
             PARTITION_TYPE => Some(snprintf!(out, "raw").len()), // Image type not supported yet.
