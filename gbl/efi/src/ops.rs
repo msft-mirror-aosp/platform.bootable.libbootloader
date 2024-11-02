@@ -46,7 +46,7 @@ use libgbl::{
     ops::{AvbIoError, AvbIoResult, CertPermanentAttributes, ImageBuffer, SHA256_DIGEST_SIZE},
     partition::PartitionBlockDevice,
     slots::{BootToken, Cursor},
-    BootImages, GblOps, Result as GblResult,
+    GblOps, Result as GblResult,
 };
 use safemath::SafeNum;
 use zbi::ZbiContainer;
@@ -240,10 +240,6 @@ where
         }
         // TODO(b/358377120): pass the UEFI error when liberror::Error support lands.
         found.or(Err(Error::Other(Some("wait for key stroke error"))))
-    }
-
-    fn preboot(&mut self, _: BootImages) -> Result<()> {
-        unimplemented!();
     }
 
     /// Reboots the system into the last set boot mode.

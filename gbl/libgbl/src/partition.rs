@@ -180,7 +180,7 @@ impl<'a, B: BlockIo> PartitionBlockDevice<'a, B> {
     /// Get total number of partitions.
     pub fn num_partitions(&self) -> Result<usize, Error> {
         match self.partitions.try_lock().ok_or(Error::NotReady)?.deref() {
-            PartitionTable::Raw(name, _) => Ok(1),
+            PartitionTable::Raw(_, _) => Ok(1),
             PartitionTable::Gpt(gpt) => gpt.num_partitions(),
         }
     }
@@ -204,7 +204,7 @@ impl<'a, B: BlockIo> PartitionBlockDevice<'a, B> {
     /// * Returns `Err` in other cases.
     pub async fn sync_gpt(&self) -> Result<Option<GptSyncResult>, Error> {
         match self.partitions.try_lock().ok_or(Error::NotReady)?.deref_mut() {
-            PartitionTable::Raw(name, _) => Ok(None),
+            PartitionTable::Raw(_, _) => Ok(None),
             PartitionTable::Gpt(ref mut gpt) => {
                 let mut blk = self.blk.try_lock().ok_or(Error::NotReady)?;
                 Ok(Some(blk.0.sync_gpt(gpt).await?))
@@ -227,7 +227,7 @@ impl<'a, B: BlockIo> PartitionBlockDevice<'a, B> {
     /// * Return `Ok(())` new GPT is valid and device is updated and synced successfully.
     pub async fn update_gpt(&self, mbr_primary: &mut [u8], resize: bool) -> Result<(), Error> {
         match self.partitions.try_lock().ok_or(Error::NotReady)?.deref_mut() {
-            PartitionTable::Raw(name, _) => Err(Error::Unsupported),
+            PartitionTable::Raw(_, _) => Err(Error::Unsupported),
             PartitionTable::Gpt(ref mut gpt) => {
                 let mut blk = self.blk.try_lock().ok_or(Error::NotReady)?;
                 blk.0.update_gpt(mbr_primary, resize, gpt).await
