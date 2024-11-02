@@ -150,7 +150,7 @@ impl Manager for ABManager<'_> {
         }
     }
 
-    fn write_back(&mut self, _: &mut dyn gbl_storage::AsBlockDevice) {
+    fn write_back(&mut self, _: &mut dyn FnMut(&mut [u8]) -> Result<()>) {
         // Note: `expect` instead of swallowing the error.
         // It is important that changes are not silently dropped.
         self.protocol.flush().expect("could not write back modifications to slot metadata");
@@ -176,10 +176,9 @@ mod test {
         ops::{AvbIoResult, CertPermanentAttributes, SHA256_DIGEST_SIZE},
         partition::PartitionBlockDevice,
         slots::{Bootability, Cursor, RecoveryTarget, UnbootableReason},
-        BootImages, Gbl, GblOps, Result as GblResult,
+        Gbl, GblOps, Result as GblResult,
     };
     use gbl_storage::BlockIoNull;
-    use gbl_storage_testlib::TestBlockDevice;
     use libgbl::{device_tree::DeviceTreeComponentsRegistry, ops::ImageBuffer};
     // TODO(b/350526796): use ptr.is_aligned() when Rust 1.79 is in Android
     use std::{
@@ -259,10 +258,6 @@ mod test {
             unimplemented!();
         }
 
-        fn preboot(&mut self, _: BootImages) -> Result<()> {
-            unimplemented!();
-        }
-
         fn reboot(&mut self) {
             unimplemented!();
         }
@@ -279,17 +274,13 @@ mod test {
             None
         }
 
-        fn do_fastboot<B: gbl_storage::AsBlockDevice>(&self, _: &mut Cursor<B>) -> GblResult<()> {
-            unimplemented!();
-        }
-
-        fn load_slot_interface<'b, B: gbl_storage::AsBlockDevice>(
+        fn load_slot_interface<'b>(
             &'b mut self,
-            block_dev: &'b mut B,
+            persist: &'b mut dyn FnMut(&mut [u8]) -> Result<()>,
             boot_token: BootToken,
-        ) -> GblResult<Cursor<'b, B>> {
+        ) -> GblResult<Cursor<'b>> {
             self.manager.boot_token = Some(boot_token);
-            Ok(Cursor { ctx: &mut self.manager, block_dev })
+            Ok(Cursor { ctx: &mut self.manager, persist })
         }
 
         fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
@@ -370,10 +361,10 @@ mod test {
             let protocol = generate_protocol::<ab_slot::GblSlotProtocol>(&efi_entry, &mut ab);
 
             {
-                let mut block_device: TestBlockDevice = Default::default();
+                let mut persist = |_: &mut [u8]| Ok(());
                 let mut test_ops = TestGblOps::new(protocol);
                 let mut gbl = Gbl::<TestGblOps>::new(&mut test_ops);
-                let _ = gbl.load_slot_interface(&mut block_device).unwrap();
+                let _ = gbl.load_slot_interface(&mut persist).unwrap();
             }
         });
         assert!(ATOMIC.with(|a| a.load(Ordering::Relaxed)));
@@ -389,10 +380,10 @@ mod test {
             };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
             let protocol = generate_protocol::<ab_slot::GblSlotProtocol>(&efi_entry, &mut ab);
-            let mut block_device: TestBlockDevice = Default::default();
+            let mut persist = |_: &mut [u8]| Ok(());
             let mut test_ops = TestGblOps::new(protocol);
             let mut gbl = Gbl::<TestGblOps>::new(&mut test_ops);
-            let cursor = gbl.load_slot_interface(&mut block_device).unwrap();
+            let cursor = gbl.load_slot_interface(&mut persist).unwrap();
 
             let slots: Vec<Slot> = cursor.ctx.slots_iter().collect();
             assert_eq!(
@@ -478,10 +469,10 @@ mod test {
             };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
             let protocol = generate_protocol::<ab_slot::GblSlotProtocol>(&efi_entry, &mut ab);
-            let mut block_device: TestBlockDevice = Default::default();
+            let mut persist = |_: &mut [u8]| Ok(());
             let mut test_ops = TestGblOps::new(protocol);
             let mut gbl = Gbl::<TestGblOps>::new(&mut test_ops);
-            let cursor = gbl.load_slot_interface(&mut block_device).unwrap();
+            let cursor = gbl.load_slot_interface(&mut persist).unwrap();
 
             let slot = Slot {
                 suffix: 'a'.into(),
@@ -516,10 +507,10 @@ mod test {
             };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
             let protocol = generate_protocol::<ab_slot::GblSlotProtocol>(&efi_entry, &mut ab);
-            let mut block_device: TestBlockDevice = Default::default();
+            let mut persist = |_: &mut [u8]| Ok(());
             let mut test_ops = TestGblOps::new(protocol);
             let mut gbl = Gbl::<TestGblOps>::new(&mut test_ops);
-            let cursor = gbl.load_slot_interface(&mut block_device).unwrap();
+            let cursor = gbl.load_slot_interface(&mut persist).unwrap();
             assert!(cursor.ctx.mark_boot_attempt().is_ok());
             assert!(ATOMIC.with(|a| a.load(Ordering::Relaxed)));
 
@@ -560,10 +551,10 @@ mod test {
             };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
             let protocol = generate_protocol::<ab_slot::GblSlotProtocol>(&efi_entry, &mut ab);
-            let mut block_device: TestBlockDevice = Default::default();
+            let mut persist = |_: &mut [u8]| Ok(());
             let mut test_ops = TestGblOps::new(protocol);
             let mut gbl = Gbl::<TestGblOps>::new(&mut test_ops);
-            let cursor = gbl.load_slot_interface(&mut block_device).unwrap();
+            let cursor = gbl.load_slot_interface(&mut persist).unwrap();
             assert_eq!(cursor.ctx.get_max_retries().unwrap(), 66usize.into());
         });
     }
@@ -589,10 +580,10 @@ mod test {
             };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
             let protocol = generate_protocol::<ab_slot::GblSlotProtocol>(&efi_entry, &mut ab);
-            let mut block_device: TestBlockDevice = Default::default();
+            let mut persist = |_: &mut [u8]| Ok(());
             let mut test_ops = TestGblOps::new(protocol);
             let mut gbl = Gbl::<TestGblOps>::new(&mut test_ops);
-            let cursor = gbl.load_slot_interface(&mut block_device).unwrap();
+            let cursor = gbl.load_slot_interface(&mut persist).unwrap();
 
             assert_eq!(cursor.ctx.set_active_slot('b'.into()), Ok(()));
             assert_eq!(cursor.ctx.set_active_slot('c'.into()), Err(Error::Other(None)));
@@ -629,10 +620,10 @@ mod test {
             };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
             let protocol = generate_protocol::<ab_slot::GblSlotProtocol>(&efi_entry, &mut ab);
-            let mut block_device: TestBlockDevice = Default::default();
+            let mut persist = |_: &mut [u8]| Ok(());
             let mut test_ops = TestGblOps::new(protocol);
             let mut gbl = Gbl::<TestGblOps>::new(&mut test_ops);
-            let cursor = gbl.load_slot_interface(&mut block_device).unwrap();
+            let cursor = gbl.load_slot_interface(&mut persist).unwrap();
 
             assert_eq!(
                 cursor.ctx.set_slot_unbootable('a'.into(), UnbootableReason::SystemUpdate),
@@ -686,10 +677,10 @@ mod test {
             };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
             let protocol = generate_protocol::<ab_slot::GblSlotProtocol>(&efi_entry, &mut ab);
-            let mut block_device: TestBlockDevice = Default::default();
+            let mut persist = |_: &mut [u8]| Ok(());
             let mut test_ops = TestGblOps::new(protocol);
             let mut gbl = Gbl::<TestGblOps>::new(&mut test_ops);
-            let cursor = gbl.load_slot_interface(&mut block_device).unwrap();
+            let cursor = gbl.load_slot_interface(&mut persist).unwrap();
 
             assert_eq!(cursor.ctx.get_oneshot_status(), None);
             assert_eq!(

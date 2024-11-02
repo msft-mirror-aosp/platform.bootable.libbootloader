@@ -80,7 +80,7 @@ impl Variable for Partition {
         mut args: Split<'_, char>,
         out: &mut [u8],
     ) -> Result<Option<usize>, CommandError> {
-        let (_, _, start, sz) = gbl_fb.parse_partition(args.next().ok_or("Missing var")?)?;
+        let (_, _, _, sz) = gbl_fb.parse_partition(args.next().ok_or("Missing var")?)?;
         Ok(match name {
             PARTITION_SIZE => Some(snprintf!(out, "{:#x}", sz).len()),
             PARTITION_TYPE => Some(snprintf!(out, "raw").len()), // Image type not supported yet.
@@ -139,9 +139,9 @@ impl Variable for BlockDevice {
     ) -> Result<Option<usize>, CommandError> {
         Ok(match name {
             BLOCK_DEVICE => {
-                let id = next_arg_u64(&mut args, Err("Missing block device ID".into()))?;
+                let id = next_arg_u64(&mut args)?.ok_or("Missing block device ID")?;
                 let id = usize::try_from(id)?;
-                let val_type = next_arg(&mut args, Err("Missing value type".into()))?;
+                let val_type = next_arg(&mut args).ok_or("Missing value type")?;
                 let blk = &gbl_fb.gbl_ops.partitions()?[id];
                 let info = blk.block_info();
                 Some(
