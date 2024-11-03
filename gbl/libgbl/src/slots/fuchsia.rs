@@ -160,7 +160,7 @@ impl Default for AbrData {
     }
 }
 
-impl super::private::SlotGet for SlotBlock<'_, AbrData> {
+impl super::private::SlotGet for SlotBlock<AbrData> {
     fn get_slot_by_number(&self, number: usize) -> Result<Slot, Error> {
         let lower_ascii_suffixes = ('a'..='z').map(Suffix);
         let (suffix, &abr_slot) = zip(lower_ascii_suffixes, self.get_data().slot_data.iter())
@@ -177,7 +177,7 @@ impl super::private::SlotGet for SlotBlock<'_, AbrData> {
     }
 }
 
-impl Manager for SlotBlock<'_, AbrData> {
+impl Manager for SlotBlock<AbrData> {
     fn get_boot_target(&self) -> Result<BootTarget, Error> {
         Ok(self
             .slots_iter()
@@ -283,12 +283,12 @@ impl Manager for SlotBlock<'_, AbrData> {
         }
     }
 
-    fn write_back(&mut self, block_dev: &mut dyn gbl_storage::AsBlockDevice) {
-        self.sync_to_disk(block_dev);
+    fn write_back(&mut self, persist: &mut dyn FnMut(&mut [u8]) -> Result<(), Error>) {
+        self.sync_to_disk(persist);
     }
 }
 
-impl<'a> SlotBlock<'a, AbrData> {
+impl<'a> SlotBlock<AbrData> {
     fn get_index_and_slot_with_suffix(&self, slot_suffix: Suffix) -> Result<(usize, Slot), Error> {
         self.slots_iter()
             .enumerate()
@@ -301,7 +301,7 @@ impl<'a> SlotBlock<'a, AbrData> {
 mod test {
     use super::*;
     use crate::slots::{partition::CacheStatus, Cursor};
-    use gbl_storage::AsBlockDevice;
+    use gbl_async::block_on;
     use gbl_storage_testlib::TestBlockDevice;
 
     #[test]
@@ -433,7 +433,6 @@ mod test {
     #[test]
     fn test_slot_mark_tried_recovery() {
         let mut sb: SlotBlock<AbrData> = Default::default();
-        let recovery_tgt = BootTarget::Recovery(RecoveryTarget::Dedicated);
         assert!(sb.set_slot_unbootable('a'.into(), UnbootableReason::UserRequested).is_ok());
         assert!(sb.set_slot_unbootable('b'.into(), UnbootableReason::UserRequested).is_ok());
         assert_eq!(sb.mark_boot_attempt(), Ok(BootToken(())));
@@ -578,12 +577,7 @@ mod test {
         // and lets us verify that the deserialized slot block
         // uses defaulted backing bytes instead of the provided bytes.
         abr_data.slot_data[0].successful = 1;
-        let sb = SlotBlock::<AbrData>::deserialize(
-            abr_data.as_bytes(),
-            "partition_moniker",
-            0,
-            BootToken(()),
-        );
+        let sb = SlotBlock::<AbrData>::deserialize(abr_data.as_bytes(), BootToken(()));
         assert_eq!(sb.cache_status(), CacheStatus::Dirty);
         assert_eq!(
             sb.slots_iter().next().unwrap().bootability,
@@ -599,12 +593,7 @@ mod test {
         // that just means we have a metadata block that stores
         // relevant, non-default information.
         abr_data.crc32.set(abr_data.calculate_crc32());
-        let sb = SlotBlock::<AbrData>::deserialize(
-            abr_data.as_bytes(),
-            "partition_moniker",
-            0,
-            BootToken(()),
-        );
+        let sb = SlotBlock::<AbrData>::deserialize(abr_data.as_bytes(), BootToken(()));
         assert_eq!(sb.cache_status(), CacheStatus::Clean);
         assert_eq!(sb.slots_iter().next().unwrap().bootability, Bootability::Successful);
     }
@@ -615,16 +604,16 @@ mod test {
         const OFFSET: u64 = 2112; // Deliberately wrong to test propagation of parameter.
         let mut block_dev: TestBlockDevice =
             include_bytes!("../../testdata/writeback_test_disk.bin").as_slice().into();
-        assert!(block_dev.sync_gpt().is_ok());
+        let (blk, mut gpt) = block_dev.new_blk_and_gpt();
+        block_on(blk.sync_gpt(&mut gpt)).unwrap();
         let mut sb: SlotBlock<AbrData> = Default::default();
-        sb.partition = PARTITION;
-        sb.partition_offset = OFFSET;
-
         let mut read_buffer: [u8; size_of::<AbrData>()] = Default::default();
 
         // Clean cache, write_back is a no-op
-        sb.write_back(&mut block_dev);
-        let res = block_dev.read_gpt_partition(PARTITION, OFFSET, &mut read_buffer);
+        sb.write_back(&mut |data: &mut [u8]| {
+            Ok(block_on(blk.write_gpt_partition(&mut gpt, PARTITION, OFFSET, data))?)
+        });
+        let res = block_on(blk.read_gpt_partition(&mut gpt, PARTITION, OFFSET, &mut read_buffer));
         assert!(res.is_ok());
         assert_eq!(read_buffer, [0; std::mem::size_of::<AbrData>()]);
 
@@ -633,8 +622,10 @@ mod test {
         assert_eq!(sb.set_oneshot_status(OneShot::Bootloader), Ok(()));
         assert_eq!(sb.cache_status(), CacheStatus::Dirty);
 
-        sb.write_back(&mut block_dev);
-        let res = block_dev.read_gpt_partition(PARTITION, OFFSET, &mut read_buffer);
+        sb.write_back(&mut |data: &mut [u8]| {
+            Ok(block_on(blk.write_gpt_partition(&mut gpt, PARTITION, OFFSET, data))?)
+        });
+        let res = block_on(blk.read_gpt_partition(&mut gpt, PARTITION, OFFSET, &mut read_buffer));
         assert!(res.is_ok());
         assert_eq!(read_buffer, sb.get_data().as_bytes());
         assert_eq!(sb.cache_status(), CacheStatus::Clean);
@@ -646,20 +637,22 @@ mod test {
         const OFFSET: u64 = 2112; // Deliberately wrong to test propagation of parameter.
         let mut block_dev: TestBlockDevice =
             include_bytes!("../../testdata/writeback_test_disk.bin").as_slice().into();
-        assert!(block_dev.sync_gpt().is_ok());
+        let (blk, mut gpt) = block_dev.new_blk_and_gpt();
+        block_on(blk.sync_gpt(&mut gpt)).unwrap();
         let mut read_buffer: [u8; size_of::<AbrData>()] = Default::default();
 
         let mut sb: SlotBlock<AbrData> = Default::default();
-        sb.partition = PARTITION;
-        sb.partition_offset = OFFSET;
 
         // New block to trigger drop on the cursor.
         {
-            let cursor = Cursor { ctx: &mut sb, block_dev: &mut block_dev };
+            let mut persist = |data: &mut [u8]| {
+                Ok(block_on(blk.write_gpt_partition(&mut gpt, PARTITION, OFFSET, data))?)
+            };
+            let cursor = Cursor { ctx: &mut sb, persist: &mut persist };
             assert!(cursor.ctx.set_active_slot('b'.into()).is_ok());
         }
 
-        let res = block_dev.read_gpt_partition(PARTITION, OFFSET, &mut read_buffer);
+        let res = block_on(blk.read_gpt_partition(&mut gpt, PARTITION, OFFSET, &mut read_buffer));
         assert!(res.is_ok());
         assert_eq!(read_buffer, sb.get_data().as_bytes());
     }

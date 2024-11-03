@@ -46,7 +46,7 @@ use libgbl::{
     ops::{AvbIoError, AvbIoResult, CertPermanentAttributes, ImageBuffer, SHA256_DIGEST_SIZE},
     partition::PartitionBlockDevice,
     slots::{BootToken, Cursor},
-    BootImages, GblOps, Result as GblResult,
+    GblOps, Result as GblResult,
 };
 use safemath::SafeNum;
 use zbi::ZbiContainer;
@@ -242,10 +242,6 @@ where
         found.or(Err(Error::Other(Some("wait for key stroke error"))))
     }
 
-    fn preboot(&mut self, _: BootImages) -> Result<()> {
-        unimplemented!();
-    }
-
     /// Reboots the system into the last set boot mode.
     fn reboot(&mut self) {
         self.efi_entry.system_table().runtime_services().cold_reset();
@@ -276,15 +272,11 @@ where
         Some(self.zbi_bootloader_files_buffer.as_mut_slice())
     }
 
-    fn do_fastboot<B: gbl_storage::AsBlockDevice>(&self, _: &mut Cursor<B>) -> GblResult<()> {
-        unimplemented!();
-    }
-
-    fn load_slot_interface<'c, B: gbl_storage::AsBlockDevice>(
+    fn load_slot_interface<'c>(
         &'c mut self,
-        _: &'c mut B,
+        _: &'c mut dyn FnMut(&mut [u8]) -> Result<()>,
         _: BootToken,
-    ) -> GblResult<Cursor<'c, B>> {
+    ) -> GblResult<Cursor<'c>> {
         unimplemented!();
     }
 
