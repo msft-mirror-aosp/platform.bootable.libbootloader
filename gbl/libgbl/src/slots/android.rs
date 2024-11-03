@@ -71,6 +71,8 @@ const DEFAULT_RETRIES: u8 = 7;
 #[derive(Copy, Clone, Debug, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
 struct SlotMetaData(u16);
 
+#[allow(dead_code)]
+#[allow(missing_docs)]
 impl SlotMetaData {
     const PRIORITY_MASK: u16 = 0b1111;
     const PRIORITY_OFFSET: u16 = 0;
@@ -136,6 +138,8 @@ impl Default for SlotMetaData {
 #[repr(C, packed)]
 struct ControlBits(u16);
 
+#[allow(dead_code)]
+#[allow(missing_docs)]
 impl ControlBits {
     const NB_SLOT_MASK: u16 = 0b111;
     const NB_SLOT_OFFSET: u16 = 0;
@@ -261,7 +265,7 @@ impl MetadataBytes for BootloaderControl {
     }
 }
 
-impl super::private::SlotGet for SlotBlock<'_, BootloaderControl> {
+impl super::private::SlotGet for SlotBlock<BootloaderControl> {
     fn get_slot_by_number(&self, number: usize) -> Result<Slot, Error> {
         let lower_ascii_suffixes = ('a'..='z').map(Suffix);
         let control = self.get_data();
@@ -281,7 +285,7 @@ impl super::private::SlotGet for SlotBlock<'_, BootloaderControl> {
     }
 }
 
-impl Manager for SlotBlock<'_, BootloaderControl> {
+impl Manager for SlotBlock<BootloaderControl> {
     fn slots_iter(&self) -> SlotIterator {
         SlotIterator::new(self)
     }
@@ -376,8 +380,8 @@ impl Manager for SlotBlock<'_, BootloaderControl> {
 
     fn clear_oneshot_status(&mut self) {}
 
-    fn write_back(&mut self, block_dev: &mut dyn gbl_storage::AsBlockDevice) {
-        self.sync_to_disk(block_dev)
+    fn write_back(&mut self, persist: &mut dyn FnMut(&mut [u8]) -> Result<(), Error>) {
+        self.sync_to_disk(persist)
     }
 }
 

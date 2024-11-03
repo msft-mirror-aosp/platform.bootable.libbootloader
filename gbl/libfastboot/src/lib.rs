@@ -696,7 +696,7 @@ async fn download(
 ) -> Result<()> {
     let mut resp = Responder::new(transport);
     let total_download_size = match (|| -> CommandResult<usize> {
-        usize::try_from(next_arg_u64(&mut args, Err("Not enough argument".into()))?)
+        usize::try_from(next_arg_u64(&mut args)?.ok_or("Not enough argument")?)
             .map_err(|_| "Download size overflow".into())
     })() {
         Err(e) => return reply_fail!(resp, "{}", e.to_str()),
@@ -783,8 +783,8 @@ async fn fetch(
         // Parses backward. Parses size, offset first and treats the remaining string as
         // partition name. This allows ":" in partition name.
         let mut rev = args.clone().rev();
-        let sz = next_arg(&mut rev, Err("Invalid argument".into()))?;
-        let off = next_arg(&mut rev, Err("Invalid argument".into()))?;
+        let sz = next_arg(&mut rev).ok_or("Missing size")?;
+        let off = next_arg(&mut rev).ok_or("Invalid offset")?;
         let part = &cmd[..cmd.len() - (off.len() + sz.len() + 2)];
         fb_impl.fetch(part, hex_to_u64(off)?, hex_to_u64(sz)?, &mut resp).await
     }
@@ -965,19 +965,13 @@ pub(crate) fn hex_to_u64(s: &str) -> CommandResult<u64> {
     Ok(u64::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16)?)
 }
 
-/// A helper to check and fetch the next argument or fall back to the default if not available.
+/// A helper to check and fetch the next non-empty argument.
 ///
 /// # Args
 ///
 /// args: A string iterator.
-/// default: This will be returned as it is if args doesn't have the next element(). Providing a
-///   Ok(str) is equivalent to providing a default value. Providing an Err() is equivalent to
-///   requiring that the next argument is mandatory.
-pub fn next_arg<'a, T: Iterator<Item = &'a str>>(
-    args: &mut T,
-    default: CommandResult<&'a str>,
-) -> CommandResult<&'a str> {
-    args.next().filter(|v| *v != "").ok_or("").or(default.map_err(|e| e.into()))
+pub fn next_arg<'a, T: Iterator<Item = &'a str>>(args: &mut T) -> Option<&'a str> {
+    args.next().filter(|v| *v != "")
 }
 
 /// A helper to check and fetch the next argument as a u64 hex string.
@@ -985,18 +979,17 @@ pub fn next_arg<'a, T: Iterator<Item = &'a str>>(
 /// # Args
 ///
 /// args: A string iterator.
-/// default: This will be returned as it is if args doesn't have the next element(). Providing a
-///   Ok(u64) is equivalent to providing a default value. Providing an Err() is equivalent to
-///   requiring that the next argument is mandatory.
 ///
-/// Returns error if the next argument is not a valid hex string.
-pub fn next_arg_u64<'a, T: Iterator<Item = &'a str>>(
-    args: &mut T,
-    default: CommandResult<u64>,
-) -> CommandResult<u64> {
-    match next_arg(args, Err("".into())) {
-        Ok(v) => hex_to_u64(v),
-        _ => default.map_err(|e| e.into()),
+///
+/// # Returns
+///
+/// * Returns Ok(Some(v)) is next argument is available and a valid u64 hex.
+/// * Returns Ok(None) is next argument is not available
+/// * Returns Err() if next argument is present but not a valid u64 hex.
+pub fn next_arg_u64<'a, T: Iterator<Item = &'a str>>(args: &mut T) -> CommandResult<Option<u64>> {
+    match next_arg(args) {
+        Some(v) => Ok(Some(hex_to_u64(v)?)),
+        _ => Ok(None),
     }
 }
 
