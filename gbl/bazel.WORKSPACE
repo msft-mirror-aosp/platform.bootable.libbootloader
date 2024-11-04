@@ -23,3 +23,15 @@ local_repository(
 load("@gbl//integration/aosp_u-boot-mainline:workspace.bzl", "define_gbl_workspace")
 
 define_gbl_workspace()
+
+load("@rules_rust//tools/rust_analyzer:deps.bzl", "rust_analyzer_dependencies")
+
+rust_analyzer_dependencies()
+
+load("@gbl//toolchain:gbl_workspace_util.bzl", "GBL_RUST_VERSION")
+load("@rules_rust//rust:repositories.bzl", "rust_analyzer_toolchain_repository")
+
+register_toolchains(rust_analyzer_toolchain_repository(
+    name = "rust_analyzer_toolchain",
+    version = GBL_RUST_VERSION,
+))
