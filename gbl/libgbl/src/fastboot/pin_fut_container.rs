@@ -45,6 +45,7 @@ pub(crate) trait PinFutContainerTyped<'a, F: Future + 'a> {
     );
 
     /// Returns the number of items
+    #[cfg(test)]
     fn size(&mut self) -> usize {
         let mut res = 0;
         self.for_each_remove_if(|_| {
@@ -66,6 +67,7 @@ pub(crate) trait PinFutContainerTyped<'a, F: Future + 'a> {
     }
 
     /// Runs until all futures are finished
+    #[cfg(test)]
     fn run(&mut self) {
         while self.poll_all() > 0 {}
     }

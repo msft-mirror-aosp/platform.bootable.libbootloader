@@ -37,32 +37,6 @@ pub use zbi::{ZbiContainer, ZBI_ALIGNMENT_USIZE};
 use super::device_tree;
 use super::slots;
 
-/// `AndroidBootImages` contains references to loaded images for booting Android.
-pub struct AndroidBootImages<'a> {
-    /// Kernel image.
-    pub kernel: &'a mut [u8],
-    /// Ramdisk to pass to the kernel.
-    pub ramdisk: &'a mut [u8],
-    /// FDT To pass to the kernel.
-    pub fdt: &'a mut [u8],
-}
-
-/// `FuchsiaBootImages` contains references to loaded images for booting Zircon.
-pub struct FuchsiaBootImages<'a> {
-    /// Kernel image.
-    pub zbi_kernel: &'a mut [u8],
-    /// ZBI container with items to pass to the kernel.
-    pub zbi_items: &'a mut [u8],
-}
-
-/// Images required to boot the supported kernels.
-pub enum BootImages<'a> {
-    /// Android boot images.
-    Android(AndroidBootImages<'a>),
-    /// Fuchsia boot images.
-    Fuchsia(FuchsiaBootImages<'a>),
-}
-
 // https://stackoverflow.com/questions/41081240/idiomatic-callbacks-in-rust
 // should we use traits for this? or optional/box FnMut?
 //
@@ -93,9 +67,6 @@ where
     /// This method can be used to implement platform specific mechanism for deciding whether boot
     /// should abort and enter Fastboot mode.
     fn should_stop_in_fastboot(&mut self) -> Result<bool, Error>;
-
-    /// Platform specific processing of boot images before booting.
-    fn preboot(&mut self, boot_images: BootImages) -> Result<(), Error>;
 
     /// Reboots the system into the last set boot mode.
     ///
@@ -371,12 +342,14 @@ pub(crate) mod test {
             // Convert GPT devices.
             for device in self.gpt_devices.iter_mut() {
                 let (gpt_blk, gpt) = device.new_blk_and_gpt();
-                parts.push(PartitionBlockDevice::new_gpt(gpt_blk, gpt));
+                parts.push(PartitionBlockDevice::new_gpt(gpt_blk.as_borrowed(), gpt));
             }
             // Convert raw devices.
             for (name, device) in self.raw_devices.iter_mut() {
-                parts
-                    .push(PartitionBlockDevice::new_raw(device.new_blk_and_gpt().0, name).unwrap());
+                parts.push(
+                    PartitionBlockDevice::new_raw(device.new_blk_and_gpt().0.as_borrowed(), name)
+                        .unwrap(),
+                );
             }
             block_on(sync_gpt(&mut parts[..])).unwrap();
             parts
@@ -463,10 +436,6 @@ pub(crate) mod test {
             self.stop_in_fastboot.unwrap_or(Ok(false))
         }
 
-        fn preboot(&mut self, boot_images: BootImages) -> Result<(), Error> {
-            unimplemented!();
-        }
-
         fn reboot(&mut self) {}
 
         fn partitions(
@@ -496,8 +465,8 @@ pub(crate) mod test {
 
         fn load_slot_interface<'b>(
             &'b mut self,
-            persist: &'b mut dyn FnMut(&mut [u8]) -> Result<(), Error>,
-            boot_token: slots::BootToken,
+            _: &'b mut dyn FnMut(&mut [u8]) -> Result<(), Error>,
+            _: slots::BootToken,
         ) -> GblResult<slots::Cursor<'b>> {
             unimplemented!();
         }
@@ -531,11 +500,7 @@ pub(crate) mod test {
             self.avb_ops.read_permanent_attributes_hash()
         }
 
-        fn get_image_buffer<'c>(
-            &mut self,
-            image_name: &str,
-            size: NonZeroUsize,
-        ) -> GblResult<ImageBuffer<'c>> {
+        fn get_image_buffer<'c>(&mut self, _: &str, _: NonZeroUsize) -> GblResult<ImageBuffer<'c>> {
             unimplemented!();
         }
 
@@ -559,13 +524,13 @@ pub(crate) mod test {
             unimplemented!();
         }
 
-        fn fixup_device_tree(&mut self, device_tree: &mut [u8]) -> Result<(), Error> {
+        fn fixup_device_tree(&mut self, _: &mut [u8]) -> Result<(), Error> {
             unimplemented!();
         }
 
         fn select_device_trees(
             &mut self,
-            components: &mut device_tree::DeviceTreeComponentsRegistry,
+            _: &mut device_tree::DeviceTreeComponentsRegistry,
         ) -> Result<(), Error> {
             unimplemented!();
         }

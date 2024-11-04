@@ -433,7 +433,6 @@ mod test {
     #[test]
     fn test_slot_mark_tried_recovery() {
         let mut sb: SlotBlock<AbrData> = Default::default();
-        let recovery_tgt = BootTarget::Recovery(RecoveryTarget::Dedicated);
         assert!(sb.set_slot_unbootable('a'.into(), UnbootableReason::UserRequested).is_ok());
         assert!(sb.set_slot_unbootable('b'.into(), UnbootableReason::UserRequested).is_ok());
         assert_eq!(sb.mark_boot_attempt(), Ok(BootToken(())));
@@ -605,7 +604,7 @@ mod test {
         const OFFSET: u64 = 2112; // Deliberately wrong to test propagation of parameter.
         let mut block_dev: TestBlockDevice =
             include_bytes!("../../testdata/writeback_test_disk.bin").as_slice().into();
-        let (mut blk, mut gpt) = block_dev.new_blk_and_gpt();
+        let (blk, mut gpt) = block_dev.new_blk_and_gpt();
         block_on(blk.sync_gpt(&mut gpt)).unwrap();
         let mut sb: SlotBlock<AbrData> = Default::default();
         let mut read_buffer: [u8; size_of::<AbrData>()] = Default::default();
@@ -638,7 +637,7 @@ mod test {
         const OFFSET: u64 = 2112; // Deliberately wrong to test propagation of parameter.
         let mut block_dev: TestBlockDevice =
             include_bytes!("../../testdata/writeback_test_disk.bin").as_slice().into();
-        let (mut blk, mut gpt) = block_dev.new_blk_and_gpt();
+        let (blk, mut gpt) = block_dev.new_blk_and_gpt();
         block_on(blk.sync_gpt(&mut gpt)).unwrap();
         let mut read_buffer: [u8; size_of::<AbrData>()] = Default::default();
 

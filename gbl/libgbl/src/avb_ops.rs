@@ -225,7 +225,7 @@ impl<'a, T: GblOps<'a>> CertOps for GblAvbOps<'_, T> {
         }
     }
 
-    fn get_random(&mut self, bytes: &mut [u8]) -> IoResult<()> {
+    fn get_random(&mut self, _: &mut [u8]) -> IoResult<()> {
         // Not needed yet; eventually we will plumb this through [GblOps].
         unimplemented!()
     }
