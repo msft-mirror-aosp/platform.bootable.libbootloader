@@ -21,7 +21,7 @@ use efi::{
 };
 use efi_types::EfiBlockIoMedia;
 use gbl_async::block_on;
-use gbl_storage::{AsyncBlockDevice, BlockInfo, BlockIo, GptCache};
+use gbl_storage::{BlockInfo, BlockIo, Disk, GptCache};
 use liberror::Error;
 use libgbl::partition::{check_part_unique, Partition, PartitionBlockDevice};
 
@@ -108,7 +108,7 @@ impl<'a> EfiBlockDevice<'a> {
     pub fn as_gbl_part(
         &mut self,
     ) -> Result<PartitionBlockDevice<&mut EfiBlockDeviceIo<'a>>, Error> {
-        let blk = AsyncBlockDevice::new(&mut self.io, &mut self.scratch)?;
+        let blk = Disk::new(&mut self.io, &mut self.scratch[..])?;
         Ok(match &mut self.partition {
             PartitionInfoBuffer::Gpt(buf) => {
                 PartitionBlockDevice::new_gpt(blk, GptCache::from_existing(buf).unwrap())

@@ -1114,12 +1114,12 @@ mod test {
         // Creates two block devices for writing raw and sparse image.
         let sparse_raw = include_bytes!("../../testdata/sparse_test_raw.bin");
         let sparse = include_bytes!("../../testdata/sparse_test.bin");
-        let dev_sparse = TestBlockDeviceBuilder::new()
+        let mut dev_sparse = TestBlockDeviceBuilder::new()
             .add_partition("sparse", BackingStore::Size(sparse_raw.len()))
             .build();
         let mut test_data = TestData::new(128 * 1024, 2);
         test_data.storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
-        test_data.storage.add_gpt_device(dev_sparse.io.storage);
+        test_data.storage.add_gpt_device(dev_sparse.disk.io().storage());
         let (partitions, dl_buffers) = test_data.get();
         let mut gbl_ops = FakeGblOps::new(&partitions);
         let tasks = vec![].into();
@@ -1226,8 +1226,8 @@ mod test {
         let (partitions, dl_buffers) = test_data.get();
         let mut gbl_ops = FakeGblOps::new(&partitions);
         // Injects an error.
-        partitions[0].partition_io(None).unwrap().dev().io().errors =
-            [liberror::Error::Other(None)].into();
+        partitions[0].partition_io(None).unwrap().dev().io().error =
+            liberror::Error::Other(None).into();
         let tasks = vec![].into();
         let mut gbl_fb = GblFastboot::new(&mut gbl_ops, Task::run, &tasks, &dl_buffers);
         let tasks = gbl_fb.tasks();
