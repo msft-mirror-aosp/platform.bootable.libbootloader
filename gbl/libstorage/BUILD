@@ -25,6 +25,7 @@ rust_library(
         "src/algorithm.rs",
         "src/gpt.rs",
         "src/lib.rs",
+        "src/ram_block.rs",
     ],
     crate_name = "gbl_storage",
     edition = "2021",
