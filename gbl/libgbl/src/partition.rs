@@ -21,7 +21,7 @@ use core::{
 };
 use fastboot::CommandError;
 use gbl_async::yield_now;
-use gbl_storage::{BlockInfo, BlockIo, Disk, GptCache, GptSyncResult, Partition as GptPartition};
+use gbl_storage::{BlockInfo, BlockIo, Disk, Gpt, GptSyncResult, Partition as GptPartition};
 use liberror::Error;
 use safemath::SafeNum;
 use spin::mutex::{Mutex, MutexGuard};
@@ -63,7 +63,7 @@ impl Partition<'_> {
 /// single whole device raw partition.
 enum PartitionTable<'a> {
     Raw(&'a str, u64),
-    Gpt(GptCache<'a>),
+    Gpt(Gpt<&'a mut [u8]>),
 }
 
 /// The status of block device
@@ -108,7 +108,7 @@ pub struct PartitionBlockDevice<'a, B: BlockIo> {
 
 impl<'a, B: BlockIo> PartitionBlockDevice<'a, B> {
     /// Creates a new instance as a GPT device.
-    pub fn new_gpt(mut blk: Disk<B, &'a mut [u8]>, gpt: GptCache<'a>) -> Self {
+    pub fn new_gpt(mut blk: Disk<B, &'a mut [u8]>, gpt: Gpt<&'a mut [u8]>) -> Self {
         let info_cache = blk.io().info();
         Self { blk: (blk, Ok(())).into(), info_cache, partitions: PartitionTable::Gpt(gpt).into() }
     }
@@ -416,7 +416,7 @@ pub(crate) mod test {
         test_blk: &'a mut TestBlockDevice,
     ) -> PartitionBlockDevice<'a, &'a mut TestBlockIo> {
         let (gpt_blk, gpt) = test_blk.new_blk_and_gpt();
-        PartitionBlockDevice::new_gpt(gpt_blk.as_borrowed(), gpt)
+        PartitionBlockDevice::new_gpt(gpt_blk.as_borrowed(), gpt.as_borrowed())
     }
 
     #[test]

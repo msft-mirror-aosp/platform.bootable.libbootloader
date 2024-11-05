@@ -21,7 +21,7 @@ use efi::{
 };
 use efi_types::EfiBlockIoMedia;
 use gbl_async::block_on;
-use gbl_storage::{BlockInfo, BlockIo, Disk, GptCache};
+use gbl_storage::{gpt_buffer_size, BlockInfo, BlockIo, Disk, Gpt};
 use liberror::Error;
 use libgbl::partition::{check_part_unique, Partition, PartitionBlockDevice};
 
@@ -73,11 +73,11 @@ impl BlockIo for EfiBlockDeviceIo<'_> {
     }
 }
 
-const MAX_GPT_ENTRIES: u64 = 128;
+const MAX_GPT_ENTRIES: usize = 128;
 
 /// `PartitionInfoBuffer` manages the buffer for raw partition name or GPT partition table.
 enum PartitionInfoBuffer {
-    Gpt(Vec<u8>),
+    Gpt(Gpt<Vec<u8>>),
     // TODO(b/357688291): Add raw partition entry once supported.
 }
 
@@ -94,13 +94,11 @@ impl<'a> EfiBlockDevice<'a> {
     /// The API allocates scratch and GPT buffer from heap.
     pub fn new_gpt(mut io: EfiBlockDeviceIo<'a>) -> Result<Self, Error> {
         let scratch_size = gbl_storage::scratch_size(&mut io)?;
-        let mut gpt_buf = vec![0u8; GptCache::required_buffer_size(MAX_GPT_ENTRIES)?];
-        // Initializes GPT buffer.
-        let _ = GptCache::new(MAX_GPT_ENTRIES, &mut gpt_buf)?;
+        let gpt_buffer = vec![0u8; gpt_buffer_size(MAX_GPT_ENTRIES)?];
         Ok(Self {
             io,
             scratch: vec![0u8; scratch_size],
-            partition: PartitionInfoBuffer::Gpt(gpt_buf),
+            partition: PartitionInfoBuffer::Gpt(Gpt::new(gpt_buffer)?),
         })
     }
 
@@ -110,9 +108,7 @@ impl<'a> EfiBlockDevice<'a> {
     ) -> Result<PartitionBlockDevice<&mut EfiBlockDeviceIo<'a>>, Error> {
         let blk = Disk::new(&mut self.io, &mut self.scratch[..])?;
         Ok(match &mut self.partition {
-            PartitionInfoBuffer::Gpt(buf) => {
-                PartitionBlockDevice::new_gpt(blk, GptCache::from_existing(buf).unwrap())
-            }
+            PartitionInfoBuffer::Gpt(gpt) => PartitionBlockDevice::new_gpt(blk, gpt.as_borrowed()),
         })
     }
 }

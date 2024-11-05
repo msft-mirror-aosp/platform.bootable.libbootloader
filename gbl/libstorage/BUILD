@@ -63,9 +63,6 @@ rust_test(
     compile_data = ["@gbl//libstorage/test:test_data"],
     crate = ":libstorage",
     rustc_flags = ANDROID_RUST_LINTS,
-    deps = [
-        ":libstorage_testlib",
-    ],
 )
 
 rust_test(
