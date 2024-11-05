@@ -91,7 +91,7 @@ pub enum GptError {
         /// Actual number of entries,
         entries: u32,
         /// Maximum allowed.
-        max_allowed: u64,
+        max_allowed: usize,
     },
     /// Unexpected GPT header size.
     UnexpectedEntrySize {
