@@ -12,14 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! ARM-specific library for GBL EFI application.
-#![cfg_attr(not(test), no_std)]
+//! Image decompression support.
 
-// Decompression is done on the heap
+// gzip [DeflateDecoder] requires heap allocation. LZ4 decompression currently uses the heap but
+// could potentially be adjusted to use preallocated buffers if necessary.
 extern crate alloc;
 
-use core::fmt::Write;
-use efi::{efi_print, efi_println, EfiEntry};
+use crate::{gbl_print, gbl_println, GblOps};
 use liberror::{Error, Result};
 use lz4_flex::decompress_into;
 use zune_inflate::DeflateDecoder;
@@ -32,13 +31,13 @@ use zune_inflate::DeflateDecoder;
 /// # Returns
 /// The offset of the decompressed kernel in `buffer`. If the kernel was not compressed. this
 /// function is a no-op and will return `kernel_start` unchanged.
-pub fn decompress_kernel(
-    efi_entry: &EfiEntry,
+pub fn decompress_kernel<'a>(
+    ops: &mut impl GblOps<'a>,
     buffer: &mut [u8],
     kernel_start: usize,
 ) -> Result<usize> {
     if buffer[kernel_start..kernel_start + 2] == [0x1f, 0x8b] {
-        efi_println!(efi_entry, "kernel is gzip compressed");
+        gbl_println!(ops, "kernel is gzip compressed");
         let mut decoder = DeflateDecoder::new(&buffer[kernel_start..]);
         let decompressed_data = match decoder.decode_gzip() {
             Ok(decompressed_data) => decompressed_data,
@@ -46,20 +45,20 @@ pub fn decompress_kernel(
                 return Err(Error::InvalidInput.into());
             }
         };
-        efi_println!(efi_entry, "kernel decompressed size {}", decompressed_data.len());
+        gbl_println!(ops, "kernel decompressed size {}", decompressed_data.len());
         let kernel_start = buffer.len() - decompressed_data.len();
         // Move decompressed data to slice.
         buffer[kernel_start..].clone_from_slice(&decompressed_data);
         Ok(kernel_start)
     } else if buffer[kernel_start..kernel_start + 4] == [0x02, 0x21, 0x4c, 0x18] {
-        efi_println!(efi_entry, "kernel is lz4 compressed");
+        gbl_println!(ops, "kernel is lz4 compressed");
         let kernel_tail_buffer = &buffer[kernel_start..];
         let mut contents = &kernel_tail_buffer[4..];
         let mut decompressed_kernel = alloc::vec::Vec::new();
         loop {
             if contents.len() < 4 {
                 if contents.len() != 0 {
-                    efi_println!(efi_entry, "Error: some leftover data in the content");
+                    gbl_println!(ops, "Error: some leftover data in the content");
                 }
                 break;
             }
@@ -78,7 +77,7 @@ pub fn decompress_kernel(
             // reduce the size of decompressed kernel buffer
             decompressed_kernel.resize(decompressed_kernel_len + decompressed_data_size, 0);
         }
-        efi_println!(efi_entry, "kernel decompressed size {}", decompressed_kernel.len());
+        gbl_println!(ops, "kernel decompressed size {}", decompressed_kernel.len());
         let kernel_start = buffer.len() - decompressed_kernel.len();
         // Move decompressed data to slice
         buffer[kernel_start..].clone_from_slice(&decompressed_kernel);
@@ -91,25 +90,24 @@ pub fn decompress_kernel(
 #[cfg(test)]
 mod test {
     use super::*;
-    use efi_mocks::MockEfi;
+    use crate::ops::test::FakeGblOps;
 
     #[test]
-    fn ops_write_trait() {
-        let mut mock_efi = MockEfi::new();
-        let installed = mock_efi.install();
-
+    fn decompress_kernel_lz4() {
         let original_data = "Test TTTTTTTTT 123";
         let compressed_data = [
             0x02, 0x21, 0x4c, 0x18, 0x0f, 0x00, 0x00, 0x00, 0x63, 0x54, 0x65, 0x73, 0x74, 0x20,
             0x54, 0x01, 0x00, 0x50, 0x54, 0x20, 0x31, 0x32, 0x33,
         ];
 
-        let buffer = vec![0u8; 8 * 1024];
-        // Copy compressed data somewhere in buffer.
-        buffer[buffer.len() - compressed_data.len()..].clone_from_slice(compressed_data);
+        // Create a buffer with the compressed data at the end.
+        let mut buffer = vec![0u8; 8 * 1024];
+        let compressed_offset = buffer.len() - compressed_data.len();
+        buffer[compressed_offset..].clone_from_slice(&compressed_data[..]);
 
         let offset =
-            decompress_kernel(installed.entry(), buffer, buffer.len() - compressed_data.len());
-        assert_eq!(buffer[offset..], original_data);
+            decompress_kernel(&mut FakeGblOps::default(), &mut buffer[..], compressed_offset)
+                .unwrap();
+        assert_eq!(&buffer[offset..], original_data.as_bytes());
     }
 }

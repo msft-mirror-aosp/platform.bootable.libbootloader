@@ -25,6 +25,7 @@ rust_library(
         "src/algorithm.rs",
         "src/gpt.rs",
         "src/lib.rs",
+        "src/ram_block.rs",
     ],
     crate_name = "gbl_storage",
     edition = "2021",
@@ -34,6 +35,7 @@ rust_library(
         "@gbl//libasync",
         "@gbl//liberror",
         "@gbl//libsafemath",
+        "@gbl//libutils",
         "@zerocopy",
     ],
 )
@@ -61,9 +63,6 @@ rust_test(
     compile_data = ["@gbl//libstorage/test:test_data"],
     crate = ":libstorage",
     rustc_flags = ANDROID_RUST_LINTS,
-    deps = [
-        ":libstorage_testlib",
-    ],
 )
 
 rust_test(

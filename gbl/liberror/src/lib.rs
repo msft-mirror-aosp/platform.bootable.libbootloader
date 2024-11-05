@@ -34,10 +34,90 @@
 
 #![cfg_attr(not(any(test, android_dylib)), no_std)]
 
-use core::ffi::{FromBytesUntilNulError, FromBytesWithNulError};
-use core::str::Utf8Error;
+use core::{
+    ffi::{FromBytesUntilNulError, FromBytesWithNulError},
+    str::Utf8Error,
+};
 
 use efi_types as efi;
+
+/// Gpt related errors.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum GptError {
+    /// Disk size is not enough to accommodate maximum allowed entries.
+    DiskTooSmall,
+    /// GPT entries buffer is too small for the expected number of entries.
+    EntriesTruncated,
+    /// GPT header CRC is not correct.
+    IncorrectHeaderCrc,
+    /// GPT header MAGIC is not correct.
+    IncorrectMagic(u64),
+    /// GPT entries CRC doesn't match.
+    IncorrectEntriesCrc,
+    /// Invalid first and last usable block in the GPT header.
+    InvalidFirstLastUsableBlock {
+        /// The value of first usable block in the GPT header.
+        first: u64,
+        /// The value of last usable block in the GPT header.
+        last: u64,
+        /// Expected range inclusive.
+        range: (u64, u64),
+    },
+    /// Partition range is invalid.
+    InvalidPartitionRange {
+        /// Partition index (1-based).
+        idx: usize,
+        /// Range of the partition, inclusive.
+        part_range: (u64, u64),
+        /// Range of usable block, inclusive.
+        usable_range: (u64, u64),
+    },
+    /// Invalid start block for primary GPT entries.
+    InvalidPrimaryEntriesStart {
+        /// The entry start block value.
+        value: u64,
+        /// Expected range.
+        expect_range: (u64, u64),
+    },
+    /// Invalid start block for secondary GPT entries.
+    InvalidSecondaryEntriesStart {
+        /// The entry start block value.
+        value: u64,
+        /// Expected range.
+        expect_range: (u64, u64),
+    },
+    /// Number of entries greater than maximum allowed.
+    NumberOfEntriesOverflow {
+        /// Actual number of entries,
+        entries: u32,
+        /// Maximum allowed.
+        max_allowed: usize,
+    },
+    /// Unexpected GPT header size.
+    UnexpectedEntrySize {
+        /// The actual entry size in the GPT header.
+        actual: u32,
+        /// The expected size.
+        expect: usize,
+    },
+    /// Unexpected GPT header size.
+    UnexpectedHeaderSize {
+        /// The actual header size in the GPT header.
+        actual: u32,
+        /// The expected size.
+        expect: usize,
+    },
+    /// Zero partition type GUID.
+    ZeroPartitionTypeGUID {
+        /// Partition index (1-based).
+        idx: usize,
+    },
+    /// Zero partition unique GUID.
+    ZeroPartitionUniqueGUID {
+        /// Partition index (1-based).
+        idx: usize,
+    },
+}
 
 /// Common, universal error type
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -83,6 +163,8 @@ pub enum Error {
     EndOfMedia,
     /// A polled operation has finished
     Finished,
+    /// GPT related errors.
+    GptError(GptError),
     /// A HTTP error occurred during a network operation.
     HttpError,
     /// An ICMP error occurred during a network operation.
