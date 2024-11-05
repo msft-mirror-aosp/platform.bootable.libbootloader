@@ -27,6 +27,7 @@ rust_library(
     crate_name = "gbl_efi",
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
+        "@arrayvec",
         "@avb",
         "@gbl//libasync",
         "@gbl//libasync:cyclic_executor",
@@ -39,10 +40,10 @@ rust_library(
         "@gbl//libgbl",
         "@gbl//libsafemath",
         "@gbl//libstorage",
-        "@gbl//third_party/libzbi",
         "@smoltcp",
         "@spin",
         "@uuid",
+        "@zbi",
         "@zerocopy",
     ],
 )

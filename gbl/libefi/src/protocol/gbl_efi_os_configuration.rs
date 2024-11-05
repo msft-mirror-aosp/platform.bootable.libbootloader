@@ -17,7 +17,7 @@
 use crate::efi_call;
 use crate::protocol::{Protocol, ProtocolInfo};
 use core::ffi::CStr;
-use efi_types::{EfiGuid, GblEfiOsConfigurationProtocol};
+use efi_types::{EfiGuid, GblEfiOsConfigurationProtocol, GblEfiVerifiedDeviceTree};
 use liberror::{Error, Result};
 
 /// `GBL_EFI_OS_CONFIGURATION_PROTOCOL` implementation.
@@ -33,7 +33,7 @@ impl ProtocolInfo for GblOsConfigurationProtocol {
 // Protocol interface wrappers.
 impl Protocol<'_, GblOsConfigurationProtocol> {
     /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.fixup_kernel_commandline()`.
-    pub fn fixup_kernel_commandline<'a>(&self, commandline: &CStr, fixup: &mut [u8]) -> Result<()> {
+    pub fn fixup_kernel_commandline(&self, commandline: &CStr, fixup: &mut [u8]) -> Result<()> {
         if fixup.is_empty() {
             return Err(Error::InvalidInput);
         }
@@ -61,7 +61,7 @@ impl Protocol<'_, GblOsConfigurationProtocol> {
     }
 
     /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.fixup_bootconfig()`.
-    pub fn fixup_bootconfig<'a>(&self, bootconfig: &[u8], fixup: &mut [u8]) -> Result<usize> {
+    pub fn fixup_bootconfig(&self, bootconfig: &[u8], fixup: &mut [u8]) -> Result<usize> {
         if fixup.is_empty() {
             return Err(Error::InvalidInput);
         }
@@ -86,6 +86,25 @@ impl Protocol<'_, GblOsConfigurationProtocol> {
         }
 
         Ok(fixup_size)
+    }
+
+    /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.select_device_trees()`.
+    pub fn select_device_trees(&self, components: &mut [GblEfiVerifiedDeviceTree]) -> Result<()> {
+        // SAFETY:
+        // * `self.interface()?` guarantees self.interface is non-null and points to a valid object
+        //   established by `Protocol::new()`.
+        // * `components` is non-null buffer available for write, used only within the call.
+        // * `components_len` is non-null usize buffer, used only within the call.
+        unsafe {
+            efi_call!(
+                self.interface()?.select_device_trees,
+                self.interface,
+                components.as_mut_ptr() as _,
+                components.len(),
+            )?;
+        }
+
+        Ok(())
     }
 }
 
@@ -233,7 +252,7 @@ mod test {
 
             assert_eq!(
                 os_config_protocol.fixup_kernel_commandline(commandline, &mut fixup_buffer),
-                Err(Error::BufferTooSmall(Some(256))),
+                Err(Error::BufferTooSmall(Some(EXPECTED_REQUESTED_FIXUP_SIZE))),
             );
         });
     }
@@ -376,8 +395,40 @@ mod test {
 
             assert_eq!(
                 os_config_protocol.fixup_bootconfig(&bootconfig[..], &mut fixup_buffer),
-                Err(Error::BufferTooSmall(Some(256))),
+                Err(Error::BufferTooSmall(Some(EXPECTED_REQUESTED_FIXUP_SIZE))),
             );
+        });
+    }
+
+    #[test]
+    fn select_device_trees_selected() {
+        // C callback implementation to select first component.
+        unsafe extern "C" fn c_select_first(
+            _: *mut GblEfiOsConfigurationProtocol,
+            device_trees: *mut GblEfiVerifiedDeviceTree,
+            num: usize,
+        ) -> EfiStatus {
+            assert_eq!(num, 1);
+
+            // SAFETY:
+            // * device_trees is non-null buffer available for write.
+            unsafe {
+                (*device_trees).selected = true;
+            }
+
+            EFI_STATUS_SUCCESS
+        }
+
+        let c_interface = GblEfiOsConfigurationProtocol {
+            select_device_trees: Some(c_select_first),
+            ..Default::default()
+        };
+
+        run_test_with_mock_protocol(c_interface, |os_config_protocol| {
+            let device_trees = &mut [GblEfiVerifiedDeviceTree::default()];
+
+            assert!(os_config_protocol.select_device_trees(device_trees).is_ok());
+            assert!(device_trees[0].selected);
         });
     }
 }

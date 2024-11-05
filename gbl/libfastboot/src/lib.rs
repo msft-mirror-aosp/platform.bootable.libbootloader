@@ -365,6 +365,16 @@ pub trait FastbootImplementation {
         responder: impl InfoSender + OkaySender,
     ) -> CommandError;
 
+    /// Method for handling `fastboot continue` clean up.
+    ///
+    /// `run()` and `run_tcp_session()` exit after receiving `fastboot continue.` The method is for
+    /// implementation to perform necessary clean up.
+    ///
+    /// # Args
+    ///
+    /// * `responder`: An instance of `InfoSender`.
+    async fn r#continue(&mut self, responder: impl InfoSender) -> CommandResult<()>;
+
     /// Backend for `fastboot oem ...`.
     ///
     /// # Args
@@ -686,7 +696,7 @@ async fn download(
 ) -> Result<()> {
     let mut resp = Responder::new(transport);
     let total_download_size = match (|| -> CommandResult<usize> {
-        usize::try_from(next_arg_u64(&mut args, Err("Not enough argument".into()))?)
+        usize::try_from(next_arg_u64(&mut args)?.ok_or("Not enough argument")?)
             .map_err(|_| "Download size overflow".into())
     })() {
         Err(e) => return reply_fail!(resp, "{}", e.to_str()),
@@ -773,8 +783,8 @@ async fn fetch(
         // Parses backward. Parses size, offset first and treats the remaining string as
         // partition name. This allows ":" in partition name.
         let mut rev = args.clone().rev();
-        let sz = next_arg(&mut rev, Err("Invalid argument".into()))?;
-        let off = next_arg(&mut rev, Err("Invalid argument".into()))?;
+        let sz = next_arg(&mut rev).ok_or("Missing size")?;
+        let off = next_arg(&mut rev).ok_or("Invalid offset")?;
         let part = &cmd[..cmd.len() - (off.len() + sz.len() + 2)];
         fb_impl.fetch(part, hex_to_u64(off)?, hex_to_u64(sz)?, &mut resp).await
     }
@@ -799,6 +809,18 @@ async fn reboot(
     reply_fail!(resp, "{}", e.to_str())
 }
 
+// Handles `fastboot continue`
+async fn r#continue(
+    transport: &mut impl Transport,
+    fb_impl: &mut impl FastbootImplementation,
+) -> Result<()> {
+    let mut resp = Responder::new(transport);
+    match fb_impl.r#continue(&mut resp).await {
+        Ok(_) => reply_okay!(resp, ""),
+        Err(e) => reply_fail!(resp, "{}", e.to_str()),
+    }
+}
+
 /// Helper for handling "fastboot oem ...".
 async fn oem(
     cmd: &str,
@@ -818,21 +840,28 @@ async fn oem(
 }
 
 /// Process the next Fastboot command from  the transport.
+///
+/// # Returns
+///
+/// * Returns Ok(is_continue) on success where `is_continue` is true if command is
+///   `fastboot continue`.
+/// * Returns Err() on errors.
 pub async fn process_next_command(
     transport: &mut impl Transport,
     fb_impl: &mut impl FastbootImplementation,
-) -> Result<()> {
+) -> Result<bool> {
     let mut packet = [0u8; MAX_COMMAND_SIZE];
     let cmd_size = match transport.receive_packet(&mut packet[..]).await? {
-        0 => return Ok(()),
+        0 => return Ok(false),
         v => v,
     };
     let Ok(cmd_str) = from_utf8(&packet[..cmd_size]) else {
-        return transport.send_packet(fastboot_fail!(packet, "Invalid Command")).await;
+        transport.send_packet(fastboot_fail!(packet, "Invalid Command")).await?;
+        return Ok(false);
     };
     let mut args = cmd_str.split(':');
     let Some(cmd) = args.next() else {
-        return transport.send_packet(fastboot_fail!(packet, "No command")).await;
+        return transport.send_packet(fastboot_fail!(packet, "No command")).await.map(|_| false);
     };
     match cmd {
         "getvar" => get_var(args, transport, fb_impl).await,
@@ -844,24 +873,35 @@ pub async fn process_next_command(
         "reboot-bootloader" => reboot(RebootMode::Bootloader, transport, fb_impl).await,
         "reboot-fastboot" => reboot(RebootMode::Fastboot, transport, fb_impl).await,
         "reboot-recovery" => reboot(RebootMode::Recovery, transport, fb_impl).await,
+        "continue" => {
+            r#continue(transport, fb_impl).await?;
+            return Ok(true);
+        }
         _ if cmd_str.starts_with("oem ") => oem(&cmd_str[4..], transport, fb_impl).await,
         _ => transport.send_packet(fastboot_fail!(packet, "Command not found")).await,
-    }
+    }?;
+    Ok(false)
 }
 
 /// Keeps polling and processing fastboot commands from the transport.
+///
+/// # Returns
+///
+/// * Returns Ok(()) if "fastboot continue" is received.
+/// * Returns Err() on errors.
 pub async fn run(
     transport: &mut impl Transport,
     fb_impl: &mut impl FastbootImplementation,
 ) -> Result<()> {
-    loop {
-        process_next_command(transport, fb_impl).await?;
-    }
+    while !process_next_command(transport, fb_impl).await? {}
+    Ok(())
 }
 
 /// Runs a fastboot over TCP session.
 ///
-/// The method performs fastboot over TCP handshake and then call `Self::run(...)`.
+/// The method performs fastboot over TCP handshake and then call `run(...)`.
+///
+/// Returns Ok(()) if "fastboot continue" is received.
 pub async fn run_tcp_session(
     tcp_stream: &mut impl TcpStream,
     fb_impl: &mut impl FastbootImplementation,
@@ -925,19 +965,13 @@ pub(crate) fn hex_to_u64(s: &str) -> CommandResult<u64> {
     Ok(u64::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16)?)
 }
 
-/// A helper to check and fetch the next argument or fall back to the default if not available.
+/// A helper to check and fetch the next non-empty argument.
 ///
 /// # Args
 ///
 /// args: A string iterator.
-/// default: This will be returned as it is if args doesn't have the next element(). Providing a
-///   Ok(str) is equivalent to providing a default value. Providing an Err() is equivalent to
-///   requiring that the next argument is mandatory.
-pub fn next_arg<'a, T: Iterator<Item = &'a str>>(
-    args: &mut T,
-    default: CommandResult<&'a str>,
-) -> CommandResult<&'a str> {
-    args.next().filter(|v| *v != "").ok_or("").or(default.map_err(|e| e.into()))
+pub fn next_arg<'a, T: Iterator<Item = &'a str>>(args: &mut T) -> Option<&'a str> {
+    args.next().filter(|v| *v != "")
 }
 
 /// A helper to check and fetch the next argument as a u64 hex string.
@@ -945,18 +979,17 @@ pub fn next_arg<'a, T: Iterator<Item = &'a str>>(
 /// # Args
 ///
 /// args: A string iterator.
-/// default: This will be returned as it is if args doesn't have the next element(). Providing a
-///   Ok(u64) is equivalent to providing a default value. Providing an Err() is equivalent to
-///   requiring that the next argument is mandatory.
 ///
-/// Returns error if the next argument is not a valid hex string.
-pub fn next_arg_u64<'a, T: Iterator<Item = &'a str>>(
-    args: &mut T,
-    default: CommandResult<u64>,
-) -> CommandResult<u64> {
-    match next_arg(args, Err("".into())) {
-        Ok(v) => hex_to_u64(v),
-        _ => default.map_err(|e| e.into()),
+///
+/// # Returns
+///
+/// * Returns Ok(Some(v)) is next argument is available and a valid u64 hex.
+/// * Returns Ok(None) is next argument is not available
+/// * Returns Err() if next argument is present but not a valid u64 hex.
+pub fn next_arg_u64<'a, T: Iterator<Item = &'a str>>(args: &mut T) -> CommandResult<Option<u64>> {
+    match next_arg(args) {
+        Some(v) => Ok(Some(hex_to_u64(v)?)),
+        _ => Ok(None),
     }
 }
 
@@ -1055,6 +1088,10 @@ mod test {
             responder.send_okay("").await.unwrap();
             self.reboot_mode = Some(mode);
             "reboot-return".into()
+        }
+
+        async fn r#continue(&mut self, mut responder: impl InfoSender) -> CommandResult<()> {
+            responder.send_info("Continuing to boot...").await
         }
 
         async fn oem<'b>(
@@ -1489,7 +1526,6 @@ mod test {
     #[test]
     fn test_fastboot_tcp_invalid_handshake() {
         let mut fastboot_impl: FastbootTest = Default::default();
-        fastboot_impl.download_buffer = vec![0u8; 1024];
         let mut tcp_stream: TestTcpStream = Default::default();
         tcp_stream.add_input(b"ABCD");
         assert_eq!(
@@ -1501,7 +1537,6 @@ mod test {
     #[test]
     fn test_fastboot_tcp_packet_size_exceeds_maximum() {
         let mut fastboot_impl: FastbootTest = Default::default();
-        fastboot_impl.download_buffer = vec![0u8; 1024];
         let mut tcp_stream: TestTcpStream = Default::default();
         tcp_stream.add_input(TCP_HANDSHAKE_MESSAGE);
         tcp_stream.add_input(&(MAX_COMMAND_SIZE + 1).to_be_bytes());
@@ -1514,7 +1549,6 @@ mod test {
     #[test]
     fn test_reboot() {
         let mut fastboot_impl: FastbootTest = Default::default();
-        fastboot_impl.download_buffer = vec![0u8; 2048];
         let mut transport = TestTransport::new();
         transport.add_input(b"reboot");
         block_on(process_next_command(&mut transport, &mut fastboot_impl)).unwrap();
@@ -1528,7 +1562,6 @@ mod test {
     #[test]
     fn test_reboot_bootloader() {
         let mut fastboot_impl: FastbootTest = Default::default();
-        fastboot_impl.download_buffer = vec![0u8; 2048];
         let mut transport = TestTransport::new();
         transport.add_input(b"reboot-bootloader");
         block_on(process_next_command(&mut transport, &mut fastboot_impl)).unwrap();
@@ -1542,7 +1575,6 @@ mod test {
     #[test]
     fn test_reboot_fastboot() {
         let mut fastboot_impl: FastbootTest = Default::default();
-        fastboot_impl.download_buffer = vec![0u8; 2048];
         let mut transport = TestTransport::new();
         transport.add_input(b"reboot-fastboot");
         block_on(process_next_command(&mut transport, &mut fastboot_impl)).unwrap();
@@ -1556,7 +1588,6 @@ mod test {
     #[test]
     fn test_reboot_recovery() {
         let mut fastboot_impl: FastbootTest = Default::default();
-        fastboot_impl.download_buffer = vec![0u8; 2048];
         let mut transport = TestTransport::new();
         transport.add_input(b"reboot-recovery");
         block_on(process_next_command(&mut transport, &mut fastboot_impl)).unwrap();
@@ -1565,5 +1596,33 @@ mod test {
         // Failure is expected here because test reboot implementation always returns, which
         // automatically generates a fastboot failure packet.
         assert!(transport.out_queue[1].starts_with(b"FAIL"));
+    }
+
+    #[test]
+    fn test_continue() {
+        let mut fastboot_impl: FastbootTest = Default::default();
+        fastboot_impl.download_buffer = vec![0u8; 1024];
+        let mut transport = TestTransport::new();
+        transport.add_input(b"getvar:max-download-size");
+        transport.add_input(b"continue");
+        transport.add_input(b"getvar:max-download-size");
+        block_on(run(&mut transport, &mut fastboot_impl)).unwrap();
+        assert_eq!(
+            transport.out_queue,
+            VecDeque::<Vec<u8>>::from([
+                b"OKAY0x400".into(),
+                b"INFOContinuing to boot...".into(),
+                b"OKAY".into()
+            ])
+        );
+    }
+
+    #[test]
+    fn test_continue_run_tcp() {
+        let mut fastboot_impl: FastbootTest = Default::default();
+        let mut tcp_stream: TestTcpStream = Default::default();
+        tcp_stream.add_input(TCP_HANDSHAKE_MESSAGE);
+        tcp_stream.add_length_prefixed_input(b"continue");
+        block_on(run_tcp_session(&mut tcp_stream, &mut fastboot_impl)).unwrap();
     }
 }

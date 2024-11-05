@@ -24,42 +24,18 @@ use crate::{
 use core::ffi::CStr;
 use core::{fmt::Write, num::NonZeroUsize, result::Result};
 use gbl_async::block_on;
-use gbl_storage::{BlockIoAsync, BlockIoNull};
+use gbl_storage::BlockIo;
+use libutils::aligned_subslice;
 
 // Re-exports of types from other dependencies that appear in the APIs of this library.
 pub use avb::{
     CertPermanentAttributes, IoError as AvbIoError, IoResult as AvbIoResult, SHA256_DIGEST_SIZE,
 };
 use liberror::Error;
-pub use zbi::ZbiContainer;
+pub use zbi::{ZbiContainer, ZBI_ALIGNMENT_USIZE};
 
+use super::device_tree;
 use super::slots;
-
-/// `AndroidBootImages` contains references to loaded images for booting Android.
-pub struct AndroidBootImages<'a> {
-    /// Kernel image.
-    pub kernel: &'a mut [u8],
-    /// Ramdisk to pass to the kernel.
-    pub ramdisk: &'a mut [u8],
-    /// FDT To pass to the kernel.
-    pub fdt: &'a mut [u8],
-}
-
-/// `FuchsiaBootImages` contains references to loaded images for booting Zircon.
-pub struct FuchsiaBootImages<'a> {
-    /// Kernel image.
-    pub zbi_kernel: &'a mut [u8],
-    /// ZBI container with items to pass to the kernel.
-    pub zbi_items: &'a mut [u8],
-}
-
-/// Images required to boot the supported kernels.
-pub enum BootImages<'a> {
-    /// Android boot images.
-    Android(AndroidBootImages<'a>),
-    /// Fuchsia boot images.
-    Fuchsia(FuchsiaBootImages<'a>),
-}
 
 // https://stackoverflow.com/questions/41081240/idiomatic-callbacks-in-rust
 // should we use traits for this? or optional/box FnMut?
@@ -74,9 +50,9 @@ pub trait GblOps<'a>
 where
     Self: 'a,
 {
-    /// Type that implements `BlockIoAsync` for the array of `PartitionBlockDevice` returned by]
+    /// Type that implements `BlockIo` for the array of `PartitionBlockDevice` returned by]
     /// `partitions()`.
-    type PartitionBlockIo: BlockIoAsync = BlockIoNull;
+    type PartitionBlockIo: BlockIo;
 
     /// Gets a console for logging messages.
     fn console_out(&mut self) -> Option<&mut dyn Write>;
@@ -91,9 +67,6 @@ where
     /// This method can be used to implement platform specific mechanism for deciding whether boot
     /// should abort and enter Fastboot mode.
     fn should_stop_in_fastboot(&mut self) -> Result<bool, Error>;
-
-    /// Platform specific processing of boot images before booting.
-    fn preboot(&mut self, boot_images: BootImages) -> Result<(), Error>;
 
     /// Reboots the system into the last set boot mode.
     ///
@@ -168,6 +141,19 @@ where
         container: &mut ZbiContainer<&mut [u8]>,
     ) -> Result<(), Error>;
 
+    /// Gets a buffer for staging bootloader file from fastboot.
+    ///
+    /// Fuchsia uses bootloader file for staging SSH key in development flow.
+    ///
+    /// Returns `None` if the platform does not intend to support it.
+    fn get_zbi_bootloader_files_buffer(&mut self) -> Option<&mut [u8]>;
+
+    /// Gets the aligned part of buffer returned by `get_zbi_bootloader_files_buffer()` according to
+    /// ZBI alignment requirement.
+    fn get_zbi_bootloader_files_buffer_aligned(&mut self) -> Option<&mut [u8]> {
+        aligned_subslice(self.get_zbi_bootloader_files_buffer()?, ZBI_ALIGNMENT_USIZE).ok()
+    }
+
     // TODO(b/334962570): figure out how to plumb ops-provided hash implementations into
     // libavb. The tricky part is that libavb hashing APIs are global with no way to directly
     // correlate the implementation to a particular [GblOps] object, so we'll probably have to
@@ -176,19 +162,17 @@ where
     // reference to [GblOps], which may restrict implementations.
     // fn new_digest(&self) -> Option<Self::Context>;
 
-    /// Callback for when fastboot mode is requested.
-    // Nevertype could be used here when it is stable https://github.com/serde-rs/serde/issues/812
-    fn do_fastboot<B: gbl_storage::AsBlockDevice>(
-        &self,
-        cursor: &mut slots::Cursor<B>,
-    ) -> GblResult<()>;
-
     /// Load and initialize a slot manager and return a cursor over the manager on success.
-    fn load_slot_interface<'b, B: gbl_storage::AsBlockDevice>(
+    ///
+    /// # Args
+    ///
+    /// * `persist`: A user provided closure for persisting a given slot metadata bytes to storage.
+    /// * `boot_token`: A [slots::BootToken].
+    fn load_slot_interface<'b>(
         &'b mut self,
-        block_device: &'b mut B,
+        persist: &'b mut dyn FnMut(&mut [u8]) -> Result<(), Error>,
         boot_token: slots::BootToken,
-    ) -> GblResult<slots::Cursor<'b, B>>;
+    ) -> GblResult<slots::Cursor<'b>>;
 
     // The following is a selective subset of the interfaces in `avb::Ops` and `avb::CertOps` needed
     // by GBL's usage of AVB. The rest of the APIs are either not relevant to or are implemented and
@@ -261,6 +245,25 @@ where
         bootconfig: &[u8],
         fixup_buffer: &'c mut [u8],
     ) -> Result<Option<&'c [u8]>, Error>;
+
+    /// Selects from device tree components to build the final one.
+    ///
+    /// Provided components registry must be used to select one device tree (none is not allowed),
+    /// and any number of overlays. Refer to the behavior specified for the corresponding UEFI
+    /// interface:
+    /// https://cs.android.com/android/platform/superproject/main/+/main:bootable/libbootloader/gbl/docs/gbl_os_configuration_protocol.md
+    fn select_device_trees(
+        &mut self,
+        components: &mut device_tree::DeviceTreeComponentsRegistry,
+    ) -> Result<(), Error>;
+
+    /// Provide writtable buffer of the device tree built by GBL.
+    ///
+    /// Modified device tree will be verified and used to boot a device. Refer to the behavior
+    /// specified for the corresponding UEFI interface:
+    /// https://cs.android.com/android/platform/superproject/main/+/main:bootable/libbootloader/gbl/docs/efi_protocols.md
+    /// https://github.com/U-Boot-EFI/EFI_DT_FIXUP_PROTOCOL
+    fn fixup_device_tree(&mut self, device_tree: &mut [u8]) -> Result<(), Error>;
 }
 
 /// Prints with `GblOps::console_out()`.
@@ -293,7 +296,6 @@ pub(crate) mod test {
     use avb::{CertOps, Ops};
     use avb_test::TestOps as AvbTestOps;
     use gbl_storage_testlib::{TestBlockDevice, TestBlockDeviceBuilder, TestBlockIo};
-    use safemath::SafeNum;
     use zbi::{ZbiFlags, ZbiType};
 
     /// Backing storage for [FakeGblOps].
@@ -327,18 +329,9 @@ pub(crate) mod test {
 
         /// Adds a raw partition block device.
         pub fn add_raw_device(&mut self, name: &'static str, data: impl AsRef<[u8]>) {
-            self.raw_devices.push((name, data.as_ref().into()))
-        }
-
-        /// Similar to [add_raw_device] but pads `data` with zeros up to the next
-        /// [TestBlockDeviceBuilder::DEFAULT_BLOCK_SIZE].
-        pub(crate) fn add_raw_device_padded(&mut self, name: &'static str, mut data: Vec<u8>) {
-            let padded_size = SafeNum::from(data.len())
-                .round_up(TestBlockDeviceBuilder::DEFAULT_BLOCK_SIZE)
-                .try_into()
-                .unwrap();
-            data.resize(padded_size, 0);
-            self.add_raw_device(name, data);
+            let dev =
+                TestBlockDeviceBuilder::new().set_data(data.as_ref()).set_block_size(1).build();
+            self.raw_devices.push((name, dev))
         }
 
         /// Returns a vector of [PartitionBlockDevice]s wrapping the added devices.
@@ -348,12 +341,15 @@ pub(crate) mod test {
             let mut parts = Vec::default();
             // Convert GPT devices.
             for device in self.gpt_devices.iter_mut() {
-                let (gpt_blk, gpt) = device.as_gpt_dev().into_blk_and_gpt();
-                parts.push(PartitionBlockDevice::new_gpt(gpt_blk, gpt));
+                let (gpt_blk, gpt) = device.new_blk_and_gpt();
+                parts.push(PartitionBlockDevice::new_gpt(gpt_blk.as_borrowed(), gpt.as_borrowed()));
             }
             // Convert raw devices.
             for (name, device) in self.raw_devices.iter_mut() {
-                parts.push(PartitionBlockDevice::new_raw(device.as_blk_dev(), name).unwrap());
+                parts.push(
+                    PartitionBlockDevice::new_raw(device.new_blk_and_gpt().0.as_borrowed(), name)
+                        .unwrap(),
+                );
             }
             block_on(sync_gpt(&mut parts[..])).unwrap();
             parts
@@ -375,6 +371,9 @@ pub(crate) mod test {
 
         /// Value returned by `should_stop_in_fastboot`.
         pub stop_in_fastboot: Option<Result<bool, Error>>,
+
+        /// For returned by `fn get_zbi_bootloader_files_buffer()`
+        pub zbi_bootloader_files_buffer: Vec<u8>,
     }
 
     /// Print `console_out` output, which can be useful for debugging.
@@ -389,9 +388,24 @@ pub(crate) mod test {
         /// single commandline ZBI item with these contents; if necessary we can generalize this
         /// later and allow tests to configure the ZBI modifications.
         pub const ADDED_ZBI_COMMANDLINE_CONTENTS: &'static [u8] = b"test_zbi_item";
+        pub const TEST_BOOTLOADER_FILE_1: &'static [u8] = b"\x06test_1foo";
+        pub const TEST_BOOTLOADER_FILE_2: &'static [u8] = b"\x06test_2bar";
 
         pub fn new(partitions: &'a [PartitionBlockDevice<'a, &'a mut TestBlockIo>]) -> Self {
-            Self { partitions, ..Default::default() }
+            let mut res = Self {
+                partitions,
+                zbi_bootloader_files_buffer: vec![0u8; 32 * 1024],
+                ..Default::default()
+            };
+            let mut container =
+                ZbiContainer::new(res.get_zbi_bootloader_files_buffer_aligned().unwrap()).unwrap();
+            for ele in [Self::TEST_BOOTLOADER_FILE_1, Self::TEST_BOOTLOADER_FILE_2] {
+                container
+                    .create_entry_with_payload(ZbiType::BootloaderFile, 0, ZbiFlags::default(), ele)
+                    .unwrap();
+            }
+
+            res
         }
 
         /// Copies an entire partition contents into a vector.
@@ -422,10 +436,6 @@ pub(crate) mod test {
             self.stop_in_fastboot.unwrap_or(Ok(false))
         }
 
-        fn preboot(&mut self, boot_images: BootImages) -> Result<(), Error> {
-            unimplemented!();
-        }
-
         fn reboot(&mut self) {}
 
         fn partitions(
@@ -449,18 +459,15 @@ pub(crate) mod test {
             Ok(())
         }
 
-        fn do_fastboot<B: gbl_storage::AsBlockDevice>(
-            &self,
-            cursor: &mut slots::Cursor<B>,
-        ) -> GblResult<()> {
-            unimplemented!();
+        fn get_zbi_bootloader_files_buffer(&mut self) -> Option<&mut [u8]> {
+            Some(self.zbi_bootloader_files_buffer.as_mut_slice())
         }
 
-        fn load_slot_interface<'b, B: gbl_storage::AsBlockDevice>(
+        fn load_slot_interface<'b>(
             &'b mut self,
-            block_device: &'b mut B,
-            boot_token: slots::BootToken,
-        ) -> GblResult<slots::Cursor<'b, B>> {
+            _: &'b mut dyn FnMut(&mut [u8]) -> Result<(), Error>,
+            _: slots::BootToken,
+        ) -> GblResult<slots::Cursor<'b>> {
             unimplemented!();
         }
 
@@ -493,11 +500,7 @@ pub(crate) mod test {
             self.avb_ops.read_permanent_attributes_hash()
         }
 
-        fn get_image_buffer<'c>(
-            &mut self,
-            image_name: &str,
-            size: NonZeroUsize,
-        ) -> GblResult<ImageBuffer<'c>> {
+        fn get_image_buffer<'c>(&mut self, _: &str, _: NonZeroUsize) -> GblResult<ImageBuffer<'c>> {
             unimplemented!();
         }
 
@@ -518,6 +521,17 @@ pub(crate) mod test {
             _bootconfig: &[u8],
             _fixup_buffer: &'c mut [u8],
         ) -> Result<Option<&'c [u8]>, Error> {
+            unimplemented!();
+        }
+
+        fn fixup_device_tree(&mut self, _: &mut [u8]) -> Result<(), Error> {
+            unimplemented!();
+        }
+
+        fn select_device_trees(
+            &mut self,
+            _: &mut device_tree::DeviceTreeComponentsRegistry,
+        ) -> Result<(), Error> {
             unimplemented!();
         }
     }

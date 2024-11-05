@@ -12,8 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::error::{listen_to_unified, recv_to_unified, send_to_unified};
-use crate::utils::{get_device_path, loop_with_timeout};
+use crate::{
+    error::{listen_to_unified, recv_to_unified, send_to_unified},
+    utils::{get_device_path, loop_with_timeout},
+};
 use alloc::{boxed::Box, vec::Vec};
 use core::{
     fmt::Write,
@@ -23,22 +25,25 @@ use efi::{
     efi_print, efi_println,
     protocol::{simple_network::SimpleNetworkProtocol, Protocol},
     utils::{ms_to_100ns, Timeout},
-    DeviceHandle, EfiEntry, EventNotify, EventType, Tpl,
+    DeviceHandle, EfiEntry, Event, EventNotify, EventType, Tpl,
 };
 use efi_types::{EfiEvent, EfiMacAddress, EFI_TIMER_DELAY_TIMER_PERIODIC};
 use gbl_async::{yield_now, YieldCounter};
 use liberror::{Error, Result};
+use libgbl::fastboot::fuchsia_fastboot_mdns_packet;
 use smoltcp::{
-    iface::{Config, Interface, SocketSet},
+    iface::{Config, Interface, SocketSet, SocketStorage},
     phy,
     phy::{Device, DeviceCapabilities, Medium},
-    socket::tcp,
+    socket::{
+        tcp::{Socket as TcpSocket, SocketBuffer, State},
+        udp::{PacketBuffer, Socket as UdpSocket, UdpMetadata},
+    },
+    storage::PacketMetadata,
     time::Instant,
-    wire::{EthernetAddress, IpAddress, IpCidr, Ipv6Address},
+    wire::{EthernetAddress, IpAddress, IpCidr, IpListenEndpoint, Ipv6Address},
 };
 
-/// Maintains a timestamp needed by smoltcp network. It's updated periodically during timer event.
-static NETWORK_TIMESTAMP: AtomicU64 = AtomicU64::new(0);
 /// Ethernet frame size for frame pool.
 const ETHERNET_FRAME_SIZE: usize = 1536;
 // Update period in milliseconds for `NETWORK_TIMESTAMP`.
@@ -106,7 +111,7 @@ impl Drop for EfiNetworkDevice<'_> {
             // SAFETY:
             // Each pointer is created by `Box::new()` in `EfiNetworkDevice::new()`. Thus the
             // pointer is valid and layout matches.
-            let _ = unsafe { Box::from_raw(v) };
+            drop(unsafe { Box::<[u8; ETHERNET_FRAME_SIZE]>::from_raw(*v) });
         });
     }
 }
@@ -254,16 +259,6 @@ impl phy::TxToken for TxToken<'_, '_> {
     }
 }
 
-/// Returns the current value of timestamp.
-fn timestamp() -> u64 {
-    NETWORK_TIMESTAMP.load(Ordering::Relaxed)
-}
-
-/// Returns a smoltcp time `Instant` value.
-fn time_instant() -> Instant {
-    Instant::from_millis(i64::try_from(timestamp()).unwrap())
-}
-
 /// Find the first available network device.
 fn find_net_device(efi_entry: &EfiEntry) -> Result<DeviceHandle> {
     // Find the device whose path is the "smallest" lexicographically, this ensures that it's not
@@ -309,11 +304,15 @@ fn ll_mac_ip6_addr_from_efi_mac(mac: EfiMacAddress) -> (EthernetAddress, IpAddre
 
 /// `EfiTcpSocket` groups together necessary components for performing TCP.
 pub struct EfiTcpSocket<'a, 'b> {
+    pub(crate) efi_entry: &'a EfiEntry,
     efi_net_dev: &'b mut EfiNetworkDevice<'a>,
-    interface: &'b mut Interface,
-    sockets: &'b mut SocketSet<'b>,
-    efi_entry: &'a EfiEntry,
+    interface: Interface,
+    socket_set: SocketSet<'b>,
     io_yield_counter: YieldCounter,
+    last_listen_timestamp: Option<u64>,
+    _time_update_event: Event<'a, 'b>,
+    timestamp: &'b AtomicU64,
+    fuchsia_fastboot_mdns_packet: Vec<u8>,
 }
 
 impl<'a, 'b> EfiTcpSocket<'a, 'b> {
@@ -321,12 +320,24 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
     pub fn listen(&mut self, port: u16) -> Result<()> {
         self.get_socket().abort();
         self.get_socket().listen(port).map_err(listen_to_unified)?;
+        self.last_listen_timestamp = Some(self.timestamp(0));
         Ok(())
+    }
+
+    // Checks if the socket is listening or performing handshake.
+    pub fn is_listening_or_handshaking(&mut self) -> bool {
+        matches!(self.get_socket().state(), State::Listen | State::SynReceived)
+    }
+
+    /// Returns the amount of time elapsed since last call to `Self::listen()`. If `listen()` has
+    /// never been called, `u64::MAX` is returned.
+    pub fn time_since_last_listen(&mut self) -> u64 {
+        self.last_listen_timestamp.map(|v| self.timestamp(v)).unwrap_or(u64::MAX)
     }
 
     /// Polls network device.
     pub fn poll(&mut self) {
-        self.interface.poll(time_instant(), self.efi_net_dev, self.sockets);
+        self.interface.poll(self.instant(), self.efi_net_dev, &mut self.socket_set);
     }
 
     /// Polls network and check if the socket is in an active state.
@@ -336,15 +347,15 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
     }
 
     /// Gets a reference to the smoltcp socket object.
-    pub fn get_socket(&mut self) -> &mut tcp::Socket<'b> {
+    pub fn get_socket(&mut self) -> &mut TcpSocket<'b> {
         // We only consider single socket use case for now.
-        let handle = self.sockets.iter().next().unwrap().0;
-        self.sockets.get_mut::<tcp::Socket>(handle)
+        let handle = self.socket_set.iter().next().unwrap().0;
+        self.socket_set.get_mut::<TcpSocket>(handle)
     }
 
     /// Checks whether a socket is closed.
     fn is_closed(&mut self) -> bool {
-        return !self.get_socket().is_open() || self.get_socket().state() == tcp::State::CloseWait;
+        return !self.get_socket().is_open() || self.get_socket().state() == State::CloseWait;
     }
 
     /// Sets the maximum number of bytes to read or write before a force await.
@@ -423,85 +434,223 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
 
     /// Gets the smoltcp `Interface` for this socket.
     pub fn interface(&self) -> &Interface {
-        self.interface
+        &self.interface
     }
 
     /// Returns the number of milliseconds elapsed since the `base` timestamp.
-    pub fn timestamp(base: u64) -> u64 {
-        let curr = timestamp();
+    pub fn timestamp(&self, base: u64) -> u64 {
+        let curr = self.timestamp.load(Ordering::Relaxed);
         // Assume there can be at most one overflow.
         match curr < base {
             true => u64::MAX - (base - curr),
             false => curr - base,
         }
     }
-}
 
-/// Initializes network environment and provides a TCP socket for callers to run a closure. The API
-/// handles clean up automatically after returning.
-pub fn with_efi_network<F, R>(efi_entry: &EfiEntry, mut f: F) -> Result<R>
-where
-    F: FnMut(&mut EfiTcpSocket) -> R,
-{
-    let bs = efi_entry.system_table().boot_services();
-
-    // Creates timestamp update event.
-    let _ = NETWORK_TIMESTAMP.swap(0, Ordering::Relaxed);
-    let mut notify_fn = |_: EfiEvent| {
-        NETWORK_TIMESTAMP.fetch_add(NETWORK_TIMESTAMP_UPDATE_PERIOD, Ordering::Relaxed);
-    };
-    let mut notify = EventNotify::new(Tpl::Callback, &mut notify_fn);
-    // SAFETY: the notification callback never allocates, deallocates, or panics.
-    let timer =
-        unsafe { bs.create_event_with_notification(EventType::TimerNotifySignal, &mut notify) }?;
-    bs.set_timer(
-        &timer,
-        EFI_TIMER_DELAY_TIMER_PERIODIC,
-        ms_to_100ns(NETWORK_TIMESTAMP_UPDATE_PERIOD)?,
-    )?;
-
-    // Creates and initializes simple network protocol.
-    let snp_dev = find_net_device(efi_entry)?;
-    let snp = bs.open_protocol::<SimpleNetworkProtocol>(snp_dev)?;
-    reset_simple_network(&snp)?;
-
-    // The TCP stack requires ICMP6 solicitation for discovery. Enable promiscuous mode so that all
-    // uni/multicast packets can be captured.
-    match snp.set_promiscuous_mode() {
-        Err(e) => efi_println!(
-            efi_entry,
-            "Warning: Failed to set promiscuous mode {e:?}. Device may be undiscoverable",
-        ),
-        _ => {}
+    /// Returns a smoltcp time `Instant` value.
+    fn instant(&self) -> Instant {
+        to_smoltcp_instant(self.timestamp(0))
     }
 
-    // Gets our MAC address and IPv6 address.
-    // We can also consider getting this from vendor configuration.
-    let (ll_mac, ll_ip6_addr) = ll_mac_ip6_addr_from_efi_mac(snp.mode()?.current_address);
+    /// Broadcasts Fuchsia Fastboot MDNS service once.
+    pub fn broadcast_fuchsia_fastboot_mdns(&mut self) {
+        const MDNS_PORT: u16 = 5353;
+        const IP6_BROADCAST_ADDR: &[u8] =
+            &[0xFF, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFB];
+        let ip6_broadcast = Ipv6Address::from_bytes(&IP6_BROADCAST_ADDR[..]);
+        let meta =
+            UdpMetadata { endpoint: (ip6_broadcast, MDNS_PORT).into(), meta: Default::default() };
+        let handle = self.socket_set.iter().nth(1).unwrap().0;
+        let socket = self.socket_set.get_mut::<UdpSocket>(handle);
+        if !socket.is_open() {
+            match socket.bind(IpListenEndpoint { addr: None, port: MDNS_PORT }) {
+                Err(e) => efi_println!(self.efi_entry, "bind error: {:?}", e),
+                _ => {}
+            }
+        }
+        if socket.can_send() {
+            match socket.send_slice(&self.fuchsia_fastboot_mdns_packet, meta) {
+                Err(e) => efi_println!(self.efi_entry, "UDP send error: {:?}", e),
+                _ => {}
+            }
+        }
+    }
+}
 
-    // Creates an `EfiNetworkDevice`.
-    // Allocates 7(chosen randomly) extra TX frames. Revisits if it is not enough.
-    let mut efi_net_dev = EfiNetworkDevice::new(snp, 7, &efi_entry);
-    // Configures smoltcp network interface.
-    let mut interface =
-        Interface::new(Config::new(ll_mac.into()), &mut efi_net_dev, time_instant());
-    interface.update_ip_addrs(|ip_addrs| ip_addrs.push(IpCidr::new(ll_ip6_addr, 64)).unwrap());
-    // Creates an instance of socket.
-    let mut tx_buffer = vec![0u8; SOCKET_TX_RX_BUFFER];
-    let mut rx_buffer = vec![0u8; SOCKET_TX_RX_BUFFER];
-    let tx_socket_buffer = tcp::SocketBuffer::new(&mut tx_buffer[..]);
-    let rx_socket_buffer = tcp::SocketBuffer::new(&mut rx_buffer[..]);
-    let socket = tcp::Socket::new(rx_socket_buffer, tx_socket_buffer);
-    let mut sockets: [_; 1] = Default::default();
-    let mut sockets = SocketSet::new(&mut sockets[..]);
-    let _ = sockets.add(socket);
-    let mut socket = EfiTcpSocket {
-        efi_net_dev: &mut efi_net_dev,
-        interface: &mut interface,
-        sockets: &mut sockets,
-        efi_entry: efi_entry,
-        io_yield_counter: YieldCounter::new(u64::MAX),
-    };
+/// Returns a smoltcp time `Instant` value from a u64 timestamp.
+fn to_smoltcp_instant(ts: u64) -> Instant {
+    Instant::from_millis(i64::try_from(ts).unwrap())
+}
 
-    Ok(f(&mut socket))
+/// Internal type that contains net driver interfaces and buffers for creating GBL network and
+/// sockets.
+///
+/// # Lifetimes
+///
+/// * `'a`: Lifetime of [EfiEntry] borrowed.
+/// * `'b`: Lifetime of [SocketStorage<'b>], which eventually refers to Self.
+/// * `'c`: Lifetime of [AtomicU64] borrowed.
+struct EfiGblNetworkInternal<'a, 'b, 'c> {
+    efi_entry: &'a EfiEntry,
+    tcp_tx_buffer: Vec<u8>,
+    tcp_rx_buffer: Vec<u8>,
+    udp_tx_payload_buffer: Vec<u8>,
+    udp_rx_payload_buffer: Vec<u8>,
+    udp_tx_metadata_buffer: Vec<PacketMetadata<UdpMetadata>>,
+    udp_rx_metadata_buffer: Vec<PacketMetadata<UdpMetadata>>,
+    socket_storage: [SocketStorage<'b>; 2],
+    efi_net_dev: EfiNetworkDevice<'a>,
+    timestamp: &'c AtomicU64,
+    notify_fn: Option<Box<dyn FnMut(EfiEvent) + Sync + 'c>>,
+    notify: Option<EventNotify<'b>>,
+}
+
+impl<'a, 'b, 'c> EfiGblNetworkInternal<'a, 'b, 'c> {
+    /// Creates a new instance of [EfiGblNetworkInternal].
+    fn new(efi_entry: &'a EfiEntry, timestamp: &'c AtomicU64) -> Result<Self> {
+        // Creates and initializes simple network protocol.
+        let snp_dev = find_net_device(efi_entry)?;
+        let snp = efi_entry
+            .system_table()
+            .boot_services()
+            .open_protocol::<SimpleNetworkProtocol>(snp_dev)?;
+        reset_simple_network(&snp)?;
+
+        // The TCP stack requires ICMP6 solicitation for discovery. Enable promiscuous mode so that
+        // all uni/multicast packets can be captured.
+        match snp.set_promiscuous_mode() {
+            Err(e) => efi_println!(
+                efi_entry,
+                "Warning: Failed to set promiscuous mode {e:?}. Device may be undiscoverable",
+            ),
+            _ => {}
+        }
+
+        Ok(Self {
+            efi_entry,
+            tcp_tx_buffer: vec![0u8; SOCKET_TX_RX_BUFFER],
+            tcp_rx_buffer: vec![0u8; SOCKET_TX_RX_BUFFER],
+            udp_tx_payload_buffer: vec![0u8; ETHERNET_FRAME_SIZE],
+            udp_rx_payload_buffer: vec![0u8; ETHERNET_FRAME_SIZE],
+            udp_tx_metadata_buffer: vec![PacketMetadata::EMPTY; 1],
+            udp_rx_metadata_buffer: vec![PacketMetadata::EMPTY; 1],
+            socket_storage: Default::default(),
+            // Allocates 7(chosen randomly) extra TX frames. Revisits if it is not enough.
+            efi_net_dev: EfiNetworkDevice::new(snp, 7, &efi_entry),
+            timestamp,
+            notify_fn: None,
+            notify: None,
+        })
+    }
+
+    /// Creates an instance of [EfiTcpSocket].
+    fn create_socket(&'b mut self) -> Result<EfiTcpSocket<'a, 'b>> {
+        // Resets network timestamp to 0.
+        let _ = self.timestamp.swap(0, Ordering::Relaxed);
+
+        // Initializes notification functions.
+        if self.notify_fn.is_none() {
+            self.notify_fn = Some(Box::new(|_: EfiEvent| {
+                self.timestamp.fetch_add(NETWORK_TIMESTAMP_UPDATE_PERIOD, Ordering::Relaxed);
+            }));
+            self.notify = Some(EventNotify::new(Tpl::Callback, self.notify_fn.as_mut().unwrap()));
+        }
+
+        // Creates a timer event for updating the global timestamp.
+        let bs = self.efi_entry.system_table().boot_services();
+        // SAFETY: the notification callback in `notify_fn` initialized above never allocates,
+        // deallocates, or panics.
+        let _time_update_event = unsafe {
+            bs.create_event_with_notification(
+                EventType::TimerNotifySignal,
+                self.notify.as_mut().unwrap(),
+            )
+        }?;
+        bs.set_timer(
+            &_time_update_event,
+            EFI_TIMER_DELAY_TIMER_PERIODIC,
+            ms_to_100ns(NETWORK_TIMESTAMP_UPDATE_PERIOD)?,
+        )?;
+
+        // Gets our MAC address and IPv6 address.
+        // We can also consider getting this from vendor configuration.
+        let (ll_mac, ll_ip6_addr) =
+            ll_mac_ip6_addr_from_efi_mac(self.efi_net_dev.protocol.mode()?.current_address);
+        // Configures smoltcp network interface.
+        let mut interface = Interface::new(
+            Config::new(ll_mac.into()),
+            &mut self.efi_net_dev,
+            to_smoltcp_instant(0),
+        );
+        interface.update_ip_addrs(|ip_addrs| ip_addrs.push(IpCidr::new(ll_ip6_addr, 64)).unwrap());
+
+        // Generates Fuchsia Fastboot MDNS packet.
+        let eth_mac = ll_mac.as_bytes();
+        let fuchsia_node_name = format!(
+            "fuchsia-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}",
+            eth_mac[0], eth_mac[1], eth_mac[2], eth_mac[3], eth_mac[4], eth_mac[5]
+        );
+        let fuchsia_fastboot_mdns_packet =
+            fuchsia_fastboot_mdns_packet(fuchsia_node_name.as_str(), ll_ip6_addr.as_bytes())?
+                .into();
+
+        // Creates sockets.
+        let mut socket_set = SocketSet::new(&mut self.socket_storage[..]);
+        // Creates a TCP socket for fastboot over TCP.
+        let tx_socket_buffer = SocketBuffer::new(&mut self.tcp_tx_buffer[..]);
+        let rx_socket_buffer = SocketBuffer::new(&mut self.tcp_rx_buffer[..]);
+        let tcp_socket = TcpSocket::new(rx_socket_buffer, tx_socket_buffer);
+        let _ = socket_set.add(tcp_socket);
+        // Creates a UDP socket for MDNS broadcast.
+        let udp_tx_packet_buffer = PacketBuffer::new(
+            &mut self.udp_tx_metadata_buffer[..],
+            &mut self.udp_tx_payload_buffer[..],
+        );
+        let udp_rx_packet_buffer = PacketBuffer::new(
+            &mut self.udp_rx_metadata_buffer[..],
+            &mut self.udp_rx_payload_buffer[..],
+        );
+        let udp_socket = UdpSocket::new(udp_rx_packet_buffer, udp_tx_packet_buffer);
+        let _ = socket_set.add(udp_socket);
+        Ok(EfiTcpSocket {
+            efi_entry: self.efi_entry,
+            efi_net_dev: &mut self.efi_net_dev,
+            interface,
+            socket_set,
+            io_yield_counter: YieldCounter::new(u64::MAX),
+            last_listen_timestamp: None,
+            _time_update_event,
+            timestamp: self.timestamp,
+            fuchsia_fastboot_mdns_packet,
+        })
+    }
+}
+
+/// The GBL network stack.
+///
+/// # Lifetimes
+///
+/// * `'a`: Lifetime of `efi_entry` borrowed.
+/// * `'b`: Lifetime of Self.
+/// * `'c`: Lifetime of external timestamp borrowed.
+#[derive(Default)]
+pub struct EfiGblNetwork<'a, 'b, 'c>(Option<EfiGblNetworkInternal<'a, 'b, 'c>>);
+
+impl<'a, 'b, 'c: 'b> EfiGblNetwork<'a, 'b, 'c> {
+    /// Initializes GBL network and creates GBL sockets.
+    ///
+    /// # Args:
+    ///
+    /// * `efi_entry`: A [EfiEntry].
+    /// * `ts`: A reference to an [AtomicU64].
+    pub fn init(
+        &'b mut self,
+        efi_entry: &'a EfiEntry,
+        timestamp: &'c AtomicU64,
+    ) -> Result<EfiTcpSocket<'a, 'b>> {
+        // Drops any existing network first to release the global event notify function.
+        self.0 = None;
+        self.0 = Some(EfiGblNetworkInternal::new(efi_entry, timestamp)?);
+        self.0.as_mut().unwrap().create_socket()
+    }
 }

@@ -23,36 +23,35 @@
 
 #include "types.h"
 
-typedef enum GBL_DEVICE_TREE_SOURCE {
+typedef enum GBL_EFI_DEVICE_TREE_SOURCE {
   BOOT,
   VENDOR_BOOT,
   DTBO,
   DTB
-} GblDeviceTreeSource;
+} GblEfiDeviceTreeSource;
 
 typedef struct {
   // GblDeviceTreeSource
   uint32_t source;
-  // values are zeroed and must not be used in case of BOOT / VENDOR_BOOT source
+  // Values are zeroed and must not be used in case of BOOT / VENDOR_BOOT source
   uint32_t id;
   uint32_t rev;
   uint32_t custom[4];
-  // make sure GblDeviceTreeMetadata size is 8-bytes aligned. Also reserved for
+  // Make sure GblDeviceTreeMetadata size is 8-bytes aligned. Also reserved for
   // the future cases
   uint32_t reserved;
-} GblDeviceTreeMetadata;
+} GblEfiDeviceTreeMetadata;
 
 typedef struct {
-  GblDeviceTreeMetadata metadata;
-  // base device tree / overlay buffer (guaranteed to be 8-bytes aligned),
-  // cannot be NULL
+  GblEfiDeviceTreeMetadata metadata;
+  // Base device tree / overlay buffer (guaranteed to be 8-bytes aligned),
+  // cannot be NULL. Device tree size can be identified by the header totalsize
+  // field
   const void* device_tree;
-  size_t device_tree_bytes;
-  // null by default, expected to set to the fdt header within provided
-  // device_tree buffer in case it expected to be picked by GBL. Remain NULL if
-  // not contribute to the final device tree.
-  void* chosen;
-} GblVerifiedDeviceTree;
+  // Indicates whether this device tree (or overlay) must be included in the
+  // final device tree. Set to true by a FW if this component must be used
+  bool selected;
+} GblEfiVerifiedDeviceTree;
 
 // Warning: API is UNSTABLE
 // Documentation:
@@ -71,14 +70,9 @@ typedef struct GblEfiOsConfigurationProtocol {
                                 char8_t* fixup, size_t* fixup_buffer_size);
 
   // Selects which device trees and overlays to use from those loaded by GBL.
-  EfiStatus (*build_device_tree)(struct GblEfiOsConfigurationProtocol* self,
-                                 GblVerifiedDeviceTree* device_trees,
-                                 size_t num_device_trees);
-
-  // Applies required fixups to the final device tree.
-  EfiStatus (*fixup_device_tree)(struct GblEfiOsConfigurationProtocol* self,
-                                 void* device_tree,
-                                 size_t* device_tree_buffer_size);
+  EfiStatus (*select_device_trees)(struct GblEfiOsConfigurationProtocol* self,
+                                   GblEfiVerifiedDeviceTree* device_trees,
+                                   size_t num_device_trees);
 } GblEfiOsConfigurationProtocol;
 
 #endif  //__GBL_OS_CONFIGURATION_PROTOCOL_H__

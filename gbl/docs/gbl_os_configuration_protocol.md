@@ -7,16 +7,16 @@ apply runtime fixups to data passed into the OS.
 
 ### Summary
 
-This protocol provides a mechanism for the EFI firmware to update OS
+This protocol provides a mechanism for the EFI firmware to build and update OS
 configuration data:
 
-* kernel commandline
-* bootconfig
-* devicetree
+* device tree (select components to build the final one)
+* kernel commandline (append fixups)
+* bootconfig (append fixups)
 
 GBL will load and verify the base data from disk, and then call these protocol
 functions to give the firmware a chance to construct and adjust the data as needed
-for the particular device.
+for the particular device. Device tree fixup is handled by `EFI_DT_FIXUP` protocol.
 
 If no runtime modifications are necessary, this protocol may be left
 unimplemented.
@@ -49,8 +49,7 @@ typedef struct _GBL_EFI_OS_CONFIGURATION_PROTOCOL {
   UINT64                            Revision;
   GBL_EFI_FIXUP_KERNEL_COMMAND_LINE FixupKernelCommandline;
   GBL_EFI_FIXUP_BOOTCONFIG          FixupBootConfig;
-  GBL_EFI_BUILD_DEVICE_TREE         BuildDeviceTree;
-  GBL_EFI_FIXUP_DEVICE_TREE         FixupDeviceTree;
+  GBL_EFI_SELECT_DEVICE_TREES       SelectDeviceTrees;
   GBL_EFI_FIXUP_ZBI                 FixupZbi;
 } GBL_EFI_OS_CONFIGURATION_PROTOCOL;
 ```
@@ -69,12 +68,9 @@ Applies kernel commandline fixups. See
 #### FixupBootConfig
 Applies bootconfig fixups. See [`FixupBootConfig()`](#FixupBootConfig).
 
-#### BuildDeviceTree
+#### SelectDeviceTrees
 Select components such as base device tree, overlays to build the final device tree.
-See [`BuildDeviceTree()`](#BuildDeviceTree).
-
-#### FixupDeviceTree
-Applies device tree fixups. See [`FixupDeviceTree()`](#FixupDeviceTree).
+See [`SelectDeviceTrees()`](#SelectDeviceTrees).
 
 #### FixupZbi
 Applies ZBI fixups (Fuchsia kernels only). See [`FixupZbi()`](#FixupZbi).
@@ -136,7 +132,7 @@ GBL will call this function after loading and verifying the base kernel command
 line, to give the device an opportunity to supply some of the runtime fixups.
 
 Since the device tree selection affects the base kernel command line, GBL will
-call `BuildDeviceTree` first before calling `FixupKernelCommandline`.
+call `SelectDeviceTrees` first before calling `FixupKernelCommandline`.
 
 #### Security
 
@@ -237,7 +233,7 @@ This function's security guidelines are exactly identical to
 This function's status return codes are exactly identical to
 [`FixupKernelCommandline`](#FixupKernelCommandline); see those docs for details.
 
-## GBL_EFI_OS_CONFIGURATION_PROTOCOL.BuildDeviceTree() {#BuildDeviceTree}
+## GBL_EFI_OS_CONFIGURATION_PROTOCOL.SelectDeviceTrees() {#SelectDeviceTrees}
 
 ### Summary
 
@@ -268,16 +264,14 @@ typedef struct {
 typedef struct {
   GBL_EFI_DEVICE_TREE_METADATA Metadata;
   // base device tree / overlay buffer (guaranteed to be 8-bytes aligned),
-  // cannot be NULL
+  // cannot be NULL. Device tree size can be identified by the header totalsize field.
   CONST VOID *DeviceTree;
-  UINTN DeviceTreeBytes;
-  // NULL by default; expected to be set to the FDT header within the provided
-  // DeviceTree buffer if it is to be picked by GBL. Remains NULL if not
-  // contributing to the final device tree.
-  VOID *Chosen;
+  // Indicates whether this device tree (or overlay) must be included in the
+  // final device tree. Set to true by a FW if this component must be used
+  BOOLEAN Selected;
 } GBL_EFI_VERIFIED_DEVICE_TREE;
 
-typedef EFI_STATUS (EFIAPI *GBL_EFI_BUILD_DEVICE_TREE)(
+typedef EFI_STATUS (EFIAPI *GBL_EFI_SELECT_DEVICE_TREES)(
   IN GBL_EFI_OS_CONFIGURATION_PROTOCOL *This,
   IN OUT GBL_EFI_VERIFIED_DEVICE_TREE  *DeviceTrees,
   IN UINTN                             NumDeviceTrees
@@ -298,15 +292,9 @@ Pointer to an array of base device trees and overlays for selection. Base device
 overlays are differentiated by the `GBL_EFI_DEVICE_TREE_METADATA.Source` field (`BOOT`,
 `VENDOR_BOOT`, `DTB` for base device trees, and `DTBO` for overlays).
 
-Selection is made by setting `GBL_EFI_VERIFIED_DEVICE_TREE.Chosen` to the FDT header within the
-provided `GBL_EFI_VERIFIED_DEVICE_TREE.DeviceTree` buffer. In the typical case, the device tree
-is selected by setting `GBL_EFI_VERIFIED_DEVICE_TREE.Chosen` to the start of the provided device
-tree, like so: `Chosen = DeviceTree`. Selection by offset is also supported in cases where the
-Android partition format is not properly followed (e.g., providing multiple device trees as part
-of the `vendor_boot` device tree field).
-
-Setting `Chosen` to an incorrect FDT header or outside the provided `DeviceTree` will cause GBL
-to fail to boot.
+Selection is made by setting `GBL_EFI_VERIFIED_DEVICE_TREE.Selected` to `TRUE`. Selecting
+multiple or zero base device trees will cause GBL to fail to boot. Selecting multiple or
+zero overlays are supported.
 
 #### NumDeviceTrees [in]
 
@@ -328,73 +316,6 @@ If more than one or no base device trees are selected, GBL will fail to boot.
 | ----------------------- | ----------------------------------------------------------------------- |
 | `EFI_SUCCESS`           | Base device tree, overlays has been selected.                           |
 | `EFI_INVALID_PARAMETER` | A parameter is invalid. For example, incorrect device trees, alignment. |
-
-## GBL_EFI_OS_CONFIGURATION_PROTOCOL.FixupDeviceTree() {#FixupDeviceTree}
-
-### Summary
-
-Inspect the final device tree and apply required fixups.
-
-### Prototype
-
-```c
-typedef EFI_STATUS (EFIAPI *GBL_EFI_FIXUP_DEVICE_TREE)(
-  IN GBL_EFI_OS_CONFIGURATION_PROTOCOL *This,
-  IN OUT VOID                          *DeviceTree,
-  IN OUT UINTN                         *DeviceTreeBufferSize
-  );
-```
-
-### Parameters
-
-Ownership of all the parameters is loaned only for the duration of the function call, and
-must not be retained by the protocol after returning.
-
-#### This
-A pointer to the `GBL_EFI_OS_CONFIGURATION_PROTOCOL` instance.
-
-#### DeviceTree [in, out]
-
-Pointer to the buffer with the device tree built by GBL. Firmware is allowed to modify
-it by applying fixups with the following restrictions:
-
-* on return, the data must be a valid device tree. Including the FDT header with the updated
-  `totalsize` field to let GBL identify a new device tree size.
-* result data must never exceed the provided `DeviceTreeBufferSize`
-* security restrictions mentioned below
-
-#### DeviceTreeBufferSize [in, out]
-
-On function call, this points to the buffer size provided by `DeviceTree`. An implementation
-is allowed to update the provided device tree up to this size.
-
-If the buffer is not large enough to fit the fixups, the function should update
-`DeviceTreeBufferSize` with the required size (including both device tree and fixups) and
-return `EFI_BUFFER_TOO_SMALL`; GBL will then allocate a larger buffer, discard all
-modifications and repeat the `FixupDeviceTree` call.
-
-### Description
-
-When the device tree is built from the artifacts (`boot`, `vendor_boot`, `dtb`, `dtbo`), some
-fixups (which can only be determined at run-time) may need to be applied by the firmware
-implementation. To allow this, GBL provides a read/write pointer to the device tree it built
-throught `FixupDeviceTree`. GBL will verify the applied changes and fail to boot if any of the
-security limitations (noted below) are violated. The error message will be communicated through
-UEFI log.
-
-
-#### Security
-
-TODO(b/353272981): add device tree fixup limitations
-
-#### Status Codes Returned
-
-|                         |                                                                                          |
-| ----------------------- | ---------------------------------------------------------------------------------------- |
-| `EFI_SUCCESS`           | Device tree fixup has been applied.                                                      |
-| `EFI_INVALID_PARAMETER` | A parameter is invalid. For example, incorrect device trees, alignment.                  |
-| `EFI_BUFFER_TOO_SMALL`  | The buffer is too small; `DeviceTreeBufferSize` has been updated with the required size. |
-| `EFI_DEVICE_ERROR`      | Internal error while applying device tree fixup.                                         |
 
 ## GBL_EFI_OS_CONFIGURATION_PROTOCOL.FixupZbi() {#FixupZbi}
 

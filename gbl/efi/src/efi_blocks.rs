@@ -21,13 +21,12 @@ use efi::{
 };
 use efi_types::EfiBlockIoMedia;
 use gbl_async::block_on;
-use gbl_storage::{AsyncBlockDevice, BlockInfo, BlockIoAsync, GptCache};
+use gbl_storage::{gpt_buffer_size, BlockInfo, BlockIo, Disk, Gpt};
 use liberror::Error;
 use libgbl::partition::{check_part_unique, Partition, PartitionBlockDevice};
-use safemath::SafeNum;
 
 /// `EfiBlockDeviceIo` wraps a EFI `BlockIoProtocol` or `BlockIo2Protocol` and implements the
-/// `BlockIoAsync` interface.
+/// `BlockIo` interface.
 pub enum EfiBlockDeviceIo<'a> {
     Sync(Protocol<'a, BlockIoProtocol>),
     Async(Protocol<'a, BlockIo2Protocol>),
@@ -52,7 +51,7 @@ impl<'a> EfiBlockDeviceIo<'a> {
     }
 }
 
-impl BlockIoAsync for EfiBlockDeviceIo<'_> {
+impl BlockIo for EfiBlockDeviceIo<'_> {
     fn info(&mut self) -> BlockInfo {
         (*self).info()
     }
@@ -74,11 +73,11 @@ impl BlockIoAsync for EfiBlockDeviceIo<'_> {
     }
 }
 
-const MAX_GPT_ENTRIES: u64 = 128;
+const MAX_GPT_ENTRIES: usize = 128;
 
 /// `PartitionInfoBuffer` manages the buffer for raw partition name or GPT partition table.
 enum PartitionInfoBuffer {
-    Gpt(Vec<u8>),
+    Gpt(Gpt<Vec<u8>>),
     // TODO(b/357688291): Add raw partition entry once supported.
 }
 
@@ -94,15 +93,12 @@ impl<'a> EfiBlockDevice<'a> {
     ///
     /// The API allocates scratch and GPT buffer from heap.
     pub fn new_gpt(mut io: EfiBlockDeviceIo<'a>) -> Result<Self, Error> {
-        let scratch_size =
-            SafeNum::from(AsyncBlockDevice::<EfiBlockDeviceIo>::required_scratch_size(&mut io)?);
-        let mut gpt_buf = vec![0u8; GptCache::required_buffer_size(MAX_GPT_ENTRIES)?];
-        // Initializes GPT buffer.
-        let _ = GptCache::from_uninit(MAX_GPT_ENTRIES, &mut gpt_buf)?;
+        let scratch_size = gbl_storage::scratch_size(&mut io)?;
+        let gpt_buffer = vec![0u8; gpt_buffer_size(MAX_GPT_ENTRIES)?];
         Ok(Self {
             io,
-            scratch: vec![0u8; scratch_size.try_into()?],
-            partition: PartitionInfoBuffer::Gpt(gpt_buf),
+            scratch: vec![0u8; scratch_size],
+            partition: PartitionInfoBuffer::Gpt(Gpt::new(gpt_buffer)?),
         })
     }
 
@@ -110,11 +106,9 @@ impl<'a> EfiBlockDevice<'a> {
     pub fn as_gbl_part(
         &mut self,
     ) -> Result<PartitionBlockDevice<&mut EfiBlockDeviceIo<'a>>, Error> {
-        let blk = AsyncBlockDevice::new(&mut self.io, &mut self.scratch)?;
+        let blk = Disk::new(&mut self.io, &mut self.scratch[..])?;
         Ok(match &mut self.partition {
-            PartitionInfoBuffer::Gpt(buf) => {
-                PartitionBlockDevice::new_gpt(blk, GptCache::from_existing(buf).unwrap())
-            }
+            PartitionInfoBuffer::Gpt(gpt) => PartitionBlockDevice::new_gpt(blk, gpt.as_borrowed()),
         })
     }
 }
@@ -158,12 +152,8 @@ pub fn find_block_devices(efi_entry: &EfiEntry) -> Result<EfiMultiBlockDevices, 
         // TODO(b/357688291): Support raw partition based on device path info.
         let mut blk = EfiBlockDevice::new_gpt(blk_io)?;
         match block_on(blk.as_gbl_part()?.sync_gpt()) {
-            Ok(true) => {
-                efi_println!(efi_entry, "Block #{}: GPT detected", idx);
-            }
-            Err(e) => {
-                efi_println!(efi_entry, "Block #{}: Failed to find GPT. {:?}", idx, e);
-            }
+            Ok(Some(v)) => efi_println!(efi_entry, "Block #{idx} GPT sync result: {v}"),
+            Err(e) => efi_println!(efi_entry, "Block #{idx} error while syncing GPT: {e}"),
             _ => {}
         };
         block_devices.push(blk);
