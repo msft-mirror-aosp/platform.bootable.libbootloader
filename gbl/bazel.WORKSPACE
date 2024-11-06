@@ -28,10 +28,10 @@ load("@rules_rust//tools/rust_analyzer:deps.bzl", "rust_analyzer_dependencies")
 
 rust_analyzer_dependencies()
 
+load("@gbl//toolchain:gbl_workspace_util.bzl", "GBL_RUST_VERSION")
 load("@rules_rust//rust:repositories.bzl", "rust_analyzer_toolchain_repository")
 
 register_toolchains(rust_analyzer_toolchain_repository(
     name = "rust_analyzer_toolchain",
-    # This should match the currently registered toolchain.
-    version = "1.80.0",
+    version = GBL_RUST_VERSION,
 ))

@@ -61,12 +61,6 @@ impl<'b, T: GblOps<'b>> AbrOps for GblAbrOps<'_, T> {
     }
 }
 
-/// A helper for getting the smallest offset in a slice with aligned address.
-fn aligned_offset(buffer: &[u8], alignment: usize) -> Result<usize> {
-    let addr = SafeNum::from(buffer.as_ptr() as usize);
-    (addr.round_up(alignment) - addr).try_into().map_err(From::from)
-}
-
 /// A helper for splitting the trailing unused portion of a ZBI container buffer.
 ///
 /// Returns a tuple of used subslice and unused subslice
@@ -278,6 +272,7 @@ mod test {
     };
     use avb_bindgen::{AVB_CERT_PIK_VERSION_LOCATION, AVB_CERT_PSK_VERSION_LOCATION};
     use gbl_storage_testlib::TestBlockIo;
+    use libutils::aligned_offset;
     use std::{
         collections::{BTreeSet, HashMap},
         fs,
@@ -469,7 +464,7 @@ mod test {
             ops.avb_ops.rollbacks,
             [
                 (TEST_ROLLBACK_INDEX_LOCATION, TEST_ROLLBACK_INDEX_VALUE),
-                (usize::try_from(AVB_CERT_PSK_VERSION_LOCATION).unwrap(), TEST_CERT_PIK_VERSION),
+                (usize::try_from(AVB_CERT_PSK_VERSION_LOCATION).unwrap(), TEST_CERT_PSK_VERSION),
                 (usize::try_from(AVB_CERT_PIK_VERSION_LOCATION).unwrap(), TEST_CERT_PIK_VERSION)
             ]
             .into()
@@ -593,8 +588,7 @@ mod test {
 
     // Calls `zircon_load_verify_abr` and checks that the specified slot is loaded.
     fn expect_load_verify_abr_ok(ops: &mut FakeGblOps, slot: SlotIndex, part: &str) {
-        let (zbi, mut load, expected_items, expected_kernel) =
-            load_verify_test_data(ops, slot, part);
+        let (_, mut load, expected_items, expected_kernel) = load_verify_test_data(ops, slot, part);
         let (zbi_items, kernel, active) = zircon_load_verify_abr(ops, &mut load).unwrap();
         assert_eq!(normalize_zbi(&expected_items), normalize_zbi(&zbi_items));
         assert_eq!(normalize_zbi(&expected_kernel), normalize_zbi(&kernel));
