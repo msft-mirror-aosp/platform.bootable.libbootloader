@@ -40,7 +40,6 @@ use safemath::SafeNum;
 use zbi::{ZbiContainer, ZbiType};
 
 mod vars;
-use vars::{fb_vars_get, fb_vars_get_all};
 
 pub(crate) mod sparse;
 use sparse::is_sparse_image;
@@ -290,11 +289,11 @@ where
         out: &mut [u8],
         _: impl InfoSender,
     ) -> CommandResult<usize> {
-        Ok(fb_vars_get(self, var, args, out).await?.ok_or("No such variable")?)
+        Ok(self.get_var_internal(var, args, out)?.len())
     }
 
     async fn get_var_all(&mut self, mut resp: impl VarInfoSender) -> CommandResult<()> {
-        fb_vars_get_all(self, &mut resp).await
+        self.get_var_all_internal(&mut resp).await
     }
 
     async fn get_download_buffer(&mut self) -> &mut [u8] {
