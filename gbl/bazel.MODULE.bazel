@@ -24,7 +24,6 @@ module(
 )
 
 register_toolchains(
-    "//prebuilts/build-tools:py_toolchain_musl",
     "//prebuilts/build-tools:py_toolchain",
 )
 
