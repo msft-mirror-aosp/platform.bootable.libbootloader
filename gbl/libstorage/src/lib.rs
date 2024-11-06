@@ -25,8 +25,8 @@ use safemath::SafeNum;
 // Selective export of submodule types.
 mod gpt;
 pub use gpt::{
-    GptCache, GptEntry, GptHeader, GptSyncResult, Partition, PartitionIterator, GPT_GUID_LEN,
-    GPT_MAGIC, GPT_NAME_LEN_U16,
+    gpt_buffer_size, new_gpt_max, new_gpt_n, Gpt, GptEntry, GptHeader, GptLoadBufferN, GptMax,
+    GptN, GptSyncResult, Partition, PartitionIterator, GPT_GUID_LEN, GPT_MAGIC, GPT_NAME_LEN_U16,
 };
 
 mod algorithm;
@@ -252,7 +252,10 @@ impl<T: BlockIo, S: DerefMut<Target = [u8]>> Disk<T, S> {
     /// * Returns Ok(sync_result) if disk IO is successful, where `sync_result` contains the GPT
     ///   verification and restoration result.
     /// * Returns Err() if disk IO encounters errors.
-    pub async fn sync_gpt(&mut self, gpt_cache: &mut GptCache<'_>) -> Result<GptSyncResult> {
+    pub async fn sync_gpt(
+        &mut self,
+        gpt_cache: &mut Gpt<impl DerefMut<Target = [u8]>>,
+    ) -> Result<GptSyncResult> {
         gpt_cache.load_and_sync(&mut self.io, &mut self.scratch).await
     }
 
@@ -272,7 +275,7 @@ impl<T: BlockIo, S: DerefMut<Target = [u8]>> Disk<T, S> {
         &mut self,
         mbr_primary: &mut [u8],
         resize: bool,
-        gpt_cache: &mut GptCache<'_>,
+        gpt_cache: &mut Gpt<impl DerefMut<Target = [u8]>>,
     ) -> Result<()> {
         gpt::update_gpt(&mut self.io, &mut self.scratch, mbr_primary, resize, gpt_cache).await
     }
@@ -291,7 +294,7 @@ impl<T: BlockIo, S: DerefMut<Target = [u8]>> Disk<T, S> {
     /// Returns success when exactly `out.len()` of bytes are read successfully.
     pub async fn read_gpt_partition(
         &mut self,
-        gpt_cache: &GptCache<'_>,
+        gpt_cache: &mut Gpt<impl DerefMut<Target = [u8]>>,
         part_name: &str,
         offset: u64,
         out: &mut [u8],
@@ -315,7 +318,7 @@ impl<T: BlockIo, S: DerefMut<Target = [u8]>> Disk<T, S> {
     /// Returns success when exactly `data.len()` of bytes are written successfully.
     pub async fn write_gpt_partition(
         &mut self,
-        gpt_cache: &GptCache<'_>,
+        gpt_cache: &mut Gpt<impl DerefMut<Target = [u8]>>,
         part_name: &str,
         offset: u64,
         data: &mut [u8],
@@ -390,7 +393,7 @@ mod test {
     const READ_WRITE_BLOCKS_UPPER_BOUND: usize = 6;
 
     // Type alias of the [Disk] type used by unittests.
-    type TestDisk = Disk<RamBlockIo<Vec<u8>>, Vec<u8>>;
+    pub(crate) type TestDisk = Disk<RamBlockIo<Vec<u8>>, Vec<u8>>;
 
     fn read_test_helper(case: &TestCase) {
         let data = (0..case.storage_size).map(|v| v as u8).collect::<Vec<_>>();

@@ -30,9 +30,8 @@ type TestDisk = Disk<TestBlockIo, Vec<u8>>;
 pub struct TestBlockDevice {
     /// Test disk.
     pub disk: Disk<TestBlockIo, Vec<u8>>,
-    /// Buffer for creating GPT cache.
-    pub gpt_buffer: Vec<u8>,
-    max_gpt_entries: u64,
+    /// Test GPT.
+    pub gpt: GptMax,
 }
 
 impl From<&[u8]> for TestBlockDevice {
@@ -48,9 +47,9 @@ impl Default for TestBlockDevice {
 }
 
 impl TestBlockDevice {
-    /// Creates an instance of [AsyncBlockDevice] and uninitialized [GptCache].
-    pub fn new_blk_and_gpt(&mut self) -> (&mut TestDisk, GptCache<'_>) {
-        (&mut self.disk, GptCache::new(self.max_gpt_entries, &mut self.gpt_buffer).unwrap())
+    /// Gets a reference to [Disk] and [Gpt].
+    pub fn new_blk_and_gpt(&mut self) -> (&mut TestDisk, &mut GptMax) {
+        (&mut self.disk, &mut self.gpt)
     }
 }
 
@@ -96,7 +95,7 @@ enum DiskDescription<'a> {
 ///       to customize the device and generate something that works without errors.
 pub struct TestBlockDeviceBuilder<'a> {
     block_size: u64,
-    max_gpt_entries: u64,
+    max_gpt_entries: usize,
     alignment: u64,
     disk_description: DiskDescription<'a>,
 }
@@ -107,7 +106,7 @@ impl<'a> TestBlockDeviceBuilder<'a> {
     /// The default block size in bytes.
     pub const DEFAULT_BLOCK_SIZE: u64 = 512;
     /// The default maximum number of GPT entries.
-    pub const MAX_GPT_ENTRIES: u64 = 128;
+    pub const MAX_GPT_ENTRIES: usize = 128;
 
     /// Creates a new TestBlockDeviceBuilder with defaults for all attributes.
     pub fn new() -> Self {
@@ -132,7 +131,7 @@ impl<'a> TestBlockDeviceBuilder<'a> {
     /// The default is `MAX_GPT_ENTRIES`.
     /// Note: setting too large a number of entries will make a device
     ///       that fails to sync its GPT.
-    pub fn set_max_gpt_entries(mut self, max_gpt_entries: u64) -> Self {
+    pub fn set_max_gpt_entries(mut self, max_gpt_entries: usize) -> Self {
         self.max_gpt_entries = max_gpt_entries;
         self
     }
@@ -203,9 +202,7 @@ impl<'a> TestBlockDeviceBuilder<'a> {
         };
         assert_eq!(storage.len() % (self.block_size as usize), 0);
         let io = TestBlockIo::new(self.block_size, self.alignment, storage.clone());
-        let disk = Disk::new_alloc_scratch(io).unwrap();
-        let gpt_buffer = vec![0u8; GptCache::required_buffer_size(self.max_gpt_entries).unwrap()];
-        TestBlockDevice { gpt_buffer, max_gpt_entries: self.max_gpt_entries, disk }
+        TestBlockDevice { gpt: new_gpt_max(), disk: Disk::new_alloc_scratch(io).unwrap() }
     }
 }
 
