@@ -14,6 +14,7 @@
 
 use crate::{read_async, write_async, BlockIo, Result};
 use core::{
+    array::from_fn,
     cmp::min,
     convert::TryFrom,
     default::Default,
@@ -231,6 +232,29 @@ fn check_entries(header: &GptHeader, entries: &[u8]) -> Result<()> {
             return Err(Error::GptError(GptError::ZeroPartitionUniqueGUID { idx }));
         }
     }
+
+    // Checks overlap between partition ranges.
+    // Sorts an index array because we don't want to modify input.
+    let mut sorted_indices: [u8; GPT_MAX_NUM_ENTRIES] = from_fn(|i| i.try_into().unwrap());
+    sorted_indices.sort_unstable_by_key(|v| match entries.get(usize::try_from(*v).unwrap()) {
+        Some(v) if !v.is_null() => v.first,
+        _ => u64::MAX,
+    });
+
+    let actual = entries.iter().position(|v| v.is_null()).unwrap_or(entries.len());
+    if actual > 1 {
+        for i in 0..actual - 1 {
+            let prev: usize = sorted_indices[i].try_into().unwrap();
+            let next: usize = sorted_indices[i + 1].try_into().unwrap();
+            if entries[prev].last >= entries[next].first {
+                return Err(Error::GptError(GptError::PartitionRangeOverlap {
+                    prev: (prev + 1, entries[prev].first, entries[prev].last),
+                    next: (next + 1, entries[next].first, entries[next].last),
+                }));
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -1037,6 +1061,20 @@ pub(crate) mod test {
     }
 
     #[test]
+    fn test_sync_gpt_partition_overlap() {
+        fn modify(hdr: &mut GptHeader, mut entries: Ref<&mut [u8], [GptEntry]>) {
+            entries[0].last = entries[1].first;
+            entries.swap(0, 1);
+            hdr.update_entries_crc(entries.as_bytes());
+        }
+        let err = Error::GptError(GptError::PartitionRangeOverlap {
+            prev: (2, 34, 50),
+            next: (1, 50, 73),
+        });
+        test_gpt_sync_restore(modify, modify, err, err);
+    }
+
+    #[test]
     fn test_sync_gpt_zero_partition_type_guid() {
         fn modify(hdr: &mut GptHeader, mut entries: Ref<&mut [u8], [GptEntry]>) {
             entries[1].part_type = [0u8; GPT_GUID_LEN];
@@ -1187,5 +1225,18 @@ pub(crate) mod test {
         let (mut dev, mut gpt) = test_disk_and_gpt(&disk);
         block_on(dev.sync_gpt(&mut gpt)).unwrap().res().unwrap();
         assert_eq!(gpt.partition_iter().unwrap().next().unwrap().size().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_sync_gpt_non_sorted_entries() {
+        let mut disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
+        let (header, entries) = disk[512..].split_at_mut(512);
+        let header = GptHeader::from_bytes_mut(header);
+        let mut entries = Ref::<_, [GptEntry]>::new_slice(entries).unwrap();
+        // Makes partition non-sorted.
+        entries.swap(0, 1);
+        header.update_entries_crc(entries.as_bytes());
+        let (mut dev, mut gpt) = test_disk_and_gpt(&disk);
+        block_on(dev.sync_gpt(&mut gpt)).unwrap().res().unwrap();
     }
 }
