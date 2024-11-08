@@ -16,7 +16,7 @@
 
 use crate::{
     gbl_print, gbl_println,
-    partition::{check_part_unique, PartitionIo},
+    partition::{check_part_unique, PartitionBlockDevice, PartitionIo},
     GblOps,
 };
 use core::{
@@ -35,6 +35,7 @@ use fastboot::{
     UploadBuilder, Uploader, VarInfoSender,
 };
 use gbl_async::{join, yield_now};
+use gbl_storage::BlockIo;
 use liberror::Error;
 use safemath::SafeNum;
 use zbi::{ZbiContainer, ZbiType};
@@ -62,13 +63,13 @@ pub use fastboot::{TcpStream, Transport};
 const FLASH_GPT_PART: &str = "gpt";
 
 /// Represents a GBL Fastboot async task.
-enum Task<'a, 'b, G: GblOps<'a>, B: BufferPool> {
+enum Task<'a, 'b, B: BlockIo, P: BufferPool> {
     /// Image flashing task. (partition io, downloaded data, data size)
-    Flash(PartitionIo<'a, 'a, G::PartitionBlockIo>, ScopedBuffer<'b, B>, usize),
+    Flash(PartitionIo<'a, 'a, B>, ScopedBuffer<'b, P>, usize),
     None,
 }
 
-impl<'a, 'd, G: GblOps<'a>, B: BufferPool> Task<'a, 'd, G, B> {
+impl<'a, 'd, B: BlockIo, P: BufferPool> Task<'a, 'd, B, P> {
     /// Runs the task.
     async fn run(self) {
         match self {
@@ -91,12 +92,19 @@ impl<'a, 'd, G: GblOps<'a>, B: BufferPool> Task<'a, 'd, G, B> {
 /// * `'b`: Download buffer lifetime.
 /// * `'c`: Lifetime of the pinned [Future]s in task container `task`.
 /// * `'d`: Lifetime of the `tasks` and `gbl_ops` objects borrowed.
-struct GblFastboot<'a, 'b, 'c, 'd, G: GblOps<'a>, B: BufferPool, P, F> {
+struct GblFastboot<'a, 'b, 'c, 'd, G: GblOps<'a>, B: BlockIo, P: BufferPool, C, F> {
     pub(crate) gbl_ops: &'d mut G,
-    buffer_pool: &'b Shared<B>,
-    task_mapper: fn(Task<'a, 'b, G, B>) -> F,
-    tasks: &'d Shared<P>,
-    current_download_buffer: Option<ScopedBuffer<'b, B>>,
+    // We store the partition devices returned by `gbl_ops.partitions()` directly instead of
+    // getting it from `gbl_ops` later because we need to establish to the compiler that the hidden
+    // type of [BlockIo] in `PartitionBlockDevice<impl BlockIO>` returned by `gbl_ops.partitions()`
+    // will be the same as the [BlockIo] type (denoted as B) in the function pointer
+    // `task_mapper`: fn(Task<'a, 'b, B, P>) -> F`. Otherwise, compiler won't allow `fn flash()` to
+    // call `task_mapper` with a `Task` constructed from `PartitionBlockDevice<impl BlockIO>`.
+    partitions: &'a [PartitionBlockDevice<'a, B>],
+    buffer_pool: &'b Shared<P>,
+    task_mapper: fn(Task<'a, 'b, B, P>) -> F,
+    tasks: &'d Shared<C>,
+    current_download_buffer: Option<ScopedBuffer<'b, P>>,
     current_download_size: usize,
     enable_async_block_io: bool,
     default_block: Option<usize>,
@@ -106,7 +114,12 @@ struct GblFastboot<'a, 'b, 'c, 'd, G: GblOps<'a>, B: BufferPool, P, F> {
     _tasks_context_lifetime: PhantomData<&'c P>,
 }
 
-impl<'a, 'b, G: GblOps<'a>, B: BufferPool, P, F> GblFastboot<'a, 'b, '_, '_, G, B, P, F> {
+impl<'a, 'b, G, B, P, C, F> GblFastboot<'a, 'b, '_, '_, G, B, P, C, F>
+where
+    G: GblOps<'a>,
+    B: BlockIo,
+    P: BufferPool,
+{
     /// Extracts the next argument and verifies that it is a valid block device ID if present.
     ///
     /// # Returns
@@ -119,7 +132,7 @@ impl<'a, 'b, G: GblOps<'a>, B: BufferPool, P, F> GblFastboot<'a, 'b, '_, '_, G, 
         &self,
         args: &mut impl Iterator<Item = &'s str>,
     ) -> CommandResult<Option<usize>> {
-        let devs = self.gbl_ops.partitions()?;
+        let devs = self.partitions;
         let blk_id = match next_arg_u64(args)? {
             Some(v) => {
                 let v = usize::try_from(v)?;
@@ -166,7 +179,7 @@ impl<'a, 'b, G: GblOps<'a>, B: BufferPool, P, F> GblFastboot<'a, 'b, '_, '_, G, 
         &self,
         part: &'s str,
     ) -> CommandResult<(Option<&'s str>, usize, u64, u64)> {
-        let devs = self.gbl_ops.partitions()?;
+        let devs = self.partitions;
         let mut args = part.split('/');
         // Parses partition name.
         let part = next_arg(&mut args);
@@ -188,13 +201,13 @@ impl<'a, 'b, G: GblOps<'a>, B: BufferPool, P, F> GblFastboot<'a, 'b, '_, '_, G, 
     }
 
     /// Takes the download data and resets download size.
-    fn take_download(&mut self) -> Option<(ScopedBuffer<'b, B>, usize)> {
+    fn take_download(&mut self) -> Option<(ScopedBuffer<'b, P>, usize)> {
         Some((self.current_download_buffer.take()?, take(&mut self.current_download_size)))
     }
 
     /// Waits for all block devices to be ready.
     async fn sync_all_blocks(&self) -> CommandResult<()> {
-        for ele in self.gbl_ops.partitions()? {
+        for ele in self.partitions {
             let _ = ele.wait_partition_io(None).await;
         }
         Ok(())
@@ -209,7 +222,7 @@ impl<'a, 'b, G: GblOps<'a>, B: BufferPool, P, F> GblFastboot<'a, 'b, '_, '_, G, 
         self.sync_all_blocks().await?;
         // Checks error.
         let mut has_error = false;
-        for (i, ele) in self.gbl_ops.partitions()?.iter().enumerate() {
+        for (i, ele) in self.partitions.iter().enumerate() {
             match ele.partition_io(None)?.last_err() {
                 Ok(_) => {}
                 Err(e) => {
@@ -274,13 +287,14 @@ impl<'a, 'b, G: GblOps<'a>, B: BufferPool, P, F> GblFastboot<'a, 'b, '_, '_, G, 
     }
 }
 
-impl<'a: 'c, 'b: 'c, 'c, G, B, P, F> FastbootImplementation
-    for GblFastboot<'a, 'b, 'c, '_, G, B, P, F>
+impl<'a: 'c, 'b: 'c, 'c, G, B, P, C, F> FastbootImplementation
+    for GblFastboot<'a, 'b, 'c, '_, G, B, P, C, F>
 where
     G: GblOps<'a>,
-    B: BufferPool,
+    B: BlockIo,
+    P: BufferPool,
+    C: PinFutContainerTyped<'c, F>,
     F: Future<Output = ()> + 'c,
-    P: PinFutContainerTyped<'c, F>,
 {
     async fn get_var(
         &mut self,
@@ -313,7 +327,7 @@ where
     }
 
     async fn flash(&mut self, part: &str, mut responder: impl InfoSender) -> CommandResult<()> {
-        let partitions = self.gbl_ops.partitions()?;
+        let partitions = self.partitions;
 
         // Checks if we are flashing new GPT partition table
         if let Some((blk_idx, resize)) = self.parse_flash_gpt_args(part)? {
@@ -366,7 +380,7 @@ where
         mut responder: impl UploadBuilder + InfoSender,
     ) -> CommandResult<()> {
         let (part, blk_idx, start, sz) = self.parse_partition(part)?;
-        let partitions = self.gbl_ops.partitions()?;
+        let partitions = self.partitions;
         let mut part_io = partitions[blk_idx].wait_partition_io(part).await?.sub(start, sz)?;
         part_io.last_err()?;
         let buffer = self.get_download_buffer().await;
@@ -426,7 +440,7 @@ where
             "gbl-set-default-block" => {
                 let id = next_arg_u64(&mut args)?.ok_or("Missing block device ID")?;
                 let id = usize::try_from(id)?;
-                self.gbl_ops.partitions()?.get(id).ok_or("Out of range")?;
+                self.partitions.get(id).ok_or("Out of range")?;
                 self.default_block = Some(id.try_into()?);
                 responder
                     .send_formatted_info(|f| write!(f, "Default block device: {id:#x}").unwrap())
@@ -443,18 +457,22 @@ where
     }
 }
 
-impl<'a: 'c, 'b: 'c, 'c, 'd, G, B, P, F> GblFastboot<'a, 'b, 'c, 'd, G, B, P, F>
+impl<'a: 'c, 'b: 'c, 'c, 'd, G, B, P, C, F> GblFastboot<'a, 'b, 'c, 'd, G, B, P, C, F>
 where
     G: GblOps<'a>,
-    B: BufferPool,
+    B: BlockIo,
+    P: BufferPool,
+    C: PinFutContainerTyped<'c, F>,
     F: Future<Output = ()> + 'c,
-    P: PinFutContainerTyped<'c, F>,
 {
     /// Creates a new [GblFastboot].
     ///
     /// # Args
     ///
     /// * `gbl_ops`: An implementation of `GblOps`.
+    /// * `partitions`: The partition devices returned by `gbl_ops.partitions()`. This is needed for
+    ///   expressing the property that the hidden [BlockIo] type is the same as that in
+    ///   `task_mapper`.
     /// * `task_mapper`: A function pointer that maps `Task<'a, 'b, G, B>` to the target [Future]
     ///   type `F` for input to `PinFutContainerTyped<F>::add_with()`.
     /// * `tasks`: A shared instance of `PinFutContainerTyped<F>`.
@@ -469,12 +487,14 @@ where
     /// infer and propagate it.
     fn new(
         gbl_ops: &'d mut G,
-        task_mapper: fn(Task<'a, 'b, G, B>) -> F,
-        tasks: &'d Shared<P>,
-        buffer_pool: &'b Shared<B>,
+        partitions: &'a [PartitionBlockDevice<'a, B>],
+        task_mapper: fn(Task<'a, 'b, B, P>) -> F,
+        tasks: &'d Shared<C>,
+        buffer_pool: &'b Shared<P>,
     ) -> Self {
         Self {
             gbl_ops,
+            partitions,
             task_mapper,
             tasks,
             buffer_pool,
@@ -584,7 +604,8 @@ pub async fn run_gbl_fastboot<'a: 'c, 'b: 'c, 'c>(
     tcp: Option<impl GblTcpStream>,
 ) {
     let tasks = tasks.into();
-    GblFastboot::new(gbl_ops, Task::run, &tasks, buffer_pool).run(usb, tcp).await;
+    let parts = gbl_ops.partitions();
+    GblFastboot::new(gbl_ops, parts, Task::run, &tasks, buffer_pool).run(usb, tcp).await;
 }
 
 /// Runs GBL fastboot on the given USB/TCP channels with N stack allocated worker tasks.
@@ -628,7 +649,8 @@ pub async fn run_gbl_fastboot_stack<'a, const N: usize>(
     // lifetime.
     let mut tasks: [_; N] = tasks.each_mut().map(|v| unsafe { Pin::new_unchecked(v) });
     let tasks = PinFutSlice::new(&mut tasks[..]).into();
-    GblFastboot::new(gbl_ops, Task::run, &tasks, &buffer_pool).run(usb, tcp).await;
+    let parts = gbl_ops.partitions();
+    GblFastboot::new(gbl_ops, parts, Task::run, &tasks, &buffer_pool).run(usb, tcp).await;
 }
 
 /// Pre-generates a Fuchsia Fastboot MDNS service broadcast packet.
@@ -790,7 +812,8 @@ mod test {
         let (partitions, dl_buffers) = test_data.get();
         let mut gbl_ops = FakeGblOps::new(&partitions);
         let tasks = vec![].into();
-        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, Task::run, &tasks, &dl_buffers);
+        let parts = gbl_ops.partitions();
+        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, parts, Task::run, &tasks, &dl_buffers);
 
         // Check different semantics
         check_var(&mut gbl_fb, "partition-size", "boot_a", "0x2000");
@@ -846,7 +869,8 @@ mod test {
         let (partitions, dl_buffers) = test_data.get();
         let mut gbl_ops = FakeGblOps::new(&partitions);
         let tasks = vec![].into();
-        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, Task::run, &tasks, &dl_buffers);
+        let parts = gbl_ops.partitions();
+        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, parts, Task::run, &tasks, &dl_buffers);
 
         let mut logger = TestVarSender(vec![]);
         block_on(gbl_fb.get_var_all(&mut logger)).unwrap();
@@ -908,7 +932,8 @@ mod test {
         let (partitions, dl_buffers) = test_data.get();
         let mut gbl_ops = FakeGblOps::new(&partitions);
         let tasks = vec![].into();
-        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, Task::run, &tasks, &dl_buffers);
+        let parts = gbl_ops.partitions();
+        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, parts, Task::run, &tasks, &dl_buffers);
 
         // Missing mandatory block device ID for raw block partition.
         assert!(fetch(&mut gbl_fb, "//0/0".into(), 0, 0).is_err());
@@ -956,7 +981,8 @@ mod test {
         let (parts, dl_buffers) = test_data.get();
         let mut gbl_ops = FakeGblOps::new(&parts);
         let tasks = vec![].into();
-        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, Task::run, &tasks, &dl_buffers);
+        let parts = gbl_ops.partitions();
+        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, parts, Task::run, &tasks, &dl_buffers);
 
         let off = 512;
         let size = 512;
@@ -996,7 +1022,8 @@ mod test {
         let (partitions, dl_buffers) = test_data.get();
         let mut gbl_ops = FakeGblOps::new(&partitions);
         let tasks = vec![].into();
-        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, Task::run, &tasks, &dl_buffers);
+        let parts = gbl_ops.partitions();
+        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, parts, Task::run, &tasks, &dl_buffers);
 
         let expect_boot_a = include_bytes!("../../../libstorage/test/boot_a.bin");
         let expect_boot_b = include_bytes!("../../../libstorage/test/boot_b.bin");
@@ -1057,7 +1084,8 @@ mod test {
         let (partitions, dl_buffers) = test_data.get();
         let mut gbl_ops = FakeGblOps::new(&partitions);
         let tasks = vec![].into();
-        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, Task::run, &tasks, &dl_buffers);
+        let parts = gbl_ops.partitions();
+        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, parts, Task::run, &tasks, &dl_buffers);
 
         let expect_boot_a = include_bytes!("../../../libstorage/test/boot_a.bin");
         let expect_boot_b = include_bytes!("../../../libstorage/test/boot_b.bin");
@@ -1086,7 +1114,8 @@ mod test {
         let (partitions, dl_buffers) = test_data.get();
         let mut gbl_ops = FakeGblOps::new(&partitions);
         let tasks = vec![].into();
-        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, Task::run, &tasks, &dl_buffers);
+        let parts = gbl_ops.partitions();
+        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, parts, Task::run, &tasks, &dl_buffers);
 
         let download = sparse.to_vec();
         let resp: TestResponder = Default::default();
@@ -1122,7 +1151,8 @@ mod test {
         let (partitions, dl_buffers) = test_data.get();
         let mut gbl_ops = FakeGblOps::new(&partitions);
         let tasks = vec![].into();
-        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, Task::run, &tasks, &dl_buffers);
+        let parts = gbl_ops.partitions();
+        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, parts, Task::run, &tasks, &dl_buffers);
         let tasks = gbl_fb.tasks();
         let resp: TestResponder = Default::default();
 
@@ -1174,7 +1204,8 @@ mod test {
         let (partitions, dl_buffers) = test_data.get();
         let mut gbl_ops = FakeGblOps::new(&partitions);
         let tasks = vec![].into();
-        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, Task::run, &tasks, &dl_buffers);
+        let parts = gbl_ops.partitions();
+        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, parts, Task::run, &tasks, &dl_buffers);
         let tasks = gbl_fb.tasks();
         let resp: TestResponder = Default::default();
 
@@ -1228,7 +1259,8 @@ mod test {
         partitions[0].partition_io(None).unwrap().dev().io().error =
             liberror::Error::Other(None).into();
         let tasks = vec![].into();
-        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, Task::run, &tasks, &dl_buffers);
+        let parts = gbl_ops.partitions();
+        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, parts, Task::run, &tasks, &dl_buffers);
         let tasks = gbl_fb.tasks();
         let resp: TestResponder = Default::default();
 
@@ -1263,7 +1295,8 @@ mod test {
         let (partitions, dl_buffers) = test_data.get();
         let mut gbl_ops = FakeGblOps::new(&partitions);
         let tasks = vec![].into();
-        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, Task::run, &tasks, &dl_buffers);
+        let parts = gbl_ops.partitions();
+        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, parts, Task::run, &tasks, &dl_buffers);
         let resp: TestResponder = Default::default();
 
         let boot_a = include_bytes!("../../../libstorage/test/boot_a.bin");
@@ -1318,7 +1351,8 @@ mod test {
         let (partitions, dl_buffers) = test_data.get();
         let mut gbl_ops = FakeGblOps::new(&partitions);
         let tasks = vec![].into();
-        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, Task::run, &tasks, &dl_buffers);
+        let parts = gbl_ops.partitions();
+        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, parts, Task::run, &tasks, &dl_buffers);
         let resp: TestResponder = Default::default();
         // Missing block device ID.
         assert!(block_on(oem(&mut gbl_fb, "gbl-set-default-block ", &resp)).is_err());
@@ -1335,7 +1369,8 @@ mod test {
         let (partitions, dl_buffers) = test_data.get();
         let mut gbl_ops = FakeGblOps::new(&partitions);
         let tasks = vec![].into();
-        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, Task::run, &tasks, &dl_buffers);
+        let parts = gbl_ops.partitions();
+        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, parts, Task::run, &tasks, &dl_buffers);
         let tasks = gbl_fb.tasks();
         let resp: TestResponder = Default::default();
 
@@ -1368,7 +1403,8 @@ mod test {
         let (partitions, dl_buffers) = test_data.get();
         let mut gbl_ops = FakeGblOps::new(&partitions);
         let tasks = vec![].into();
-        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, Task::run, &tasks, &dl_buffers);
+        let parts = gbl_ops.partitions();
+        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, parts, Task::run, &tasks, &dl_buffers);
         let tasks = gbl_fb.tasks();
         let resp: TestResponder = Default::default();
 

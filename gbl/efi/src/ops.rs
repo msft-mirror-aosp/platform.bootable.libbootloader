@@ -37,6 +37,7 @@ use efi_types::{
     PARTITION_NAME_LEN_U16,
 };
 use fdt::Fdt;
+use gbl_storage::BlockIo;
 use liberror::{Error, Result};
 use libgbl::{
     device_tree::{
@@ -208,8 +209,6 @@ impl<'a, 'b> GblOps<'b> for Ops<'a, 'b>
 where
     Self: 'b,
 {
-    type PartitionBlockIo = &'b mut EfiBlockDeviceIo<'a>;
-
     fn console_out(&mut self) -> Option<&mut dyn Write> {
         Some(self)
     }
@@ -247,8 +246,8 @@ where
         self.efi_entry.system_table().runtime_services().cold_reset();
     }
 
-    fn partitions(&self) -> Result<&'b [PartitionBlockDevice<'b, Self::PartitionBlockIo>]> {
-        Ok(self.partitions)
+    fn partitions(&self) -> &'b [PartitionBlockDevice<'b, impl BlockIo + 'b>] {
+        self.partitions
     }
 
     fn zircon_add_device_zbi_items(
