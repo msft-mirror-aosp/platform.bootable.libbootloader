@@ -178,7 +178,7 @@ mod test {
         slots::{Bootability, Cursor, RecoveryTarget, UnbootableReason},
         Gbl, GblOps, Result as GblResult,
     };
-    use gbl_storage::BlockIoNull;
+    use gbl_storage::{BlockIo, BlockIoNull};
     use libgbl::{device_tree::DeviceTreeComponentsRegistry, ops::ImageBuffer};
     // TODO(b/350526796): use ptr.is_aligned() when Rust 1.79 is in Android
     use std::{
@@ -244,12 +244,7 @@ mod test {
         }
     }
 
-    impl<'a> GblOps<'a> for TestGblOps<'_>
-    where
-        Self: 'a,
-    {
-        type PartitionBlockIo = BlockIoNull;
-
+    impl<'a> GblOps<'a> for TestGblOps<'_> {
         fn console_out(&mut self) -> Option<&mut dyn Write> {
             unimplemented!();
         }
@@ -262,8 +257,8 @@ mod test {
             unimplemented!();
         }
 
-        fn partitions(&self) -> Result<&'a [PartitionBlockDevice<'a, Self::PartitionBlockIo>]> {
-            unimplemented!();
+        fn partitions(&self) -> &'a [PartitionBlockDevice<'a, impl BlockIo + 'a>] {
+            &[] as &[PartitionBlockDevice<BlockIoNull>]
         }
 
         fn zircon_add_device_zbi_items(&mut self, _: &mut ZbiContainer<&mut [u8]>) -> Result<()> {
