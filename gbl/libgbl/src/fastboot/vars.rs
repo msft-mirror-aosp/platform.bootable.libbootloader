@@ -12,90 +12,91 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::fastboot::PinFutContainerTyped;
 use crate::{
     fastboot::{BufferPool, GblFastboot},
     GblOps,
 };
 use core::fmt::Write;
+use core::future::Future;
 use core::str::{from_utf8, Split};
-use fastboot::{next_arg, next_arg_u64, snprintf, CommandError, FormattedBytes, VarInfoSender};
+use fastboot::{next_arg, next_arg_u64, snprintf, CommandResult, FormattedBytes, VarInfoSender};
 
-/// Internal trait that provides methods for getting and enumerating values for one or multiple
-/// related fastboot variables.
-pub(crate) trait Variable {
-    /// Get the variable value given variable name and arguments.
-    ///
-    /// Return Ok(Some(`size`)) where `size` is the number of bytes written to `out`. Return
-    /// `Ok(None)` if the variable is not supported.
-    async fn get<'a, P, F>(
-        &self,
-        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
+impl<'a: 'c, 'b: 'c, 'c, 'd, G, B, P, F> GblFastboot<'a, 'b, 'c, 'd, G, B, P, F>
+where
+    G: GblOps<'a>,
+    B: BufferPool,
+    F: Future<Output = ()> + 'c,
+    P: PinFutContainerTyped<'c, F>,
+{
+    const VERSION_BOOTLOADER: &'static str = "version-bootloader";
+    const VERSION_BOOTLOADER_VAL: &'static str = "1.0";
+
+    const MAX_FETCH_SIZE: &'static str = "max-fetch-size";
+    const MAX_FETCH_SIZE_VAL: &'static str = "0xffffffffffffffff";
+
+    /// Entry point for "fastboot getvar <variable>..."
+    pub(crate) fn get_var_internal<'s>(
+        &mut self,
         name: &str,
         args: Split<'_, char>,
-        out: &mut [u8],
-    ) -> Result<Option<usize>, CommandError>;
-
-    /// Iterates and calls `f` on all values/arguments combinations.
-    async fn get_all<'a, P, F>(
-        &self,
-        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
-        responder: &mut impl VarInfoSender,
-    ) -> Result<(), CommandError>;
-}
-
-// Constant fastboot variable
-impl Variable for (&'static str, &'static str) {
-    async fn get<'a, P, F>(
-        &self,
-        _: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
-        name: &str,
-        _: Split<'_, char>,
-        out: &mut [u8],
-    ) -> Result<Option<usize>, CommandError> {
-        Ok((name == self.0).then_some(snprintf!(out, "{}", self.1).len()))
-    }
-
-    async fn get_all<'a, P, F>(
-        &self,
-        _: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
-        responder: &mut impl VarInfoSender,
-    ) -> Result<(), CommandError> {
-        responder.send_var_info(self.0, &[], self.1).await
-    }
-}
-
-/// `Partition` variable provides information of GPT partitions
-///
-/// `fastboot getvar partition-size:<GBL Fastboot partition>`
-/// `fastboot getvar partition-type:<GBL Fastboot partition>`
-pub(crate) struct Partition {}
-
-const PARTITION_SIZE: &str = "partition-size";
-const PARTITION_TYPE: &str = "partition-type";
-impl Variable for Partition {
-    async fn get<'a, P, F>(
-        &self,
-        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
-        name: &str,
-        mut args: Split<'_, char>,
-        out: &mut [u8],
-    ) -> Result<Option<usize>, CommandError> {
-        let (_, _, start, sz) = gbl_fb.parse_partition(args.next().ok_or("Missing var")?)?;
+        out: &'s mut [u8],
+    ) -> CommandResult<&'s str> {
         Ok(match name {
-            PARTITION_SIZE => Some(snprintf!(out, "{:#x}", sz).len()),
-            PARTITION_TYPE => Some(snprintf!(out, "raw").len()), // Image type not supported yet.
-            _ => None,
+            Self::VERSION_BOOTLOADER => snprintf!(out, "{}", Self::VERSION_BOOTLOADER_VAL),
+            Self::MAX_FETCH_SIZE => snprintf!(out, "{}", Self::MAX_FETCH_SIZE_VAL),
+            Self::PARTITION_SIZE => self.get_var_partition_size(args, out)?,
+            Self::PARTITION_TYPE => self.get_var_partition_type(args, out)?,
+            Self::BLOCK_DEVICE => self.get_var_block_device(args, out)?,
+            Self::DEFAULT_BLOCK => self.get_var_default_block(out)?,
+            _ => Err("Not found")?,
         })
     }
 
-    async fn get_all<'a, P, F>(
-        &self,
-        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
+    /// Entry point for "fastboot getvar all..."
+    pub(crate) async fn get_var_all_internal(
+        &mut self,
+        send: &mut impl VarInfoSender,
+    ) -> CommandResult<()> {
+        send.send_var_info(Self::VERSION_BOOTLOADER, &[], Self::VERSION_BOOTLOADER_VAL).await?;
+        send.send_var_info(Self::MAX_FETCH_SIZE, &[], Self::MAX_FETCH_SIZE_VAL).await?;
+        self.get_all_block_device(send).await?;
+        let mut buf = [0u8; 32];
+        send.send_var_info(Self::DEFAULT_BLOCK, &[], self.get_var_default_block(&mut buf)?).await?;
+        self.get_all_partition_size_type(send).await
+    }
+
+    const PARTITION_SIZE: &'static str = "partition-size";
+    const PARTITION_TYPE: &'static str = "partition-type";
+
+    /// "fastboot getvar partition-size"
+    fn get_var_partition_size<'s>(
+        &mut self,
+        mut args: Split<'_, char>,
+        out: &'s mut [u8],
+    ) -> CommandResult<&'s str> {
+        let (_, _, _, sz) = self.parse_partition(args.next().ok_or("Missing var")?)?;
+        Ok(snprintf!(out, "{:#x}", sz))
+    }
+
+    /// "fastboot getvar partition-type"
+    fn get_var_partition_type<'s>(
+        &mut self,
+        mut args: Split<'_, char>,
+        out: &'s mut [u8],
+    ) -> CommandResult<&'s str> {
+        self.parse_partition(args.next().ok_or("Missing var")?)?;
+        Ok(snprintf!(out, "raw"))
+    }
+
+    /// Gets all "partition-size/partition-type"
+    async fn get_all_partition_size_type(
+        &mut self,
         responder: &mut impl VarInfoSender,
-    ) -> Result<(), CommandError> {
+    ) -> CommandResult<()> {
         // Though any sub range of a GPT partition or raw block counts as a partition in GBL
         // Fastboot, for "getvar all" we only enumerate whole range GPT partitions.
-        let partitions = gbl_fb.gbl_ops.partitions()?;
+        let partitions = self.gbl_ops.partitions()?;
         let mut size_str = [0u8; 32];
         for (idx, blk) in partitions.iter().enumerate() {
             for ptn_idx in 0..blk.num_partitions().unwrap_or(0) {
@@ -106,229 +107,89 @@ impl Variable for Partition {
                 let mut part_id_buf = [0u8; 128];
                 let part = snprintf!(part_id_buf, "{}/{:x}", part, idx);
                 responder
-                    .send_var_info(PARTITION_SIZE, &[part], snprintf!(size_str, "{:#x}", sz))
+                    .send_var_info(Self::PARTITION_SIZE, &[part], snprintf!(size_str, "{:#x}", sz))
                     .await?;
                 // Image type is not supported yet.
                 responder
-                    .send_var_info(PARTITION_TYPE, &[part], snprintf!(size_str, "raw"))
+                    .send_var_info(Self::PARTITION_TYPE, &[part], snprintf!(size_str, "raw"))
                     .await?;
             }
         }
         Ok(())
     }
-}
 
-/// `BlockDevice` variable provides information of block devices.
-///
-/// `fastboot getvar block-device:<id>:total-blocks`
-/// `fastboot getvar block-device:<id>:block-size`
-pub(crate) struct BlockDevice {}
+    const BLOCK_DEVICE: &'static str = "block-device";
+    const TOTAL_BLOCKS: &'static str = "total-blocks";
+    const BLOCK_SIZE: &'static str = "block-size";
+    const BLOCK_DEVICE_STATUS: &'static str = "status";
 
-const BLOCK_DEVICE: &str = "block-device";
-const TOTAL_BLOCKS: &str = "total-blocks";
-const BLOCK_SIZE: &str = "block-size";
-const BLOCK_DEVICE_STATUS: &str = "status";
-
-impl Variable for BlockDevice {
-    async fn get<'a, P, F>(
-        &self,
-        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
-        name: &str,
+    /// Block device related information.
+    ///
+    /// `fastboot getvar block-device:<id>:total-blocks`
+    /// `fastboot getvar block-device:<id>:block-size`
+    /// `fastboot getvar block-device:<id>:status`
+    fn get_var_block_device<'s>(
+        &mut self,
         mut args: Split<'_, char>,
-        out: &mut [u8],
-    ) -> Result<Option<usize>, CommandError> {
-        Ok(match name {
-            BLOCK_DEVICE => {
-                let id = next_arg_u64(&mut args)?.ok_or("Missing block device ID")?;
-                let id = usize::try_from(id)?;
-                let val_type = next_arg(&mut args).ok_or("Missing value type")?;
-                let blk = &gbl_fb.gbl_ops.partitions()?[id];
-                let info = blk.block_info();
-                Some(
-                    match val_type {
-                        TOTAL_BLOCKS => snprintf!(out, "{:#x}", info.num_blocks),
-                        BLOCK_SIZE => snprintf!(out, "{:#x}", info.block_size),
-                        BLOCK_DEVICE_STATUS => {
-                            snprintf!(out, "{}", blk.status().to_str())
-                        }
-                        _ => return Err("Invalid type".into()),
-                    }
-                    .len(),
-                )
+        out: &'s mut [u8],
+    ) -> CommandResult<&'s str> {
+        let id = next_arg_u64(&mut args)?.ok_or("Missing block device ID")?;
+        let id = usize::try_from(id)?;
+        let val_type = next_arg(&mut args).ok_or("Missing value type")?;
+        let blk = &self.gbl_ops.partitions()?[id];
+        let info = blk.block_info();
+        Ok(match val_type {
+            Self::TOTAL_BLOCKS => snprintf!(out, "{:#x}", info.num_blocks),
+            Self::BLOCK_SIZE => snprintf!(out, "{:#x}", info.block_size),
+            Self::BLOCK_DEVICE_STATUS => {
+                snprintf!(out, "{}", blk.status().to_str())
             }
-            _ => None,
+            _ => return Err("Invalid type".into()),
         })
     }
 
-    async fn get_all<'a, P, F>(
-        &self,
-        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
+    /// Gets all "block-device" variables
+    async fn get_all_block_device(
+        &mut self,
         responder: &mut impl VarInfoSender,
-    ) -> Result<(), CommandError> {
+    ) -> CommandResult<()> {
         let mut val = [0u8; 32];
-        for (idx, blk) in gbl_fb.gbl_ops.partitions()?.iter().enumerate() {
+        for (idx, blk) in self.gbl_ops.partitions()?.iter().enumerate() {
             let mut id_str = [0u8; 32];
             let id = snprintf!(id_str, "{:x}", idx);
             let info = blk.block_info();
             responder
                 .send_var_info(
-                    BLOCK_DEVICE,
-                    &[id, TOTAL_BLOCKS],
+                    Self::BLOCK_DEVICE,
+                    &[id, Self::TOTAL_BLOCKS],
                     snprintf!(val, "{:#x}", info.num_blocks),
                 )
                 .await?;
             responder
                 .send_var_info(
-                    BLOCK_DEVICE,
-                    &[id, BLOCK_SIZE],
+                    Self::BLOCK_DEVICE,
+                    &[id, Self::BLOCK_SIZE],
                     snprintf!(val, "{:#x}", info.block_size),
                 )
                 .await?;
             responder
                 .send_var_info(
-                    BLOCK_DEVICE,
-                    &[id, BLOCK_DEVICE_STATUS],
+                    Self::BLOCK_DEVICE,
+                    &[id, Self::BLOCK_DEVICE_STATUS],
                     snprintf!(val, "{}", blk.status().to_str()),
                 )
                 .await?;
         }
         Ok(())
     }
-}
 
-/// Gives the value of current default block device ID set by "oem gbl-set-default-block".
-///
-/// `fastboot getvar gbl-default-block`
-pub(crate) struct DefaultBlock {}
+    const DEFAULT_BLOCK: &'static str = "gbl-default-block";
 
-const DEFAULT_BLOCK: &str = "gbl-default-block";
-
-impl Variable for DefaultBlock {
-    async fn get<'a, P, F>(
-        &self,
-        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
-        name: &str,
-        _: Split<'_, char>,
-        out: &mut [u8],
-    ) -> Result<Option<usize>, CommandError> {
-        Ok(match name {
-            DEFAULT_BLOCK => Some(
-                match gbl_fb.default_block {
-                    Some(v) => snprintf!(out, "{:#x}", v),
-                    _ => snprintf!(out, "None"),
-                }
-                .len(),
-            ),
-            _ => None,
+    /// "fastboot getvar gbl-default-block"
+    fn get_var_default_block<'s>(&mut self, out: &'s mut [u8]) -> CommandResult<&'s str> {
+        Ok(match self.default_block {
+            Some(v) => snprintf!(out, "{:#x}", v),
+            None => snprintf!(out, "None"),
         })
     }
-
-    async fn get_all<'a, P, F>(
-        &self,
-        gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
-        responder: &mut impl VarInfoSender,
-    ) -> Result<(), CommandError> {
-        let mut val = [0u8; 32];
-        match gbl_fb.default_block {
-            Some(v) => {
-                responder.send_var_info(DEFAULT_BLOCK, &[], snprintf!(val, "{:#x}", v)).await
-            }
-            _ => responder.send_var_info(DEFAULT_BLOCK, &[], snprintf!(val, "None")).await,
-        }
-    }
-}
-
-/// `fb_vars_api` generates a `fn fb_vars_get()` and `fn fb_vars_get_all()` helper API for all
-/// registered Fastboot variables.
-macro_rules! fb_vars_api {
-    ($($vars:expr),+ $(,)?) => {
-        /// Gets a Fastboot variable.
-        ///
-        /// The macro simply generates `var.get()` calls for each variable. i.e.:
-        ///
-        ///   pub(crate) async fn fb_vars_get<'a, P, F>(
-        ///       gbl_fb: &mut GblFastboot<...>,
-        ///       name: &str,
-        ///       args: Split<'_, char>,
-        ///       out: &mut [u8],
-        ///   ) -> Result<Option<usize>, CommandError> {
-        ///       match ("version-bootloader", "1.0").get(gbl_fb, name, args, out).await? {
-        ///           Some(v) => return Ok(Some(v)),
-        ///           _ => {}
-        ///       }
-        ///
-        ///       match BlockDevice {}.get(gbl_fb, name, args, out).await? {
-        ///           Some(v) => return Ok(Some(v)),
-        ///           _ => {}
-        ///       }
-        ///
-        ///       Ok(None)
-        ///   }
-        pub(crate) async fn fb_vars_get<'a, P, F> (
-            gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
-            name: &str,
-            args: Split<'_, char>,
-            out: &mut [u8],
-        ) -> Result<Option<usize>, CommandError> {
-            fb_vars_get_body!(gbl_fb, name, args.clone(), out, $($vars),*);
-            Ok(None)
-        }
-
-        /// Gets all Fastboot variable values.
-        ///
-        /// The macro simply generates `var.get_all()` calls for each variable.
-        ///
-        ///   pub(crate) async fn fb_vars_get_all<'a, P, F>(
-        ///       gbl_fb: &mut GblFastboot<...>,
-        ///       responder: &mut impl VarInfoSender,
-        ///   ) -> Result<(), CommandError> {
-        ///       ("version-bootloader", "1.0").get_all(gbl_fb, responder).await?;
-        ///       ("max-fetch-size", "0xffffffffffffffff").get_all(gbl_fb, responder).await?;
-        ///       BlockDevice {}.get_all(gbl_fb, responder).await?;
-        ///       Partition {}.get_all(gbl_fb, responder).await?;
-        ///       Ok(())
-        ///   }
-        pub(crate) async fn fb_vars_get_all<'a, P, F>(
-            gbl_fb: &mut GblFastboot<'a, '_, '_, '_, impl GblOps<'a>, impl BufferPool, P, F>,
-            responder: &mut impl VarInfoSender,
-        ) -> Result<(), CommandError> {
-            fb_vars_get_all_body!(gbl_fb, responder, $($vars),*);
-            Ok(())
-        }
-    }
-}
-
-// `fb_vars_get_body` generates the body for `fn fb_vars_get()`
-macro_rules! fb_vars_get_body {
-    ($gbl_fb:expr, $name:expr, $args:expr, $out:expr, $var:expr) => {
-        match $var.get($gbl_fb, $name, $args, $out).await? {
-            Some(v) => return Ok(Some(v)),
-            _ => {}
-        }
-    };
-    ($gbl_fb:expr, $name:expr, $args:expr, $out:expr, $var:expr, $($remains:expr),+ $(,)?) => {
-        fb_vars_get_body!($gbl_fb, $name, $args, $out, $var);
-        fb_vars_get_body!($gbl_fb, $name, $args, $out, $($remains),*)
-    };
-}
-
-// `fb_vars_get_all_body` generates the body for `fn fb_vars_get_all()`
-macro_rules! fb_vars_get_all_body {
-    ($gbl_fb:expr, $responder:expr, $var:expr) => {
-        $var.get_all($gbl_fb, $responder).await?
-    };
-    ($gbl_fb:expr, $responder:expr, $var:expr, $($remains:expr),+ $(,)?) => {
-        fb_vars_get_all_body!($gbl_fb, $responder, $var);
-        fb_vars_get_all_body!($gbl_fb, $responder, $($remains),*)
-    };
-}
-
-fb_vars_api! {
-    ("version-bootloader", "1.0"),
-    // GBL Fastboot can internally handle uploading in batches, thus there is no limit on
-    // max-fetch-size.
-    ("max-fetch-size", "0xffffffffffffffff"),
-    BlockDevice {},
-    DefaultBlock {},
-    Partition {},
 }

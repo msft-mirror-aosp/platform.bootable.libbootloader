@@ -1,4 +1,4 @@
-# Copyright (C) 2023 The Android Open Source Project
+# Copyright (C) 2023-2024 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -105,7 +105,7 @@ genrule(
 
 rust_library(
     # The naming is expected by "@mkbootimg//:rust/bootimg.rs".
-    name = "bootimg_private",
+    name = "bootimg_bindgen",
     srcs = ["src/defs.rs"],
     crate_root = "src/defs.rs",
     data = [":bootimg_sources_gen"],
@@ -122,7 +122,7 @@ rust_library(
     data = [":bootimg_sources_gen"],
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
-        ":bootimg_private",
+        ":bootimg_bindgen",
         "@gbl//liberror",
         "@zerocopy",
     ],

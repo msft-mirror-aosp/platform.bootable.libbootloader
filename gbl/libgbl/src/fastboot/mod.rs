@@ -40,7 +40,6 @@ use safemath::SafeNum;
 use zbi::{ZbiContainer, ZbiType};
 
 mod vars;
-use vars::{fb_vars_get, fb_vars_get_all};
 
 pub(crate) mod sparse;
 use sparse::is_sparse_image;
@@ -144,7 +143,6 @@ impl<'a, 'b, G: GblOps<'a>, B: BufferPool, P, F> GblFastboot<'a, 'b, '_, '_, G, 
     /// * Returns `Err()` otherwise.
     pub(crate) fn parse_flash_gpt_args(&self, part: &str) -> CommandResult<Option<(usize, bool)>> {
         // Syntax: flash gpt/<blk_idx>/"resize"
-        let devs = self.gbl_ops.partitions()?;
         let mut args = part.split('/');
         if next_arg(&mut args).filter(|v| *v == FLASH_GPT_PART).is_none() {
             return Ok(None);
@@ -291,11 +289,11 @@ where
         out: &mut [u8],
         _: impl InfoSender,
     ) -> CommandResult<usize> {
-        Ok(fb_vars_get(self, var, args, out).await?.ok_or("No such variable")?)
+        Ok(self.get_var_internal(var, args, out)?.len())
     }
 
     async fn get_var_all(&mut self, mut resp: impl VarInfoSender) -> CommandResult<()> {
-        fb_vars_get_all(self, &mut resp).await
+        self.get_var_all_internal(&mut resp).await
     }
 
     async fn get_download_buffer(&mut self) -> &mut [u8] {
@@ -690,7 +688,6 @@ mod test {
         partition::PartitionBlockDevice,
     };
     use core::{
-        cmp::max,
         mem::size_of,
         pin::{pin, Pin},
         str::from_utf8,
@@ -896,8 +893,6 @@ mod test {
     ) -> CommandResult<Vec<u8>> {
         let off = off.try_into().unwrap();
         let size = size.try_into().unwrap();
-        // Forces upload in two batches for testing.
-        let download_buffer = vec![0u8; max(1, usize::try_from(size).unwrap() / 2usize)];
         let mut upload_out = vec![0u8; usize::try_from(size).unwrap()];
         let test_uploader = TestUploadBuilder(&mut upload_out[..]);
         block_on(fb.fetch(part.as_str(), off, size, test_uploader))?;
@@ -1118,12 +1113,12 @@ mod test {
         // Creates two block devices for writing raw and sparse image.
         let sparse_raw = include_bytes!("../../testdata/sparse_test_raw.bin");
         let sparse = include_bytes!("../../testdata/sparse_test.bin");
-        let dev_sparse = TestBlockDeviceBuilder::new()
+        let mut dev_sparse = TestBlockDeviceBuilder::new()
             .add_partition("sparse", BackingStore::Size(sparse_raw.len()))
             .build();
         let mut test_data = TestData::new(128 * 1024, 2);
         test_data.storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
-        test_data.storage.add_gpt_device(dev_sparse.io.storage);
+        test_data.storage.add_gpt_device(dev_sparse.disk.io().storage());
         let (partitions, dl_buffers) = test_data.get();
         let mut gbl_ops = FakeGblOps::new(&partitions);
         let tasks = vec![].into();
@@ -1230,8 +1225,8 @@ mod test {
         let (partitions, dl_buffers) = test_data.get();
         let mut gbl_ops = FakeGblOps::new(&partitions);
         // Injects an error.
-        partitions[0].partition_io(None).unwrap().dev().io().errors =
-            [liberror::Error::Other(None)].into();
+        partitions[0].partition_io(None).unwrap().dev().io().error =
+            liberror::Error::Other(None).into();
         let tasks = vec![].into();
         let mut gbl_fb = GblFastboot::new(&mut gbl_ops, Task::run, &tasks, &dl_buffers);
         let tasks = gbl_fb.tasks();
@@ -1544,7 +1539,6 @@ mod test {
             listener.dump_usb_out_queue()
         );
 
-        let tcp_out_queue = listener.lock().tcp_out_queue.clone();
         assert_eq!(
             listener.tcp_out_queue(),
             make_expected_tcp_out(&[b"OKAY0x20000", b"INFOSyncing storage...", b"OKAY"]),
@@ -1697,6 +1691,7 @@ mod test {
         );
     }
 
+    #[test]
     fn test_fuchsia_fastboot_mdns_packet() {
         let expected = [
             0x00, 0x00, 0x84, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x09, 0x5f,
@@ -1720,6 +1715,7 @@ mod test {
         );
     }
 
+    #[test]
     fn test_fuchsia_fastboot_mdns_packet_invalid_node_name() {
         let ip6_addr = &[
             0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x50, 0x54, 0x00, 0xff, 0xfe, 0x12,

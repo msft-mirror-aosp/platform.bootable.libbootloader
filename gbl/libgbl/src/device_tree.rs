@@ -344,7 +344,7 @@ pub(crate) mod test {
 
         let mut current_buffer = &mut buffer[..];
         // Fill the whole reserved space
-        for i in 0..MAXIMUM_DEVICE_TREE_COMPONENTS {
+        for _ in 0..MAXIMUM_DEVICE_TREE_COMPONENTS {
             current_buffer = registry
                 .append(&mut gbl_ops, DeviceTreeComponentSource::Boot, &dt[..], current_buffer)
                 .unwrap();
@@ -542,7 +542,7 @@ pub(crate) mod test {
         assert_eq!(registry.selected().unwrap(), expected_selected);
     }
 
-    // #[test]
+    #[test]
     fn test_components_autoselect_multiple_base_device_trees_failed() {
         let dt = include_bytes!("../../libfdt/test/data/base.dtb").to_vec();
         let mut buffer = vec![0u8; 2 * 1024 * 1024]; // 2 MB
