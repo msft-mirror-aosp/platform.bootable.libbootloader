@@ -46,14 +46,7 @@ missing:
 - key management => atx extension in callback =>  atx_ops: ptr::null_mut(), // support optional ATX.
 */
 /// Trait that defines callbacks that can be provided to Gbl.
-pub trait GblOps<'a>
-where
-    Self: 'a,
-{
-    /// Type that implements `BlockIo` for the array of `PartitionBlockDevice` returned by]
-    /// `partitions()`.
-    type PartitionBlockIo: BlockIo;
-
+pub trait GblOps<'a> {
     /// Gets a console for logging messages.
     fn console_out(&mut self) -> Option<&mut dyn Write>;
 
@@ -84,7 +77,7 @@ where
     /// in order to parallelize fastboot flash, download and other commands. For implementation,
     /// this typically means that the `GblOps` object should hold a reference of the array instead
     /// of owning it.
-    fn partitions(&self) -> Result<&'a [PartitionBlockDevice<'a, Self::PartitionBlockIo>], Error>;
+    fn partitions(&self) -> &'a [PartitionBlockDevice<'a, impl BlockIo + 'a>];
 
     /// Reads data from a partition.
     async fn read_from_partition(
@@ -93,7 +86,7 @@ where
         off: u64,
         out: &mut [u8],
     ) -> Result<(), Error> {
-        read_unique_partition(self.partitions()?, part, off, out).await
+        read_unique_partition(self.partitions(), part, off, out).await
     }
 
     /// Reads data from a partition synchronously.
@@ -113,7 +106,7 @@ where
         off: u64,
         data: &mut [u8],
     ) -> Result<(), Error> {
-        write_unique_partition(self.partitions()?, part, off, data).await
+        write_unique_partition(self.partitions(), part, off, data).await
     }
 
     /// Writes data to a partition synchronously.
@@ -128,7 +121,7 @@ where
 
     /// Returns the size of a partiiton. Returns Ok(None) if partition doesn't exist.
     fn partition_size(&mut self, part: &str) -> Result<Option<u64>, Error> {
-        match check_part_unique(self.partitions()?, part) {
+        match check_part_unique(self.partitions(), part) {
             Ok((_, p)) => Ok(Some(p.size()?)),
             Err(Error::NotFound) => Ok(None),
             Err(e) => Err(e),
@@ -342,7 +335,7 @@ pub(crate) mod test {
             // Convert GPT devices.
             for device in self.gpt_devices.iter_mut() {
                 let (gpt_blk, gpt) = device.new_blk_and_gpt();
-                parts.push(PartitionBlockDevice::new_gpt(gpt_blk.as_borrowed(), gpt));
+                parts.push(PartitionBlockDevice::new_gpt(gpt_blk.as_borrowed(), gpt.as_borrowed()));
             }
             // Convert raw devices.
             for (name, device) in self.raw_devices.iter_mut() {
@@ -422,12 +415,7 @@ pub(crate) mod test {
         }
     }
 
-    impl<'a> GblOps<'a> for FakeGblOps<'a>
-    where
-        Self: 'a,
-    {
-        type PartitionBlockIo = &'a mut TestBlockIo;
-
+    impl<'a> GblOps<'a> for FakeGblOps<'a> {
         fn console_out(&mut self) -> Option<&mut dyn Write> {
             Some(self)
         }
@@ -438,10 +426,8 @@ pub(crate) mod test {
 
         fn reboot(&mut self) {}
 
-        fn partitions(
-            &self,
-        ) -> Result<&'a [PartitionBlockDevice<'a, Self::PartitionBlockIo>], Error> {
-            Ok(self.partitions)
+        fn partitions(&self) -> &'a [PartitionBlockDevice<'a, impl BlockIo + 'a>] {
+            self.partitions
         }
 
         fn zircon_add_device_zbi_items(
