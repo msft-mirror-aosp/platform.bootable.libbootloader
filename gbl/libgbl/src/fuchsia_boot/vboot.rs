@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::{
-    avb_ops::GblAvbOps,
     fuchsia_boot::{zbi_split_unused_buffer, zircon_part_name, SlotIndex},
+    gbl_avb::ops::GblAvbOps,
     gbl_print, GblOps, Result as GblResult,
 };
 use avb::{slot_verify, Descriptor, HashtreeErrorMode, Ops as _, SlotVerifyError, SlotVerifyFlags};
