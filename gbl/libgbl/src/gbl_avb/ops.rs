@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! AVB operations.
+//! Gbl AVB operations.
 
 use crate::GblOps;
 use avb::{
