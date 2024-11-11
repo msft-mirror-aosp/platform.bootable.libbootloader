@@ -24,10 +24,12 @@ use libutils::aligned_subslice;
 /// Device tree alignment.
 pub const FDT_ALIGNMENT: usize = 8;
 /// Maximum amount of device tree components GBL can handle to select from.
-pub const MAXIMUM_DEVICE_TREE_COMPONENTS: usize = 32;
+/// TODO(b/353272981): Use dynamic memory to store components. Currently
+/// DeviceTreeComponentsRegistry takes about 18kb of stack, which can be slow and dangerous.
+pub const MAXIMUM_DEVICE_TREE_COMPONENTS: usize = 256;
 /// Error message to fail in case of unsupported amount of device tree components.
 pub const MAXIMUM_DEVICE_TREE_COMPONENTS_ERROR_MSG: &str =
-    "At most 32 device components are supported to build the final one";
+    "At most 256 device components are supported to build the final one";
 
 /// The source device tree component is coming from.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
