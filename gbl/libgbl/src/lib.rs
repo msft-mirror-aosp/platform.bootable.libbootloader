@@ -38,7 +38,6 @@ use avb::{HashtreeErrorMode, SlotVerifyData, SlotVerifyError, SlotVerifyFlags};
 use core::ffi::CStr;
 
 pub mod android_boot;
-pub mod avb_ops; // TODO(b/363074091): make this private once we move Android boot into libgbl.
 pub mod boot_mode;
 pub mod boot_reason;
 pub mod decompress;
@@ -46,6 +45,7 @@ pub mod device_tree;
 pub mod error;
 pub mod fastboot;
 pub mod fuchsia_boot;
+pub mod gbl_avb;
 pub mod ops;
 pub mod partition;
 
