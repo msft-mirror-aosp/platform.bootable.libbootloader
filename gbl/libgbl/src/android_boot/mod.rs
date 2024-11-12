@@ -15,8 +15,8 @@
 //! Android boot support.
 
 use crate::{
-    avb_ops::GblAvbOps,
     device_tree::{DeviceTreeComponentSource, DeviceTreeComponentsRegistry, FDT_ALIGNMENT},
+    gbl_avb::ops::GblAvbOps,
     gbl_print, gbl_println, GblOps, IntegrationError, Result,
 };
 use arrayvec::ArrayVec;
