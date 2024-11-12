@@ -212,15 +212,26 @@ where
         let window_offset = next_arg_u64(&mut args)?.unwrap_or(0);
         // Parses sub window size.
         let window_size = next_arg_u64(&mut args)?;
-        // Checks and resolves blk_id and partition size
-        let (blk_id, partition) = match blk_id {
-            None => check_part_unique(devs, part.ok_or("Must provide a partition")?)?,
-            Some(v) => (v, devs[v].find_partition(part)?),
+        // Checks uniqueness of the partition and resolves its block device ID.
+        let find = |p: Option<&'s str>| match blk_id {
+            None => Ok((check_part_unique(devs, p.ok_or("Must provide a partition")?)?, p)),
+            Some(v) => Ok(((v, devs[v].find_partition(p)?), p)),
+        };
+        let ((blk_id, partition), actual) = match find(part) {
+            // Some legacy Fuchsia devices in the field uses name "fuchsia-fvm" for the standard
+            // "fvm" partition. However all of our infra uses the standard name "fvm" when flashing.
+            // Here we do a one off mapping if the device falls into this case. Once we have a
+            // solution for migrating those devices off the legacy name, we can remove this.
+            //
+            // If we run into more of such legacy aliases that we can't migrate, consider adding
+            // interfaces in GblOps for this.
+            Err(Error::NotFound) if part == Some("fvm") => find(Some("fuchsia-fvm"))?,
+            v => v?,
         };
         let part_sz = SafeNum::from(partition.size()?);
         let window_size = window_size.unwrap_or((part_sz - window_offset).try_into()?);
         u64::try_from(part_sz - window_size - window_offset)?;
-        Ok((part, blk_id, window_offset, window_size))
+        Ok((actual, blk_id, window_offset, window_size))
     }
 
     /// Takes the download data and resets download size.
@@ -2199,5 +2210,35 @@ mod test {
         // One shot recovery is set.
         assert_eq!(get_boot_slot(&mut GblAbrOps(&mut gbl_ops), true), (SlotIndex::R, false));
         assert_eq!(get_boot_slot(&mut GblAbrOps(&mut gbl_ops), true), (SlotIndex::A, false));
+    }
+
+    #[test]
+    fn test_legacy_fvm_partition_aliase() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"fuchsia-fvm", [0x00u8; 4 * 1024]);
+        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.os = Some(Os::Fuchsia);
+        let listener: SharedTestListener = Default::default();
+        let (usb, tcp) = (&listener, &listener);
+
+        listener.add_usb_input(format!("download:{:#x}", 4 * 1024).as_bytes());
+        listener.add_usb_input(&[0xaau8; 4 * 1024]);
+        listener.add_usb_input(b"flash:fvm");
+        listener.add_usb_input(b"continue");
+        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp)));
+
+        assert_eq!(
+            listener.usb_out_queue(),
+            make_expected_usb_out(&[
+                b"DATA00001000",
+                b"OKAY",
+                b"OKAY",
+                b"INFOSyncing storage...",
+                b"OKAY",
+            ]),
+            "\nActual USB output:\n{}",
+            listener.dump_usb_out_queue()
+        );
     }
 }
