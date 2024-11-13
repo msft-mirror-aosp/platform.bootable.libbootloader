@@ -25,6 +25,7 @@ use liberror::Error;
 use liberror::Error::BufferTooSmall;
 use libgbl::{
     fuchsia_boot::{zircon_check_enter_fastboot, zircon_load_verify_abr, zircon_part_name},
+    partition::check_part_unique,
     IntegrationError::UnificationError,
     Result,
 };
@@ -36,7 +37,7 @@ const PAGE_SIZE: u64 = 4096;
 
 /// Check if the disk GPT layout is a Fuchsia device layout.
 pub fn is_fuchsia_gpt(efi_entry: &EfiEntry) -> Result<()> {
-    let mut gpt_devices = find_block_devices(&efi_entry)?;
+    let gpt_devices = find_block_devices(&efi_entry)?;
     let partitions: &[&[&str]] = &[
         &["zircon_a", "zircon-a"],
         &["zircon_b", "zircon-b"],
@@ -48,7 +49,7 @@ pub fn is_fuchsia_gpt(efi_entry: &EfiEntry) -> Result<()> {
     ];
     if !partitions
         .iter()
-        .all(|&partition| partition.iter().any(|v| gpt_devices.find_partition(*v).is_ok()))
+        .all(|&partition| partition.iter().any(|v| check_part_unique(&gpt_devices[..], *v).is_ok()))
     {
         return Err(Error::NotFound.into());
     }
@@ -63,9 +64,8 @@ pub fn fuchsia_boot_demo(efi_entry: EfiEntry) -> Result<()> {
     // Allocates buffer for load.
     let mut load_buffer = vec![0u8; 128 * 1024 * 1024]; // 128MB
     let (_zbi_items, _kernel, slot) = {
-        let mut blks = find_block_devices(&efi_entry)?;
-        let partitions = &blks.as_gbl_parts()?;
-        let mut ops = Ops::new(&efi_entry, partitions);
+        let blks = find_block_devices(&efi_entry)?;
+        let mut ops = Ops::new(&efi_entry, &blks[..]);
         // Checks whether to enter fastboot mode.
         if zircon_check_enter_fastboot(&mut ops) {
             fastboot(&mut ops)?;

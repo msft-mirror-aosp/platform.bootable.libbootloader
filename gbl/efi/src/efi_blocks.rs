@@ -23,7 +23,7 @@ use efi_types::EfiBlockIoMedia;
 use gbl_async::block_on;
 use gbl_storage::{gpt_buffer_size, BlockInfo, BlockIo, Disk, Gpt};
 use liberror::Error;
-use libgbl::partition::{check_part_unique, Partition, PartitionBlockDevice};
+use libgbl::partition::GblDisk;
 
 /// `EfiBlockDeviceIo` wraps a EFI `BlockIoProtocol` or `BlockIo2Protocol` and implements the
 /// `BlockIo` interface.
@@ -75,71 +75,15 @@ impl BlockIo for EfiBlockDeviceIo<'_> {
 
 const MAX_GPT_ENTRIES: usize = 128;
 
-/// `PartitionInfoBuffer` manages the buffer for raw partition name or GPT partition table.
-enum PartitionInfoBuffer {
-    Gpt(Gpt<Vec<u8>>),
-    // TODO(b/357688291): Add raw partition entry once supported.
-}
-
-/// `EfiBlockDevice` manages EFI block IO, scratch and partition table buffers.
-pub struct EfiBlockDevice<'a> {
-    io: EfiBlockDeviceIo<'a>,
-    scratch: Vec<u8>,
-    partition: PartitionInfoBuffer,
-}
-
-impl<'a> EfiBlockDevice<'a> {
-    /// Creates a new instance as GPT partition device.
-    ///
-    /// The API allocates scratch and GPT buffer from heap.
-    pub fn new_gpt(mut io: EfiBlockDeviceIo<'a>) -> Result<Self, Error> {
-        let scratch_size = gbl_storage::scratch_size(&mut io)?;
-        let gpt_buffer = vec![0u8; gpt_buffer_size(MAX_GPT_ENTRIES)?];
-        Ok(Self {
-            io,
-            scratch: vec![0u8; scratch_size],
-            partition: PartitionInfoBuffer::Gpt(Gpt::new(gpt_buffer)?),
-        })
-    }
-
-    /// Creates an instance of GBL partition block device.
-    pub fn as_gbl_part(
-        &mut self,
-    ) -> Result<PartitionBlockDevice<&mut EfiBlockDeviceIo<'a>>, Error> {
-        let blk = Disk::new(&mut self.io, &mut self.scratch[..])?;
-        Ok(match &mut self.partition {
-            PartitionInfoBuffer::Gpt(gpt) => PartitionBlockDevice::new_gpt(blk, gpt.as_borrowed()),
-        })
-    }
-}
-
-/// `EfiMultiBlockDevices` wraps a vector of `EfiBlockDevice`.
-pub struct EfiMultiBlockDevices<'a>(pub Vec<EfiBlockDevice<'a>>);
-
-impl<'a> EfiMultiBlockDevices<'a> {
-    /// Creates a vector of `PartitionBlockDevice`
-    pub fn as_gbl_parts(
-        &mut self,
-    ) -> Result<Vec<PartitionBlockDevice<&mut EfiBlockDeviceIo<'a>>>, Error> {
-        let mut res = vec![];
-        for ele in &mut self.0 {
-            res.push(ele.as_gbl_part()?)
-        }
-        Ok(res)
-    }
-
-    /// Finds a partition.
-    // TODO(b/357688291): Remove once we switch to GblOps for finding partitions.
-    pub fn find_partition(&mut self, part: &str) -> Result<Partition, Error> {
-        Ok(check_part_unique(&self.as_gbl_parts()?, part)?.1)
-    }
-}
+/// The [GblDisk] type in the GBL EFI context.
+pub type EfiGblDisk<'a> = GblDisk<Disk<EfiBlockDeviceIo<'a>, Vec<u8>>, Gpt<Vec<u8>>>;
 
 /// Finds and returns all EFI devices supporting either EFI_BLOCK_IO or EFI_BLOCK_IO2 protocol.
-pub fn find_block_devices(efi_entry: &EfiEntry) -> Result<EfiMultiBlockDevices, Error> {
+pub fn find_block_devices(efi_entry: &EfiEntry) -> Result<Vec<EfiGblDisk<'_>>, Error> {
     let bs = efi_entry.system_table().boot_services();
     let block_dev_handles = bs.locate_handle_buffer_by_protocol::<BlockIoProtocol>()?;
-    let mut block_devices = Vec::<EfiBlockDevice>::new();
+    let mut gbl_disks = vec![];
+    let gpt_buffer_size = gpt_buffer_size(MAX_GPT_ENTRIES)?;
     for (idx, handle) in block_dev_handles.handles().iter().enumerate() {
         // Prioritizes `BlockIo2Protocol`.
         let blk_io = match bs.open_protocol::<BlockIo2Protocol>(*handle) {
@@ -150,13 +94,16 @@ pub fn find_block_devices(efi_entry: &EfiEntry) -> Result<EfiMultiBlockDevices, 
             continue;
         }
         // TODO(b/357688291): Support raw partition based on device path info.
-        let mut blk = EfiBlockDevice::new_gpt(blk_io)?;
-        match block_on(blk.as_gbl_part()?.sync_gpt()) {
+        let disk = GblDisk::new_gpt(
+            Disk::new_alloc_scratch(blk_io).unwrap(),
+            Gpt::new(vec![0u8; gpt_buffer_size]).unwrap(),
+        );
+        match block_on(disk.sync_gpt()) {
             Ok(Some(v)) => efi_println!(efi_entry, "Block #{idx} GPT sync result: {v}"),
             Err(e) => efi_println!(efi_entry, "Block #{idx} error while syncing GPT: {e}"),
             _ => {}
         };
-        block_devices.push(blk);
+        gbl_disks.push(disk);
     }
-    Ok(EfiMultiBlockDevices(block_devices))
+    Ok(gbl_disks)
 }
