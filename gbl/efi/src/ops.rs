@@ -16,7 +16,7 @@
 
 use crate::{
     efi,
-    efi_blocks::EfiBlockDeviceIo,
+    efi_blocks::EfiGblDisk,
     utils::{get_efi_fdt, wait_key_stroke},
 };
 use alloc::{
@@ -24,7 +24,10 @@ use alloc::{
     vec::Vec,
 };
 use arrayvec::ArrayVec;
-use core::{ffi::CStr, fmt::Write, mem::MaybeUninit, num::NonZeroUsize, slice::from_raw_parts_mut};
+use core::{
+    ffi::CStr, fmt::Write, mem::MaybeUninit, num::NonZeroUsize, ops::DerefMut,
+    slice::from_raw_parts_mut,
+};
 use efi::{
     efi_print, efi_println, protocol::dt_fixup::DtFixupProtocol,
     protocol::gbl_efi_image_loading::GblImageLoadingProtocol,
@@ -37,6 +40,7 @@ use efi_types::{
     PARTITION_NAME_LEN_U16,
 };
 use fdt::Fdt;
+use gbl_storage::{BlockIo, Disk, Gpt};
 use liberror::{Error, Result};
 use libgbl::{
     device_tree::{
@@ -44,7 +48,7 @@ use libgbl::{
         MAXIMUM_DEVICE_TREE_COMPONENTS,
     },
     ops::{AvbIoError, AvbIoResult, CertPermanentAttributes, ImageBuffer, SHA256_DIGEST_SIZE},
-    partition::PartitionBlockDevice,
+    partition::GblDisk,
     slots::{BootToken, Cursor},
     GblOps, Result as GblResult,
 };
@@ -78,17 +82,14 @@ fn dt_component_to_efi_dt(component: &DeviceTreeComponent) -> GblEfiVerifiedDevi
 
 pub struct Ops<'a, 'b> {
     pub efi_entry: &'a EfiEntry,
-    pub partitions: &'b [PartitionBlockDevice<'b, &'b mut EfiBlockDeviceIo<'a>>],
+    pub disks: &'b [EfiGblDisk<'a>],
     pub zbi_bootloader_files_buffer: Vec<u8>,
 }
 
 impl<'a, 'b> Ops<'a, 'b> {
     /// Creates a new instance of [Ops]
-    pub fn new(
-        efi_entry: &'a EfiEntry,
-        partitions: &'b [PartitionBlockDevice<'b, &'b mut EfiBlockDeviceIo<'a>>],
-    ) -> Self {
-        Self { efi_entry, partitions, zbi_bootloader_files_buffer: Default::default() }
+    pub fn new(efi_entry: &'a EfiEntry, disks: &'b [EfiGblDisk<'a>]) -> Self {
+        Self { efi_entry, disks, zbi_bootloader_files_buffer: Default::default() }
     }
 
     /// Gets the property of an FDT node from EFI FDT.
@@ -208,8 +209,6 @@ impl<'a, 'b> GblOps<'b> for Ops<'a, 'b>
 where
     Self: 'b,
 {
-    type PartitionBlockIo = &'b mut EfiBlockDeviceIo<'a>;
-
     fn console_out(&mut self) -> Option<&mut dyn Write> {
         Some(self)
     }
@@ -247,8 +246,13 @@ where
         self.efi_entry.system_table().runtime_services().cold_reset();
     }
 
-    fn partitions(&self) -> Result<&'b [PartitionBlockDevice<'b, Self::PartitionBlockIo>]> {
-        Ok(self.partitions)
+    fn disks(
+        &self,
+    ) -> &'b [GblDisk<
+        Disk<impl BlockIo + 'b, impl DerefMut<Target = [u8]> + 'b>,
+        Gpt<impl DerefMut<Target = [u8]> + 'b>,
+    >] {
+        self.disks
     }
 
     fn zircon_add_device_zbi_items(

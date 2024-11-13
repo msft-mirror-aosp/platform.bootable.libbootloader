@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! AVB operations.
+//! Gbl AVB operations.
 
 use crate::GblOps;
 use avb::{
@@ -248,10 +248,9 @@ mod test {
     #[test]
     fn read_from_partition_positive_off() {
         let mut storage = FakeGblOpsStorage::default();
-        storage.add_raw_device("test_part", test_data(512));
+        storage.add_raw_device(c"test_part", test_data(512));
 
-        let partitions = storage.as_partition_block_devices();
-        let mut gbl_ops = FakeGblOps::new(&partitions);
+        let mut gbl_ops = FakeGblOps::new(&storage);
         let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
 
         // Positive offset.
@@ -263,10 +262,9 @@ mod test {
     #[test]
     fn read_from_partition_negative_off() {
         let mut storage = FakeGblOpsStorage::default();
-        storage.add_raw_device("test_part", test_data(512));
+        storage.add_raw_device(c"test_part", test_data(512));
 
-        let partitions = storage.as_partition_block_devices();
-        let mut gbl_ops = FakeGblOps::new(&partitions);
+        let mut gbl_ops = FakeGblOps::new(&storage);
         let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
 
         // Negative offset should wrap from the end
@@ -278,10 +276,9 @@ mod test {
     #[test]
     fn read_from_partition_partial_read() {
         let mut storage = FakeGblOpsStorage::default();
-        storage.add_raw_device("test_part", test_data(512));
+        storage.add_raw_device(c"test_part", test_data(512));
 
-        let partitions = storage.as_partition_block_devices();
-        let mut gbl_ops = FakeGblOps::new(&partitions);
+        let mut gbl_ops = FakeGblOps::new(&storage);
         let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
 
         // Reading past the end of the partition should truncate.
@@ -293,10 +290,9 @@ mod test {
     #[test]
     fn read_from_partition_out_of_bounds() {
         let mut storage = FakeGblOpsStorage::default();
-        storage.add_raw_device("test_part", test_data(512));
+        storage.add_raw_device(c"test_part", test_data(512));
 
-        let partitions = storage.as_partition_block_devices();
-        let mut gbl_ops = FakeGblOps::new(&partitions);
+        let mut gbl_ops = FakeGblOps::new(&storage);
         let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
 
         // Reads starting out of bounds should fail.

@@ -17,20 +17,17 @@
 pub use crate::image_buffer::ImageBuffer;
 use crate::{
     error::Result as GblResult,
-    partition::{
-        check_part_unique, read_unique_partition, write_unique_partition, PartitionBlockDevice,
-    },
+    partition::{check_part_unique, read_unique_partition, write_unique_partition, GblDisk},
 };
-use core::ffi::CStr;
-use core::{fmt::Write, num::NonZeroUsize, result::Result};
+use core::{ffi::CStr, fmt::Write, num::NonZeroUsize, ops::DerefMut, result::Result};
 use gbl_async::block_on;
-use gbl_storage::BlockIo;
 use libutils::aligned_subslice;
 
 // Re-exports of types from other dependencies that appear in the APIs of this library.
 pub use avb::{
     CertPermanentAttributes, IoError as AvbIoError, IoResult as AvbIoResult, SHA256_DIGEST_SIZE,
 };
+pub use gbl_storage::{BlockIo, Disk, Gpt};
 use liberror::Error;
 pub use zbi::{ZbiContainer, ZBI_ALIGNMENT_USIZE};
 
@@ -46,14 +43,7 @@ missing:
 - key management => atx extension in callback =>  atx_ops: ptr::null_mut(), // support optional ATX.
 */
 /// Trait that defines callbacks that can be provided to Gbl.
-pub trait GblOps<'a>
-where
-    Self: 'a,
-{
-    /// Type that implements `BlockIo` for the array of `PartitionBlockDevice` returned by]
-    /// `partitions()`.
-    type PartitionBlockIo: BlockIo;
-
+pub trait GblOps<'a> {
     /// Gets a console for logging messages.
     fn console_out(&mut self) -> Option<&mut dyn Write>;
 
@@ -77,14 +67,20 @@ where
     /// way.
     fn reboot(&mut self);
 
-    /// Returns the list of partition block devices.
+    /// Returns the list of disk devices on this platform.
     ///
     /// Notes that the return slice doesn't capture the life time of `&self`, meaning that the slice
-    /// reference must be producible without borrowing the `GblOps`. This is intended and necessary
-    /// in order to parallelize fastboot flash, download and other commands. For implementation,
-    /// this typically means that the `GblOps` object should hold a reference of the array instead
-    /// of owning it.
-    fn partitions(&self) -> Result<&'a [PartitionBlockDevice<'a, Self::PartitionBlockIo>], Error>;
+    /// reference must be producible without borrowing `Self`. This is intended and necessary to
+    /// make disk IO and the rest of GblOps methods independent and parallelizable, which is
+    /// required for features such as parallell fastboot flash, download and other commands. For
+    /// implementation, this typically means that the `GblOps` object should hold a reference of the
+    /// array instead of owning it.
+    fn disks(
+        &self,
+    ) -> &'a [GblDisk<
+        Disk<impl BlockIo + 'a, impl DerefMut<Target = [u8]> + 'a>,
+        Gpt<impl DerefMut<Target = [u8]> + 'a>,
+    >];
 
     /// Reads data from a partition.
     async fn read_from_partition(
@@ -93,7 +89,7 @@ where
         off: u64,
         out: &mut [u8],
     ) -> Result<(), Error> {
-        read_unique_partition(self.partitions()?, part, off, out).await
+        read_unique_partition(self.disks(), part, off, out).await
     }
 
     /// Reads data from a partition synchronously.
@@ -113,7 +109,7 @@ where
         off: u64,
         data: &mut [u8],
     ) -> Result<(), Error> {
-        write_unique_partition(self.partitions()?, part, off, data).await
+        write_unique_partition(self.disks(), part, off, data).await
     }
 
     /// Writes data to a partition synchronously.
@@ -128,7 +124,7 @@ where
 
     /// Returns the size of a partiiton. Returns Ok(None) if partition doesn't exist.
     fn partition_size(&mut self, part: &str) -> Result<Option<u64>, Error> {
-        match check_part_unique(self.partitions()?, part) {
+        match check_part_unique(self.disks(), part) {
             Ok((_, p)) => Ok(Some(p.size()?)),
             Err(Error::NotFound) => Ok(None),
             Err(e) => Err(e),
@@ -292,67 +288,61 @@ macro_rules! gbl_println {
 #[cfg(test)]
 pub(crate) mod test {
     use super::*;
-    use crate::partition::sync_gpt;
+    use crate::partition::GblDisk;
     use avb::{CertOps, Ops};
     use avb_test::TestOps as AvbTestOps;
-    use gbl_storage_testlib::{TestBlockDevice, TestBlockDeviceBuilder, TestBlockIo};
+    use core::ops::{Deref, DerefMut};
+    use gbl_async::block_on;
+    use gbl_storage::{new_gpt_max, Disk, GptMax, RamBlockIo};
     use zbi::{ZbiFlags, ZbiType};
+
+    /// Type of [GblDisk] in tests.
+    pub(crate) type TestGblDisk = GblDisk<Disk<RamBlockIo<Vec<u8>>, Vec<u8>>, GptMax>;
 
     /// Backing storage for [FakeGblOps].
     ///
     /// This needs to be a separate object because [GblOps] has designed its lifetimes to borrow
-    /// the [PartitionBlockDevice] objects rather than own it, so that they can outlive the ops
+    /// the [GblDisk] objects rather than own it, so that they can outlive the ops
     /// object when necessary.
     ///
     /// # Example usage
     /// ```
     /// let storage = FakeGblOpsStorage::default();
     /// storage.add_gpt_device(&gpt_disk_contents);
-    /// storage.add_raw_device("raw", &raw_disk_contents);
+    /// storage.add_raw_device(c"raw", &raw_disk_contents);
     ///
-    /// let partitions = storage.as_partition_block_devices();
-    /// let fake_ops = FakeGblOps(&partitions);
+    /// let fake_ops = FakeGblOps(&storage);
     /// ```
     #[derive(Default)]
-    pub(crate) struct FakeGblOpsStorage {
-        /// GPT block devices.
-        gpt_devices: Vec<TestBlockDevice>,
-        /// Raw partition block devices.
-        raw_devices: Vec<(&'static str, TestBlockDevice)>,
-    }
+    pub(crate) struct FakeGblOpsStorage(pub Vec<TestGblDisk>);
 
     impl FakeGblOpsStorage {
-        /// Adds a GPT block device.
-        pub fn add_gpt_device(&mut self, data: impl AsRef<[u8]>) {
-            self.gpt_devices.push(data.as_ref().into())
+        /// Adds a GPT disk.
+        pub(crate) fn add_gpt_device(&mut self, data: impl AsRef<[u8]>) {
+            // For test GPT images, all block sizes are 512.
+            let ram_blk = RamBlockIo::new(512, 512, data.as_ref().to_vec());
+            self.0.push(TestGblDisk::new_gpt(
+                Disk::new_alloc_scratch(ram_blk).unwrap(),
+                new_gpt_max(),
+            ));
+            let _ = block_on(self.0.last().unwrap().sync_gpt());
         }
 
-        /// Adds a raw partition block device.
-        pub fn add_raw_device(&mut self, name: &'static str, data: impl AsRef<[u8]>) {
-            let dev =
-                TestBlockDeviceBuilder::new().set_data(data.as_ref()).set_block_size(1).build();
-            self.raw_devices.push((name, dev))
+        /// Adds a raw partition disk.
+        pub(crate) fn add_raw_device(&mut self, name: &CStr, data: impl AsRef<[u8]>) {
+            // For raw partition, use block_size=alignment=1 for simplicity.
+            let ram_blk = RamBlockIo::new(1, 1, data.as_ref().to_vec());
+            self.0.push(
+                TestGblDisk::new_raw(Disk::new_alloc_scratch(ram_blk).unwrap(), name).unwrap(),
+            )
         }
+    }
 
-        /// Returns a vector of [PartitionBlockDevice]s wrapping the added devices.
-        pub fn as_partition_block_devices(
-            &mut self,
-        ) -> Vec<PartitionBlockDevice<&mut TestBlockIo>> {
-            let mut parts = Vec::default();
-            // Convert GPT devices.
-            for device in self.gpt_devices.iter_mut() {
-                let (gpt_blk, gpt) = device.new_blk_and_gpt();
-                parts.push(PartitionBlockDevice::new_gpt(gpt_blk.as_borrowed(), gpt.as_borrowed()));
-            }
-            // Convert raw devices.
-            for (name, device) in self.raw_devices.iter_mut() {
-                parts.push(
-                    PartitionBlockDevice::new_raw(device.new_blk_and_gpt().0.as_borrowed(), name)
-                        .unwrap(),
-                );
-            }
-            block_on(sync_gpt(&mut parts[..])).unwrap();
-            parts
+    impl Deref for FakeGblOpsStorage {
+        type Target = [TestGblDisk];
+
+        fn deref(&self) -> &Self::Target {
+            &self.0[..]
         }
     }
 
@@ -360,7 +350,7 @@ pub(crate) mod test {
     #[derive(Default)]
     pub(crate) struct FakeGblOps<'a> {
         /// Partition data to expose.
-        pub partitions: &'a [PartitionBlockDevice<'a, &'a mut TestBlockIo>],
+        pub partitions: &'a [TestGblDisk],
 
         /// Test fixture for [avb::Ops] and [avb::CertOps], provided by libavb.
         ///
@@ -391,7 +381,7 @@ pub(crate) mod test {
         pub const TEST_BOOTLOADER_FILE_1: &'static [u8] = b"\x06test_1foo";
         pub const TEST_BOOTLOADER_FILE_2: &'static [u8] = b"\x06test_2bar";
 
-        pub fn new(partitions: &'a [PartitionBlockDevice<'a, &'a mut TestBlockIo>]) -> Self {
+        pub fn new(partitions: &'a [TestGblDisk]) -> Self {
             let mut res = Self {
                 partitions,
                 zbi_bootloader_files_buffer: vec![0u8; 32 * 1024],
@@ -422,12 +412,7 @@ pub(crate) mod test {
         }
     }
 
-    impl<'a> GblOps<'a> for FakeGblOps<'a>
-    where
-        Self: 'a,
-    {
-        type PartitionBlockIo = &'a mut TestBlockIo;
-
+    impl<'a> GblOps<'a> for FakeGblOps<'a> {
         fn console_out(&mut self) -> Option<&mut dyn Write> {
             Some(self)
         }
@@ -438,10 +423,13 @@ pub(crate) mod test {
 
         fn reboot(&mut self) {}
 
-        fn partitions(
+        fn disks(
             &self,
-        ) -> Result<&'a [PartitionBlockDevice<'a, Self::PartitionBlockIo>], Error> {
-            Ok(self.partitions)
+        ) -> &'a [GblDisk<
+            Disk<impl BlockIo + 'a, impl DerefMut<Target = [u8]> + 'a>,
+            Gpt<impl DerefMut<Target = [u8]> + 'a>,
+        >] {
+            self.partitions
         }
 
         fn zircon_add_device_zbi_items(
