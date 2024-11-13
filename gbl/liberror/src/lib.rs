@@ -93,6 +93,13 @@ pub enum GptError {
         /// Maximum allowed.
         max_allowed: usize,
     },
+    /// Two partitions overlap.
+    PartitionRangeOverlap {
+        /// Previous partition in overlap. (partition index, first, last)
+        prev: (usize, u64, u64),
+        /// Next partition in overlap. (partition index, first, last)
+        next: (usize, u64, u64),
+    },
     /// Unexpected GPT header size.
     UnexpectedEntrySize {
         /// The actual entry size in the GPT header.
