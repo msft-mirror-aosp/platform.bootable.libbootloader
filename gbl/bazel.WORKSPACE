@@ -20,7 +20,7 @@ local_repository(
 )
 
 # buildifier: disable=load-on-top
-load("@gbl//integration/aosp_u-boot-mainline:workspace.bzl", "define_gbl_workspace")
+load("@gbl//integration/aosp_uefi-gbl-mainline:workspace.bzl", "define_gbl_workspace")
 
 define_gbl_workspace()
 
