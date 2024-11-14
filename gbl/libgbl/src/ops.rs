@@ -17,8 +17,10 @@
 pub use crate::image_buffer::ImageBuffer;
 use crate::{
     error::Result as GblResult,
+    fuchsia_boot::GblAbrOps,
     partition::{check_part_unique, read_unique_partition, write_unique_partition, GblDisk},
 };
+pub use abr::{set_one_shot_bootloader, set_one_shot_recovery, SlotIndex};
 use core::{ffi::CStr, fmt::Write, num::NonZeroUsize, ops::DerefMut, result::Result};
 use gbl_async::block_on;
 use libutils::aligned_subslice;
@@ -33,6 +35,15 @@ pub use zbi::{ZbiContainer, ZBI_ALIGNMENT_USIZE};
 
 use super::device_tree;
 use super::slots;
+
+/// Target Type of OS to boot.
+#[derive(PartialEq, Debug, Copy, Clone)]
+pub enum Os {
+    /// Android
+    Android,
+    /// Fuchsia
+    Fuchsia,
+}
 
 // https://stackoverflow.com/questions/41081240/idiomatic-callbacks-in-rust
 // should we use traits for this? or optional/box FnMut?
@@ -66,6 +77,32 @@ pub trait GblOps<'a> {
     /// absolutely can't be taken, implementation should hang and notify platform user in its own
     /// way.
     fn reboot(&mut self);
+
+    /// Reboots into recovery mode
+    ///
+    /// On success, returns a closure that performs the reboot.
+    fn reboot_recovery(&mut self) -> Result<impl FnOnce() + '_, Error> {
+        if self.expected_os_is_fuchsia()? {
+            // TODO(b/363075013): Checks and prioritizes platform specific
+            // `set_boot_reason()`.
+            set_one_shot_recovery(&mut GblAbrOps(self), true)?;
+            return Ok(|| self.reboot());
+        }
+        Err(Error::Unsupported)
+    }
+
+    /// Reboots into bootloader fastboot mode
+    ///
+    /// On success, returns a closure that performs the reboot.
+    fn reboot_bootloader(&mut self) -> Result<impl FnOnce() + '_, Error> {
+        if self.expected_os_is_fuchsia()? {
+            // TODO(b/363075013): Checks and prioritizes platform specific
+            // `set_boot_reason()`.
+            set_one_shot_bootloader(&mut GblAbrOps(self), true)?;
+            return Ok(|| self.reboot());
+        }
+        Err(Error::Unsupported)
+    }
 
     /// Returns the list of disk devices on this platform.
     ///
@@ -129,6 +166,15 @@ pub trait GblOps<'a> {
             Err(Error::NotFound) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+
+    /// Returns which OS to load, or `None` to try to auto-detect based on disk layout & contents.
+    fn expected_os(&mut self) -> Result<Option<Os>, Error>;
+
+    /// Returns if the expected_os is fuchsia
+    fn expected_os_is_fuchsia(&mut self) -> Result<bool, Error> {
+        // TODO(b/374776896): Implement auto detection.
+        Ok(self.expected_os()?.map(|v| v == Os::Fuchsia).unwrap_or(false))
     }
 
     /// Adds device specific ZBI items to the given `container`
@@ -289,6 +335,7 @@ macro_rules! gbl_println {
 pub(crate) mod test {
     use super::*;
     use crate::partition::GblDisk;
+    use abr::{get_and_clear_one_shot_bootloader, get_boot_slot};
     use avb::{CertOps, Ops};
     use avb_test::TestOps as AvbTestOps;
     use core::ops::{Deref, DerefMut};
@@ -364,6 +411,12 @@ pub(crate) mod test {
 
         /// For returned by `fn get_zbi_bootloader_files_buffer()`
         pub zbi_bootloader_files_buffer: Vec<u8>,
+
+        /// For checking that `Self::reboot` is called.
+        pub rebooted: bool,
+
+        /// For return by `Self::expected_os()`
+        pub os: Option<Os>,
     }
 
     /// Print `console_out` output, which can be useful for debugging.
@@ -421,7 +474,9 @@ pub(crate) mod test {
             self.stop_in_fastboot.unwrap_or(Ok(false))
         }
 
-        fn reboot(&mut self) {}
+        fn reboot(&mut self) {
+            self.rebooted = true;
+        }
 
         fn disks(
             &self,
@@ -430,6 +485,10 @@ pub(crate) mod test {
             Gpt<impl DerefMut<Target = [u8]> + 'a>,
         >] {
             self.partitions
+        }
+
+        fn expected_os(&mut self) -> Result<Option<Os>, Error> {
+            Ok(self.os)
         }
 
         fn zircon_add_device_zbi_items(
@@ -522,5 +581,50 @@ pub(crate) mod test {
         ) -> Result<(), Error> {
             unimplemented!();
         }
+    }
+
+    #[test]
+    fn test_fuchsia_reboot_bootloader() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"durable_boot", [0x00u8; 4 * 1024]);
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.os = Some(Os::Fuchsia);
+        (gbl_ops.reboot_bootloader().unwrap())();
+        assert!(gbl_ops.rebooted);
+        assert_eq!(get_and_clear_one_shot_bootloader(&mut GblAbrOps(&mut gbl_ops)), Ok(true));
+    }
+
+    #[test]
+    fn test_non_fuchsia_reboot_bootloader() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"durable_boot", [0x00u8; 4 * 1024]);
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.os = Some(Os::Android);
+        assert!(gbl_ops.reboot_bootloader().is_err_and(|e| e == Error::Unsupported));
+        assert_eq!(get_and_clear_one_shot_bootloader(&mut GblAbrOps(&mut gbl_ops)), Ok(false));
+    }
+
+    #[test]
+    fn test_fuchsia_reboot_recovery() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"durable_boot", [0x00u8; 4 * 1024]);
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.os = Some(Os::Fuchsia);
+        (gbl_ops.reboot_recovery().unwrap())();
+        assert!(gbl_ops.rebooted);
+        // One shot recovery is set.
+        assert_eq!(get_boot_slot(&mut GblAbrOps(&mut gbl_ops), true), (SlotIndex::R, false));
+        assert_eq!(get_boot_slot(&mut GblAbrOps(&mut gbl_ops), true), (SlotIndex::A, false));
+    }
+
+    #[test]
+    fn test_non_fuchsia_reboot_recovery() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"durable_boot", [0x00u8; 4 * 1024]);
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.os = Some(Os::Android);
+        assert!(gbl_ops.reboot_recovery().is_err_and(|e| e == Error::Unsupported));
+        // One shot recovery is not set.
+        assert_eq!(get_boot_slot(&mut GblAbrOps(&mut gbl_ops), true), (SlotIndex::A, false));
     }
 }
