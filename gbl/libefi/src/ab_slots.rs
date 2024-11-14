@@ -174,13 +174,14 @@ mod test {
     };
     use gbl::{
         ops::{AvbIoResult, CertPermanentAttributes, SHA256_DIGEST_SIZE},
-        partition::PartitionBlockDevice,
+        partition::GblDisk,
         slots::{Bootability, Cursor, RecoveryTarget, UnbootableReason},
-        Gbl, GblOps, Result as GblResult,
+        Gbl, GblOps, Os, Result as GblResult,
     };
-    use gbl_storage::{BlockIo, BlockIoNull};
+    use gbl_storage::{BlockIo, BlockIoNull, Disk, Gpt};
     use libgbl::{device_tree::DeviceTreeComponentsRegistry, ops::ImageBuffer};
     // TODO(b/350526796): use ptr.is_aligned() when Rust 1.79 is in Android
+    use core::ops::DerefMut;
     use std::{
         ffi::CStr,
         fmt::Write,
@@ -257,8 +258,17 @@ mod test {
             unimplemented!();
         }
 
-        fn partitions(&self) -> &'a [PartitionBlockDevice<'a, impl BlockIo + 'a>] {
-            &[] as &[PartitionBlockDevice<BlockIoNull>]
+        fn disks(
+            &self,
+        ) -> &'a [GblDisk<
+            Disk<impl BlockIo + 'a, impl DerefMut<Target = [u8]> + 'a>,
+            Gpt<impl DerefMut<Target = [u8]> + 'a>,
+        >] {
+            &[] as &[GblDisk<Disk<BlockIoNull, &mut [u8]>, Gpt<&mut [u8]>>]
+        }
+
+        fn expected_os(&mut self) -> Result<Option<Os>> {
+            Ok(None)
         }
 
         fn zircon_add_device_zbi_items(&mut self, _: &mut ZbiContainer<&mut [u8]>) -> Result<()> {

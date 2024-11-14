@@ -16,7 +16,7 @@
 
 use crate::{
     efi,
-    efi_blocks::EfiBlockDeviceIo,
+    efi_blocks::EfiGblDisk,
     utils::{get_efi_fdt, wait_key_stroke},
 };
 use alloc::{
@@ -24,7 +24,10 @@ use alloc::{
     vec::Vec,
 };
 use arrayvec::ArrayVec;
-use core::{ffi::CStr, fmt::Write, mem::MaybeUninit, num::NonZeroUsize, slice::from_raw_parts_mut};
+use core::{
+    ffi::CStr, fmt::Write, mem::MaybeUninit, num::NonZeroUsize, ops::DerefMut,
+    slice::from_raw_parts_mut,
+};
 use efi::{
     efi_print, efi_println, protocol::dt_fixup::DtFixupProtocol,
     protocol::gbl_efi_image_loading::GblImageLoadingProtocol,
@@ -37,7 +40,7 @@ use efi_types::{
     PARTITION_NAME_LEN_U16,
 };
 use fdt::Fdt;
-use gbl_storage::BlockIo;
+use gbl_storage::{BlockIo, Disk, Gpt};
 use liberror::{Error, Result};
 use libgbl::{
     device_tree::{
@@ -45,9 +48,9 @@ use libgbl::{
         MAXIMUM_DEVICE_TREE_COMPONENTS,
     },
     ops::{AvbIoError, AvbIoResult, CertPermanentAttributes, ImageBuffer, SHA256_DIGEST_SIZE},
-    partition::PartitionBlockDevice,
+    partition::GblDisk,
     slots::{BootToken, Cursor},
-    GblOps, Result as GblResult,
+    GblOps, Os, Result as GblResult,
 };
 use safemath::SafeNum;
 use zbi::ZbiContainer;
@@ -79,17 +82,15 @@ fn dt_component_to_efi_dt(component: &DeviceTreeComponent) -> GblEfiVerifiedDevi
 
 pub struct Ops<'a, 'b> {
     pub efi_entry: &'a EfiEntry,
-    pub partitions: &'b [PartitionBlockDevice<'b, &'b mut EfiBlockDeviceIo<'a>>],
+    pub disks: &'b [EfiGblDisk<'a>],
     pub zbi_bootloader_files_buffer: Vec<u8>,
+    pub os: Option<Os>,
 }
 
 impl<'a, 'b> Ops<'a, 'b> {
     /// Creates a new instance of [Ops]
-    pub fn new(
-        efi_entry: &'a EfiEntry,
-        partitions: &'b [PartitionBlockDevice<'b, &'b mut EfiBlockDeviceIo<'a>>],
-    ) -> Self {
-        Self { efi_entry, partitions, zbi_bootloader_files_buffer: Default::default() }
+    pub fn new(efi_entry: &'a EfiEntry, disks: &'b [EfiGblDisk<'a>], os: Option<Os>) -> Self {
+        Self { efi_entry, disks, zbi_bootloader_files_buffer: Default::default(), os }
     }
 
     /// Gets the property of an FDT node from EFI FDT.
@@ -246,8 +247,17 @@ where
         self.efi_entry.system_table().runtime_services().cold_reset();
     }
 
-    fn partitions(&self) -> &'b [PartitionBlockDevice<'b, impl BlockIo + 'b>] {
-        self.partitions
+    fn disks(
+        &self,
+    ) -> &'b [GblDisk<
+        Disk<impl BlockIo + 'b, impl DerefMut<Target = [u8]> + 'b>,
+        Gpt<impl DerefMut<Target = [u8]> + 'b>,
+    >] {
+        self.disks
+    }
+
+    fn expected_os(&mut self) -> Result<Option<Os>> {
+        Ok(self.os)
     }
 
     fn zircon_add_device_zbi_items(
@@ -445,7 +455,7 @@ mod test {
         mock_efi.con_out.expect_write_str().with(eq("foo bar")).return_const(Ok(()));
         let installed = mock_efi.install();
 
-        let mut ops = Ops::new(installed.entry(), &[]);
+        let mut ops = Ops::new(installed.entry(), &[], None);
 
         assert!(write!(&mut ops, "{} {}", "foo", "bar").is_ok());
     }
