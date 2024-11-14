@@ -491,11 +491,10 @@ pub fn load_android_simple<'a, 'b>(
     gbl_println!(ops, "linux,initrd-end: {:#x}", ramdisk_end);
 
     // Update the FDT commandline.
-    let device_tree_commandline_length =
-        CStr::from_bytes_until_nul(fdt.get_property("chosen", BOOTARGS_PROP)?)
-            .map_err(Error::from)?
-            .to_bytes()
-            .len();
+    let device_tree_commandline_length = match fdt.get_property("chosen", BOOTARGS_PROP) {
+        Ok(val) => CStr::from_bytes_until_nul(val).map_err(Error::from)?.to_bytes().len(),
+        Err(_) => 0,
+    };
 
     // Reserve 1024 bytes for separators and fixup.
     let final_commandline_len =
