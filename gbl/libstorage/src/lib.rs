@@ -18,7 +18,7 @@
 #![cfg_attr(not(test), no_std)]
 #![allow(async_fn_in_trait)]
 
-use core::{cmp::max, ops::DerefMut};
+use core::{cell::RefMut, cmp::max, ops::DerefMut};
 use liberror::{Error, Result};
 use safemath::SafeNum;
 
@@ -90,17 +90,20 @@ pub trait BlockIo {
     async fn write_blocks(&mut self, blk_offset: u64, data: &mut [u8]) -> Result<()>;
 }
 
-impl<T: BlockIo> BlockIo for &mut T {
+impl<T: DerefMut> BlockIo for T
+where
+    T::Target: BlockIo,
+{
     fn info(&mut self) -> BlockInfo {
-        (*self).info()
+        self.deref_mut().info()
     }
 
     async fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> Result<()> {
-        (*self).read_blocks(blk_offset, out).await
+        self.deref_mut().read_blocks(blk_offset, out).await
     }
 
     async fn write_blocks(&mut self, blk_offset: u64, data: &mut [u8]) -> Result<()> {
-        (*self).write_blocks(blk_offset, data).await
+        self.deref_mut().write_blocks(blk_offset, data).await
     }
 }
 
@@ -326,6 +329,15 @@ impl<T: BlockIo, S: DerefMut<Target = [u8]>> Disk<T, S> {
     ) -> Result<()> {
         let offset = gpt_cache.check_range(part_name, offset, data.len())?;
         self.write(offset, data).await
+    }
+}
+
+impl<'a, T: BlockIo> Disk<RefMut<'a, T>, RefMut<'a, [u8]>> {
+    /// Converts a `RefMut<Disk<T, S>>` to `Disk<RefMut<T>, RefMut<[u8]>>`. The scratch buffer
+    /// generic type is eliminated in the return.
+    pub fn from_ref_mut(val: RefMut<'a, Disk<T, impl DerefMut<Target = [u8]>>>) -> Self {
+        let (io, scratch) = RefMut::map_split(val, |v| (&mut v.io, &mut v.scratch[..]));
+        Disk::new(io, scratch).unwrap()
     }
 }
 

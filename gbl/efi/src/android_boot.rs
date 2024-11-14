@@ -30,9 +30,8 @@ use libgbl::{android_boot::load_android_simple, gbl_print, gbl_println, GblOps, 
 // flow in libgbl, which will eventually replace this demo. The demo is currently used as an
 // end-to-end test for libraries developed so far.
 pub fn android_boot_demo(entry: EfiEntry) -> Result<()> {
-    let mut blks = find_block_devices(&entry)?;
-    let partitions = &blks.as_gbl_parts()?;
-    let mut ops = Ops::new(&entry, partitions);
+    let blks = find_block_devices(&entry)?;
+    let mut ops = Ops::new(&entry, &blks[..]);
 
     match ops.should_stop_in_fastboot() {
         Ok(true) => {
