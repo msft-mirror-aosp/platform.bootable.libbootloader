@@ -269,21 +269,25 @@ where
         resp.send_info("Syncing storage...").await?;
         self.sync_all_blocks().await?;
         match mode {
-            RebootMode::Normal => resp.send_info("Rebooting...").await?,
+            RebootMode::Normal => {
+                resp.send_info("Rebooting...").await?;
+                resp.send_okay("").await?;
+                self.gbl_ops.reboot();
+            }
             RebootMode::Bootloader => {
                 let f = self.gbl_ops.reboot_bootloader()?;
                 resp.send_info("Rebooting to bootloader...").await?;
+                resp.send_okay("").await?;
                 f()
             }
             RebootMode::Recovery => {
                 let f = self.gbl_ops.reboot_recovery()?;
                 resp.send_info("Rebooting to recovery...").await?;
+                resp.send_okay("").await?;
                 f()
             }
             _ => return Err("Unsupported".into()),
         }
-        resp.send_okay("").await?;
-        self.gbl_ops.reboot();
         Ok(())
     }
 
