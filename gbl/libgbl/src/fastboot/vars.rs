@@ -156,7 +156,7 @@ where
         })
     }
 
-    /// Gets all "block-device" variables
+    /// Gets all "block-device" variables.
     async fn get_all_block_device(
         &mut self,
         responder: &mut impl VarInfoSender,
