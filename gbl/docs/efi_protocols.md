@@ -213,3 +213,13 @@ Used to provide buffers to load the images for verification and boot process.
 In addition this protocol provides a list of additional custom partitions to be
 verified before booting, for boards that want to verify data in addition to the
 standard boot partitions.
+
+### GblAvbProtocol
+
+* [`GBL_EFI_AVB_PROTOCOL`](./gbl_avb_protocol.md)
+* Optional: enables AVB-related firmware callbacks.
+
+This protocol delegates some of AVB-related logic to the firmware, including
+tasks such as verifying public keys, handling verification results, and
+managing the device’s secure state (e.g., ROT, lock state, rollback indexes,
+etc.).
