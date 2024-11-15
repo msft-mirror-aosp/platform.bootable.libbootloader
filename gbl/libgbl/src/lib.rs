@@ -63,7 +63,7 @@ pub use boot_mode::BootMode;
 pub use boot_reason::KnownBootReason;
 pub use error::{IntegrationError, Result};
 use liberror::Error;
-pub use ops::GblOps;
+pub use ops::{GblOps, Os};
 
 use overlap::is_overlap;
 
