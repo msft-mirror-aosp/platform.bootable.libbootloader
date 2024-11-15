@@ -179,7 +179,9 @@ mod test {
         Gbl, GblOps, Os, Result as GblResult,
     };
     use gbl_storage::{BlockIo, BlockIoNull, Disk, Gpt};
-    use libgbl::{device_tree::DeviceTreeComponentsRegistry, ops::ImageBuffer};
+    use libgbl::{
+        device_tree::DeviceTreeComponentsRegistry, gbl_avb::state::BootStateColor, ops::ImageBuffer,
+    };
     // TODO(b/350526796): use ptr.is_aligned() when Rust 1.79 is in Android
     use core::ops::DerefMut;
     use std::{
@@ -314,6 +316,19 @@ mod test {
         fn avb_cert_read_permanent_attributes_hash(
             &mut self,
         ) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
+            unimplemented!();
+        }
+
+        fn avb_handle_verification_result(
+            &mut self,
+            _color: BootStateColor,
+            _boot_os_version: Option<&[u8]>,
+            _boot_security_patch: Option<&[u8]>,
+            _system_os_version: Option<&[u8]>,
+            _system_security_patch: Option<&[u8]>,
+            _vendor_os_version: Option<&[u8]>,
+            _vendor_security_patch: Option<&[u8]>,
+        ) -> AvbIoResult<()> {
             unimplemented!();
         }
 
