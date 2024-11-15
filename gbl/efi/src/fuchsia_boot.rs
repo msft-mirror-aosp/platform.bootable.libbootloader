@@ -14,8 +14,9 @@
 
 use crate::utils::efi_to_zbi_mem_range_type;
 #[allow(unused_imports)]
-use crate::utils::get_efi_mem_attr;
-use crate::{efi_blocks::find_block_devices, fastboot::fastboot, ops::Ops};
+use crate::{
+    efi_blocks::find_block_devices, fastboot::fastboot, ops::Ops, utils::get_efi_mem_attr,
+};
 use core::fmt::Write;
 use efi::{efi_print, efi_println, EfiEntry, EfiMemoryAttributesTable, EfiMemoryMap};
 use efi_types::{
@@ -27,7 +28,7 @@ use libgbl::{
     fuchsia_boot::{zircon_check_enter_fastboot, zircon_load_verify_abr, zircon_part_name},
     partition::check_part_unique,
     IntegrationError::UnificationError,
-    Result,
+    Os, Result,
 };
 use safemath::SafeNum;
 use zbi::{zbi_format::zbi_mem_range_t, ZbiContainer, ZbiFlags, ZbiType};
@@ -65,7 +66,7 @@ pub fn fuchsia_boot_demo(efi_entry: EfiEntry) -> Result<()> {
     let mut load_buffer = vec![0u8; 128 * 1024 * 1024]; // 128MB
     let (_zbi_items, _kernel, slot) = {
         let blks = find_block_devices(&efi_entry)?;
-        let mut ops = Ops::new(&efi_entry, &blks[..]);
+        let mut ops = Ops::new(&efi_entry, &blks[..], Some(Os::Fuchsia));
         // Checks whether to enter fastboot mode.
         if zircon_check_enter_fastboot(&mut ops) {
             fastboot(&mut ops)?;

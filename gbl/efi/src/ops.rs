@@ -50,7 +50,7 @@ use libgbl::{
     ops::{AvbIoError, AvbIoResult, CertPermanentAttributes, ImageBuffer, SHA256_DIGEST_SIZE},
     partition::GblDisk,
     slots::{BootToken, Cursor},
-    GblOps, Result as GblResult,
+    GblOps, Os, Result as GblResult,
 };
 use safemath::SafeNum;
 use zbi::ZbiContainer;
@@ -84,12 +84,13 @@ pub struct Ops<'a, 'b> {
     pub efi_entry: &'a EfiEntry,
     pub disks: &'b [EfiGblDisk<'a>],
     pub zbi_bootloader_files_buffer: Vec<u8>,
+    pub os: Option<Os>,
 }
 
 impl<'a, 'b> Ops<'a, 'b> {
     /// Creates a new instance of [Ops]
-    pub fn new(efi_entry: &'a EfiEntry, disks: &'b [EfiGblDisk<'a>]) -> Self {
-        Self { efi_entry, disks, zbi_bootloader_files_buffer: Default::default() }
+    pub fn new(efi_entry: &'a EfiEntry, disks: &'b [EfiGblDisk<'a>], os: Option<Os>) -> Self {
+        Self { efi_entry, disks, zbi_bootloader_files_buffer: Default::default(), os }
     }
 
     /// Gets the property of an FDT node from EFI FDT.
@@ -253,6 +254,10 @@ where
         Gpt<impl DerefMut<Target = [u8]> + 'b>,
     >] {
         self.disks
+    }
+
+    fn expected_os(&mut self) -> Result<Option<Os>> {
+        Ok(self.os)
     }
 
     fn zircon_add_device_zbi_items(
@@ -450,7 +455,7 @@ mod test {
         mock_efi.con_out.expect_write_str().with(eq("foo bar")).return_const(Ok(()));
         let installed = mock_efi.install();
 
-        let mut ops = Ops::new(installed.entry(), &[]);
+        let mut ops = Ops::new(installed.entry(), &[], None);
 
         assert!(write!(&mut ops, "{} {}", "foo", "bar").is_ok());
     }
