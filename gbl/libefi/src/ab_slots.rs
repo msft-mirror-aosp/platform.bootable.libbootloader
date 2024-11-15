@@ -176,7 +176,7 @@ mod test {
         ops::{AvbIoResult, CertPermanentAttributes, SHA256_DIGEST_SIZE},
         partition::GblDisk,
         slots::{Bootability, Cursor, RecoveryTarget, UnbootableReason},
-        Gbl, GblOps, Result as GblResult,
+        Gbl, GblOps, Os, Result as GblResult,
     };
     use gbl_storage::{BlockIo, BlockIoNull, Disk, Gpt};
     use libgbl::{device_tree::DeviceTreeComponentsRegistry, ops::ImageBuffer};
@@ -265,6 +265,10 @@ mod test {
             Gpt<impl DerefMut<Target = [u8]> + 'a>,
         >] {
             &[] as &[GblDisk<Disk<BlockIoNull, &mut [u8]>, Gpt<&mut [u8]>>]
+        }
+
+        fn expected_os(&mut self) -> Result<Option<Os>> {
+            Ok(None)
         }
 
         fn zircon_add_device_zbi_items(&mut self, _: &mut ZbiContainer<&mut [u8]>) -> Result<()> {
