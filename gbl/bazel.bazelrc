@@ -37,6 +37,7 @@ build --action_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
 
 build --@rules_rust//rust/settings:experimental_toolchain_generated_sysroot=false
 common --extra_toolchains=@gbl//toolchain:all
+test  --test_output=errors
 
 # Set up remote caching
 # https://developers.google.com/remote-build-execution/docs/set-up/set-up-caching
