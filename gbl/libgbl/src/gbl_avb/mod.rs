@@ -15,3 +15,4 @@
 //! GBL AVB implementation.
 
 pub(crate) mod ops;
+pub mod state;
