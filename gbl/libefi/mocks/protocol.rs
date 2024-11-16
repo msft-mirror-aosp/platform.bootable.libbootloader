@@ -21,7 +21,10 @@ use crate::{DeviceHandle, MOCK_EFI};
 use core::ffi::CStr;
 use core::fmt::Write;
 use efi::protocol::gbl_efi_image_loading::EfiImageBuffer;
-use efi_types::{EfiInputKey, GblEfiImageInfo, GblEfiPartitionName, GblEfiVerifiedDeviceTree};
+use efi_types::{
+    EfiInputKey, GblEfiAvbVerificationResult, GblEfiImageInfo, GblEfiPartitionName,
+    GblEfiVerifiedDeviceTree,
+};
 use liberror::Result;
 use mockall::mock;
 
@@ -197,4 +200,23 @@ pub mod dt_fixup {
 
     /// Map to the libefi name so code under test can just use one name.
     pub type DtFixupProtocol = MockDtFixupProtocol;
+}
+
+/// Mock avb protocol.
+pub mod gbl_efi_avb {
+    use super::*;
+
+    mock! {
+        /// Mock [efi::GblAvbProtocol].
+        pub GblAvbProtocol {
+            /// Wraps `GBL_EFI_AVB_PROTOCOL.handle_verification_result()`.
+            pub fn handle_verification_result(
+                &self,
+                verification_result: &GblEfiAvbVerificationResult,
+            ) -> Result<()>;
+        }
+    }
+
+    /// Map to the libefi name so code under test can just use one name.
+    pub type GblAvbProtocol = MockGblAvbProtocol;
 }

@@ -18,6 +18,7 @@ pub use crate::image_buffer::ImageBuffer;
 use crate::{
     error::Result as GblResult,
     fuchsia_boot::GblAbrOps,
+    gbl_avb::state::BootStateColor,
     partition::{check_part_unique, read_unique_partition, write_unique_partition, GblDisk},
 };
 pub use abr::{set_one_shot_bootloader, set_one_shot_recovery, SlotIndex};
@@ -251,6 +252,20 @@ pub trait GblOps<'a> {
     ///
     /// The interface has the same requirement as `avb::CertOps::read_permanent_attributes_hash`.
     fn avb_cert_read_permanent_attributes_hash(&mut self) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]>;
+
+    /// Handle AVB result.
+    ///
+    /// Set device state (rot / version binding), show UI, etc.
+    fn avb_handle_verification_result(
+        &mut self,
+        color: BootStateColor,
+        boot_os_version: Option<&[u8]>,
+        boot_security_patch: Option<&[u8]>,
+        system_os_version: Option<&[u8]>,
+        system_security_patch: Option<&[u8]>,
+        vendor_os_version: Option<&[u8]>,
+        vendor_security_patch: Option<&[u8]>,
+    ) -> AvbIoResult<()>;
 
     /// Get buffer for specific image of requested size.
     fn get_image_buffer<'c>(
@@ -545,6 +560,19 @@ pub(crate) mod test {
             &mut self,
         ) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
             self.avb_ops.read_permanent_attributes_hash()
+        }
+
+        fn avb_handle_verification_result(
+            &mut self,
+            _color: BootStateColor,
+            _boot_os_version: Option<&[u8]>,
+            _boot_security_patch: Option<&[u8]>,
+            _system_os_version: Option<&[u8]>,
+            _system_security_patch: Option<&[u8]>,
+            _vendor_os_version: Option<&[u8]>,
+            _vendor_security_patch: Option<&[u8]>,
+        ) -> AvbIoResult<()> {
+            unimplemented!();
         }
 
         fn get_image_buffer<'c>(&mut self, _: &str, _: NonZeroUsize) -> GblResult<ImageBuffer<'c>> {
