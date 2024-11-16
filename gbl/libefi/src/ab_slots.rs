@@ -173,7 +173,7 @@ mod test {
         GBL_EFI_BOOT_REASON_GBL_EFI_WATCHDOG as REASON_WATCHDOG,
     };
     use gbl::{
-        ops::{AvbIoResult, CertPermanentAttributes, SHA256_DIGEST_SIZE},
+        ops::{AvbIoResult, CertPermanentAttributes, VarInfoSender, SHA256_DIGEST_SIZE},
         partition::GblDisk,
         slots::{Bootability, Cursor, RecoveryTarget, UnbootableReason},
         Gbl, GblOps, Os, Result as GblResult,
@@ -189,6 +189,7 @@ mod test {
         fmt::Write,
         mem::align_of,
         num::NonZeroUsize,
+        str::Split,
         sync::atomic::{AtomicBool, AtomicU32, Ordering},
     };
     use zbi::ZbiContainer;
@@ -369,6 +370,19 @@ mod test {
             _components: &mut DeviceTreeComponentsRegistry,
         ) -> Result<()> {
             unimplemented!();
+        }
+
+        fn fastboot_variable(
+            &mut self,
+            _: &str,
+            _: Split<'_, char>,
+            _: &mut [u8],
+        ) -> Result<usize> {
+            unimplemented!()
+        }
+
+        async fn fastboot_send_all_variables(&mut self, _: &mut impl VarInfoSender) -> Result<()> {
+            unimplemented!()
         }
     }
 
