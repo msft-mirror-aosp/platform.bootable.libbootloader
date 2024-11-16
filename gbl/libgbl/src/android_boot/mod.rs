@@ -16,7 +16,7 @@
 
 use crate::{
     device_tree::{DeviceTreeComponentSource, DeviceTreeComponentsRegistry, FDT_ALIGNMENT},
-    gbl_avb::ops::GblAvbOps,
+    gbl_avb::{ops::GblAvbOps, state::BootStateColor},
     gbl_print, gbl_println, GblOps, IntegrationError, Result,
 };
 use arrayvec::ArrayVec;
@@ -85,21 +85,27 @@ fn avb_verify_slot<'a>(
         }
     }
 
+    // TODO(b/337846185): Pass AVB_SLOT_VERIFY_FLAGS_RESTART_CAUSED_BY_HASHTREE_CORRUPTION in
+    // case verity corruption is detected by HLOS.
     let mut avb_ops = GblAvbOps::new(ops, &preloaded[..], false);
-    let avb_state = match avb_ops.read_is_device_unlocked()? {
-        true => "orange",
-        _ => "green",
-    };
-
     let res = slot_verify(
         &mut avb_ops,
         &partitions,
         Some(c"_a"),
         SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_NONE,
-        // For demo, we use the same setting as Cuttlefish u-boot.
+        // TODO(b/337846185): For demo, we use the same setting as Cuttlefish u-boot.
+        // Pass AVB_HASHTREE_ERROR_MODE_MANAGED_RESTART_AND_EIO and handle EIO.
         HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_RESTART_AND_INVALIDATE,
     )
     .map_err(|e| IntegrationError::from(e.without_verify_data()))?;
+
+    // TODO(b/337846185): Handle RED and RED_EIO (AVB_HASHTREE_ERROR_MODE_EIO).
+    // TODO(b/337846185): Handle YELLOW code using validate_vbmeta_public_key.
+    let color = match avb_ops.read_is_device_unlocked()? {
+        false => BootStateColor::Green,
+        true => BootStateColor::Orange,
+    };
+    avb_ops.handle_verification_result(&res, color)?;
 
     // Append avb generated bootconfig.
     for cmdline_arg in res.cmdline().to_str().unwrap().split(' ') {
@@ -107,7 +113,7 @@ fn avb_verify_slot<'a>(
     }
 
     // Append "androidboot.verifiedbootstate="
-    write!(bootconfig_builder, "androidboot.verifiedbootstate={}\n", avb_state)
+    write!(bootconfig_builder, "androidboot.verifiedbootstate={}\n", color)
         .or(Err(Error::BufferTooSmall(None)))?;
     Ok(())
 }

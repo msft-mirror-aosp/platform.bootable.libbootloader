@@ -14,10 +14,10 @@
 
 //! Gbl AVB operations.
 
-use crate::GblOps;
+use crate::{gbl_avb::state::BootStateColor, GblOps};
 use avb::{
     cert_validate_vbmeta_public_key, CertOps, CertPermanentAttributes, IoError, IoResult,
-    Ops as AvbOps, PublicKeyForPartitionInfo, SHA256_DIGEST_SIZE,
+    Ops as AvbOps, PublicKeyForPartitionInfo, SlotVerifyData, SHA256_DIGEST_SIZE,
 };
 use core::{
     cmp::{max, min},
@@ -68,6 +68,71 @@ impl<'a, 'p, T: GblOps<'p>> GblAvbOps<'a, T> {
     /// use [AvbOps::get_size_of_partition].
     fn partition_size(&mut self, partition: &str) -> IoResult<u64> {
         self.gbl_ops.partition_size(partition).or(Err(IoError::Io))?.ok_or(IoError::NoSuchPartition)
+    }
+
+    /// Allowes implementation side to handle verification result.
+    pub fn handle_verification_result(
+        &mut self,
+        slot_verify: &SlotVerifyData,
+        color: BootStateColor,
+    ) -> IoResult<()> {
+        let mut vbmeta = None;
+        let mut vbmeta_boot = None;
+        let mut vbmeta_system = None;
+        let mut vbmeta_vendor = None;
+
+        // The Android build system automatically generates only the main vbmeta, but also allows
+        // to have separate chained partitions like vbmeta_system (for system, product, system_ext,
+        // etc.) or vbmeta_vendor (for vendor).
+        // https://android.googlesource.com/platform/external/avb/+/master/README.md#build-system-integration
+        //
+        // It may also integrate chained vbmeta into system level metadata partitions such as boot
+        // or init_boot, so they can be updated separately.
+        // https://android.googlesource.com/platform/external/avb/+/master/README.md#gki-2_0-integration
+        //
+        // Custom chained partitions are also supported by the Android build system, but we expect
+        // OEMs to follow about the same pattern.
+        // https://android-review.googlesource.com/q/Id671e2c3aee9ada90256381cce432927df03169b
+        for data in slot_verify.vbmeta_data() {
+            match data.partition_name().to_str().unwrap_or_default() {
+                "vbmeta" => vbmeta = Some(data),
+                "boot" => vbmeta_boot = Some(data),
+                "vbmeta_system" => vbmeta_system = Some(data),
+                "vbmeta_vendor" => vbmeta_vendor = Some(data),
+                _ => {}
+            }
+        }
+
+        let data = vbmeta.ok_or(IoError::NoSuchPartition)?;
+        let boot_data = vbmeta_boot.unwrap_or(data);
+        let system_data = vbmeta_system.unwrap_or(data);
+        let vendor_data = vbmeta_vendor.unwrap_or(data);
+
+        let boot_os_version = boot_data.get_property_value("com.android.build.boot.os_version");
+        let boot_security_patch =
+            boot_data.get_property_value("com.android.build.boot.security_patch");
+
+        let system_os_version =
+            system_data.get_property_value("com.android.build.system.os_version");
+        let system_security_patch =
+            system_data.get_property_value("com.android.build.system.security_patch");
+
+        let vendor_os_version =
+            vendor_data.get_property_value("com.android.build.vendor.os_version");
+        let vendor_security_patch =
+            vendor_data.get_property_value("com.android.build.vendor.security_patch");
+
+        self.gbl_ops.avb_handle_verification_result(
+            color,
+            boot_os_version,
+            boot_security_patch,
+            system_os_version,
+            system_security_patch,
+            vendor_os_version,
+            vendor_security_patch,
+        )?;
+
+        Ok(())
     }
 }
 
