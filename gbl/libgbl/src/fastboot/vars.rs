@@ -17,16 +17,22 @@ use crate::{
     fastboot::{BufferPool, GblFastboot},
     GblOps,
 };
-use core::fmt::Write;
-use core::future::Future;
-use core::str::{from_utf8, Split};
+use core::{
+    fmt::Write,
+    future::Future,
+    ops::DerefMut,
+    str::{from_utf8, Split},
+};
 use fastboot::{next_arg, next_arg_u64, snprintf, CommandResult, FormattedBytes, VarInfoSender};
 use gbl_storage::BlockIo;
 
-impl<'a: 'c, 'b: 'c, 'c, 'd, G, B, P, C, F> GblFastboot<'a, 'b, 'c, 'd, G, B, P, C, F>
+// See definition of [GblFastboot] for docs on lifetimes and generics parameters.
+impl<'a: 'c, 'b: 'c, 'c, 'd, G, B, S, T, P, C, F> GblFastboot<'a, 'b, 'c, 'd, G, B, S, T, P, C, F>
 where
     G: GblOps<'a>,
     B: BlockIo,
+    S: DerefMut<Target = [u8]>,
+    T: DerefMut<Target = [u8]>,
     P: BufferPool,
     C: PinFutContainerTyped<'c, F>,
     F: Future<Output = ()> + 'c,
@@ -98,9 +104,9 @@ where
     ) -> CommandResult<()> {
         // Though any sub range of a GPT partition or raw block counts as a partition in GBL
         // Fastboot, for "getvar all" we only enumerate whole range GPT partitions.
-        let partitions = self.gbl_ops.partitions();
+        let disks = self.disks;
         let mut size_str = [0u8; 32];
-        for (idx, blk) in partitions.iter().enumerate() {
+        for (idx, blk) in disks.iter().enumerate() {
             for ptn_idx in 0..blk.num_partitions().unwrap_or(0) {
                 let ptn = blk.get_partition_by_idx(ptn_idx)?;
                 let sz: u64 = ptn.size()?;
@@ -138,7 +144,7 @@ where
         let id = next_arg_u64(&mut args)?.ok_or("Missing block device ID")?;
         let id = usize::try_from(id)?;
         let val_type = next_arg(&mut args).ok_or("Missing value type")?;
-        let blk = &self.partitions[id];
+        let blk = &self.disks[id];
         let info = blk.block_info();
         Ok(match val_type {
             Self::TOTAL_BLOCKS => snprintf!(out, "{:#x}", info.num_blocks),
@@ -150,13 +156,13 @@ where
         })
     }
 
-    /// Gets all "block-device" variables
+    /// Gets all "block-device" variables.
     async fn get_all_block_device(
         &mut self,
         responder: &mut impl VarInfoSender,
     ) -> CommandResult<()> {
         let mut val = [0u8; 32];
-        for (idx, blk) in self.gbl_ops.partitions().iter().enumerate() {
+        for (idx, blk) in self.gbl_ops.disks().iter().enumerate() {
             let mut id_str = [0u8; 32];
             let id = snprintf!(id_str, "{:x}", idx);
             let info = blk.block_info();

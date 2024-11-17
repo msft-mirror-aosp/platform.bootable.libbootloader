@@ -14,7 +14,7 @@
 
 use crate::{efi_blocks::find_block_devices, fastboot::fastboot, ops::Ops};
 use efi::{exit_boot_services, EfiEntry};
-use libgbl::{android_boot::load_android_simple, gbl_print, gbl_println, GblOps, Result};
+use libgbl::{android_boot::load_android_simple, gbl_print, gbl_println, GblOps, Os, Result};
 
 // The following implements a demo for booting Android from disk. It can be run from
 // Cuttlefish by adding `--android_efi_loader=<path of this EFI binary>` to the command line.
@@ -30,9 +30,8 @@ use libgbl::{android_boot::load_android_simple, gbl_print, gbl_println, GblOps, 
 // flow in libgbl, which will eventually replace this demo. The demo is currently used as an
 // end-to-end test for libraries developed so far.
 pub fn android_boot_demo(entry: EfiEntry) -> Result<()> {
-    let mut blks = find_block_devices(&entry)?;
-    let partitions = &blks.as_gbl_parts()?;
-    let mut ops = Ops::new(&entry, partitions);
+    let blks = find_block_devices(&entry)?;
+    let mut ops = Ops::new(&entry, &blks[..], Some(Os::Android));
 
     match ops.should_stop_in_fastboot() {
         Ok(true) => {
