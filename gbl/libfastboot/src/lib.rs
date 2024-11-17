@@ -375,6 +375,9 @@ pub trait FastbootImplementation {
     /// * `responder`: An instance of `InfoSender`.
     async fn r#continue(&mut self, responder: impl InfoSender) -> CommandResult<()>;
 
+    /// Backend for `fastboot set_active`.
+    async fn set_active(&mut self, slot: &str, responder: impl InfoSender) -> CommandResult<()>;
+
     /// Backend for `fastboot oem ...`.
     ///
     /// # Args
@@ -821,6 +824,23 @@ async fn r#continue(
     }
 }
 
+// Handles `fastboot set_active`
+async fn set_active(
+    mut args: Split<'_, char>,
+    transport: &mut impl Transport,
+    fb_impl: &mut impl FastbootImplementation,
+) -> Result<()> {
+    let mut resp = Responder::new(transport);
+    let res = async {
+        let slot = next_arg(&mut args).ok_or("Missing slot")?;
+        fb_impl.set_active(slot, &mut resp).await
+    };
+    match res.await {
+        Ok(_) => reply_okay!(resp, ""),
+        Err(e) => reply_fail!(resp, "{}", e.to_str()),
+    }
+}
+
 /// Helper for handling "fastboot oem ...".
 async fn oem(
     cmd: &str,
@@ -873,6 +893,7 @@ pub async fn process_next_command(
         "reboot-bootloader" => reboot(RebootMode::Bootloader, transport, fb_impl).await,
         "reboot-fastboot" => reboot(RebootMode::Fastboot, transport, fb_impl).await,
         "reboot-recovery" => reboot(RebootMode::Recovery, transport, fb_impl).await,
+        "set_active" => set_active(args, transport, fb_impl).await,
         "continue" => {
             r#continue(transport, fb_impl).await?;
             return Ok(true);
@@ -1014,6 +1035,7 @@ mod test {
         download_buffer: Vec<u8>,
         downloaded_size: usize,
         reboot_mode: Option<RebootMode>,
+        active_slot: Option<String>,
     }
 
     impl FastbootImplementation for FastbootTest {
@@ -1092,6 +1114,11 @@ mod test {
 
         async fn r#continue(&mut self, mut responder: impl InfoSender) -> CommandResult<()> {
             responder.send_info("Continuing to boot...").await
+        }
+
+        async fn set_active(&mut self, slot: &str, _: impl InfoSender) -> CommandResult<()> {
+            self.active_slot = Some(slot.into());
+            Ok(())
         }
 
         async fn oem<'b>(
@@ -1624,5 +1651,26 @@ mod test {
         tcp_stream.add_input(TCP_HANDSHAKE_MESSAGE);
         tcp_stream.add_length_prefixed_input(b"continue");
         block_on(run_tcp_session(&mut tcp_stream, &mut fastboot_impl)).unwrap();
+    }
+
+    #[test]
+    fn test_set_active() {
+        let mut fastboot_impl: FastbootTest = Default::default();
+        fastboot_impl.download_buffer = vec![0u8; 1024];
+        let mut transport = TestTransport::new();
+        transport.add_input(b"set_active:a");
+        block_on(process_next_command(&mut transport, &mut fastboot_impl)).unwrap();
+        assert_eq!(transport.out_queue, VecDeque::<Vec<u8>>::from([b"OKAY".into()]));
+        assert_eq!(fastboot_impl.active_slot, Some("a".into()));
+    }
+
+    #[test]
+    fn test_set_active_missing_slot() {
+        let mut fastboot_impl: FastbootTest = Default::default();
+        fastboot_impl.download_buffer = vec![0u8; 1024];
+        let mut transport = TestTransport::new();
+        transport.add_input(b"set_active");
+        block_on(process_next_command(&mut transport, &mut fastboot_impl)).unwrap();
+        assert_eq!(transport.out_queue, VecDeque::<Vec<u8>>::from([b"FAILMissing slot".into()]));
     }
 }
