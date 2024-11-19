@@ -803,7 +803,7 @@ mod test {
         async fn send_formatted_info<F: FnOnce(&mut dyn Write)>(
             &mut self,
             cb: F,
-        ) -> CommandResult<()> {
+        ) -> Result<(), Error> {
             let mut msg: String = "".into();
             cb(&mut msg);
             self.info_messages.try_lock().unwrap().push(msg);
@@ -813,7 +813,7 @@ mod test {
 
     impl OkaySender for &TestResponder {
         /// Sends a Fastboot "INFO<`msg`>" packet.
-        async fn send_formatted_okay<F: FnOnce(&mut dyn Write)>(self, _: F) -> CommandResult<()> {
+        async fn send_formatted_okay<F: FnOnce(&mut dyn Write)>(self, _: F) -> Result<(), Error> {
             *self.okay_sent.try_lock().unwrap() = true;
             Ok(())
         }
@@ -847,6 +847,22 @@ mod test {
                 cb(&mut self[idx].as_mut()).then(|| self.swap_remove(idx));
             }
         }
+    }
+
+    #[test]
+    fn test_get_var_gbl() {
+        let dl_buffers = Shared::from(vec![vec![0u8; 128 * 1024]; 1]);
+        let storage = FakeGblOpsStorage::default();
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        let tasks = vec![].into();
+        let parts = gbl_ops.disks();
+        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, parts, Task::run, &tasks, &dl_buffers);
+        check_var(
+            &mut gbl_fb,
+            FakeGblOps::GBL_TEST_VAR,
+            "arg",
+            format!("{}:Some(\"arg\")", FakeGblOps::GBL_TEST_VAR_VAL).as_str(),
+        );
     }
 
     #[test]
@@ -898,9 +914,10 @@ mod test {
         async fn send_var_info(
             &mut self,
             name: &str,
-            args: &[&str],
+            args: impl IntoIterator<Item = &'_ str>,
             val: &str,
-        ) -> CommandResult<()> {
+        ) -> Result<(), Error> {
+            let args = args.into_iter().collect::<Vec<_>>();
             self.0.push(format!("{}:{}: {}", name, args.join(":"), val));
             Ok(())
         }
@@ -950,7 +967,11 @@ mod test {
                 "partition-size:raw_0/2: 0x1000",
                 "partition-type:raw_0/2: raw",
                 "partition-size:raw_1/3: 0x2000",
-                "partition-type:raw_1/3: raw"
+                "partition-type:raw_1/3: raw",
+                format!("{}:1: {}:1", FakeGblOps::GBL_TEST_VAR, FakeGblOps::GBL_TEST_VAR_VAL)
+                    .as_str(),
+                format!("{}:2: {}:2", FakeGblOps::GBL_TEST_VAR, FakeGblOps::GBL_TEST_VAR_VAL)
+                    .as_str(),
             ]
         );
     }
@@ -1852,6 +1873,10 @@ mod test {
                 b"INFOpartition-type:vendor_boot_a/1: raw",
                 b"INFOpartition-size:vendor_boot_b/1: 0x1800",
                 b"INFOpartition-type:vendor_boot_b/1: raw",
+                format!("INFO{}:1: {}:1", FakeGblOps::GBL_TEST_VAR, FakeGblOps::GBL_TEST_VAR_VAL)
+                    .as_bytes(),
+                format!("INFO{}:2: {}:2", FakeGblOps::GBL_TEST_VAR, FakeGblOps::GBL_TEST_VAR_VAL)
+                    .as_bytes(),
                 b"OKAY",
                 b"DATA00004400",
                 b"OKAY",
@@ -1877,6 +1902,10 @@ mod test {
                 b"INFOpartition-type:vendor_boot_a/1: raw",
                 b"INFOpartition-size:vendor_boot_b/1: 0x1800",
                 b"INFOpartition-type:vendor_boot_b/1: raw",
+                format!("INFO{}:1: {}:1", FakeGblOps::GBL_TEST_VAR, FakeGblOps::GBL_TEST_VAR_VAL)
+                    .as_bytes(),
+                format!("INFO{}:2: {}:2", FakeGblOps::GBL_TEST_VAR, FakeGblOps::GBL_TEST_VAR_VAL)
+                    .as_bytes(),
                 b"OKAY",
                 b"INFOSyncing storage...",
                 b"OKAY",

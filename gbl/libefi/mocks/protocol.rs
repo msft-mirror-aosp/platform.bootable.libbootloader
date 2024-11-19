@@ -220,3 +220,39 @@ pub mod gbl_efi_avb {
     /// Map to the libefi name so code under test can just use one name.
     pub type GblAvbProtocol = MockGblAvbProtocol;
 }
+
+/// Mock gbl_efi_fastboot protocol.
+pub mod gbl_efi_fastboot {
+    use super::*;
+
+    mock! {
+        /// Mock [efi::protocol::gbl_efi_fastboot::Var].
+        pub Var {
+            /// Get name, arguments and corresponding value.
+            pub fn get<'s>(&self, out: &mut [u8])
+                -> Result<(&'static str, [&'static str; 1], &'static str)>;
+        }
+    }
+
+    mock! {
+        /// Mock [efi::GblFastbootProtocol].
+        pub GblFastbootProtocol {
+            /// Protocol<'_, GblFastbootProtocol>::get_var.
+            pub fn get_var<'a>(
+                &self,
+                name: &str,
+                args: core::str::Split<'a, char>,
+                buffer: &mut [u8],
+            ) -> Result<usize>;
+
+            /// Returns an iterator over backend fastboot variables.
+            pub fn var_iter(&self) -> Result<&'static [Var]> ;
+        }
+    }
+
+    /// Map to the libefi name so code under test can just use one name.
+    pub type Var = MockVar;
+
+    /// Map to the libefi name so code under test can just use one name.
+    pub type GblFastbootProtocol = MockGblFastbootProtocol;
+}
