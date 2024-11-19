@@ -26,13 +26,16 @@ use alloc::{
 use arrayvec::ArrayVec;
 use core::{
     ffi::CStr, fmt::Write, mem::MaybeUninit, num::NonZeroUsize, ops::DerefMut, ptr::null,
-    slice::from_raw_parts_mut,
+    slice::from_raw_parts_mut, str::Split,
 };
 use efi::{
-    efi_print, efi_println, protocol::dt_fixup::DtFixupProtocol,
-    protocol::gbl_efi_avb::GblAvbProtocol,
-    protocol::gbl_efi_image_loading::GblImageLoadingProtocol,
-    protocol::gbl_efi_os_configuration::GblOsConfigurationProtocol, EfiEntry,
+    efi_print, efi_println,
+    protocol::{
+        dt_fixup::DtFixupProtocol, gbl_efi_avb::GblAvbProtocol,
+        gbl_efi_fastboot::GblFastbootProtocol, gbl_efi_image_loading::GblImageLoadingProtocol,
+        gbl_efi_os_configuration::GblOsConfigurationProtocol,
+    },
+    EfiEntry,
 };
 use efi_types::{
     GblEfiAvbVerificationResult, GblEfiDeviceTreeMetadata, GblEfiImageInfo,
@@ -47,7 +50,10 @@ use libgbl::{
         MAXIMUM_DEVICE_TREE_COMPONENTS,
     },
     gbl_avb::state::BootStateColor,
-    ops::{AvbIoError, AvbIoResult, CertPermanentAttributes, ImageBuffer, SHA256_DIGEST_SIZE},
+    ops::{
+        AvbIoError, AvbIoResult, CertPermanentAttributes, ImageBuffer, VarInfoSender,
+        SHA256_DIGEST_SIZE,
+    },
     partition::GblDisk,
     slots::{BootToken, Cursor},
     GblOps, Os, Result as GblResult,
@@ -500,6 +506,33 @@ where
             }
             _ => components_registry.autoselect(),
         }
+    }
+
+    fn fastboot_variable(
+        &mut self,
+        name: &str,
+        args: Split<'_, char>,
+        out: &mut [u8],
+    ) -> Result<usize> {
+        self.efi_entry
+            .system_table()
+            .boot_services()
+            .find_first_and_open::<GblFastbootProtocol>()?
+            .get_var(name, args, out)
+    }
+
+    async fn fastboot_send_all_variables(&mut self, sender: &mut impl VarInfoSender) -> Result<()> {
+        let mut out = [0u8; fastboot::MAX_RESPONSE_SIZE];
+        let protocol = self
+            .efi_entry
+            .system_table()
+            .boot_services()
+            .find_first_and_open::<GblFastbootProtocol>()?;
+        for ele in protocol.var_iter()? {
+            let (name, args, val) = ele.get(&mut out[..])?;
+            sender.send_var_info(name, args, val).await?;
+        }
+        Ok(())
     }
 }
 
