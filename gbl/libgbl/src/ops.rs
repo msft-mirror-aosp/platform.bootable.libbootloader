@@ -22,7 +22,7 @@ use crate::{
     partition::{check_part_unique, read_unique_partition, write_unique_partition, GblDisk},
 };
 pub use abr::{set_one_shot_bootloader, set_one_shot_recovery, SlotIndex};
-use core::{ffi::CStr, fmt::Write, num::NonZeroUsize, ops::DerefMut, result::Result};
+use core::{ffi::CStr, fmt::Write, num::NonZeroUsize, ops::DerefMut, result::Result, str::Split};
 use gbl_async::block_on;
 use libutils::aligned_subslice;
 
@@ -30,6 +30,7 @@ use libutils::aligned_subslice;
 pub use avb::{
     CertPermanentAttributes, IoError as AvbIoError, IoResult as AvbIoResult, SHA256_DIGEST_SIZE,
 };
+pub use fastboot::VarInfoSender;
 pub use gbl_storage::{BlockIo, Disk, Gpt};
 use liberror::Error;
 pub use zbi::{ZbiContainer, ZBI_ALIGNMENT_USIZE};
@@ -321,8 +322,39 @@ pub trait GblOps<'a> {
     /// https://cs.android.com/android/platform/superproject/main/+/main:bootable/libbootloader/gbl/docs/efi_protocols.md
     /// https://github.com/U-Boot-EFI/EFI_DT_FIXUP_PROTOCOL
     fn fixup_device_tree(&mut self, device_tree: &mut [u8]) -> Result<(), Error>;
-}
 
+    /// Gets platform-specific fastboot variable
+    ///
+    /// # Args
+    ///
+    /// * `name`: Varaiable name.
+    /// * `args`: Additional arguments.
+    /// * `out`: The output buffer for the value of the variable. Must be a ASCII string.
+    ///
+    /// # Returns
+    ///
+    /// * Returns the number of bytes written in `out` on success.
+    fn fastboot_variable(
+        &mut self,
+        name: &str,
+        args: Split<'_, char>,
+        out: &mut [u8],
+    ) -> Result<usize, Error>;
+
+    /// Sends all fastboot variables, arguments and values.
+    ///
+    /// The interface is for returnning platform specific fastboot variables for
+    /// `fastboot getvar all`.
+    ///
+    /// # Args
+    ///
+    /// * `sender`: An implementation of [VarInfoSender]. Implementation is responsible for calling
+    ///   `VarInfoSender::send_var_info` for all fastboot variables and values.
+    async fn fastboot_send_all_variables(
+        &mut self,
+        sender: &mut impl VarInfoSender,
+    ) -> Result<(), Error>;
+}
 /// Prints with `GblOps::console_out()`.
 #[macro_export]
 macro_rules! gbl_print {
@@ -353,7 +385,12 @@ pub(crate) mod test {
     use abr::{get_and_clear_one_shot_bootloader, get_boot_slot};
     use avb::{CertOps, Ops};
     use avb_test::TestOps as AvbTestOps;
-    use core::ops::{Deref, DerefMut};
+    use core::{
+        fmt::Write,
+        ops::{Deref, DerefMut},
+        str::from_utf8,
+    };
+    use fastboot::{snprintf, FormattedBytes};
     use gbl_async::block_on;
     use gbl_storage::{new_gpt_max, Disk, GptMax, RamBlockIo};
     use zbi::{ZbiFlags, ZbiType};
@@ -448,6 +485,8 @@ pub(crate) mod test {
         pub const ADDED_ZBI_COMMANDLINE_CONTENTS: &'static [u8] = b"test_zbi_item";
         pub const TEST_BOOTLOADER_FILE_1: &'static [u8] = b"\x06test_1foo";
         pub const TEST_BOOTLOADER_FILE_2: &'static [u8] = b"\x06test_2bar";
+        pub const GBL_TEST_VAR: &'static str = "gbl-test-var";
+        pub const GBL_TEST_VAR_VAL: &'static str = "gbl-test-var-val";
 
         pub fn new(partitions: &'a [TestGblDisk]) -> Self {
             let mut res = Self {
@@ -608,6 +647,40 @@ pub(crate) mod test {
             _: &mut device_tree::DeviceTreeComponentsRegistry,
         ) -> Result<(), Error> {
             unimplemented!();
+        }
+
+        fn fastboot_variable(
+            &mut self,
+            name: &str,
+            mut args: Split<'_, char>,
+            out: &mut [u8],
+        ) -> Result<usize, Error> {
+            match name {
+                Self::GBL_TEST_VAR => {
+                    Ok(snprintf!(out, "{}:{:?}", Self::GBL_TEST_VAR_VAL, args.next()).len())
+                }
+                _ => Err(Error::NotFound),
+            }
+        }
+
+        async fn fastboot_send_all_variables(
+            &mut self,
+            sender: &mut impl VarInfoSender,
+        ) -> Result<(), Error> {
+            sender
+                .send_var_info(
+                    Self::GBL_TEST_VAR,
+                    ["1"],
+                    format!("{}:1", Self::GBL_TEST_VAR_VAL).as_str(),
+                )
+                .await?;
+            sender
+                .send_var_info(
+                    Self::GBL_TEST_VAR,
+                    ["2"],
+                    format!("{}:2", Self::GBL_TEST_VAR_VAL).as_str(),
+                )
+                .await
         }
     }
 
