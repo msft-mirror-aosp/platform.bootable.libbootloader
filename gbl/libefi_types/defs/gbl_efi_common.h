@@ -27,6 +27,6 @@
       .data3=0x4083,                                            \
       .data4=[0x91, 0xa1, 0xa5, 0x0f, 0x6c, 0x3d, 0x98, 0x30]   \
   }
-#define GBL_EFI_OS_BOOT_TARGET_VARNAME "gbl_os_boot_target"
+#define GBL_EFI_OS_BOOT_TARGET_VARNAME "gbl_os_boot_fuchsia"
 
 #endif  /* __GBL_EFI_COMMON_H__ */
