@@ -38,7 +38,7 @@ const GPT_NAME_LEN_U8: usize = 2 * GPT_GUID_LEN;
 
 /// The top-level GPT header.
 #[repr(C, packed)]
-#[derive(Debug, Default, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Default, Copy, Clone, AsBytes, FromBytes, FromZeroes, PartialEq, Eq)]
 pub struct GptHeader {
     /// Magic bytes; must be [GPT_MAGIC].
     pub magic: u64,
@@ -724,6 +724,9 @@ impl<B: DerefMut<Target = [u8]>> Gpt<B> {
         let secondary_entries = secondary_entries.as_bytes_mut();
         let sync_res = match (primary_res, secondary_res) {
             (Err(primary), Err(secondary)) => GptSyncResult::NoValidGpt { primary, secondary },
+            (Ok(()), Ok(())) if is_consistent(&primary_header, &secondary_header) => {
+                GptSyncResult::BothValid
+            }
             (Err(e), Ok(())) => {
                 // Restores to primary
                 primary_header.as_bytes_mut().clone_from_slice(secondary_header.as_bytes());
@@ -737,7 +740,7 @@ impl<B: DerefMut<Target = [u8]>> Gpt<B> {
                 write_async(io, primary_entries_pos.try_into()?, primary_entries, scratch).await?;
                 GptSyncResult::PrimaryRestored(e)
             }
-            (Ok(()), Err(e)) => {
+            (Ok(()), v) => {
                 // Restores to secondary
                 let secondary_entries_pos = secondary_header_pos - GPT_MAX_NUM_ENTRIES_SIZE;
                 let secondary_entries_blk = secondary_entries_pos / blk_sz;
@@ -758,14 +761,27 @@ impl<B: DerefMut<Target = [u8]>> Gpt<B> {
                 .await?;
                 write_async(io, secondary_entries_pos.try_into()?, secondary_entries, scratch)
                     .await?;
-                GptSyncResult::SecondaryRestored(e)
+
+                GptSyncResult::SecondaryRestored(match v {
+                    Err(e) => e,
+                    _ => Error::GptError(GptError::DifferentFromPrimary),
+                })
             }
-            _ => GptSyncResult::BothValid,
         };
 
         block_size.0 = Some(nonzero_blk_sz);
         Ok(sync_res)
     }
+}
+
+/// Checks whether primary and secondary header
+fn is_consistent(primary: &GptHeader, secondary: &GptHeader) -> bool {
+    let mut expected_secondary = *primary;
+    expected_secondary.crc32 = secondary.crc32;
+    expected_secondary.current = primary.backup;
+    expected_secondary.backup = primary.current;
+    expected_secondary.entries = secondary.entries;
+    &expected_secondary == secondary
 }
 
 /// A [Gpt] that owns a `GptLoadBufferN<N>` and can load up to N partition entries.
@@ -1349,6 +1365,20 @@ pub(crate) mod test {
     }
 
     #[test]
+    fn test_load_gpt_disk_primary_override_secondary() {
+        let mut disk = include_bytes!("../test/gpt_test_1.bin").to_vec();
+        // Modifies secondary header.
+        let secondary_hdr = GptHeader::from_bytes_mut(disk.last_chunk_mut::<512>().unwrap());
+        secondary_hdr.revision = !secondary_hdr.revision;
+        secondary_hdr.update_crc();
+        let (mut dev, mut gpt) = test_disk_and_gpt(&disk);
+        assert_eq!(
+            block_on(dev.sync_gpt(&mut gpt)).unwrap(),
+            GptSyncResult::SecondaryRestored(Error::GptError(GptError::DifferentFromPrimary)),
+        );
+    }
+
+    #[test]
     fn test_load_gpt_disk_too_small() {
         let disk_orig = include_bytes!("../test/gpt_test_1.bin");
         let mut disk = disk_orig.to_vec();
@@ -1381,6 +1411,25 @@ pub(crate) mod test {
         // Erases all GPT headers.
         disk[512..][..512].fill(0);
         disk.last_chunk_mut::<512>().unwrap().fill(0);
+
+        let (mut dev, mut gpt) = test_disk_and_gpt(&disk);
+
+        assert_ne!(dev.io().storage(), disk_orig);
+        let mut mbr_primary = disk_orig[..34 * 512].to_vec();
+        block_on(dev.update_gpt(&mut mbr_primary, false, &mut gpt)).unwrap();
+        assert_eq!(dev.io().storage(), disk_orig);
+    }
+
+    #[test]
+    fn test_update_gpt_has_existing_valid_secondary() {
+        let disk_orig = include_bytes!("../test/gpt_test_1.bin");
+        let mut disk = disk_orig.to_vec();
+        // Erases all GPT headers.
+        disk[512..][..512].fill(0);
+        // Leaves a valid but different secondary GPT.
+        let secondary_hdr = GptHeader::from_bytes_mut(disk.last_chunk_mut::<512>().unwrap());
+        secondary_hdr.revision = !secondary_hdr.revision;
+        secondary_hdr.update_crc();
 
         let (mut dev, mut gpt) = test_disk_and_gpt(&disk);
 
