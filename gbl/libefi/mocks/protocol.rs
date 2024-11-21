@@ -22,8 +22,8 @@ use core::ffi::CStr;
 use core::fmt::Write;
 use efi::protocol::gbl_efi_image_loading::EfiImageBuffer;
 use efi_types::{
-    EfiInputKey, GblEfiAvbVerificationResult, GblEfiImageInfo, GblEfiPartitionName,
-    GblEfiVerifiedDeviceTree,
+    EfiInputKey, GblEfiAvbKeyValidationStatus, GblEfiAvbVerificationResult, GblEfiImageInfo,
+    GblEfiPartitionName, GblEfiVerifiedDeviceTree,
 };
 use liberror::Result;
 use mockall::mock;
@@ -206,19 +206,31 @@ pub mod dt_fixup {
 pub mod gbl_efi_avb {
     use super::*;
 
-    mock! {
-        /// Mock [efi::GblAvbProtocol].
-        pub GblAvbProtocol {
-            /// Wraps `GBL_EFI_AVB_PROTOCOL.handle_verification_result()`.
-            pub fn handle_verification_result(
-                &self,
-                verification_result: &GblEfiAvbVerificationResult,
-            ) -> Result<()>;
-        }
+    /// Mock implementation of `GBL_EFI_AVB_PROTOCOL`.
+    #[derive(Clone, Default)]
+    pub struct GblAvbProtocol {
+        /// Expected return value from `validate_vbmeta_public_key`.
+        pub validate_vbmeta_public_key_result: Option<Result<GblEfiAvbKeyValidationStatus>>,
     }
 
-    /// Map to the libefi name so code under test can just use one name.
-    pub type GblAvbProtocol = MockGblAvbProtocol;
+    impl GblAvbProtocol {
+        /// Wraps `GBL_EFI_AVB_PROTOCOL.validate_vbmeta_public_key()`.
+        pub fn validate_vbmeta_public_key(
+            &self,
+            _public_key: &[u8],
+            _public_key_metadata: Option<&[u8]>,
+        ) -> Result<GblEfiAvbKeyValidationStatus> {
+            self.validate_vbmeta_public_key_result.unwrap()
+        }
+
+        /// Wraps `GBL_EFI_AVB_PROTOCOL.handle_verification_result()`.
+        pub fn handle_verification_result(
+            &self,
+            _verification_result: &GblEfiAvbVerificationResult,
+        ) -> Result<()> {
+            unimplemented!();
+        }
+    }
 }
 
 /// Mock gbl_efi_fastboot protocol.
