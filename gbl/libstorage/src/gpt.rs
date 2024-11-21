@@ -813,8 +813,8 @@ pub fn new_gpt_max() -> GptMax {
 /// * `io`: An implementation of [BlockIo]
 /// * `scratch`: Scratch buffer for unaligned read write.
 /// * `mbr_primary`: A buffer containing the MBR block, primary GPT header and entries.
-/// * `resize`: If set to true, the method updates the value of last usable block in the header and
-///   the extends last partition to cover the rest of the storage.
+/// * `resize`: If set to true, the method updates the last partition to cover the rest of the
+///    storage.
 /// * `gpt`: The output [Gpt] to update.
 pub(crate) async fn update_gpt(
     io: &mut impl BlockIo,
@@ -830,6 +830,15 @@ pub(crate) async fn update_gpt(
         .flatten()
         .ok_or(Error::BufferTooSmall(Some(blk_sz * 2)))?;
     let header = Ref::<_, GptHeader>::new_from_prefix(&mut header[..]).unwrap().0.into_mut();
+
+    // Adjusts last usable block according to this device in case the GPT was generated for a
+    // different disk size. If this results in some partition being out of range, it will be
+    // caught during `check_header()`.
+    let entries_blk = SafeNum::from(GPT_MAX_NUM_ENTRIES_SIZE) / blk_sz;
+    // Reserves only secondary GPT header and entries.
+    header.last = (SafeNum::from(io.info().num_blocks) - entries_blk - 2).try_into().unwrap();
+    header.update_crc();
+
     check_header(io, &header, true)?;
     // Computes entries offset in bytes relative to `remain`
     let entries_off: usize = ((SafeNum::from(header.entries) - 2) * blk_sz).try_into().unwrap();
@@ -843,9 +852,6 @@ pub(crate) async fn update_gpt(
     check_entries(&header, entries)?;
 
     if resize {
-        // Extends last usable block to maximum. Reserves only secondary GPT header and entries.
-        let entries_blk = SafeNum::from(GPT_MAX_NUM_ENTRIES_SIZE) / blk_sz;
-        header.last = (SafeNum::from(io.info().num_blocks) - entries_blk - 2).try_into().unwrap();
         // Updates the last entry to cover the rest of the storage.
         let gpt_entries =
             Ref::<_, [GptEntry]>::new_slice(&mut entries[..]).unwrap().into_mut_slice();
@@ -1440,7 +1446,7 @@ pub(crate) mod test {
     }
 
     #[test]
-    fn test_update_gpt_resize() {
+    fn test_update_gpt_last_usable_adjusted() {
         let disk_orig = include_bytes!("../test/gpt_test_1.bin");
         let mut disk = disk_orig.to_vec();
         // Erases all GPT headers.
@@ -1462,8 +1468,36 @@ pub(crate) mod test {
         // Header's last usable block is updated.
         assert_eq!({ primary_hdr.last }, expected_last.try_into().unwrap());
         assert_eq!({ secondary_hdr.last }, expected_last.try_into().unwrap());
+    }
+
+    #[test]
+    fn test_update_gpt_resize() {
+        let disk_orig = include_bytes!("../test/gpt_test_1.bin");
+        let mut disk = disk_orig.to_vec();
+        // Erases all GPT headers.
+        disk[512..][..512].fill(0);
+        disk.last_chunk_mut::<512>().unwrap().fill(0);
+        // Doubles the disk size.
+        disk.resize(disk_orig.len() * 2, 0);
+
+        let (mut dev, mut gpt) = test_disk_and_gpt(&disk);
+
+        assert_ne!(dev.io().storage, disk_orig);
+        let mut mbr_primary = disk_orig[..34 * 512].to_vec();
+        block_on(dev.update_gpt(&mut mbr_primary, true, &mut gpt)).unwrap();
         // Last entry is extended.
+        let expected_last = (disk.len() - GPT_MAX_NUM_ENTRIES_SIZE - 512) / 512 - 1;
         assert_eq!({ gpt.entries().unwrap()[1].last }, expected_last.try_into().unwrap());
+    }
+
+    #[test]
+    fn test_update_gpt_new_partition_out_of_range() {
+        // `gpt_test_1.bin` has a 8k "boot_a" and a 12k "boot_b". Thus partitions space is 40
+        // blocks (512 bytes block size) and in total the GPT disk needs (40 + 1 + (33) * 2) = 107
+        // blocks.
+        let (mut dev, mut gpt) = test_disk_and_gpt(&vec![0u8; 106 * 512]);
+        let mut mbr_primary = include_bytes!("../test/gpt_test_1.bin")[..34 * 512].to_vec();
+        assert!(block_on(dev.update_gpt(&mut mbr_primary, true, &mut gpt)).is_err());
     }
 
     #[test]
