@@ -14,7 +14,10 @@
 
 //! Gbl AVB operations.
 
-use crate::{gbl_avb::state::BootStateColor, GblOps};
+use crate::{
+    gbl_avb::state::{BootStateColor, KeyValidationStatus},
+    gbl_print, gbl_println, GblOps,
+};
 use avb::{
     cert_validate_vbmeta_public_key, CertOps, CertPermanentAttributes, IoError, IoResult,
     Ops as AvbOps, PublicKeyForPartitionInfo, SlotVerifyData, SHA256_DIGEST_SIZE,
@@ -45,6 +48,9 @@ pub struct GblAvbOps<'a, T> {
     pub key_versions: [Option<(usize, u64)>; AVB_CERT_NUM_KEY_VERSIONS],
     /// True to use the AVB cert extensions.
     use_cert: bool,
+    /// Avb public key validation status reported by validate_vbmeta_public_key.
+    /// https://source.android.com/docs/security/features/verifiedboot/boot-flow#locked-devices-with-custom-root-of-trust
+    key_validation_status: Option<KeyValidationStatus>,
 }
 
 impl<'a, 'p, T: GblOps<'p>> GblAvbOps<'a, T> {
@@ -59,6 +65,7 @@ impl<'a, 'p, T: GblOps<'p>> GblAvbOps<'a, T> {
             preloaded_partitions,
             key_versions: [None; AVB_CERT_NUM_KEY_VERSIONS],
             use_cert,
+            key_validation_status: None,
         }
     }
 
@@ -130,9 +137,12 @@ impl<'a, 'p, T: GblOps<'p>> GblAvbOps<'a, T> {
             system_security_patch,
             vendor_os_version,
             vendor_security_patch,
-        )?;
+        )
+    }
 
-        Ok(())
+    /// Get vbmeta public key validation status reported by validate_vbmeta_public_key.
+    pub fn key_validation_status(&self) -> IoResult<KeyValidationStatus> {
+        self.key_validation_status.ok_or(IoError::NotImplemented)
     }
 }
 
@@ -186,14 +196,33 @@ impl<'a, 'b, T: GblOps<'b>> AvbOps<'a> for GblAvbOps<'a, T> {
         public_key: &[u8],
         public_key_metadata: Option<&[u8]>,
     ) -> IoResult<bool> {
-        match self.use_cert {
-            true => cert_validate_vbmeta_public_key(self, public_key, public_key_metadata),
-            false => {
-                // Not needed yet; eventually we will plumb this through [GblOps].
-                // For now just trust any vbmeta signature.
-                Ok(true)
+        let status = if self.use_cert {
+            match cert_validate_vbmeta_public_key(self, public_key, public_key_metadata)? {
+                true => KeyValidationStatus::Valid,
+                false => KeyValidationStatus::Invalid,
             }
-        }
+        } else {
+            self.gbl_ops.avb_validate_vbmeta_public_key(public_key, public_key_metadata).or_else(
+                |err| match err {
+                    IoError::NotImplemented => {
+                        // TODO(b/337846185): Remove fallback once AVB protocol implementation
+                        // is forced.
+                        gbl_println!(
+                            self.gbl_ops,
+                            "WARNING: UEFI GblEfiAvbProtocol.validate_vbmeta_public_key \
+                                implementation is missing. This will not be permitted in the \
+                                future."
+                        );
+                        Ok(KeyValidationStatus::ValidCustomKey)
+                    }
+                    err => Err(err),
+                },
+            )?
+        };
+
+        self.key_validation_status = Some(status);
+
+        Ok(matches!(status, KeyValidationStatus::Valid | KeyValidationStatus::ValidCustomKey))
     }
 
     fn read_rollback_index(&mut self, rollback_index_location: usize) -> IoResult<u64> {
@@ -436,5 +465,57 @@ mod test {
         avb_ops.set_key_version(5, 10);
         avb_ops.set_key_version(20, 40);
         avb_ops.set_key_version(40, 100);
+    }
+
+    #[test]
+    fn validate_vbmeta_public_key_valid() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_key_validation_status = Some(Ok(KeyValidationStatus::Valid));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.validate_vbmeta_public_key(&[], None), Ok(true));
+        assert_eq!(avb_ops.key_validation_status(), Ok(KeyValidationStatus::Valid));
+    }
+
+    #[test]
+    fn validate_vbmeta_public_key_valid_custom_key() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_key_validation_status = Some(Ok(KeyValidationStatus::ValidCustomKey));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.validate_vbmeta_public_key(&[], None), Ok(true));
+        assert_eq!(avb_ops.key_validation_status(), Ok(KeyValidationStatus::ValidCustomKey));
+    }
+
+    #[test]
+    fn validate_vbmeta_public_key_invalid() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_key_validation_status = Some(Ok(KeyValidationStatus::Invalid));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.validate_vbmeta_public_key(&[], None), Ok(false));
+        assert_eq!(avb_ops.key_validation_status(), Ok(KeyValidationStatus::Invalid));
+    }
+
+    #[test]
+    fn validate_vbmeta_public_key_failed() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_key_validation_status = Some(Err(IoError::Io));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.validate_vbmeta_public_key(&[], None), Err(IoError::Io));
+        assert!(avb_ops.key_validation_status().is_err());
+    }
+
+    // TODO(b/337846185): Remove test once AVB protocol implementation is forced.
+    #[test]
+    fn validate_vbmeta_public_key_not_implemented() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_key_validation_status = Some(Err(IoError::NotImplemented));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+
+        assert_eq!(avb_ops.validate_vbmeta_public_key(&[], None), Ok(true));
+        assert_eq!(avb_ops.key_validation_status(), Ok(KeyValidationStatus::ValidCustomKey));
     }
 }
