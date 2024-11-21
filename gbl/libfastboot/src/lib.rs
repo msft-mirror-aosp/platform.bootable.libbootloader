@@ -375,6 +375,9 @@ pub trait FastbootImplementation {
     /// * `responder`: An instance of `InfoSender`.
     async fn r#continue(&mut self, responder: impl InfoSender) -> CommandResult<()>;
 
+    /// Backend for `fastboot set_active`.
+    async fn set_active(&mut self, slot: &str, responder: impl InfoSender) -> CommandResult<()>;
+
     /// Backend for `fastboot oem ...`.
     ///
     /// # Args
@@ -425,9 +428,19 @@ macro_rules! fastboot_fail {
 pub trait VarInfoSender {
     /// Send a combination of variable name, arguments and value.
     ///
-    /// In actual fastboot context, the method should send an "INFO<var>:<args>:<val>" message to
-    /// the host.
-    async fn send_var_info(&mut self, name: &str, args: &[&str], val: &str) -> CommandResult<()>;
+    /// The method sends a fastboot message "INFO<var>:<args>:<val>" to the host.
+    ///
+    /// # Args
+    ///
+    /// * `name`: Name of the fastboot variable.
+    /// * `args`: An iterator to additional arguments.
+    /// * `val`: Value of the variable.
+    async fn send_var_info(
+        &mut self,
+        name: &str,
+        args: impl IntoIterator<Item = &'_ str>,
+        val: &str,
+    ) -> Result<()>;
 }
 
 /// Provides an API for sending fastboot INFO messages.
@@ -437,10 +450,10 @@ pub trait InfoSender {
     /// # Args:
     ///
     /// * `cb`: A closure provided by the caller for constructing the formatted messagae.
-    async fn send_formatted_info<F: FnOnce(&mut dyn Write)>(&mut self, cb: F) -> CommandResult<()>;
+    async fn send_formatted_info<F: FnOnce(&mut dyn Write)>(&mut self, cb: F) -> Result<()>;
 
     /// Sends a Fastboot "INFO<`msg`>" packet.
-    async fn send_info(&mut self, msg: &str) -> CommandResult<()> {
+    async fn send_info(&mut self, msg: &str) -> Result<()> {
         self.send_formatted_info(|w| write!(w, "{}", msg).unwrap()).await
     }
 }
@@ -452,10 +465,10 @@ pub trait OkaySender {
     /// # Args:
     ///
     /// * `cb`: A closure provided by the caller for constructing the formatted messagae.
-    async fn send_formatted_okay<F: FnOnce(&mut dyn Write)>(self, cb: F) -> CommandResult<()>;
+    async fn send_formatted_okay<F: FnOnce(&mut dyn Write)>(self, cb: F) -> Result<()>;
 
     /// Sends a fastboot OKAY<msg> packet. `Self` is consumed.
-    async fn send_okay(self, msg: &str) -> CommandResult<()>
+    async fn send_okay(self, msg: &str) -> Result<()>
     where
         Self: Sized,
     {
@@ -469,13 +482,13 @@ pub trait UploadBuilder {
     ///
     /// In a real fastboot context, the method should send `DATA0xXXXXXXXX` to the remote host to
     /// start the download. An `Uploader` implementation should be returned for uploading payload.
-    async fn initiate_upload(self, data_size: u64) -> CommandResult<impl Uploader>;
+    async fn initiate_upload(self, data_size: u64) -> Result<impl Uploader>;
 }
 
 /// `UploadBuilder` provides API for uploading payload.
 pub trait Uploader {
     /// Uploads data to the Fastboot host.
-    async fn upload(&mut self, data: &[u8]) -> CommandResult<()>;
+    async fn upload(&mut self, data: &[u8]) -> Result<()>;
 }
 
 /// `Responder` implements APIs for fastboot backend to send fastboot messages and uploading data.
@@ -528,12 +541,17 @@ impl<'a, T: Transport> Responder<'a, T> {
 }
 
 impl<'a, T: Transport> VarInfoSender for &mut Responder<'a, T> {
-    async fn send_var_info(&mut self, name: &str, args: &[&str], val: &str) -> CommandResult<()> {
+    async fn send_var_info(
+        &mut self,
+        name: &str,
+        args: impl IntoIterator<Item = &'_ str>,
+        val: &str,
+    ) -> Result<()> {
         // Sends a "INFO<var>:<':'-separated args>:<val>" packet to the host.
         Ok(self
             .send_formatted_msg("INFO", |v| {
                 write!(v, "{}", name).unwrap();
-                args.iter().for_each(|arg| write!(v, ":{}", arg).unwrap());
+                args.into_iter().for_each(|arg| write!(v, ":{}", arg).unwrap());
                 write!(v, ": {}", val).unwrap();
             })
             .await?)
@@ -561,19 +579,19 @@ macro_rules! reply_fail {
 }
 
 impl<T: Transport> InfoSender for &mut Responder<'_, T> {
-    async fn send_formatted_info<F: FnOnce(&mut dyn Write)>(&mut self, cb: F) -> CommandResult<()> {
+    async fn send_formatted_info<F: FnOnce(&mut dyn Write)>(&mut self, cb: F) -> Result<()> {
         Ok(self.send_formatted_msg("INFO", cb).await?)
     }
 }
 
 impl<T: Transport> OkaySender for &mut Responder<'_, T> {
-    async fn send_formatted_okay<F: FnOnce(&mut dyn Write)>(self, cb: F) -> CommandResult<()> {
+    async fn send_formatted_okay<F: FnOnce(&mut dyn Write)>(self, cb: F) -> Result<()> {
         Ok(self.send_formatted_msg("OKAY", cb).await?)
     }
 }
 
 impl<'a, T: Transport> UploadBuilder for &mut Responder<'a, T> {
-    async fn initiate_upload(self, data_size: u64) -> CommandResult<impl Uploader> {
+    async fn initiate_upload(self, data_size: u64) -> Result<impl Uploader> {
         self.send_data_message(data_size).await?;
         self.remaining_upload = data_size;
         Ok(self)
@@ -583,12 +601,12 @@ impl<'a, T: Transport> UploadBuilder for &mut Responder<'a, T> {
 impl<'a, T: Transport> Uploader for &mut Responder<'a, T> {
     /// Uploads data. Returns error if accumulative amount exceeds `data_size` passed to
     /// `UploadBuilder::start()`.
-    async fn upload(&mut self, data: &[u8]) -> CommandResult<()> {
+    async fn upload(&mut self, data: &[u8]) -> Result<()> {
         self.transport_error?;
         self.remaining_upload = self
             .remaining_upload
             .checked_sub(data.len().try_into().map_err(|_| "")?)
-            .ok_or::<CommandError>("".into())?;
+            .ok_or(Error::Other(Some("Invalid size of upload data")))?;
         self.transport_error = self.transport.send_packet(data).await;
         Ok(())
     }
@@ -597,8 +615,9 @@ impl<'a, T: Transport> Uploader for &mut Responder<'a, T> {
 pub mod test_utils {
     //! Test utilities to help users of this library write unit tests.
 
-    use crate::{CommandResult, InfoSender, UploadBuilder, Uploader};
+    use crate::{InfoSender, UploadBuilder, Uploader};
     use core::fmt::Write;
+    use liberror::Error;
 
     /// A test implementation of `UploadBuilder` for unittesting
     /// `FastbootImplementation::upload()`.
@@ -607,7 +626,7 @@ pub mod test_utils {
     pub struct TestUploadBuilder<'a>(pub &'a mut [u8]);
 
     impl<'a> UploadBuilder for TestUploadBuilder<'a> {
-        async fn initiate_upload(self, _: u64) -> CommandResult<impl Uploader> {
+        async fn initiate_upload(self, _: u64) -> Result<impl Uploader, Error> {
             Ok(TestUploader(0, self.0))
         }
     }
@@ -616,7 +635,7 @@ pub mod test_utils {
         async fn send_formatted_info<F: FnOnce(&mut dyn Write)>(
             &mut self,
             _: F,
-        ) -> CommandResult<()> {
+        ) -> Result<(), Error> {
             // Not needed currently.
             Ok(())
         }
@@ -626,7 +645,7 @@ pub mod test_utils {
     struct TestUploader<'a>(usize, &'a mut [u8]);
 
     impl Uploader for TestUploader<'_> {
-        async fn upload(&mut self, data: &[u8]) -> CommandResult<()> {
+        async fn upload(&mut self, data: &[u8]) -> Result<(), Error> {
             self.1[self.0..][..data.len()].clone_from_slice(data);
             self.0 = self.0.checked_add(data.len()).unwrap();
             Ok(())
@@ -670,7 +689,7 @@ async fn get_var_all_with_native(
     // Process the built-in MAX_DOWNLOAD_SIZE_NAME variable.
     let mut size_str = [0u8; 32];
     let size_str = snprintf!(size_str, "{:#x}", fb_impl.get_download_buffer().await.len());
-    sender.send_var_info(MAX_DOWNLOAD_SIZE_NAME, &[], size_str).await?;
+    sender.send_var_info(MAX_DOWNLOAD_SIZE_NAME, [], size_str).await?;
     fb_impl.get_var_all(sender).await
 }
 
@@ -821,6 +840,23 @@ async fn r#continue(
     }
 }
 
+// Handles `fastboot set_active`
+async fn set_active(
+    mut args: Split<'_, char>,
+    transport: &mut impl Transport,
+    fb_impl: &mut impl FastbootImplementation,
+) -> Result<()> {
+    let mut resp = Responder::new(transport);
+    let res = async {
+        let slot = next_arg(&mut args).ok_or("Missing slot")?;
+        fb_impl.set_active(slot, &mut resp).await
+    };
+    match res.await {
+        Ok(_) => reply_okay!(resp, ""),
+        Err(e) => reply_fail!(resp, "{}", e.to_str()),
+    }
+}
+
 /// Helper for handling "fastboot oem ...".
 async fn oem(
     cmd: &str,
@@ -873,6 +909,7 @@ pub async fn process_next_command(
         "reboot-bootloader" => reboot(RebootMode::Bootloader, transport, fb_impl).await,
         "reboot-fastboot" => reboot(RebootMode::Fastboot, transport, fb_impl).await,
         "reboot-recovery" => reboot(RebootMode::Recovery, transport, fb_impl).await,
+        "set_active" => set_active(args, transport, fb_impl).await,
         "continue" => {
             r#continue(transport, fb_impl).await?;
             return Ok(true);
@@ -1014,6 +1051,7 @@ mod test {
         download_buffer: Vec<u8>,
         downloaded_size: usize,
         reboot_mode: Option<RebootMode>,
+        active_slot: Option<String>,
     }
 
     impl FastbootImplementation for FastbootTest {
@@ -1036,7 +1074,7 @@ mod test {
 
         async fn get_var_all(&mut self, mut responder: impl VarInfoSender) -> CommandResult<()> {
             for ((var, config), value) in &self.vars {
-                responder.send_var_info(var, config, value).await?;
+                responder.send_var_info(var, config.iter().copied(), value).await?;
             }
             Ok(())
         }
@@ -1077,7 +1115,9 @@ mod test {
         ) -> CommandResult<()> {
             let (size_override, data) = self.fetch_data.get(part).ok_or("Not Found")?;
             let mut uploader = responder.initiate_upload(*size_override).await?;
-            uploader.upload(&data[offset.try_into().unwrap()..][..size.try_into().unwrap()]).await
+            Ok(uploader
+                .upload(&data[offset.try_into().unwrap()..][..size.try_into().unwrap()])
+                .await?)
         }
 
         async fn reboot(
@@ -1091,7 +1131,12 @@ mod test {
         }
 
         async fn r#continue(&mut self, mut responder: impl InfoSender) -> CommandResult<()> {
-            responder.send_info("Continuing to boot...").await
+            Ok(responder.send_info("Continuing to boot...").await?)
+        }
+
+        async fn set_active(&mut self, slot: &str, _: impl InfoSender) -> CommandResult<()> {
+            self.active_slot = Some(slot.into());
+            Ok(())
         }
 
         async fn oem<'b>(
@@ -1624,5 +1669,26 @@ mod test {
         tcp_stream.add_input(TCP_HANDSHAKE_MESSAGE);
         tcp_stream.add_length_prefixed_input(b"continue");
         block_on(run_tcp_session(&mut tcp_stream, &mut fastboot_impl)).unwrap();
+    }
+
+    #[test]
+    fn test_set_active() {
+        let mut fastboot_impl: FastbootTest = Default::default();
+        fastboot_impl.download_buffer = vec![0u8; 1024];
+        let mut transport = TestTransport::new();
+        transport.add_input(b"set_active:a");
+        block_on(process_next_command(&mut transport, &mut fastboot_impl)).unwrap();
+        assert_eq!(transport.out_queue, VecDeque::<Vec<u8>>::from([b"OKAY".into()]));
+        assert_eq!(fastboot_impl.active_slot, Some("a".into()));
+    }
+
+    #[test]
+    fn test_set_active_missing_slot() {
+        let mut fastboot_impl: FastbootTest = Default::default();
+        fastboot_impl.download_buffer = vec![0u8; 1024];
+        let mut transport = TestTransport::new();
+        transport.add_input(b"set_active");
+        block_on(process_next_command(&mut transport, &mut fastboot_impl)).unwrap();
+        assert_eq!(transport.out_queue, VecDeque::<Vec<u8>>::from([b"FAILMissing slot".into()]));
     }
 }

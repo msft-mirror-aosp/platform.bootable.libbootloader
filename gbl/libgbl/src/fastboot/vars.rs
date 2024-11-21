@@ -57,7 +57,10 @@ where
             Self::PARTITION_TYPE => self.get_var_partition_type(args, out)?,
             Self::BLOCK_DEVICE => self.get_var_block_device(args, out)?,
             Self::DEFAULT_BLOCK => self.get_var_default_block(out)?,
-            _ => Err("Not found")?,
+            _ => {
+                let sz = self.gbl_ops.fastboot_variable(name, args, out)?;
+                from_utf8(out.get(..sz).ok_or("Invalid variable value size")?)?
+            }
         })
     }
 
@@ -66,12 +69,15 @@ where
         &mut self,
         send: &mut impl VarInfoSender,
     ) -> CommandResult<()> {
-        send.send_var_info(Self::VERSION_BOOTLOADER, &[], Self::VERSION_BOOTLOADER_VAL).await?;
-        send.send_var_info(Self::MAX_FETCH_SIZE, &[], Self::MAX_FETCH_SIZE_VAL).await?;
+        send.send_var_info(Self::VERSION_BOOTLOADER, [], Self::VERSION_BOOTLOADER_VAL).await?;
+        send.send_var_info(Self::MAX_FETCH_SIZE, [], Self::MAX_FETCH_SIZE_VAL).await?;
         self.get_all_block_device(send).await?;
         let mut buf = [0u8; 32];
-        send.send_var_info(Self::DEFAULT_BLOCK, &[], self.get_var_default_block(&mut buf)?).await?;
-        self.get_all_partition_size_type(send).await
+        send.send_var_info(Self::DEFAULT_BLOCK, [], self.get_var_default_block(&mut buf)?).await?;
+        self.get_all_partition_size_type(send).await?;
+
+        // Gets platform specific variables
+        Ok(self.gbl_ops.fastboot_send_all_variables(send).await?)
     }
 
     const PARTITION_SIZE: &'static str = "partition-size";
@@ -115,11 +121,11 @@ where
                 let mut part_id_buf = [0u8; 128];
                 let part = snprintf!(part_id_buf, "{}/{:x}", part, idx);
                 responder
-                    .send_var_info(Self::PARTITION_SIZE, &[part], snprintf!(size_str, "{:#x}", sz))
+                    .send_var_info(Self::PARTITION_SIZE, [part], snprintf!(size_str, "{:#x}", sz))
                     .await?;
                 // Image type is not supported yet.
                 responder
-                    .send_var_info(Self::PARTITION_TYPE, &[part], snprintf!(size_str, "raw"))
+                    .send_var_info(Self::PARTITION_TYPE, [part], snprintf!(size_str, "raw"))
                     .await?;
             }
         }
@@ -156,7 +162,7 @@ where
         })
     }
 
-    /// Gets all "block-device" variables
+    /// Gets all "block-device" variables.
     async fn get_all_block_device(
         &mut self,
         responder: &mut impl VarInfoSender,
@@ -169,21 +175,21 @@ where
             responder
                 .send_var_info(
                     Self::BLOCK_DEVICE,
-                    &[id, Self::TOTAL_BLOCKS],
+                    [id, Self::TOTAL_BLOCKS],
                     snprintf!(val, "{:#x}", info.num_blocks),
                 )
                 .await?;
             responder
                 .send_var_info(
                     Self::BLOCK_DEVICE,
-                    &[id, Self::BLOCK_SIZE],
+                    [id, Self::BLOCK_SIZE],
                     snprintf!(val, "{:#x}", info.block_size),
                 )
                 .await?;
             responder
                 .send_var_info(
                     Self::BLOCK_DEVICE,
-                    &[id, Self::BLOCK_DEVICE_STATUS],
+                    [id, Self::BLOCK_DEVICE_STATUS],
                     snprintf!(val, "{}", blk.status().to_str()),
                 )
                 .await?;

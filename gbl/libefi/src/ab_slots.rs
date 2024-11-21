@@ -173,13 +173,15 @@ mod test {
         GBL_EFI_BOOT_REASON_GBL_EFI_WATCHDOG as REASON_WATCHDOG,
     };
     use gbl::{
-        ops::{AvbIoResult, CertPermanentAttributes, SHA256_DIGEST_SIZE},
+        ops::{AvbIoResult, CertPermanentAttributes, VarInfoSender, SHA256_DIGEST_SIZE},
         partition::GblDisk,
         slots::{Bootability, Cursor, RecoveryTarget, UnbootableReason},
-        Gbl, GblOps, Result as GblResult,
+        Gbl, GblOps, Os, Result as GblResult,
     };
     use gbl_storage::{BlockIo, BlockIoNull, Disk, Gpt};
-    use libgbl::{device_tree::DeviceTreeComponentsRegistry, ops::ImageBuffer};
+    use libgbl::{
+        device_tree::DeviceTreeComponentsRegistry, gbl_avb::state::BootStateColor, ops::ImageBuffer,
+    };
     // TODO(b/350526796): use ptr.is_aligned() when Rust 1.79 is in Android
     use core::ops::DerefMut;
     use std::{
@@ -187,6 +189,7 @@ mod test {
         fmt::Write,
         mem::align_of,
         num::NonZeroUsize,
+        str::Split,
         sync::atomic::{AtomicBool, AtomicU32, Ordering},
     };
     use zbi::ZbiContainer;
@@ -267,6 +270,10 @@ mod test {
             &[] as &[GblDisk<Disk<BlockIoNull, &mut [u8]>, Gpt<&mut [u8]>>]
         }
 
+        fn expected_os(&mut self) -> Result<Option<Os>> {
+            Ok(None)
+        }
+
         fn zircon_add_device_zbi_items(&mut self, _: &mut ZbiContainer<&mut [u8]>) -> Result<()> {
             unimplemented!();
         }
@@ -313,6 +320,19 @@ mod test {
             unimplemented!();
         }
 
+        fn avb_handle_verification_result(
+            &mut self,
+            _color: BootStateColor,
+            _boot_os_version: Option<&[u8]>,
+            _boot_security_patch: Option<&[u8]>,
+            _system_os_version: Option<&[u8]>,
+            _system_security_patch: Option<&[u8]>,
+            _vendor_os_version: Option<&[u8]>,
+            _vendor_security_patch: Option<&[u8]>,
+        ) -> AvbIoResult<()> {
+            unimplemented!();
+        }
+
         fn get_image_buffer<'c>(
             &mut self,
             _image_name: &str,
@@ -350,6 +370,19 @@ mod test {
             _components: &mut DeviceTreeComponentsRegistry,
         ) -> Result<()> {
             unimplemented!();
+        }
+
+        fn fastboot_variable(
+            &mut self,
+            _: &str,
+            _: Split<'_, char>,
+            _: &mut [u8],
+        ) -> Result<usize> {
+            unimplemented!()
+        }
+
+        async fn fastboot_send_all_variables(&mut self, _: &mut impl VarInfoSender) -> Result<()> {
+            unimplemented!()
         }
     }
 
