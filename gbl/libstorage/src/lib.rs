@@ -268,8 +268,8 @@ impl<T: BlockIo, S: DerefMut<Target = [u8]>> Disk<T, S> {
     /// # Args
     ///
     /// * `mbr_primary`: A buffer containing the MBR block, primary GPT header and entries.
-    /// * `resize`: If set to true, the method updates the value of last usable block in the header
-    ///   and the extends last partition to cover the rest of the storage.
+    /// * `resize`: If set to true, the method updates the last partition to cover the rest of the
+    ///    storage.
     /// * `gpt_cache`: The GPT cache to update.
     ///
     /// # Returns
