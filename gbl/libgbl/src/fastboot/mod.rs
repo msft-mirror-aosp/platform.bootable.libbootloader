@@ -69,21 +69,27 @@ const FLASH_GPT_PART: &str = "gpt";
 enum Task<'a, 'b, B: BlockIo, P: BufferPool> {
     /// Image flashing task. (partition io, downloaded data, data size)
     Flash(PartitionIo<'a, B>, ScopedBuffer<'b, P>, usize),
+    // Image erase task.
+    Erase(PartitionIo<'a, B>, ScopedBuffer<'b, P>),
     None,
 }
 
 impl<'a, 'b, B: BlockIo, P: BufferPool> Task<'a, 'b, B, P> {
-    /// Runs the task.
+    // Runs the task.
     async fn run(self) {
-        match self {
-            Self::Flash(mut part_io, mut download, data_size) => {
-                let _ = match is_sparse_image(&download) {
-                    Ok(_) => part_io.write_sparse(0, &mut download).await,
-                    _ => part_io.write(0, &mut download[..data_size]).await,
-                };
+        let _ = async {
+            match self {
+                Self::Flash(mut part_io, mut download, data_size) => {
+                    match is_sparse_image(&download) {
+                        Ok(_) => part_io.write_sparse(0, &mut download).await,
+                        _ => part_io.write(0, &mut download[..data_size]).await,
+                    }
+                }
+                Self::Erase(mut part_io, mut buffer) => part_io.zeroize(&mut buffer).await,
+                _ => Ok(()),
             }
-            _ => {}
         }
+        .await;
     }
 }
 
@@ -126,7 +132,7 @@ where
     tasks: &'d Shared<C>,
     current_download_buffer: Option<ScopedBuffer<'b, P>>,
     current_download_size: usize,
-    enable_async_block_io: bool,
+    enable_async_task: bool,
     default_block: Option<usize>,
     // Introduces marker type so that we can enforce constraint 'd <= min('b, 'c).
     // The constraint is expressed in the implementation block for the `FastbootImplementation`
@@ -179,7 +185,7 @@ where
             buffer_pool,
             current_download_buffer: None,
             current_download_size: 0,
-            enable_async_block_io: false,
+            enable_async_task: false,
             default_block: None,
             _tasks_context_lifetime: PhantomData,
         }
@@ -340,15 +346,68 @@ where
         Some((self.current_download_buffer.take()?, take(&mut self.current_download_size)))
     }
 
+    /// Waits until a Disk device is ready and get the [PartitionIo] for `part`.
+    pub async fn wait_partition_io(
+        &self,
+        blk: usize,
+        part: Option<&str>,
+    ) -> CommandResult<PartitionIo<'a, B>> {
+        loop {
+            match self.disks[blk].partition_io(part) {
+                Err(Error::NotReady) => yield_now().await,
+                Ok(v) => {
+                    v.last_err()?;
+                    return Ok(v);
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+
+    /// An internal helper for parsing a partition and getting the partition IO
+    async fn parse_and_get_partition_io(
+        &self,
+        part: &str,
+    ) -> CommandResult<(usize, PartitionIo<'a, B>)> {
+        let (part, blk_idx, start, sz) = self.parse_partition(part)?;
+        Ok((blk_idx, self.wait_partition_io(blk_idx, part).await?.sub(start, sz)?))
+    }
+
+    /// Helper for scheduiling an async task.
+    ///
+    /// * If `Self::enable_async_task` is true, the method will add the task to the background task
+    ///   list. Otherwise it simply runs the task.
+    async fn schedule_task(
+        &mut self,
+        task: Task<'a, 'b, B, P>,
+        responder: &mut impl InfoSender,
+    ) -> CommandResult<()> {
+        match self.enable_async_task {
+            true => {
+                let mut t = Some((self.task_mapper)(task));
+                self.tasks.borrow_mut().add_with(|| t.take().unwrap());
+                while t.is_some() {
+                    yield_now().await;
+                    self.tasks.borrow_mut().add_with(|| t.take().unwrap());
+                }
+                self.tasks.borrow_mut().poll_all();
+                let info = "An IO task is launched. To sync manually, run \"oem gbl-sync-tasks\".";
+                responder.send_info(info).await?
+            }
+            _ => task.run().await,
+        };
+        Ok(())
+    }
+
     /// Waits for all block devices to be ready.
     async fn sync_all_blocks(&self) -> CommandResult<()> {
-        for ele in self.disks {
-            let _ = ele.wait_partition_io(None).await;
+        for (idx, _) in self.disks.iter().enumerate() {
+            let _ = self.wait_partition_io(idx, None).await;
         }
         Ok(())
     }
 
-    /// Implementation for "fastboot oem gbl-sync-blocks".
+    /// Implementation for "fastboot oem gbl-sync-tasks".
     async fn oem_sync_blocks<'s>(
         &self,
         mut responder: impl InfoSender,
@@ -481,7 +540,7 @@ where
 
         // Checks if we are flashing new GPT partition table
         if let Some((blk_idx, resize)) = self.parse_flash_gpt_args(part)? {
-            disks[blk_idx].wait_partition_io(None).await?.last_err()?;
+            self.wait_partition_io(blk_idx, None).await?;
             let (mut gpt, size) = self.take_download().ok_or("No GPT downloaded")?;
             responder.send_info("Updating GPT...").await?;
             return match disks[blk_idx].update_gpt(&mut gpt[..size], resize).await {
@@ -491,31 +550,35 @@ where
             };
         }
 
-        let (part, blk_idx, start, sz) = self.parse_partition(part)?;
-        let part_io = disks[blk_idx].wait_partition_io(part).await?.sub(start, sz)?;
-        part_io.last_err()?;
+        let (blk_idx, part_io) = self.parse_and_get_partition_io(part).await?;
         let (download_buffer, data_size) = self.take_download().ok_or("No download")?;
         let write_task = Task::Flash(part_io, download_buffer, data_size);
-        match self.enable_async_block_io {
-            true => {
-                let mut t = Some((self.task_mapper)(write_task));
-                self.tasks.borrow_mut().add_with(|| t.take().unwrap());
-                while t.is_some() {
-                    yield_now().await;
-                    self.tasks.borrow_mut().add_with(|| t.take().unwrap());
-                }
-                self.tasks.borrow_mut().poll_all();
-                let info = "An IO task is launched. To sync manually, run \"oem gbl-sync-blocks\".";
-                responder.send_info(info).await?
-            }
-            _ => write_task.run().await,
-        };
+        self.schedule_task(write_task, &mut responder).await?;
         // Checks if block is ready already and returns errors. This can be the case when the
         // operation is synchronous or runs into early errors.
-        match disks[blk_idx].partition_io(part) {
-            Ok(v) => Ok(v.last_err()?),
-            _ => Ok(()),
+        Ok(disks[blk_idx].status().result()?)
+    }
+
+    async fn erase(&mut self, part: &str, mut responder: impl InfoSender) -> CommandResult<()> {
+        let disks = self.disks;
+
+        // Checks if we are erasing GPT partition table.
+        if let Some((blk_idx, _)) = self.parse_flash_gpt_args(part)? {
+            self.wait_partition_io(blk_idx, None).await?;
+            return match disks[blk_idx].erase_gpt().await {
+                Err(Error::NotReady) => panic!("Should not be busy"),
+                Err(Error::Unsupported) => Err("Block device is not for GPT".into()),
+                v => Ok(v?),
+            };
         }
+
+        let (blk_idx, part_io) = self.parse_and_get_partition_io(part).await?;
+        self.get_download_buffer().await;
+        let erase_task = Task::Erase(part_io, self.take_download().unwrap().0);
+        self.schedule_task(erase_task, &mut responder).await?;
+        // Checks if block is ready already and returns errors. This can be the case when the
+        // operation is synchronous or runs into early errors.
+        Ok(disks[blk_idx].status().result()?)
     }
 
     async fn upload(&mut self, _: impl UploadBuilder) -> CommandResult<()> {
@@ -529,10 +592,7 @@ where
         size: u64,
         mut responder: impl UploadBuilder + InfoSender,
     ) -> CommandResult<()> {
-        let (part, blk_idx, start, sz) = self.parse_partition(part)?;
-        let disks = self.disks;
-        let mut part_io = disks[blk_idx].wait_partition_io(part).await?.sub(start, sz)?;
-        part_io.last_err()?;
+        let (_, mut part_io) = self.parse_and_get_partition_io(part).await?;
         let buffer = self.get_download_buffer().await;
         let end = u64::try_from(SafeNum::from(offset) + size)?;
         let mut curr = offset;
@@ -590,13 +650,13 @@ where
         let mut args = cmd.split(' ');
         let cmd = args.next().ok_or("Missing command")?;
         match cmd {
-            "gbl-sync-blocks" => self.oem_sync_blocks(responder, res).await,
-            "gbl-enable-async-block-io" => {
-                self.enable_async_block_io = true;
+            "gbl-sync-tasks" => self.oem_sync_blocks(responder, res).await,
+            "gbl-enable-async-task" => {
+                self.enable_async_task = true;
                 Ok(b"")
             }
-            "gbl-disable-async-block-io" => {
-                self.enable_async_block_io = false;
+            "gbl-disable-async-task" => {
+                self.enable_async_task = false;
                 Ok(b"")
             }
             "gbl-unset-default-block" => {
@@ -1214,12 +1274,10 @@ mod test {
         let tasks = gbl_fb.tasks();
         let resp: TestResponder = Default::default();
 
-        // "oem gbl-sync-blocks" should return immediately when there is no pending IOs.
-        assert!(poll(&mut pin!(oem(&mut gbl_fb, "gbl-sync-blocks", &resp))).unwrap().is_ok());
+        // "oem gbl-sync-tasks" should return immediately when there is no pending IOs.
+        assert!(poll(&mut pin!(oem(&mut gbl_fb, "gbl-sync-tasks", &resp))).unwrap().is_ok());
         // Enable async IO.
-        assert!(poll(&mut pin!(oem(&mut gbl_fb, "gbl-enable-async-block-io", &resp)))
-            .unwrap()
-            .is_ok());
+        assert!(poll(&mut pin!(oem(&mut gbl_fb, "gbl-enable-async-task", &resp))).unwrap().is_ok());
 
         // Flashes "boot_a".
         let expect_boot_a = flipped_bits(include_bytes!("../../../libstorage/test/boot_a.bin"));
@@ -1233,12 +1291,12 @@ mod test {
         check_var(&mut gbl_fb, "block-device", "1:status", "IO pending");
 
         {
-            // "oem gbl-sync-blocks" should block.
-            let oem_sync_blk_fut = &mut pin!(oem(&mut gbl_fb, "gbl-sync-blocks", &resp));
+            // "oem gbl-sync-tasks" should block.
+            let oem_sync_blk_fut = &mut pin!(oem(&mut gbl_fb, "gbl-sync-tasks", &resp));
             assert!(poll(oem_sync_blk_fut).is_none());
             // Schedules the disk IO tasks to completion.
             tasks.borrow_mut().run();
-            // "oem gbl-sync-blocks" should now be able to finish.
+            // "oem gbl-sync-tasks" should now be able to finish.
             assert!(poll(oem_sync_blk_fut).unwrap().is_ok());
         }
 
@@ -1268,9 +1326,7 @@ mod test {
         let resp: TestResponder = Default::default();
 
         // Enable async IO.
-        assert!(poll(&mut pin!(oem(&mut gbl_fb, "gbl-enable-async-block-io", &resp)))
-            .unwrap()
-            .is_ok());
+        assert!(poll(&mut pin!(oem(&mut gbl_fb, "gbl-enable-async-task", &resp))).unwrap().is_ok());
 
         // Flashes boot_a partition.
         let expect_boot_a = flipped_bits(include_bytes!("../../../libstorage/test/boot_a.bin"));
@@ -1323,9 +1379,7 @@ mod test {
         let resp: TestResponder = Default::default();
 
         // Enable async IO.
-        assert!(poll(&mut pin!(oem(&mut gbl_fb, "gbl-enable-async-block-io", &resp)))
-            .unwrap()
-            .is_ok());
+        assert!(poll(&mut pin!(oem(&mut gbl_fb, "gbl-enable-async-task", &resp))).unwrap().is_ok());
         // Flashes boot_a partition.
         let expect_boot_a = flipped_bits(include_bytes!("../../../libstorage/test/boot_a.bin"));
         set_download(&mut gbl_fb, expect_boot_a.as_slice());
@@ -1335,8 +1389,53 @@ mod test {
         // New flash to "boot_a" should fail due to previous error
         set_download(&mut gbl_fb, expect_boot_a.as_slice());
         assert!(block_on(gbl_fb.flash("boot_a", &resp)).is_err());
-        // "oem gbl-sync-blocks" should fail.
-        assert!(block_on(oem(&mut gbl_fb, "gbl-sync-blocks", &resp)).is_err());
+        // "oem gbl-sync-tasks" should fail.
+        assert!(block_on(oem(&mut gbl_fb, "gbl-sync-tasks", &resp)).is_err());
+    }
+
+    #[test]
+    fn test_async_erase() {
+        let dl_buffers = Shared::from(vec![vec![0u8; 128 * 1024]; 2]);
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"raw_0", [0xaau8; 4096]);
+        storage.add_raw_device(c"raw_1", [0x55u8; 4096]);
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        let tasks = vec![].into();
+        let parts = gbl_ops.disks();
+        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, parts, Task::run, &tasks, &dl_buffers);
+        let tasks = gbl_fb.tasks();
+        let resp: TestResponder = Default::default();
+
+        // Enable async IO.
+        assert!(poll(&mut pin!(oem(&mut gbl_fb, "gbl-enable-async-task", &resp))).unwrap().is_ok());
+
+        // Erases "raw_0".
+        block_on(gbl_fb.erase("raw_0", &resp)).unwrap();
+        check_var(&mut gbl_fb, "block-device", "0:status", "IO pending");
+
+        // Erases second half of "raw_1"
+        block_on(gbl_fb.erase("raw_1//800", &resp)).unwrap();
+        check_var(&mut gbl_fb, "block-device", "1:status", "IO pending");
+
+        {
+            // "oem gbl-sync-tasks" should block.
+            let oem_sync_blk_fut = &mut pin!(oem(&mut gbl_fb, "gbl-sync-tasks", &resp));
+            assert!(poll(oem_sync_blk_fut).is_none());
+            // Schedules the disk IO tasks to completion.
+            tasks.borrow_mut().run();
+            // "oem gbl-sync-tasks" should now be able to finish.
+            assert!(poll(oem_sync_blk_fut).unwrap().is_ok());
+        }
+
+        // The two blocks should be in the idle state.
+        check_var(&mut gbl_fb, "block-device", "0:status", "idle");
+        check_var(&mut gbl_fb, "block-device", "1:status", "idle");
+
+        assert_eq!(storage[0].partition_io(None).unwrap().dev().io().storage, [0u8; 4096]);
+        assert_eq!(
+            storage[1].partition_io(None).unwrap().dev().io().storage,
+            [[0x55u8; 2048], [0u8; 2048]].concat()
+        );
     }
 
     #[test]
@@ -1432,7 +1531,7 @@ mod test {
         let tasks = gbl_fb.tasks();
         let resp: TestResponder = Default::default();
 
-        block_on(oem(&mut gbl_fb, "gbl-enable-async-block-io", &resp)).unwrap();
+        block_on(oem(&mut gbl_fb, "gbl-enable-async-task", &resp)).unwrap();
 
         // Flashes "boot_a".
         let expect_boot_a = flipped_bits(include_bytes!("../../../libstorage/test/boot_a.bin"));
@@ -1466,7 +1565,7 @@ mod test {
         let tasks = gbl_fb.tasks();
         let resp: TestResponder = Default::default();
 
-        block_on(oem(&mut gbl_fb, "gbl-enable-async-block-io", &resp)).unwrap();
+        block_on(oem(&mut gbl_fb, "gbl-enable-async-task", &resp)).unwrap();
 
         // Flashes "boot_a".
         let expect_boot_a = flipped_bits(include_bytes!("../../../libstorage/test/boot_a.bin"));
@@ -1652,7 +1751,7 @@ mod test {
         let mut fb_fut =
             pin!(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp)));
 
-        listener.add_usb_input(b"oem gbl-enable-async-block-io");
+        listener.add_usb_input(b"oem gbl-enable-async-task");
         listener.add_usb_input(format!("download:{:#x}", 4 * 1024).as_bytes());
         listener.add_usb_input(&[0x55u8; 4 * 1024]);
         listener.add_usb_input(b"flash:raw_0");
@@ -1670,7 +1769,7 @@ mod test {
                 b"OKAY",
                 b"DATA00001000",
                 b"OKAY",
-                b"INFOAn IO task is launched. To sync manually, run \"oem gbl-sync-blocks\".",
+                b"INFOAn IO task is launched. To sync manually, run \"oem gbl-sync-tasks\".",
                 b"OKAY",
             ]),
             "\nActual USB output:\n{}",
@@ -1682,7 +1781,7 @@ mod test {
             make_expected_tcp_out(&[
                 b"DATA00002000",
                 b"OKAY",
-                b"INFOAn IO task is launched. To sync manually, run \"oem gbl-sync-blocks\".",
+                b"INFOAn IO task is launched. To sync manually, run \"oem gbl-sync-tasks\".",
                 b"OKAY",
             ]),
             "\nActual TCP output:\n{}",
@@ -2082,6 +2181,69 @@ mod test {
         );
     }
 
+    #[test]
+    fn test_oem_erase_gpt() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
+        storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
+        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        let listener: SharedTestListener = Default::default();
+        let (usb, tcp) = (&listener, &listener);
+
+        // Erases the GPT on disk #0.
+        listener.add_usb_input(b"erase:gpt/0");
+        // Checks that we can no longer get partition info on disk #0.
+        listener.add_usb_input(b"getvar:partition-size:boot_a");
+        listener.add_usb_input(b"getvar:partition-size:boot_b");
+        // Checks that we can still get partition info on disk #1.
+        listener.add_usb_input(b"getvar:partition-size:vendor_boot_a");
+        listener.add_usb_input(b"getvar:partition-size:vendor_boot_b");
+        listener.add_usb_input(b"continue");
+
+        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp)));
+
+        assert_eq!(
+            listener.usb_out_queue(),
+            make_expected_usb_out(&[
+                b"OKAY",
+                b"FAILNotFound",
+                b"FAILNotFound",
+                b"OKAY0x1000",
+                b"OKAY0x1800",
+                b"INFOSyncing storage...",
+                b"OKAY",
+            ]),
+            "\nActual USB output:\n{}",
+            listener.dump_usb_out_queue()
+        );
+    }
+
+    #[test]
+    fn test_oem_erase_gpt_fail_on_raw_blk() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"raw_0", [0u8; 1024 * 1024]);
+        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        let listener: SharedTestListener = Default::default();
+        let (usb, tcp) = (&listener, &listener);
+
+        listener.add_usb_input(b"erase:gpt/0");
+        listener.add_usb_input(b"continue");
+        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp)));
+
+        assert_eq!(
+            listener.usb_out_queue(),
+            make_expected_usb_out(&[
+                b"FAILBlock device is not for GPT",
+                b"INFOSyncing storage...",
+                b"OKAY",
+            ]),
+            "\nActual USB output:\n{}",
+            listener.dump_usb_out_queue()
+        );
+    }
+
     /// Helper for testing fastboot set_active in fuchsia A/B/R mode.
     fn test_run_gbl_fastboot_set_active_fuchsia_abr(cmd: &str, slot: SlotIndex) {
         let mut storage = FakeGblOpsStorage::default();
@@ -2098,7 +2260,7 @@ mod test {
         // Flash some data to `durable_boot` after A/B/R metadata. This is for testing that sync
         // storage is done first.
         let data = vec![0x55u8; 4 * 1024 - ABR_DATA_SIZE];
-        listener.add_usb_input(b"oem gbl-enable-async-block-io");
+        listener.add_usb_input(b"oem gbl-enable-async-task");
         listener.add_usb_input(format!("download:{:#x}", 4 * 1024 - ABR_DATA_SIZE).as_bytes());
         listener.add_usb_input(&data);
         listener.add_usb_input(format!("flash:durable_boot//{:#x}", ABR_DATA_SIZE).as_bytes());
@@ -2113,7 +2275,7 @@ mod test {
                 b"OKAY",
                 b"DATA00000fe0",
                 b"OKAY",
-                b"INFOAn IO task is launched. To sync manually, run \"oem gbl-sync-blocks\".",
+                b"INFOAn IO task is launched. To sync manually, run \"oem gbl-sync-tasks\".",
                 b"OKAY",
                 b"OKAY",
                 b"INFOSyncing storage...",
