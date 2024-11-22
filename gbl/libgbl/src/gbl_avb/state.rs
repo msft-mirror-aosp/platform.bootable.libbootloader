@@ -43,3 +43,14 @@ impl Display for BootStateColor {
         })
     }
 }
+
+/// https://source.android.com/docs/security/features/verifiedboot/boot-flow#locked-devices-with-custom-root-of-trust
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum KeyValidationStatus {
+    /// Vbmeta key is matched with a production key.
+    Valid,
+    /// Vbmeta key is matched with a custom key.
+    ValidCustomKey,
+    /// Vbmeta key isn't matched.
+    Invalid,
+}
