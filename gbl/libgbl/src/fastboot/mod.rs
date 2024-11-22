@@ -135,14 +135,115 @@ where
 }
 
 // See definition of [GblFastboot] for docs on lifetimes and generics parameters.
-impl<'a, 'b, G, B, S, T, P, C, F> GblFastboot<'a, 'b, '_, '_, G, B, S, T, P, C, F>
+impl<'a: 'c, 'b: 'c, 'c, 'd, G, B, S, T, P, C, F> GblFastboot<'a, 'b, 'c, 'd, G, B, S, T, P, C, F>
 where
     G: GblOps<'a>,
     B: BlockIo,
     S: DerefMut<Target = [u8]>,
     T: DerefMut<Target = [u8]>,
     P: BufferPool,
+    C: PinFutContainerTyped<'c, F>,
+    F: Future<Output = ()> + 'c,
 {
+    /// Creates a new [GblFastboot].
+    ///
+    /// # Args
+    ///
+    /// * `gbl_ops`: An implementation of `GblOps`.
+    /// * `disks`: The disk devices returned by `gbl_ops.disks()`. This is needed for expressing the
+    ///   property that the hidden [BlockIo] type is the same as that in `task_mapper`.
+    /// * `task_mapper`: A function pointer that maps `Task<'a, 'b, G, B>` to the target [Future]
+    ///   type `F` for input to `PinFutContainerTyped<F>::add_with()`.
+    /// * `tasks`: A shared instance of `PinFutContainerTyped<F>`.
+    /// * `buffer_pool`: A shared instance of `BufferPool`.
+    ///
+    /// The combination of `task_mapper` and `tasks` allows type `F`, which will be running the
+    /// async function `Task::run()`, to be defined at the callsite. This is necessary for the
+    /// usage of preallocated pinned futures (by `run_gbl_fastboot_stack()`) because the returned
+    /// type of a `async fn` is compiler-generated and can't be named. The only way to create a
+    /// preallocated slice of anonymous future is to keep the type generic and pass in the
+    /// anonymous future instance at the initialization callsite (aka defining use) and let compiler
+    /// infer and propagate it.
+    fn new(
+        gbl_ops: &'d mut G,
+        disks: &'a [GblDisk<Disk<B, S>, Gpt<T>>],
+        task_mapper: fn(Task<'a, 'b, B, P>) -> F,
+        tasks: &'d Shared<C>,
+        buffer_pool: &'b Shared<P>,
+    ) -> Self {
+        Self {
+            gbl_ops,
+            disks,
+            task_mapper,
+            tasks,
+            buffer_pool,
+            current_download_buffer: None,
+            current_download_size: 0,
+            enable_async_block_io: false,
+            default_block: None,
+            _tasks_context_lifetime: PhantomData,
+        }
+    }
+
+    /// Returns the shared task container.
+    fn tasks(&self) -> &'d Shared<impl PinFutContainerTyped<'c, F>> {
+        self.tasks
+    }
+
+    /// Listens on the given USB/TCP channels and runs fastboot.
+    async fn run(
+        &mut self,
+        mut usb: Option<impl GblUsbTransport>,
+        mut tcp: Option<impl GblTcpStream>,
+    ) {
+        if usb.is_none() && tcp.is_none() {
+            gbl_println!(self.gbl_ops, "No USB or TCP found for GBL Fastboot");
+            return;
+        }
+        let tasks = self.tasks();
+        // The fastboot command loop task for interacting with the remote host.
+        let cmd_loop_end = Shared::from(false);
+        let cmd_loop_task = async {
+            loop {
+                if let Some(v) = usb.as_mut() {
+                    if v.has_packet() {
+                        let res = match process_next_command(v, self).await {
+                            Ok(true) => break,
+                            v => v,
+                        };
+                        if res.is_err() {
+                            gbl_println!(self.gbl_ops, "GBL Fastboot USB session error: {:?}", res);
+                        }
+                    }
+                }
+
+                if let Some(v) = tcp.as_mut() {
+                    if v.accept_new() {
+                        let res = match run_tcp_session(v, self).await {
+                            Ok(()) => break,
+                            v => v,
+                        };
+                        if res.is_err_and(|e| e != Error::Disconnected) {
+                            gbl_println!(self.gbl_ops, "GBL Fastboot TCP session error: {:?}", res);
+                        }
+                    }
+                }
+
+                yield_now().await;
+            }
+            *cmd_loop_end.borrow_mut() = true;
+        };
+
+        // Schedules [Task] spawned by GBL fastboot.
+        let gbl_fb_tasks = async {
+            while tasks.borrow_mut().poll_all() > 0 || !*cmd_loop_end.borrow_mut() {
+                yield_now().await;
+            }
+        };
+
+        let _ = join(cmd_loop_task, gbl_fb_tasks).await;
+    }
+
     /// Extracts the next argument and verifies that it is a valid block device ID if present.
     ///
     /// # Returns
@@ -519,117 +620,6 @@ where
             }
             _ => Err("Unknown oem command".into()),
         }
-    }
-}
-
-// See definition of [GblFastboot] for docs on lifetimes and generics parameters.
-impl<'a: 'c, 'b: 'c, 'c, 'd, G, B, S, T, P, C, F> GblFastboot<'a, 'b, 'c, 'd, G, B, S, T, P, C, F>
-where
-    G: GblOps<'a>,
-    B: BlockIo,
-    S: DerefMut<Target = [u8]>,
-    T: DerefMut<Target = [u8]>,
-    P: BufferPool,
-    C: PinFutContainerTyped<'c, F>,
-    F: Future<Output = ()> + 'c,
-{
-    /// Creates a new [GblFastboot].
-    ///
-    /// # Args
-    ///
-    /// * `gbl_ops`: An implementation of `GblOps`.
-    /// * `disks`: The disk devices returned by `gbl_ops.disks()`. This is needed for expressing the
-    ///   property that the hidden [BlockIo] type is the same as that in `task_mapper`.
-    /// * `task_mapper`: A function pointer that maps `Task<'a, 'b, G, B>` to the target [Future]
-    ///   type `F` for input to `PinFutContainerTyped<F>::add_with()`.
-    /// * `tasks`: A shared instance of `PinFutContainerTyped<F>`.
-    /// * `buffer_pool`: A shared instance of `BufferPool`.
-    ///
-    /// The combination of `task_mapper` and `tasks` allows type `F`, which will be running the
-    /// async function `Task::run()`, to be defined at the callsite. This is necessary for the
-    /// usage of preallocated pinned futures (by `run_gbl_fastboot_stack()`) because the returned
-    /// type of a `async fn` is compiler-generated and can't be named. The only way to create a
-    /// preallocated slice of anonymous future is to keep the type generic and pass in the
-    /// anonymous future instance at the initialization callsite (aka defining use) and let compiler
-    /// infer and propagate it.
-    fn new(
-        gbl_ops: &'d mut G,
-        disks: &'a [GblDisk<Disk<B, S>, Gpt<T>>],
-        task_mapper: fn(Task<'a, 'b, B, P>) -> F,
-        tasks: &'d Shared<C>,
-        buffer_pool: &'b Shared<P>,
-    ) -> Self {
-        Self {
-            gbl_ops,
-            disks,
-            task_mapper,
-            tasks,
-            buffer_pool,
-            current_download_buffer: None,
-            current_download_size: 0,
-            enable_async_block_io: false,
-            default_block: None,
-            _tasks_context_lifetime: PhantomData,
-        }
-    }
-
-    /// Returns the shared task container.
-    fn tasks(&self) -> &'d Shared<impl PinFutContainerTyped<'c, F>> {
-        self.tasks
-    }
-
-    /// Listens on the given USB/TCP channels and runs fastboot.
-    async fn run(
-        &mut self,
-        mut usb: Option<impl GblUsbTransport>,
-        mut tcp: Option<impl GblTcpStream>,
-    ) {
-        if usb.is_none() && tcp.is_none() {
-            gbl_println!(self.gbl_ops, "No USB or TCP found for GBL Fastboot");
-            return;
-        }
-        let tasks = self.tasks();
-        // The fastboot command loop task for interacting with the remote host.
-        let cmd_loop_end = Shared::from(false);
-        let cmd_loop_task = async {
-            loop {
-                if let Some(v) = usb.as_mut() {
-                    if v.has_packet() {
-                        let res = match process_next_command(v, self).await {
-                            Ok(true) => break,
-                            v => v,
-                        };
-                        if res.is_err() {
-                            gbl_println!(self.gbl_ops, "GBL Fastboot USB session error: {:?}", res);
-                        }
-                    }
-                }
-
-                if let Some(v) = tcp.as_mut() {
-                    if v.accept_new() {
-                        let res = match run_tcp_session(v, self).await {
-                            Ok(()) => break,
-                            v => v,
-                        };
-                        if res.is_err_and(|e| e != Error::Disconnected) {
-                            gbl_println!(self.gbl_ops, "GBL Fastboot TCP session error: {:?}", res);
-                        }
-                    }
-                }
-
-                yield_now().await;
-            }
-            *cmd_loop_end.borrow_mut() = true;
-        };
-
-        // Schedules [Task] spawned by GBL fastboot.
-        let gbl_fb_tasks = async {
-            while tasks.borrow_mut().poll_all() > 0 || !*cmd_loop_end.borrow_mut() {
-                yield_now().await;
-            }
-        };
-
-        let _ = join(cmd_loop_task, gbl_fb_tasks).await;
     }
 }
 
