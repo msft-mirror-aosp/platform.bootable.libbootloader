@@ -25,19 +25,21 @@ use alloc::{
 };
 use arrayvec::ArrayVec;
 use core::{
-    ffi::CStr, fmt::Write, mem::MaybeUninit, num::NonZeroUsize, ops::DerefMut,
-    slice::from_raw_parts_mut,
+    ffi::CStr, fmt::Write, mem::MaybeUninit, num::NonZeroUsize, ops::DerefMut, ptr::null,
+    slice::from_raw_parts_mut, str::Split,
 };
 use efi::{
-    efi_print, efi_println, protocol::dt_fixup::DtFixupProtocol,
-    protocol::gbl_efi_image_loading::GblImageLoadingProtocol,
-    protocol::gbl_efi_os_configuration::GblOsConfigurationProtocol, EfiEntry,
+    efi_print, efi_println,
+    protocol::{
+        dt_fixup::DtFixupProtocol, gbl_efi_avb::GblAvbProtocol,
+        gbl_efi_fastboot::GblFastbootProtocol, gbl_efi_image_loading::GblImageLoadingProtocol,
+        gbl_efi_os_configuration::GblOsConfigurationProtocol,
+    },
+    EfiEntry,
 };
 use efi_types::{
-    GblEfiDeviceTreeMetadata, GblEfiImageInfo, GblEfiVerifiedDeviceTree,
-    GBL_EFI_DEVICE_TREE_SOURCE_BOOT, GBL_EFI_DEVICE_TREE_SOURCE_DTB,
-    GBL_EFI_DEVICE_TREE_SOURCE_DTBO, GBL_EFI_DEVICE_TREE_SOURCE_VENDOR_BOOT,
-    PARTITION_NAME_LEN_U16,
+    GblEfiAvbVerificationResult, GblEfiDeviceTreeMetadata, GblEfiImageInfo,
+    GblEfiVerifiedDeviceTree, PARTITION_NAME_LEN_U16,
 };
 use fdt::Fdt;
 use gbl_storage::{BlockIo, Disk, Gpt};
@@ -47,7 +49,11 @@ use libgbl::{
         DeviceTreeComponent, DeviceTreeComponentSource, DeviceTreeComponentsRegistry,
         MAXIMUM_DEVICE_TREE_COMPONENTS,
     },
-    ops::{AvbIoError, AvbIoResult, CertPermanentAttributes, ImageBuffer, SHA256_DIGEST_SIZE},
+    gbl_avb::state::BootStateColor,
+    ops::{
+        AvbIoError, AvbIoResult, CertPermanentAttributes, ImageBuffer, VarInfoSender,
+        SHA256_DIGEST_SIZE,
+    },
     partition::GblDisk,
     slots::{BootToken, Cursor},
     GblOps, Os, Result as GblResult,
@@ -55,6 +61,16 @@ use libgbl::{
 use safemath::SafeNum;
 use zbi::ZbiContainer;
 use zerocopy::AsBytes;
+
+fn avb_color_to_efi_color(color: BootStateColor) -> u32 {
+    match color {
+        BootStateColor::Green => efi_types::GBL_EFI_AVB_BOOT_STATE_COLOR_GREEN,
+        BootStateColor::Yellow => efi_types::GBL_EFI_AVB_BOOT_STATE_COLOR_YELLOW,
+        BootStateColor::Orange => efi_types::GBL_EFI_AVB_BOOT_STATE_COLOR_ORANGE,
+        BootStateColor::RedEio => efi_types::GBL_EFI_AVB_BOOT_STATE_COLOR_RED_EIO,
+        BootStateColor::Red => efi_types::GBL_EFI_AVB_BOOT_STATE_COLOR_RED,
+    }
+}
 
 fn dt_component_to_efi_dt(component: &DeviceTreeComponent) -> GblEfiVerifiedDeviceTree {
     let metadata = match component.source {
@@ -65,10 +81,12 @@ fn dt_component_to_efi_dt(component: &DeviceTreeComponent) -> GblEfiVerifiedDevi
     GblEfiVerifiedDeviceTree {
         metadata: GblEfiDeviceTreeMetadata {
             source: match component.source {
-                DeviceTreeComponentSource::Boot => GBL_EFI_DEVICE_TREE_SOURCE_BOOT,
-                DeviceTreeComponentSource::VendorBoot => GBL_EFI_DEVICE_TREE_SOURCE_VENDOR_BOOT,
-                DeviceTreeComponentSource::Dtb(_) => GBL_EFI_DEVICE_TREE_SOURCE_DTB,
-                DeviceTreeComponentSource::Dtbo(_) => GBL_EFI_DEVICE_TREE_SOURCE_DTBO,
+                DeviceTreeComponentSource::Boot => efi_types::GBL_EFI_DEVICE_TREE_SOURCE_BOOT,
+                DeviceTreeComponentSource::VendorBoot => {
+                    efi_types::GBL_EFI_DEVICE_TREE_SOURCE_VENDOR_BOOT
+                }
+                DeviceTreeComponentSource::Dtb(_) => efi_types::GBL_EFI_DEVICE_TREE_SOURCE_DTB,
+                DeviceTreeComponentSource::Dtbo(_) => efi_types::GBL_EFI_DEVICE_TREE_SOURCE_DTBO,
             },
             id: metadata.id,
             rev: metadata.rev,
@@ -77,6 +95,28 @@ fn dt_component_to_efi_dt(component: &DeviceTreeComponent) -> GblEfiVerifiedDevi
         },
         device_tree: component.dt.as_ptr() as _,
         selected: component.selected,
+    }
+}
+
+fn efi_error_to_avb_error(error: Error) -> AvbIoError {
+    match error {
+        // EFI_STATUS_OUT_OF_RESOURCES
+        Error::OutOfResources => AvbIoError::Oom,
+        // EFI_STATUS_DEVICE_ERROR
+        Error::DeviceError => AvbIoError::Io,
+        // EFI_STATUS_NOT_FOUND
+        Error::NotFound => AvbIoError::NoSuchValue,
+        // EFI_STATUS_END_OF_FILE
+        Error::EndOfFile => AvbIoError::RangeOutsidePartition,
+        // EFI_STATUS_INVALID_PARAMETER
+        Error::InvalidInput => AvbIoError::InvalidValueSize,
+        // EFI_STATUS_BUFFER_TOO_SMALL
+        Error::BufferTooSmall(required) => {
+            AvbIoError::InsufficientSpace(required.unwrap_or_default())
+        }
+        // EFI_STATUS_UNSUPPORTED
+        Error::Unsupported => AvbIoError::NotImplemented,
+        _ => AvbIoError::NotImplemented,
     }
 }
 
@@ -328,6 +368,33 @@ where
         Ok(hash.try_into().map_err(|_| AvbIoError::Io)?)
     }
 
+    fn avb_handle_verification_result(
+        &mut self,
+        color: BootStateColor,
+        boot_os_version: Option<&[u8]>,
+        boot_security_patch: Option<&[u8]>,
+        system_os_version: Option<&[u8]>,
+        system_security_patch: Option<&[u8]>,
+        vendor_os_version: Option<&[u8]>,
+        vendor_security_patch: Option<&[u8]>,
+    ) -> AvbIoResult<()> {
+        match self.efi_entry.system_table().boot_services().find_first_and_open::<GblAvbProtocol>()
+        {
+            Ok(protocol) => protocol
+                .handle_verification_result(&GblEfiAvbVerificationResult {
+                    color: avb_color_to_efi_color(color),
+                    boot_version: boot_os_version.map_or(null(), |p| p.as_ptr()),
+                    boot_security_patch: boot_security_patch.map_or(null(), |p| p.as_ptr()),
+                    system_version: system_os_version.map_or(null(), |p| p.as_ptr()),
+                    system_security_patch: system_security_patch.map_or(null(), |p| p.as_ptr()),
+                    vendor_version: vendor_os_version.map_or(null(), |p| p.as_ptr()),
+                    vendor_security_patch: vendor_security_patch.map_or(null(), |p| p.as_ptr()),
+                })
+                .map_err(efi_error_to_avb_error),
+            _ => Ok(()),
+        }
+    }
+
     fn get_image_buffer<'c>(
         &mut self,
         image_name: &str,
@@ -439,6 +506,33 @@ where
             }
             _ => components_registry.autoselect(),
         }
+    }
+
+    fn fastboot_variable(
+        &mut self,
+        name: &str,
+        args: Split<'_, char>,
+        out: &mut [u8],
+    ) -> Result<usize> {
+        self.efi_entry
+            .system_table()
+            .boot_services()
+            .find_first_and_open::<GblFastbootProtocol>()?
+            .get_var(name, args, out)
+    }
+
+    async fn fastboot_send_all_variables(&mut self, sender: &mut impl VarInfoSender) -> Result<()> {
+        let mut out = [0u8; fastboot::MAX_RESPONSE_SIZE];
+        let protocol = self
+            .efi_entry
+            .system_table()
+            .boot_services()
+            .find_first_and_open::<GblFastbootProtocol>()?;
+        for ele in protocol.var_iter()? {
+            let (name, args, val) = ele.get(&mut out[..])?;
+            sender.send_var_info(name, args, val).await?;
+        }
+        Ok(())
     }
 }
 

@@ -212,15 +212,26 @@ where
         let window_offset = next_arg_u64(&mut args)?.unwrap_or(0);
         // Parses sub window size.
         let window_size = next_arg_u64(&mut args)?;
-        // Checks and resolves blk_id and partition size
-        let (blk_id, partition) = match blk_id {
-            None => check_part_unique(devs, part.ok_or("Must provide a partition")?)?,
-            Some(v) => (v, devs[v].find_partition(part)?),
+        // Checks uniqueness of the partition and resolves its block device ID.
+        let find = |p: Option<&'s str>| match blk_id {
+            None => Ok((check_part_unique(devs, p.ok_or("Must provide a partition")?)?, p)),
+            Some(v) => Ok(((v, devs[v].find_partition(p)?), p)),
+        };
+        let ((blk_id, partition), actual) = match find(part) {
+            // Some legacy Fuchsia devices in the field uses name "fuchsia-fvm" for the standard
+            // "fvm" partition. However all of our infra uses the standard name "fvm" when flashing.
+            // Here we do a one off mapping if the device falls into this case. Once we have a
+            // solution for migrating those devices off the legacy name, we can remove this.
+            //
+            // If we run into more of such legacy aliases that we can't migrate, consider adding
+            // interfaces in GblOps for this.
+            Err(Error::NotFound) if part == Some("fvm") => find(Some("fuchsia-fvm"))?,
+            v => v?,
         };
         let part_sz = SafeNum::from(partition.size()?);
         let window_size = window_size.unwrap_or((part_sz - window_offset).try_into()?);
         u64::try_from(part_sz - window_size - window_offset)?;
-        Ok((part, blk_id, window_offset, window_size))
+        Ok((actual, blk_id, window_offset, window_size))
     }
 
     /// Takes the download data and resets download size.
@@ -269,21 +280,25 @@ where
         resp.send_info("Syncing storage...").await?;
         self.sync_all_blocks().await?;
         match mode {
-            RebootMode::Normal => resp.send_info("Rebooting...").await?,
+            RebootMode::Normal => {
+                resp.send_info("Rebooting...").await?;
+                resp.send_okay("").await?;
+                self.gbl_ops.reboot();
+            }
             RebootMode::Bootloader => {
                 let f = self.gbl_ops.reboot_bootloader()?;
                 resp.send_info("Rebooting to bootloader...").await?;
+                resp.send_okay("").await?;
                 f()
             }
             RebootMode::Recovery => {
                 let f = self.gbl_ops.reboot_recovery()?;
                 resp.send_info("Rebooting to recovery...").await?;
+                resp.send_okay("").await?;
                 f()
             }
             _ => return Err("Unsupported".into()),
         }
-        resp.send_okay("").await?;
-        self.gbl_ops.reboot();
         Ok(())
     }
 
@@ -788,7 +803,7 @@ mod test {
         async fn send_formatted_info<F: FnOnce(&mut dyn Write)>(
             &mut self,
             cb: F,
-        ) -> CommandResult<()> {
+        ) -> Result<(), Error> {
             let mut msg: String = "".into();
             cb(&mut msg);
             self.info_messages.try_lock().unwrap().push(msg);
@@ -798,7 +813,7 @@ mod test {
 
     impl OkaySender for &TestResponder {
         /// Sends a Fastboot "INFO<`msg`>" packet.
-        async fn send_formatted_okay<F: FnOnce(&mut dyn Write)>(self, _: F) -> CommandResult<()> {
+        async fn send_formatted_okay<F: FnOnce(&mut dyn Write)>(self, _: F) -> Result<(), Error> {
             *self.okay_sent.try_lock().unwrap() = true;
             Ok(())
         }
@@ -832,6 +847,22 @@ mod test {
                 cb(&mut self[idx].as_mut()).then(|| self.swap_remove(idx));
             }
         }
+    }
+
+    #[test]
+    fn test_get_var_gbl() {
+        let dl_buffers = Shared::from(vec![vec![0u8; 128 * 1024]; 1]);
+        let storage = FakeGblOpsStorage::default();
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        let tasks = vec![].into();
+        let parts = gbl_ops.disks();
+        let mut gbl_fb = GblFastboot::new(&mut gbl_ops, parts, Task::run, &tasks, &dl_buffers);
+        check_var(
+            &mut gbl_fb,
+            FakeGblOps::GBL_TEST_VAR,
+            "arg",
+            format!("{}:Some(\"arg\")", FakeGblOps::GBL_TEST_VAR_VAL).as_str(),
+        );
     }
 
     #[test]
@@ -883,9 +914,10 @@ mod test {
         async fn send_var_info(
             &mut self,
             name: &str,
-            args: &[&str],
+            args: impl IntoIterator<Item = &'_ str>,
             val: &str,
-        ) -> CommandResult<()> {
+        ) -> Result<(), Error> {
+            let args = args.into_iter().collect::<Vec<_>>();
             self.0.push(format!("{}:{}: {}", name, args.join(":"), val));
             Ok(())
         }
@@ -935,7 +967,11 @@ mod test {
                 "partition-size:raw_0/2: 0x1000",
                 "partition-type:raw_0/2: raw",
                 "partition-size:raw_1/3: 0x2000",
-                "partition-type:raw_1/3: raw"
+                "partition-type:raw_1/3: raw",
+                format!("{}:1: {}:1", FakeGblOps::GBL_TEST_VAR, FakeGblOps::GBL_TEST_VAR_VAL)
+                    .as_str(),
+                format!("{}:2: {}:2", FakeGblOps::GBL_TEST_VAR, FakeGblOps::GBL_TEST_VAR_VAL)
+                    .as_str(),
             ]
         );
     }
@@ -1837,6 +1873,10 @@ mod test {
                 b"INFOpartition-type:vendor_boot_a/1: raw",
                 b"INFOpartition-size:vendor_boot_b/1: 0x1800",
                 b"INFOpartition-type:vendor_boot_b/1: raw",
+                format!("INFO{}:1: {}:1", FakeGblOps::GBL_TEST_VAR, FakeGblOps::GBL_TEST_VAR_VAL)
+                    .as_bytes(),
+                format!("INFO{}:2: {}:2", FakeGblOps::GBL_TEST_VAR, FakeGblOps::GBL_TEST_VAR_VAL)
+                    .as_bytes(),
                 b"OKAY",
                 b"DATA00004400",
                 b"OKAY",
@@ -1862,6 +1902,10 @@ mod test {
                 b"INFOpartition-type:vendor_boot_a/1: raw",
                 b"INFOpartition-size:vendor_boot_b/1: 0x1800",
                 b"INFOpartition-type:vendor_boot_b/1: raw",
+                format!("INFO{}:1: {}:1", FakeGblOps::GBL_TEST_VAR, FakeGblOps::GBL_TEST_VAR_VAL)
+                    .as_bytes(),
+                format!("INFO{}:2: {}:2", FakeGblOps::GBL_TEST_VAR, FakeGblOps::GBL_TEST_VAR_VAL)
+                    .as_bytes(),
                 b"OKAY",
                 b"INFOSyncing storage...",
                 b"OKAY",
@@ -2195,5 +2239,35 @@ mod test {
         // One shot recovery is set.
         assert_eq!(get_boot_slot(&mut GblAbrOps(&mut gbl_ops), true), (SlotIndex::R, false));
         assert_eq!(get_boot_slot(&mut GblAbrOps(&mut gbl_ops), true), (SlotIndex::A, false));
+    }
+
+    #[test]
+    fn test_legacy_fvm_partition_aliase() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"fuchsia-fvm", [0x00u8; 4 * 1024]);
+        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.os = Some(Os::Fuchsia);
+        let listener: SharedTestListener = Default::default();
+        let (usb, tcp) = (&listener, &listener);
+
+        listener.add_usb_input(format!("download:{:#x}", 4 * 1024).as_bytes());
+        listener.add_usb_input(&[0xaau8; 4 * 1024]);
+        listener.add_usb_input(b"flash:fvm");
+        listener.add_usb_input(b"continue");
+        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp)));
+
+        assert_eq!(
+            listener.usb_out_queue(),
+            make_expected_usb_out(&[
+                b"DATA00001000",
+                b"OKAY",
+                b"OKAY",
+                b"INFOSyncing storage...",
+                b"OKAY",
+            ]),
+            "\nActual USB output:\n{}",
+            listener.dump_usb_out_queue()
+        );
     }
 }
