@@ -22,8 +22,8 @@ use core::ffi::CStr;
 use core::fmt::Write;
 use efi::protocol::gbl_efi_image_loading::EfiImageBuffer;
 use efi_types::{
-    EfiInputKey, GblEfiAvbVerificationResult, GblEfiImageInfo, GblEfiPartitionName,
-    GblEfiVerifiedDeviceTree,
+    EfiInputKey, GblEfiAvbKeyValidationStatus, GblEfiAvbVerificationResult, GblEfiImageInfo,
+    GblEfiPartitionName, GblEfiVerifiedDeviceTree,
 };
 use liberror::Result;
 use mockall::mock;
@@ -206,17 +206,65 @@ pub mod dt_fixup {
 pub mod gbl_efi_avb {
     use super::*;
 
+    /// Mock implementation of `GBL_EFI_AVB_PROTOCOL`.
+    #[derive(Clone, Default)]
+    pub struct GblAvbProtocol {
+        /// Expected return value from `validate_vbmeta_public_key`.
+        pub validate_vbmeta_public_key_result: Option<Result<GblEfiAvbKeyValidationStatus>>,
+    }
+
+    impl GblAvbProtocol {
+        /// Wraps `GBL_EFI_AVB_PROTOCOL.validate_vbmeta_public_key()`.
+        pub fn validate_vbmeta_public_key(
+            &self,
+            _public_key: &[u8],
+            _public_key_metadata: Option<&[u8]>,
+        ) -> Result<GblEfiAvbKeyValidationStatus> {
+            self.validate_vbmeta_public_key_result.unwrap()
+        }
+
+        /// Wraps `GBL_EFI_AVB_PROTOCOL.handle_verification_result()`.
+        pub fn handle_verification_result(
+            &self,
+            _verification_result: &GblEfiAvbVerificationResult,
+        ) -> Result<()> {
+            unimplemented!();
+        }
+    }
+}
+
+/// Mock gbl_efi_fastboot protocol.
+pub mod gbl_efi_fastboot {
+    use super::*;
+
     mock! {
-        /// Mock [efi::GblAvbProtocol].
-        pub GblAvbProtocol {
-            /// Wraps `GBL_EFI_AVB_PROTOCOL.handle_verification_result()`.
-            pub fn handle_verification_result(
+        /// Mock [efi::protocol::gbl_efi_fastboot::Var].
+        pub Var {
+            /// Get name, arguments and corresponding value.
+            pub fn get<'s>(&self, out: &mut [u8])
+                -> Result<(&'static str, [&'static str; 1], &'static str)>;
+        }
+    }
+
+    mock! {
+        /// Mock [efi::GblFastbootProtocol].
+        pub GblFastbootProtocol {
+            /// Protocol<'_, GblFastbootProtocol>::get_var.
+            pub fn get_var<'a>(
                 &self,
-                verification_result: &GblEfiAvbVerificationResult,
-            ) -> Result<()>;
+                name: &str,
+                args: core::str::Split<'a, char>,
+                buffer: &mut [u8],
+            ) -> Result<usize>;
+
+            /// Returns an iterator over backend fastboot variables.
+            pub fn var_iter(&self) -> Result<&'static [Var]> ;
         }
     }
 
     /// Map to the libefi name so code under test can just use one name.
-    pub type GblAvbProtocol = MockGblAvbProtocol;
+    pub type Var = MockVar;
+
+    /// Map to the libefi name so code under test can just use one name.
+    pub type GblFastbootProtocol = MockGblFastbootProtocol;
 }

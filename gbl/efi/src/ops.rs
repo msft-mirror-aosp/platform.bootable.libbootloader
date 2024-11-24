@@ -26,17 +26,20 @@ use alloc::{
 use arrayvec::ArrayVec;
 use core::{
     ffi::CStr, fmt::Write, mem::MaybeUninit, num::NonZeroUsize, ops::DerefMut, ptr::null,
-    slice::from_raw_parts_mut,
+    slice::from_raw_parts_mut, str::Split,
 };
 use efi::{
-    efi_print, efi_println, protocol::dt_fixup::DtFixupProtocol,
-    protocol::gbl_efi_avb::GblAvbProtocol,
-    protocol::gbl_efi_image_loading::GblImageLoadingProtocol,
-    protocol::gbl_efi_os_configuration::GblOsConfigurationProtocol, EfiEntry,
+    efi_print, efi_println,
+    protocol::{
+        dt_fixup::DtFixupProtocol, gbl_efi_avb::GblAvbProtocol,
+        gbl_efi_fastboot::GblFastbootProtocol, gbl_efi_image_loading::GblImageLoadingProtocol,
+        gbl_efi_os_configuration::GblOsConfigurationProtocol,
+    },
+    EfiEntry,
 };
 use efi_types::{
-    GblEfiAvbVerificationResult, GblEfiDeviceTreeMetadata, GblEfiImageInfo,
-    GblEfiVerifiedDeviceTree, PARTITION_NAME_LEN_U16,
+    GblEfiAvbKeyValidationStatus, GblEfiAvbVerificationResult, GblEfiDeviceTreeMetadata,
+    GblEfiImageInfo, GblEfiVerifiedDeviceTree, PARTITION_NAME_LEN_U16,
 };
 use fdt::Fdt;
 use gbl_storage::{BlockIo, Disk, Gpt};
@@ -46,8 +49,11 @@ use libgbl::{
         DeviceTreeComponent, DeviceTreeComponentSource, DeviceTreeComponentsRegistry,
         MAXIMUM_DEVICE_TREE_COMPONENTS,
     },
-    gbl_avb::state::BootStateColor,
-    ops::{AvbIoError, AvbIoResult, CertPermanentAttributes, ImageBuffer, SHA256_DIGEST_SIZE},
+    gbl_avb::state::{BootStateColor, KeyValidationStatus},
+    ops::{
+        AvbIoError, AvbIoResult, CertPermanentAttributes, ImageBuffer, VarInfoSender,
+        SHA256_DIGEST_SIZE,
+    },
     partition::GblDisk,
     slots::{BootToken, Cursor},
     GblOps, Os, Result as GblResult,
@@ -55,6 +61,17 @@ use libgbl::{
 use safemath::SafeNum;
 use zbi::ZbiContainer;
 use zerocopy::AsBytes;
+
+fn to_avb_validation_status_or_panic(status: GblEfiAvbKeyValidationStatus) -> KeyValidationStatus {
+    match status {
+        efi_types::GBL_EFI_AVB_KEY_VALIDATION_STATUS_VALID => KeyValidationStatus::Valid,
+        efi_types::GBL_EFI_AVB_KEY_VALIDATION_STATUS_VALID_CUSTOM_KEY => {
+            KeyValidationStatus::ValidCustomKey
+        }
+        efi_types::GBL_EFI_AVB_KEY_VALIDATION_STATUS_INVALID => KeyValidationStatus::Invalid,
+        _ => panic!("Unrecognized avb key validation status: {}", status),
+    }
+}
 
 fn avb_color_to_efi_color(color: BootStateColor) -> u32 {
     match color {
@@ -342,6 +359,21 @@ where
         Ok(())
     }
 
+    fn avb_validate_vbmeta_public_key(
+        &self,
+        public_key: &[u8],
+        public_key_metadata: Option<&[u8]>,
+    ) -> AvbIoResult<KeyValidationStatus> {
+        match self.efi_entry.system_table().boot_services().find_first_and_open::<GblAvbProtocol>()
+        {
+            Ok(protocol) => protocol
+                .validate_vbmeta_public_key(public_key, public_key_metadata)
+                .map(to_avb_validation_status_or_panic)
+                .map_err(efi_error_to_avb_error),
+            Err(_) => Err(AvbIoError::NotImplemented),
+        }
+    }
+
     fn avb_cert_read_permanent_attributes(
         &mut self,
         attributes: &mut CertPermanentAttributes,
@@ -501,12 +533,39 @@ where
             _ => components_registry.autoselect(),
         }
     }
+
+    fn fastboot_variable(
+        &mut self,
+        name: &str,
+        args: Split<'_, char>,
+        out: &mut [u8],
+    ) -> Result<usize> {
+        self.efi_entry
+            .system_table()
+            .boot_services()
+            .find_first_and_open::<GblFastbootProtocol>()?
+            .get_var(name, args, out)
+    }
+
+    async fn fastboot_send_all_variables(&mut self, sender: &mut impl VarInfoSender) -> Result<()> {
+        let mut out = [0u8; fastboot::MAX_RESPONSE_SIZE];
+        let protocol = self
+            .efi_entry
+            .system_table()
+            .boot_services()
+            .find_first_and_open::<GblFastbootProtocol>()?;
+        for ele in protocol.var_iter()? {
+            let (name, args, val) = ele.get(&mut out[..])?;
+            sender.send_var_info(name, args, val).await?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use efi_mocks::MockEfi;
+    use efi_mocks::{protocol::gbl_efi_avb::GblAvbProtocol, MockEfi};
     use mockall::predicate::eq;
 
     #[test]
@@ -519,5 +578,77 @@ mod test {
         let mut ops = Ops::new(installed.entry(), &[], None);
 
         assert!(write!(&mut ops, "{} {}", "foo", "bar").is_ok());
+    }
+
+    #[test]
+    fn ops_avb_validate_vbmeta_public_key_returns_valid() {
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        avb.validate_vbmeta_public_key_result =
+            Some(Ok(efi_types::GBL_EFI_AVB_KEY_VALIDATION_STATUS_VALID));
+        mock_efi.boot_services.expect_find_first_and_open::<GblAvbProtocol>().return_const(Ok(avb));
+
+        let installed = mock_efi.install();
+        let ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_validate_vbmeta_public_key(&[], None), Ok(KeyValidationStatus::Valid));
+    }
+
+    #[test]
+    fn ops_avb_validate_vbmeta_public_key_returns_valid_custom_key() {
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        avb.validate_vbmeta_public_key_result =
+            Some(Ok(efi_types::GBL_EFI_AVB_KEY_VALIDATION_STATUS_VALID_CUSTOM_KEY));
+        mock_efi.boot_services.expect_find_first_and_open::<GblAvbProtocol>().return_const(Ok(avb));
+
+        let installed = mock_efi.install();
+        let ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(
+            ops.avb_validate_vbmeta_public_key(&[], None),
+            Ok(KeyValidationStatus::ValidCustomKey)
+        );
+    }
+
+    #[test]
+    fn ops_avb_validate_vbmeta_public_key_returns_invalid() {
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        avb.validate_vbmeta_public_key_result =
+            Some(Ok(efi_types::GBL_EFI_AVB_KEY_VALIDATION_STATUS_INVALID));
+        mock_efi.boot_services.expect_find_first_and_open::<GblAvbProtocol>().return_const(Ok(avb));
+
+        let installed = mock_efi.install();
+        let ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_validate_vbmeta_public_key(&[], None), Ok(KeyValidationStatus::Invalid));
+    }
+
+    #[test]
+    fn ops_avb_validate_vbmeta_public_key_failed_error_mapped() {
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        avb.validate_vbmeta_public_key_result = Some(Err(Error::OutOfResources));
+        mock_efi.boot_services.expect_find_first_and_open::<GblAvbProtocol>().return_const(Ok(avb));
+
+        let installed = mock_efi.install();
+        let ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_validate_vbmeta_public_key(&[], None), Err(AvbIoError::Oom));
+    }
+
+    #[test]
+    fn ops_avb_validate_vbmeta_public_key_protocol_not_found_mapped_to_not_implemented() {
+        let mut mock_efi = MockEfi::new();
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblAvbProtocol>()
+            .returning(|| Err(Error::NotFound));
+
+        let installed = mock_efi.install();
+        let ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_validate_vbmeta_public_key(&[], None), Err(AvbIoError::NotImplemented));
     }
 }

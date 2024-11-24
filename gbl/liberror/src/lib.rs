@@ -44,6 +44,8 @@ use efi_types as efi;
 /// Gpt related errors.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum GptError {
+    /// Secondary header is valid, but different from primary.
+    DifferentFromPrimary,
     /// Disk size is not enough to accommodate maximum allowed entries.
     DiskTooSmall,
     /// GPT entries buffer is too small for the expected number of entries.
