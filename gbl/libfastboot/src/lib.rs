@@ -303,6 +303,14 @@ pub trait FastbootImplementation {
     /// * `responder`: An instance of `InfoSender`.
     async fn flash(&mut self, part: &str, responder: impl InfoSender) -> CommandResult<()>;
 
+    /// Backend for `fastboot erase ...`
+    ///
+    /// # Args
+    ///
+    /// * `part`: Name of the partition.
+    /// * `responder`: An instance of `InfoSender`.
+    async fn erase(&mut self, part: &str, responder: impl InfoSender) -> CommandResult<()>;
+
     /// Backend for `fastboot get_staged ...`
     ///
     /// # Args
@@ -770,6 +778,24 @@ async fn flash(
     }
 }
 
+/// Helper for handling "fastboot erase ...".
+async fn erase(
+    cmd: &str,
+    transport: &mut impl Transport,
+    fb_impl: &mut impl FastbootImplementation,
+) -> Result<()> {
+    let mut resp = Responder::new(transport);
+    let flash_res =
+        match cmd.strip_prefix("erase:").ok_or::<CommandError>("Missing partition".into()) {
+            Ok(part) => fb_impl.erase(part, &mut resp).await,
+            Err(e) => Err(e),
+        };
+    match flash_res {
+        Err(e) => reply_fail!(resp, "{}", e.to_str()),
+        _ => reply_okay!(resp, ""),
+    }
+}
+
 /// Helper for handling "fastboot get_staged ...".
 async fn upload(
     transport: &mut impl Transport,
@@ -900,20 +926,21 @@ pub async fn process_next_command(
         return transport.send_packet(fastboot_fail!(packet, "No command")).await.map(|_| false);
     };
     match cmd {
-        "getvar" => get_var(args, transport, fb_impl).await,
+        "continue" => {
+            r#continue(transport, fb_impl).await?;
+            return Ok(true);
+        }
         "download" => download(args, transport, fb_impl).await,
-        "flash" => flash(cmd_str, transport, fb_impl).await,
-        "upload" => upload(transport, fb_impl).await,
+        "erase" => erase(cmd_str, transport, fb_impl).await,
         "fetch" => fetch(cmd_str, args, transport, fb_impl).await,
+        "flash" => flash(cmd_str, transport, fb_impl).await,
+        "getvar" => get_var(args, transport, fb_impl).await,
         "reboot" => reboot(RebootMode::Normal, transport, fb_impl).await,
         "reboot-bootloader" => reboot(RebootMode::Bootloader, transport, fb_impl).await,
         "reboot-fastboot" => reboot(RebootMode::Fastboot, transport, fb_impl).await,
         "reboot-recovery" => reboot(RebootMode::Recovery, transport, fb_impl).await,
         "set_active" => set_active(args, transport, fb_impl).await,
-        "continue" => {
-            r#continue(transport, fb_impl).await?;
-            return Ok(true);
-        }
+        "upload" => upload(transport, fb_impl).await,
         _ if cmd_str.starts_with("oem ") => oem(&cmd_str[4..], transport, fb_impl).await,
         _ => transport.send_packet(fastboot_fail!(packet, "Command not found")).await,
     }?;
@@ -1039,8 +1066,10 @@ mod test {
     struct FastbootTest {
         // A mapping from (variable name, argument) to variable value.
         vars: BTreeMap<(&'static str, &'static [&'static str]), &'static str>,
-        // The partition arg from Fastboot command
+        // The partition arg from Fastboot flash command
         flash_partition: String,
+        // The partition arg from Fastboot erase command
+        erase_partition: String,
         // Upload size, batches of data to upload,
         upload_config: (u64, Vec<Vec<u8>>),
         // A map from partition name to (upload size override, partition data)
@@ -1094,6 +1123,11 @@ mod test {
 
         async fn flash(&mut self, part: &str, _: impl InfoSender) -> CommandResult<()> {
             self.flash_partition = part.into();
+            Ok(())
+        }
+
+        async fn erase(&mut self, part: &str, _: impl InfoSender) -> CommandResult<()> {
+            self.erase_partition = part.into();
             Ok(())
         }
 
@@ -1433,6 +1467,26 @@ mod test {
         let mut fastboot_impl: FastbootTest = Default::default();
         let mut transport = TestTransport::new();
         transport.add_input(b"flash");
+        let _ = block_on(run(&mut transport, &mut fastboot_impl));
+        assert_eq!(transport.out_queue, [b"FAILMissing partition"]);
+    }
+
+    #[test]
+    fn test_erase() {
+        let mut fastboot_impl: FastbootTest = Default::default();
+        fastboot_impl.download_buffer = vec![0u8; 2048];
+        let mut transport = TestTransport::new();
+        transport.add_input(b"erase:boot_a:0::");
+        let _ = block_on(run(&mut transport, &mut fastboot_impl));
+        assert_eq!(fastboot_impl.erase_partition, "boot_a:0::");
+        assert_eq!(transport.out_queue, VecDeque::<Vec<u8>>::from([b"OKAY".into()]));
+    }
+
+    #[test]
+    fn test_erase_missing_partition() {
+        let mut fastboot_impl: FastbootTest = Default::default();
+        let mut transport = TestTransport::new();
+        transport.add_input(b"erase");
         let _ = block_on(run(&mut transport, &mut fastboot_impl));
         assert_eq!(transport.out_queue, [b"FAILMissing partition"]);
     }
