@@ -12,12 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! AVB operations.
+//! Gbl AVB operations.
 
-use crate::GblOps;
+use crate::{
+    gbl_avb::state::{BootStateColor, KeyValidationStatus},
+    gbl_print, gbl_println, GblOps,
+};
 use avb::{
     cert_validate_vbmeta_public_key, CertOps, CertPermanentAttributes, IoError, IoResult,
-    Ops as AvbOps, PublicKeyForPartitionInfo, SHA256_DIGEST_SIZE,
+    Ops as AvbOps, PublicKeyForPartitionInfo, SlotVerifyData, SHA256_DIGEST_SIZE,
 };
 use core::{
     cmp::{max, min},
@@ -45,6 +48,9 @@ pub struct GblAvbOps<'a, T> {
     pub key_versions: [Option<(usize, u64)>; AVB_CERT_NUM_KEY_VERSIONS],
     /// True to use the AVB cert extensions.
     use_cert: bool,
+    /// Avb public key validation status reported by validate_vbmeta_public_key.
+    /// https://source.android.com/docs/security/features/verifiedboot/boot-flow#locked-devices-with-custom-root-of-trust
+    key_validation_status: Option<KeyValidationStatus>,
 }
 
 impl<'a, 'p, T: GblOps<'p>> GblAvbOps<'a, T> {
@@ -59,6 +65,7 @@ impl<'a, 'p, T: GblOps<'p>> GblAvbOps<'a, T> {
             preloaded_partitions,
             key_versions: [None; AVB_CERT_NUM_KEY_VERSIONS],
             use_cert,
+            key_validation_status: None,
         }
     }
 
@@ -68,6 +75,74 @@ impl<'a, 'p, T: GblOps<'p>> GblAvbOps<'a, T> {
     /// use [AvbOps::get_size_of_partition].
     fn partition_size(&mut self, partition: &str) -> IoResult<u64> {
         self.gbl_ops.partition_size(partition).or(Err(IoError::Io))?.ok_or(IoError::NoSuchPartition)
+    }
+
+    /// Allowes implementation side to handle verification result.
+    pub fn handle_verification_result(
+        &mut self,
+        slot_verify: &SlotVerifyData,
+        color: BootStateColor,
+    ) -> IoResult<()> {
+        let mut vbmeta = None;
+        let mut vbmeta_boot = None;
+        let mut vbmeta_system = None;
+        let mut vbmeta_vendor = None;
+
+        // The Android build system automatically generates only the main vbmeta, but also allows
+        // to have separate chained partitions like vbmeta_system (for system, product, system_ext,
+        // etc.) or vbmeta_vendor (for vendor).
+        // https://android.googlesource.com/platform/external/avb/+/master/README.md#build-system-integration
+        //
+        // It may also integrate chained vbmeta into system level metadata partitions such as boot
+        // or init_boot, so they can be updated separately.
+        // https://android.googlesource.com/platform/external/avb/+/master/README.md#gki-2_0-integration
+        //
+        // Custom chained partitions are also supported by the Android build system, but we expect
+        // OEMs to follow about the same pattern.
+        // https://android-review.googlesource.com/q/Id671e2c3aee9ada90256381cce432927df03169b
+        for data in slot_verify.vbmeta_data() {
+            match data.partition_name().to_str().unwrap_or_default() {
+                "vbmeta" => vbmeta = Some(data),
+                "boot" => vbmeta_boot = Some(data),
+                "vbmeta_system" => vbmeta_system = Some(data),
+                "vbmeta_vendor" => vbmeta_vendor = Some(data),
+                _ => {}
+            }
+        }
+
+        let data = vbmeta.ok_or(IoError::NoSuchPartition)?;
+        let boot_data = vbmeta_boot.unwrap_or(data);
+        let system_data = vbmeta_system.unwrap_or(data);
+        let vendor_data = vbmeta_vendor.unwrap_or(data);
+
+        let boot_os_version = boot_data.get_property_value("com.android.build.boot.os_version");
+        let boot_security_patch =
+            boot_data.get_property_value("com.android.build.boot.security_patch");
+
+        let system_os_version =
+            system_data.get_property_value("com.android.build.system.os_version");
+        let system_security_patch =
+            system_data.get_property_value("com.android.build.system.security_patch");
+
+        let vendor_os_version =
+            vendor_data.get_property_value("com.android.build.vendor.os_version");
+        let vendor_security_patch =
+            vendor_data.get_property_value("com.android.build.vendor.security_patch");
+
+        self.gbl_ops.avb_handle_verification_result(
+            color,
+            boot_os_version,
+            boot_security_patch,
+            system_os_version,
+            system_security_patch,
+            vendor_os_version,
+            vendor_security_patch,
+        )
+    }
+
+    /// Get vbmeta public key validation status reported by validate_vbmeta_public_key.
+    pub fn key_validation_status(&self) -> IoResult<KeyValidationStatus> {
+        self.key_validation_status.ok_or(IoError::NotImplemented)
     }
 }
 
@@ -121,14 +196,33 @@ impl<'a, 'b, T: GblOps<'b>> AvbOps<'a> for GblAvbOps<'a, T> {
         public_key: &[u8],
         public_key_metadata: Option<&[u8]>,
     ) -> IoResult<bool> {
-        match self.use_cert {
-            true => cert_validate_vbmeta_public_key(self, public_key, public_key_metadata),
-            false => {
-                // Not needed yet; eventually we will plumb this through [GblOps].
-                // For now just trust any vbmeta signature.
-                Ok(true)
+        let status = if self.use_cert {
+            match cert_validate_vbmeta_public_key(self, public_key, public_key_metadata)? {
+                true => KeyValidationStatus::Valid,
+                false => KeyValidationStatus::Invalid,
             }
-        }
+        } else {
+            self.gbl_ops.avb_validate_vbmeta_public_key(public_key, public_key_metadata).or_else(
+                |err| match err {
+                    IoError::NotImplemented => {
+                        // TODO(b/337846185): Remove fallback once AVB protocol implementation
+                        // is forced.
+                        gbl_println!(
+                            self.gbl_ops,
+                            "WARNING: UEFI GblEfiAvbProtocol.validate_vbmeta_public_key \
+                                implementation is missing. This will not be permitted in the \
+                                future."
+                        );
+                        Ok(KeyValidationStatus::ValidCustomKey)
+                    }
+                    err => Err(err),
+                },
+            )?
+        };
+
+        self.key_validation_status = Some(status);
+
+        Ok(matches!(status, KeyValidationStatus::Valid | KeyValidationStatus::ValidCustomKey))
     }
 
     fn read_rollback_index(&mut self, rollback_index_location: usize) -> IoResult<u64> {
@@ -248,10 +342,9 @@ mod test {
     #[test]
     fn read_from_partition_positive_off() {
         let mut storage = FakeGblOpsStorage::default();
-        storage.add_raw_device("test_part", test_data(512));
+        storage.add_raw_device(c"test_part", test_data(512));
 
-        let partitions = storage.as_partition_block_devices();
-        let mut gbl_ops = FakeGblOps::new(&partitions);
+        let mut gbl_ops = FakeGblOps::new(&storage);
         let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
 
         // Positive offset.
@@ -263,10 +356,9 @@ mod test {
     #[test]
     fn read_from_partition_negative_off() {
         let mut storage = FakeGblOpsStorage::default();
-        storage.add_raw_device("test_part", test_data(512));
+        storage.add_raw_device(c"test_part", test_data(512));
 
-        let partitions = storage.as_partition_block_devices();
-        let mut gbl_ops = FakeGblOps::new(&partitions);
+        let mut gbl_ops = FakeGblOps::new(&storage);
         let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
 
         // Negative offset should wrap from the end
@@ -278,10 +370,9 @@ mod test {
     #[test]
     fn read_from_partition_partial_read() {
         let mut storage = FakeGblOpsStorage::default();
-        storage.add_raw_device("test_part", test_data(512));
+        storage.add_raw_device(c"test_part", test_data(512));
 
-        let partitions = storage.as_partition_block_devices();
-        let mut gbl_ops = FakeGblOps::new(&partitions);
+        let mut gbl_ops = FakeGblOps::new(&storage);
         let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
 
         // Reading past the end of the partition should truncate.
@@ -293,10 +384,9 @@ mod test {
     #[test]
     fn read_from_partition_out_of_bounds() {
         let mut storage = FakeGblOpsStorage::default();
-        storage.add_raw_device("test_part", test_data(512));
+        storage.add_raw_device(c"test_part", test_data(512));
 
-        let partitions = storage.as_partition_block_devices();
-        let mut gbl_ops = FakeGblOps::new(&partitions);
+        let mut gbl_ops = FakeGblOps::new(&storage);
         let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
 
         // Reads starting out of bounds should fail.
@@ -375,5 +465,57 @@ mod test {
         avb_ops.set_key_version(5, 10);
         avb_ops.set_key_version(20, 40);
         avb_ops.set_key_version(40, 100);
+    }
+
+    #[test]
+    fn validate_vbmeta_public_key_valid() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_key_validation_status = Some(Ok(KeyValidationStatus::Valid));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.validate_vbmeta_public_key(&[], None), Ok(true));
+        assert_eq!(avb_ops.key_validation_status(), Ok(KeyValidationStatus::Valid));
+    }
+
+    #[test]
+    fn validate_vbmeta_public_key_valid_custom_key() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_key_validation_status = Some(Ok(KeyValidationStatus::ValidCustomKey));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.validate_vbmeta_public_key(&[], None), Ok(true));
+        assert_eq!(avb_ops.key_validation_status(), Ok(KeyValidationStatus::ValidCustomKey));
+    }
+
+    #[test]
+    fn validate_vbmeta_public_key_invalid() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_key_validation_status = Some(Ok(KeyValidationStatus::Invalid));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.validate_vbmeta_public_key(&[], None), Ok(false));
+        assert_eq!(avb_ops.key_validation_status(), Ok(KeyValidationStatus::Invalid));
+    }
+
+    #[test]
+    fn validate_vbmeta_public_key_failed() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_key_validation_status = Some(Err(IoError::Io));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.validate_vbmeta_public_key(&[], None), Err(IoError::Io));
+        assert!(avb_ops.key_validation_status().is_err());
+    }
+
+    // TODO(b/337846185): Remove test once AVB protocol implementation is forced.
+    #[test]
+    fn validate_vbmeta_public_key_not_implemented() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_key_validation_status = Some(Err(IoError::NotImplemented));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+
+        assert_eq!(avb_ops.validate_vbmeta_public_key(&[], None), Ok(true));
+        assert_eq!(avb_ops.key_validation_status(), Ok(KeyValidationStatus::ValidCustomKey));
     }
 }

@@ -18,15 +18,21 @@
 #![cfg_attr(not(test), no_std)]
 #![allow(async_fn_in_trait)]
 
-use core::{cmp::max, ops::DerefMut};
+use core::{
+    cell::RefMut,
+    cmp::{max, min},
+    ops::DerefMut,
+};
 use liberror::{Error, Result};
+use libutils::aligned_subslice;
 use safemath::SafeNum;
 
 // Selective export of submodule types.
 mod gpt;
 pub use gpt::{
-    GptCache, GptEntry, GptHeader, GptSyncResult, Partition, PartitionIterator, GPT_GUID_LEN,
-    GPT_MAGIC, GPT_NAME_LEN_U16,
+    gpt_buffer_size, new_gpt_max, new_gpt_n, Gpt, GptBuilder, GptEntry, GptHeader, GptLoadBufferN,
+    GptMax, GptN, GptSyncResult, Partition, PartitionIterator, GPT_GUID_LEN, GPT_MAGIC,
+    GPT_NAME_LEN_U16,
 };
 
 mod algorithm;
@@ -89,17 +95,20 @@ pub trait BlockIo {
     async fn write_blocks(&mut self, blk_offset: u64, data: &mut [u8]) -> Result<()>;
 }
 
-impl<T: BlockIo> BlockIo for &mut T {
+impl<T: DerefMut> BlockIo for T
+where
+    T::Target: BlockIo,
+{
     fn info(&mut self) -> BlockInfo {
-        (*self).info()
+        self.deref_mut().info()
     }
 
     async fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> Result<()> {
-        (*self).read_blocks(blk_offset, out).await
+        self.deref_mut().read_blocks(blk_offset, out).await
     }
 
     async fn write_blocks(&mut self, blk_offset: u64, data: &mut [u8]) -> Result<()> {
-        (*self).write_blocks(blk_offset, data).await
+        self.deref_mut().write_blocks(blk_offset, data).await
     }
 }
 
@@ -243,6 +252,48 @@ impl<T: BlockIo, S: DerefMut<Target = [u8]>> Disk<T, S> {
         write_async(&mut self.io, offset, data, &mut self.scratch).await
     }
 
+    /// Fills a disk range with the given byte value
+    ///
+    /// # Args
+    ///
+    /// * `offset`: Offset in number of bytes.
+    /// * `size`: Number of bytes to fill.
+    /// * `val`: Fill value.
+    /// * `scratch`: A scratch buffer that will be used for writing `val` in batches.
+    ///
+    /// # Returns
+    ///
+    /// * Returns Err(Error::InvalidInput) if size of `scratch` is 0.
+    pub async fn fill(
+        &mut self,
+        mut offset: u64,
+        size: u64,
+        val: u8,
+        scratch: &mut [u8],
+    ) -> Result<()> {
+        if scratch.is_empty() {
+            return Err(Error::InvalidInput);
+        }
+        let blk_sz = usize::try_from(self.block_info().block_size)?;
+        // Optimizes by trying to get an aligned and multi-block-size buffer.
+        let buf = match aligned_subslice(scratch, self.block_info().alignment) {
+            Ok(v) => match v.len() / blk_sz {
+                b if b > 0 => &mut v[..b * blk_sz],
+                _ => v,
+            },
+            _ => scratch,
+        };
+        let sz = min(size, buf.len().try_into()?);
+        buf[..usize::try_from(sz).unwrap()].fill(val);
+        let end: u64 = (SafeNum::from(offset) + size).try_into()?;
+        while offset < end {
+            let to_write = min(sz, end - offset);
+            self.write(offset, &mut buf[..usize::try_from(to_write).unwrap()]).await?;
+            offset += to_write;
+        }
+        Ok(())
+    }
+
     /// Loads and syncs GPT from a block device.
     ///
     /// The API validates and restores primary/secondary GPT header.
@@ -252,8 +303,11 @@ impl<T: BlockIo, S: DerefMut<Target = [u8]>> Disk<T, S> {
     /// * Returns Ok(sync_result) if disk IO is successful, where `sync_result` contains the GPT
     ///   verification and restoration result.
     /// * Returns Err() if disk IO encounters errors.
-    pub async fn sync_gpt(&mut self, gpt_cache: &mut GptCache<'_>) -> Result<GptSyncResult> {
-        gpt_cache.load_and_sync(&mut self.io, &mut self.scratch).await
+    pub async fn sync_gpt(
+        &mut self,
+        gpt: &mut Gpt<impl DerefMut<Target = [u8]>>,
+    ) -> Result<GptSyncResult> {
+        gpt.load_and_sync(self).await
     }
 
     /// Updates GPT to the block device and sync primary and secondary GPT.
@@ -261,9 +315,9 @@ impl<T: BlockIo, S: DerefMut<Target = [u8]>> Disk<T, S> {
     /// # Args
     ///
     /// * `mbr_primary`: A buffer containing the MBR block, primary GPT header and entries.
-    /// * `resize`: If set to true, the method updates the value of last usable block in the header
-    ///   and the extends last partition to cover the rest of the storage.
-    /// * `gpt_cache`: The GPT cache to update.
+    /// * `resize`: If set to true, the method updates the last partition to cover the rest of the
+    ///    storage.
+    /// * `gpt`: The GPT to update.
     ///
     /// # Returns
     ///
@@ -272,16 +326,27 @@ impl<T: BlockIo, S: DerefMut<Target = [u8]>> Disk<T, S> {
         &mut self,
         mbr_primary: &mut [u8],
         resize: bool,
-        gpt_cache: &mut GptCache<'_>,
+        gpt: &mut Gpt<impl DerefMut<Target = [u8]>>,
     ) -> Result<()> {
-        gpt::update_gpt(&mut self.io, &mut self.scratch, mbr_primary, resize, gpt_cache).await
+        gpt::update_gpt(self, mbr_primary, resize, gpt).await
+    }
+
+    /// Erases GPT if the disk has one.
+    ///
+    /// The method will first perform a GPT sync and makes sure that all valid entries are wiped.
+    ///
+    /// # Args
+    ///
+    /// * `gpt`: An instance of GPT.
+    pub async fn erase_gpt(&mut self, gpt: &mut Gpt<impl DerefMut<Target = [u8]>>) -> Result<()> {
+        gpt::erase_gpt(self, gpt).await
     }
 
     /// Reads a GPT partition on a block device
     ///
     /// # Args
     ///
-    /// * `gpt_cache`: A `GptCache` initialized with `Self::sync_gpt()`.
+    /// * `gpt`: A `GptCache` initialized with `Self::sync_gpt()`.
     /// * `part_name`: Name of the partition.
     /// * `offset`: Offset in number of bytes into the partition.
     /// * `out`: Buffer to store the read data.
@@ -291,12 +356,12 @@ impl<T: BlockIo, S: DerefMut<Target = [u8]>> Disk<T, S> {
     /// Returns success when exactly `out.len()` of bytes are read successfully.
     pub async fn read_gpt_partition(
         &mut self,
-        gpt_cache: &GptCache<'_>,
+        gpt: &mut Gpt<impl DerefMut<Target = [u8]>>,
         part_name: &str,
         offset: u64,
         out: &mut [u8],
     ) -> Result<()> {
-        let offset = gpt_cache.check_range(part_name, offset, out.len())?;
+        let offset = gpt.check_range(part_name, offset, out.len())?;
         self.read(offset, out).await
     }
 
@@ -305,7 +370,7 @@ impl<T: BlockIo, S: DerefMut<Target = [u8]>> Disk<T, S> {
     ///
     /// # Args
     ///
-    /// * `gpt_cache`: A `GptCache` initialized with `Self::sync_gpt()`.
+    /// * `gpt`: A `GptCache` initialized with `Self::sync_gpt()`.
     /// * `part_name`: Name of the partition.
     /// * `offset`: Offset in number of bytes into the partition.
     /// * `data`: Data to write. See `data` passed to `BlockIoSync::write()` for details.
@@ -315,13 +380,22 @@ impl<T: BlockIo, S: DerefMut<Target = [u8]>> Disk<T, S> {
     /// Returns success when exactly `data.len()` of bytes are written successfully.
     pub async fn write_gpt_partition(
         &mut self,
-        gpt_cache: &GptCache<'_>,
+        gpt: &mut Gpt<impl DerefMut<Target = [u8]>>,
         part_name: &str,
         offset: u64,
         data: &mut [u8],
     ) -> Result<()> {
-        let offset = gpt_cache.check_range(part_name, offset, data.len())?;
+        let offset = gpt.check_range(part_name, offset, data.len())?;
         self.write(offset, data).await
+    }
+}
+
+impl<'a, T: BlockIo> Disk<RefMut<'a, T>, RefMut<'a, [u8]>> {
+    /// Converts a `RefMut<Disk<T, S>>` to `Disk<RefMut<T>, RefMut<[u8]>>`. The scratch buffer
+    /// generic type is eliminated in the return.
+    pub fn from_ref_mut(val: RefMut<'a, Disk<T, impl DerefMut<Target = [u8]>>>) -> Self {
+        let (io, scratch) = RefMut::map_split(val, |v| (&mut v.io, &mut v.scratch[..]));
+        Disk::new(io, scratch).unwrap()
     }
 }
 
@@ -390,7 +464,7 @@ mod test {
     const READ_WRITE_BLOCKS_UPPER_BOUND: usize = 6;
 
     // Type alias of the [Disk] type used by unittests.
-    type TestDisk = Disk<RamBlockIo<Vec<u8>>, Vec<u8>>;
+    pub(crate) type TestDisk = Disk<RamBlockIo<Vec<u8>>, Vec<u8>>;
 
     fn read_test_helper(case: &TestCase) {
         let data = (0..case.storage_size).map(|v| v as u8).collect::<Vec<_>>();
