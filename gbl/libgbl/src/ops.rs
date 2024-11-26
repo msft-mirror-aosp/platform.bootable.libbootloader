@@ -17,43 +17,45 @@
 pub use crate::image_buffer::ImageBuffer;
 use crate::{
     error::Result as GblResult,
-    partition::{
-        check_part_unique, read_unique_partition, write_unique_partition, PartitionBlockDevice,
-    },
+    fuchsia_boot::GblAbrOps,
+    gbl_avb::state::{BootStateColor, KeyValidationStatus},
+    partition::{check_part_unique, read_unique_partition, write_unique_partition, GblDisk},
 };
-use core::ffi::CStr;
-use core::{fmt::Write, num::NonZeroUsize, result::Result};
+pub use abr::{set_one_shot_bootloader, set_one_shot_recovery, SlotIndex};
+use core::{ffi::CStr, fmt::Write, num::NonZeroUsize, ops::DerefMut, result::Result, str::Split};
 use gbl_async::block_on;
-use gbl_storage::BlockIo;
 use libutils::aligned_subslice;
 
 // Re-exports of types from other dependencies that appear in the APIs of this library.
 pub use avb::{
     CertPermanentAttributes, IoError as AvbIoError, IoResult as AvbIoResult, SHA256_DIGEST_SIZE,
 };
+pub use fastboot::VarInfoSender;
+pub use gbl_storage::{BlockIo, Disk, Gpt};
 use liberror::Error;
 pub use zbi::{ZbiContainer, ZBI_ALIGNMENT_USIZE};
 
 use super::device_tree;
 use super::slots;
 
+/// Target Type of OS to boot.
+#[derive(PartialEq, Debug, Copy, Clone)]
+pub enum Os {
+    /// Android
+    Android,
+    /// Fuchsia
+    Fuchsia,
+}
+
 // https://stackoverflow.com/questions/41081240/idiomatic-callbacks-in-rust
 // should we use traits for this? or optional/box FnMut?
 //
 /* TODO: b/312612203 - needed callbacks:
 missing:
-- validate_public_key_for_partition: None,
 - key management => atx extension in callback =>  atx_ops: ptr::null_mut(), // support optional ATX.
 */
 /// Trait that defines callbacks that can be provided to Gbl.
-pub trait GblOps<'a>
-where
-    Self: 'a,
-{
-    /// Type that implements `BlockIo` for the array of `PartitionBlockDevice` returned by]
-    /// `partitions()`.
-    type PartitionBlockIo: BlockIo;
-
+pub trait GblOps<'a> {
     /// Gets a console for logging messages.
     fn console_out(&mut self) -> Option<&mut dyn Write>;
 
@@ -77,14 +79,46 @@ where
     /// way.
     fn reboot(&mut self);
 
-    /// Returns the list of partition block devices.
+    /// Reboots into recovery mode
+    ///
+    /// On success, returns a closure that performs the reboot.
+    fn reboot_recovery(&mut self) -> Result<impl FnOnce() + '_, Error> {
+        if self.expected_os_is_fuchsia()? {
+            // TODO(b/363075013): Checks and prioritizes platform specific
+            // `set_boot_reason()`.
+            set_one_shot_recovery(&mut GblAbrOps(self), true)?;
+            return Ok(|| self.reboot());
+        }
+        Err(Error::Unsupported)
+    }
+
+    /// Reboots into bootloader fastboot mode
+    ///
+    /// On success, returns a closure that performs the reboot.
+    fn reboot_bootloader(&mut self) -> Result<impl FnOnce() + '_, Error> {
+        if self.expected_os_is_fuchsia()? {
+            // TODO(b/363075013): Checks and prioritizes platform specific
+            // `set_boot_reason()`.
+            set_one_shot_bootloader(&mut GblAbrOps(self), true)?;
+            return Ok(|| self.reboot());
+        }
+        Err(Error::Unsupported)
+    }
+
+    /// Returns the list of disk devices on this platform.
     ///
     /// Notes that the return slice doesn't capture the life time of `&self`, meaning that the slice
-    /// reference must be producible without borrowing the `GblOps`. This is intended and necessary
-    /// in order to parallelize fastboot flash, download and other commands. For implementation,
-    /// this typically means that the `GblOps` object should hold a reference of the array instead
-    /// of owning it.
-    fn partitions(&self) -> Result<&'a [PartitionBlockDevice<'a, Self::PartitionBlockIo>], Error>;
+    /// reference must be producible without borrowing `Self`. This is intended and necessary to
+    /// make disk IO and the rest of GblOps methods independent and parallelizable, which is
+    /// required for features such as parallell fastboot flash, download and other commands. For
+    /// implementation, this typically means that the `GblOps` object should hold a reference of the
+    /// array instead of owning it.
+    fn disks(
+        &self,
+    ) -> &'a [GblDisk<
+        Disk<impl BlockIo + 'a, impl DerefMut<Target = [u8]> + 'a>,
+        Gpt<impl DerefMut<Target = [u8]> + 'a>,
+    >];
 
     /// Reads data from a partition.
     async fn read_from_partition(
@@ -93,7 +127,7 @@ where
         off: u64,
         out: &mut [u8],
     ) -> Result<(), Error> {
-        read_unique_partition(self.partitions()?, part, off, out).await
+        read_unique_partition(self.disks(), part, off, out).await
     }
 
     /// Reads data from a partition synchronously.
@@ -113,7 +147,7 @@ where
         off: u64,
         data: &mut [u8],
     ) -> Result<(), Error> {
-        write_unique_partition(self.partitions()?, part, off, data).await
+        write_unique_partition(self.disks(), part, off, data).await
     }
 
     /// Writes data to a partition synchronously.
@@ -128,11 +162,20 @@ where
 
     /// Returns the size of a partiiton. Returns Ok(None) if partition doesn't exist.
     fn partition_size(&mut self, part: &str) -> Result<Option<u64>, Error> {
-        match check_part_unique(self.partitions()?, part) {
+        match check_part_unique(self.disks(), part) {
             Ok((_, p)) => Ok(Some(p.size()?)),
             Err(Error::NotFound) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+
+    /// Returns which OS to load, or `None` to try to auto-detect based on disk layout & contents.
+    fn expected_os(&mut self) -> Result<Option<Os>, Error>;
+
+    /// Returns if the expected_os is fuchsia
+    fn expected_os_is_fuchsia(&mut self) -> Result<bool, Error> {
+        // TODO(b/374776896): Implement auto detection.
+        Ok(self.expected_os()?.map(|v| v == Os::Fuchsia).unwrap_or(false))
     }
 
     /// Adds device specific ZBI items to the given `container`
@@ -197,6 +240,15 @@ where
         _index: u64,
     ) -> AvbIoResult<()>;
 
+    /// Validate public key used to execute AVB.
+    ///
+    /// Used by `avb::CertOps::read_permanent_attributes_hash` so have similar requirements.
+    fn avb_validate_vbmeta_public_key(
+        &self,
+        public_key: &[u8],
+        public_key_metadata: Option<&[u8]>,
+    ) -> AvbIoResult<KeyValidationStatus>;
+
     /// Reads AVB certificate extension permanent attributes.
     ///
     /// The interface has the same requirement as `avb::CertOps::read_permanent_attributes`.
@@ -209,6 +261,20 @@ where
     ///
     /// The interface has the same requirement as `avb::CertOps::read_permanent_attributes_hash`.
     fn avb_cert_read_permanent_attributes_hash(&mut self) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]>;
+
+    /// Handle AVB result.
+    ///
+    /// Set device state (rot / version binding), show UI, etc.
+    fn avb_handle_verification_result(
+        &mut self,
+        color: BootStateColor,
+        boot_os_version: Option<&[u8]>,
+        boot_security_patch: Option<&[u8]>,
+        system_os_version: Option<&[u8]>,
+        system_security_patch: Option<&[u8]>,
+        vendor_os_version: Option<&[u8]>,
+        vendor_security_patch: Option<&[u8]>,
+    ) -> AvbIoResult<()>;
 
     /// Get buffer for specific image of requested size.
     fn get_image_buffer<'c>(
@@ -264,8 +330,39 @@ where
     /// https://cs.android.com/android/platform/superproject/main/+/main:bootable/libbootloader/gbl/docs/efi_protocols.md
     /// https://github.com/U-Boot-EFI/EFI_DT_FIXUP_PROTOCOL
     fn fixup_device_tree(&mut self, device_tree: &mut [u8]) -> Result<(), Error>;
-}
 
+    /// Gets platform-specific fastboot variable
+    ///
+    /// # Args
+    ///
+    /// * `name`: Varaiable name.
+    /// * `args`: Additional arguments.
+    /// * `out`: The output buffer for the value of the variable. Must be a ASCII string.
+    ///
+    /// # Returns
+    ///
+    /// * Returns the number of bytes written in `out` on success.
+    fn fastboot_variable(
+        &mut self,
+        name: &str,
+        args: Split<'_, char>,
+        out: &mut [u8],
+    ) -> Result<usize, Error>;
+
+    /// Sends all fastboot variables, arguments and values.
+    ///
+    /// The interface is for returnning platform specific fastboot variables for
+    /// `fastboot getvar all`.
+    ///
+    /// # Args
+    ///
+    /// * `sender`: An implementation of [VarInfoSender]. Implementation is responsible for calling
+    ///   `VarInfoSender::send_var_info` for all fastboot variables and values.
+    async fn fastboot_send_all_variables(
+        &mut self,
+        sender: &mut impl VarInfoSender,
+    ) -> Result<(), Error>;
+}
 /// Prints with `GblOps::console_out()`.
 #[macro_export]
 macro_rules! gbl_print {
@@ -292,67 +389,67 @@ macro_rules! gbl_println {
 #[cfg(test)]
 pub(crate) mod test {
     use super::*;
-    use crate::partition::sync_gpt;
+    use crate::partition::GblDisk;
+    use abr::{get_and_clear_one_shot_bootloader, get_boot_slot};
     use avb::{CertOps, Ops};
     use avb_test::TestOps as AvbTestOps;
-    use gbl_storage_testlib::{TestBlockDevice, TestBlockDeviceBuilder, TestBlockIo};
+    use core::{
+        fmt::Write,
+        ops::{Deref, DerefMut},
+        str::from_utf8,
+    };
+    use fastboot::{snprintf, FormattedBytes};
+    use gbl_async::block_on;
+    use gbl_storage::{new_gpt_max, Disk, GptMax, RamBlockIo};
     use zbi::{ZbiFlags, ZbiType};
+
+    /// Type of [GblDisk] in tests.
+    pub(crate) type TestGblDisk = GblDisk<Disk<RamBlockIo<Vec<u8>>, Vec<u8>>, GptMax>;
 
     /// Backing storage for [FakeGblOps].
     ///
     /// This needs to be a separate object because [GblOps] has designed its lifetimes to borrow
-    /// the [PartitionBlockDevice] objects rather than own it, so that they can outlive the ops
+    /// the [GblDisk] objects rather than own it, so that they can outlive the ops
     /// object when necessary.
     ///
     /// # Example usage
     /// ```
     /// let storage = FakeGblOpsStorage::default();
     /// storage.add_gpt_device(&gpt_disk_contents);
-    /// storage.add_raw_device("raw", &raw_disk_contents);
+    /// storage.add_raw_device(c"raw", &raw_disk_contents);
     ///
-    /// let partitions = storage.as_partition_block_devices();
-    /// let fake_ops = FakeGblOps(&partitions);
+    /// let fake_ops = FakeGblOps(&storage);
     /// ```
     #[derive(Default)]
-    pub(crate) struct FakeGblOpsStorage {
-        /// GPT block devices.
-        gpt_devices: Vec<TestBlockDevice>,
-        /// Raw partition block devices.
-        raw_devices: Vec<(&'static str, TestBlockDevice)>,
-    }
+    pub(crate) struct FakeGblOpsStorage(pub Vec<TestGblDisk>);
 
     impl FakeGblOpsStorage {
-        /// Adds a GPT block device.
-        pub fn add_gpt_device(&mut self, data: impl AsRef<[u8]>) {
-            self.gpt_devices.push(data.as_ref().into())
+        /// Adds a GPT disk.
+        pub(crate) fn add_gpt_device(&mut self, data: impl AsRef<[u8]>) {
+            // For test GPT images, all block sizes are 512.
+            let ram_blk = RamBlockIo::new(512, 512, data.as_ref().to_vec());
+            self.0.push(TestGblDisk::new_gpt(
+                Disk::new_alloc_scratch(ram_blk).unwrap(),
+                new_gpt_max(),
+            ));
+            let _ = block_on(self.0.last().unwrap().sync_gpt());
         }
 
-        /// Adds a raw partition block device.
-        pub fn add_raw_device(&mut self, name: &'static str, data: impl AsRef<[u8]>) {
-            let dev =
-                TestBlockDeviceBuilder::new().set_data(data.as_ref()).set_block_size(1).build();
-            self.raw_devices.push((name, dev))
+        /// Adds a raw partition disk.
+        pub(crate) fn add_raw_device(&mut self, name: &CStr, data: impl AsRef<[u8]>) {
+            // For raw partition, use block_size=alignment=1 for simplicity.
+            let ram_blk = RamBlockIo::new(1, 1, data.as_ref().to_vec());
+            self.0.push(
+                TestGblDisk::new_raw(Disk::new_alloc_scratch(ram_blk).unwrap(), name).unwrap(),
+            )
         }
+    }
 
-        /// Returns a vector of [PartitionBlockDevice]s wrapping the added devices.
-        pub fn as_partition_block_devices(
-            &mut self,
-        ) -> Vec<PartitionBlockDevice<&mut TestBlockIo>> {
-            let mut parts = Vec::default();
-            // Convert GPT devices.
-            for device in self.gpt_devices.iter_mut() {
-                let (gpt_blk, gpt) = device.new_blk_and_gpt();
-                parts.push(PartitionBlockDevice::new_gpt(gpt_blk.as_borrowed(), gpt.as_borrowed()));
-            }
-            // Convert raw devices.
-            for (name, device) in self.raw_devices.iter_mut() {
-                parts.push(
-                    PartitionBlockDevice::new_raw(device.new_blk_and_gpt().0.as_borrowed(), name)
-                        .unwrap(),
-                );
-            }
-            block_on(sync_gpt(&mut parts[..])).unwrap();
-            parts
+    impl Deref for FakeGblOpsStorage {
+        type Target = [TestGblDisk];
+
+        fn deref(&self) -> &Self::Target {
+            &self.0[..]
         }
     }
 
@@ -360,7 +457,7 @@ pub(crate) mod test {
     #[derive(Default)]
     pub(crate) struct FakeGblOps<'a> {
         /// Partition data to expose.
-        pub partitions: &'a [PartitionBlockDevice<'a, &'a mut TestBlockIo>],
+        pub partitions: &'a [TestGblDisk],
 
         /// Test fixture for [avb::Ops] and [avb::CertOps], provided by libavb.
         ///
@@ -374,6 +471,15 @@ pub(crate) mod test {
 
         /// For returned by `fn get_zbi_bootloader_files_buffer()`
         pub zbi_bootloader_files_buffer: Vec<u8>,
+
+        /// For checking that `Self::reboot` is called.
+        pub rebooted: bool,
+
+        /// For return by `Self::expected_os()`
+        pub os: Option<Os>,
+
+        /// For return by `Self::avb_validate_vbmeta_public_key`
+        pub avb_key_validation_status: Option<AvbIoResult<KeyValidationStatus>>,
     }
 
     /// Print `console_out` output, which can be useful for debugging.
@@ -390,8 +496,10 @@ pub(crate) mod test {
         pub const ADDED_ZBI_COMMANDLINE_CONTENTS: &'static [u8] = b"test_zbi_item";
         pub const TEST_BOOTLOADER_FILE_1: &'static [u8] = b"\x06test_1foo";
         pub const TEST_BOOTLOADER_FILE_2: &'static [u8] = b"\x06test_2bar";
+        pub const GBL_TEST_VAR: &'static str = "gbl-test-var";
+        pub const GBL_TEST_VAR_VAL: &'static str = "gbl-test-var-val";
 
-        pub fn new(partitions: &'a [PartitionBlockDevice<'a, &'a mut TestBlockIo>]) -> Self {
+        pub fn new(partitions: &'a [TestGblDisk]) -> Self {
             let mut res = Self {
                 partitions,
                 zbi_bootloader_files_buffer: vec![0u8; 32 * 1024],
@@ -422,12 +530,7 @@ pub(crate) mod test {
         }
     }
 
-    impl<'a> GblOps<'a> for FakeGblOps<'a>
-    where
-        Self: 'a,
-    {
-        type PartitionBlockIo = &'a mut TestBlockIo;
-
+    impl<'a> GblOps<'a> for FakeGblOps<'a> {
         fn console_out(&mut self) -> Option<&mut dyn Write> {
             Some(self)
         }
@@ -436,12 +539,21 @@ pub(crate) mod test {
             self.stop_in_fastboot.unwrap_or(Ok(false))
         }
 
-        fn reboot(&mut self) {}
+        fn reboot(&mut self) {
+            self.rebooted = true;
+        }
 
-        fn partitions(
+        fn disks(
             &self,
-        ) -> Result<&'a [PartitionBlockDevice<'a, Self::PartitionBlockIo>], Error> {
-            Ok(self.partitions)
+        ) -> &'a [GblDisk<
+            Disk<impl BlockIo + 'a, impl DerefMut<Target = [u8]> + 'a>,
+            Gpt<impl DerefMut<Target = [u8]> + 'a>,
+        >] {
+            self.partitions
+        }
+
+        fn expected_os(&mut self) -> Result<Option<Os>, Error> {
+            Ok(self.os)
         }
 
         fn zircon_add_device_zbi_items(
@@ -487,6 +599,14 @@ pub(crate) mod test {
             self.avb_ops.write_rollback_index(rollback_index_location, index)
         }
 
+        fn avb_validate_vbmeta_public_key(
+            &self,
+            _public_key: &[u8],
+            _public_key_metadata: Option<&[u8]>,
+        ) -> AvbIoResult<KeyValidationStatus> {
+            self.avb_key_validation_status.clone().unwrap()
+        }
+
         fn avb_cert_read_permanent_attributes(
             &mut self,
             attributes: &mut CertPermanentAttributes,
@@ -498,6 +618,19 @@ pub(crate) mod test {
             &mut self,
         ) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
             self.avb_ops.read_permanent_attributes_hash()
+        }
+
+        fn avb_handle_verification_result(
+            &mut self,
+            _color: BootStateColor,
+            _boot_os_version: Option<&[u8]>,
+            _boot_security_patch: Option<&[u8]>,
+            _system_os_version: Option<&[u8]>,
+            _system_security_patch: Option<&[u8]>,
+            _vendor_os_version: Option<&[u8]>,
+            _vendor_security_patch: Option<&[u8]>,
+        ) -> AvbIoResult<()> {
+            unimplemented!();
         }
 
         fn get_image_buffer<'c>(&mut self, _: &str, _: NonZeroUsize) -> GblResult<ImageBuffer<'c>> {
@@ -534,5 +667,84 @@ pub(crate) mod test {
         ) -> Result<(), Error> {
             unimplemented!();
         }
+
+        fn fastboot_variable(
+            &mut self,
+            name: &str,
+            mut args: Split<'_, char>,
+            out: &mut [u8],
+        ) -> Result<usize, Error> {
+            match name {
+                Self::GBL_TEST_VAR => {
+                    Ok(snprintf!(out, "{}:{:?}", Self::GBL_TEST_VAR_VAL, args.next()).len())
+                }
+                _ => Err(Error::NotFound),
+            }
+        }
+
+        async fn fastboot_send_all_variables(
+            &mut self,
+            sender: &mut impl VarInfoSender,
+        ) -> Result<(), Error> {
+            sender
+                .send_var_info(
+                    Self::GBL_TEST_VAR,
+                    ["1"],
+                    format!("{}:1", Self::GBL_TEST_VAR_VAL).as_str(),
+                )
+                .await?;
+            sender
+                .send_var_info(
+                    Self::GBL_TEST_VAR,
+                    ["2"],
+                    format!("{}:2", Self::GBL_TEST_VAR_VAL).as_str(),
+                )
+                .await
+        }
+    }
+
+    #[test]
+    fn test_fuchsia_reboot_bootloader() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"durable_boot", [0x00u8; 4 * 1024]);
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.os = Some(Os::Fuchsia);
+        (gbl_ops.reboot_bootloader().unwrap())();
+        assert!(gbl_ops.rebooted);
+        assert_eq!(get_and_clear_one_shot_bootloader(&mut GblAbrOps(&mut gbl_ops)), Ok(true));
+    }
+
+    #[test]
+    fn test_non_fuchsia_reboot_bootloader() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"durable_boot", [0x00u8; 4 * 1024]);
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.os = Some(Os::Android);
+        assert!(gbl_ops.reboot_bootloader().is_err_and(|e| e == Error::Unsupported));
+        assert_eq!(get_and_clear_one_shot_bootloader(&mut GblAbrOps(&mut gbl_ops)), Ok(false));
+    }
+
+    #[test]
+    fn test_fuchsia_reboot_recovery() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"durable_boot", [0x00u8; 4 * 1024]);
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.os = Some(Os::Fuchsia);
+        (gbl_ops.reboot_recovery().unwrap())();
+        assert!(gbl_ops.rebooted);
+        // One shot recovery is set.
+        assert_eq!(get_boot_slot(&mut GblAbrOps(&mut gbl_ops), true), (SlotIndex::R, false));
+        assert_eq!(get_boot_slot(&mut GblAbrOps(&mut gbl_ops), true), (SlotIndex::A, false));
+    }
+
+    #[test]
+    fn test_non_fuchsia_reboot_recovery() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"durable_boot", [0x00u8; 4 * 1024]);
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.os = Some(Os::Android);
+        assert!(gbl_ops.reboot_recovery().is_err_and(|e| e == Error::Unsupported));
+        // One shot recovery is not set.
+        assert_eq!(get_boot_slot(&mut GblAbrOps(&mut gbl_ops), true), (SlotIndex::A, false));
     }
 }
