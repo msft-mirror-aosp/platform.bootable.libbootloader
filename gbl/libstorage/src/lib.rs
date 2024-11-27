@@ -18,8 +18,13 @@
 #![cfg_attr(not(test), no_std)]
 #![allow(async_fn_in_trait)]
 
-use core::{cell::RefMut, cmp::max, ops::DerefMut};
+use core::{
+    cell::RefMut,
+    cmp::{max, min},
+    ops::DerefMut,
+};
 use liberror::{Error, Result};
+use libutils::aligned_subslice;
 use safemath::SafeNum;
 
 // Selective export of submodule types.
@@ -247,6 +252,48 @@ impl<T: BlockIo, S: DerefMut<Target = [u8]>> Disk<T, S> {
         write_async(&mut self.io, offset, data, &mut self.scratch).await
     }
 
+    /// Fills a disk range with the given byte value
+    ///
+    /// # Args
+    ///
+    /// * `offset`: Offset in number of bytes.
+    /// * `size`: Number of bytes to fill.
+    /// * `val`: Fill value.
+    /// * `scratch`: A scratch buffer that will be used for writing `val` in batches.
+    ///
+    /// # Returns
+    ///
+    /// * Returns Err(Error::InvalidInput) if size of `scratch` is 0.
+    pub async fn fill(
+        &mut self,
+        mut offset: u64,
+        size: u64,
+        val: u8,
+        scratch: &mut [u8],
+    ) -> Result<()> {
+        if scratch.is_empty() {
+            return Err(Error::InvalidInput);
+        }
+        let blk_sz = usize::try_from(self.block_info().block_size)?;
+        // Optimizes by trying to get an aligned and multi-block-size buffer.
+        let buf = match aligned_subslice(scratch, self.block_info().alignment) {
+            Ok(v) => match v.len() / blk_sz {
+                b if b > 0 => &mut v[..b * blk_sz],
+                _ => v,
+            },
+            _ => scratch,
+        };
+        let sz = min(size, buf.len().try_into()?);
+        buf[..usize::try_from(sz).unwrap()].fill(val);
+        let end: u64 = (SafeNum::from(offset) + size).try_into()?;
+        while offset < end {
+            let to_write = min(sz, end - offset);
+            self.write(offset, &mut buf[..usize::try_from(to_write).unwrap()]).await?;
+            offset += to_write;
+        }
+        Ok(())
+    }
+
     /// Loads and syncs GPT from a block device.
     ///
     /// The API validates and restores primary/secondary GPT header.
@@ -258,9 +305,9 @@ impl<T: BlockIo, S: DerefMut<Target = [u8]>> Disk<T, S> {
     /// * Returns Err() if disk IO encounters errors.
     pub async fn sync_gpt(
         &mut self,
-        gpt_cache: &mut Gpt<impl DerefMut<Target = [u8]>>,
+        gpt: &mut Gpt<impl DerefMut<Target = [u8]>>,
     ) -> Result<GptSyncResult> {
-        gpt_cache.load_and_sync(&mut self.io, &mut self.scratch).await
+        gpt.load_and_sync(self).await
     }
 
     /// Updates GPT to the block device and sync primary and secondary GPT.
@@ -268,9 +315,9 @@ impl<T: BlockIo, S: DerefMut<Target = [u8]>> Disk<T, S> {
     /// # Args
     ///
     /// * `mbr_primary`: A buffer containing the MBR block, primary GPT header and entries.
-    /// * `resize`: If set to true, the method updates the value of last usable block in the header
-    ///   and the extends last partition to cover the rest of the storage.
-    /// * `gpt_cache`: The GPT cache to update.
+    /// * `resize`: If set to true, the method updates the last partition to cover the rest of the
+    ///    storage.
+    /// * `gpt`: The GPT to update.
     ///
     /// # Returns
     ///
@@ -279,16 +326,27 @@ impl<T: BlockIo, S: DerefMut<Target = [u8]>> Disk<T, S> {
         &mut self,
         mbr_primary: &mut [u8],
         resize: bool,
-        gpt_cache: &mut Gpt<impl DerefMut<Target = [u8]>>,
+        gpt: &mut Gpt<impl DerefMut<Target = [u8]>>,
     ) -> Result<()> {
-        gpt::update_gpt(&mut self.io, &mut self.scratch, mbr_primary, resize, gpt_cache).await
+        gpt::update_gpt(self, mbr_primary, resize, gpt).await
+    }
+
+    /// Erases GPT if the disk has one.
+    ///
+    /// The method will first perform a GPT sync and makes sure that all valid entries are wiped.
+    ///
+    /// # Args
+    ///
+    /// * `gpt`: An instance of GPT.
+    pub async fn erase_gpt(&mut self, gpt: &mut Gpt<impl DerefMut<Target = [u8]>>) -> Result<()> {
+        gpt::erase_gpt(self, gpt).await
     }
 
     /// Reads a GPT partition on a block device
     ///
     /// # Args
     ///
-    /// * `gpt_cache`: A `GptCache` initialized with `Self::sync_gpt()`.
+    /// * `gpt`: A `GptCache` initialized with `Self::sync_gpt()`.
     /// * `part_name`: Name of the partition.
     /// * `offset`: Offset in number of bytes into the partition.
     /// * `out`: Buffer to store the read data.
@@ -298,12 +356,12 @@ impl<T: BlockIo, S: DerefMut<Target = [u8]>> Disk<T, S> {
     /// Returns success when exactly `out.len()` of bytes are read successfully.
     pub async fn read_gpt_partition(
         &mut self,
-        gpt_cache: &mut Gpt<impl DerefMut<Target = [u8]>>,
+        gpt: &mut Gpt<impl DerefMut<Target = [u8]>>,
         part_name: &str,
         offset: u64,
         out: &mut [u8],
     ) -> Result<()> {
-        let offset = gpt_cache.check_range(part_name, offset, out.len())?;
+        let offset = gpt.check_range(part_name, offset, out.len())?;
         self.read(offset, out).await
     }
 
@@ -312,7 +370,7 @@ impl<T: BlockIo, S: DerefMut<Target = [u8]>> Disk<T, S> {
     ///
     /// # Args
     ///
-    /// * `gpt_cache`: A `GptCache` initialized with `Self::sync_gpt()`.
+    /// * `gpt`: A `GptCache` initialized with `Self::sync_gpt()`.
     /// * `part_name`: Name of the partition.
     /// * `offset`: Offset in number of bytes into the partition.
     /// * `data`: Data to write. See `data` passed to `BlockIoSync::write()` for details.
@@ -322,12 +380,12 @@ impl<T: BlockIo, S: DerefMut<Target = [u8]>> Disk<T, S> {
     /// Returns success when exactly `data.len()` of bytes are written successfully.
     pub async fn write_gpt_partition(
         &mut self,
-        gpt_cache: &mut Gpt<impl DerefMut<Target = [u8]>>,
+        gpt: &mut Gpt<impl DerefMut<Target = [u8]>>,
         part_name: &str,
         offset: u64,
         data: &mut [u8],
     ) -> Result<()> {
-        let offset = gpt_cache.check_range(part_name, offset, data.len())?;
+        let offset = gpt.check_range(part_name, offset, data.len())?;
         self.write(offset, data).await
     }
 }

@@ -33,6 +33,15 @@ typedef enum GBL_EFI_AVB_BOOT_STATE_COLOR {
   RED,
 } GblEfiAvbBootStateColor;
 
+// Vbmeta key validation status.
+//
+// https://source.android.com/docs/security/features/verifiedboot/boot-flow#locked-devices-with-custom-root-of-trust
+typedef enum GBL_EFI_AVB_KEY_VALIDATION_STATUS {
+  VALID,
+  VALID_CUSTOM_KEY,
+  INVALID,
+} GblEfiAvbKeyValidationStatus;
+
 typedef struct {
   // GblEfiAvbBootStateColor
   uint32_t color;
@@ -53,6 +62,12 @@ typedef struct {
 
 typedef struct GblEfiAvbProtocol {
   uint64_t revision;
+
+  EfiStatus (*validate_vbmeta_public_key)(
+      struct GblEfiAvbProtocol* self, const uint8_t* public_key_data,
+      size_t public_key_length, const uint8_t* public_key_metadata,
+      size_t public_key_metadata_length,
+      /* GblEfiAvbKeyValidationStatus */ uint32_t* validation_status);
 
   EfiStatus (*handle_verification_result)(
       struct GblEfiAvbProtocol* self,
