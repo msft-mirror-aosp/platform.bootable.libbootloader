@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::{
-    avb_ops::GblAvbOps,
     fuchsia_boot::{zbi_split_unused_buffer, zircon_part_name, SlotIndex},
+    gbl_avb::ops::GblAvbOps,
     gbl_print, GblOps, Result as GblResult,
 };
 use avb::{slot_verify, Descriptor, HashtreeErrorMode, Ops as _, SlotVerifyError, SlotVerifyFlags};
@@ -40,19 +40,20 @@ pub(crate) fn zircon_verify_kernel<'a, 'b>(
     let (kernel, desc_buf) = zbi_split_unused_buffer(&mut zbi_kernel[..])?;
     let desc_zbi_off = kernel.len();
 
-    // Determines verify flags and error mode.
-    let unlocked = gbl_ops.avb_read_is_device_unlocked()?;
-    let mode = HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_EIO; // Don't care for fuchsia
-    let flag = match unlocked {
-        true => SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_ALLOW_VERIFICATION_ERROR,
-        _ => SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_NONE,
-    };
-
     {
         // Verifies the kernel.
         let part = zircon_part_name(slot);
         let preloaded = [(part, &kernel[..])];
         let mut avb_ops = GblAvbOps::new(gbl_ops, &preloaded[..], true);
+
+        // Determines verify flags and error mode.
+        let unlocked = avb_ops.read_is_device_unlocked()?;
+        let mode = HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_EIO; // Don't care for fuchsia
+        let flag = match unlocked {
+            true => SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_ALLOW_VERIFICATION_ERROR,
+            _ => SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_NONE,
+        };
+
         // TODO(b/334962583): Supports optional additional partitions to verify.
         let verify_res = slot_verify(&mut avb_ops, &[c"zircon"], slot_suffix(slot), flag, mode);
         let verified_success = verify_res.is_ok();
@@ -132,9 +133,8 @@ mod test {
 
     #[test]
     fn test_verify_success() {
-        let mut storage = create_storage();
-        let partitions = storage.as_partition_block_devices();
-        let mut ops = create_gbl_ops(&partitions);
+        let storage = create_storage();
+        let mut ops = create_gbl_ops(&storage);
 
         let expect_rollback = ops.avb_ops.rollbacks.clone();
         let zbi = &read_test_data(ZIRCON_A_ZBI_FILE);
@@ -156,9 +156,8 @@ mod test {
 
     #[test]
     fn test_verify_update_rollback_index_for_successful_slot() {
-        let mut storage = create_storage();
-        let partitions = storage.as_partition_block_devices();
-        let mut ops = create_gbl_ops(&partitions);
+        let storage = create_storage();
+        let mut ops = create_gbl_ops(&storage);
 
         let zbi = &read_test_data(ZIRCON_A_ZBI_FILE);
         // Adds extra bytes for device ZBI items.
@@ -171,9 +170,15 @@ mod test {
         assert_eq!(
             ops.avb_ops.rollbacks,
             [
-                (1, 2),
-                (usize::try_from(AVB_CERT_PSK_VERSION_LOCATION).unwrap(), TEST_CERT_PIK_VERSION),
-                (usize::try_from(AVB_CERT_PIK_VERSION_LOCATION).unwrap(), TEST_CERT_PIK_VERSION)
+                (1, Ok(2)),
+                (
+                    usize::try_from(AVB_CERT_PSK_VERSION_LOCATION).unwrap(),
+                    Ok(TEST_CERT_PSK_VERSION)
+                ),
+                (
+                    usize::try_from(AVB_CERT_PIK_VERSION_LOCATION).unwrap(),
+                    Ok(TEST_CERT_PIK_VERSION)
+                )
             ]
             .into()
         );
@@ -181,9 +186,8 @@ mod test {
 
     #[test]
     fn test_verify_failed_on_corrupted_image() {
-        let mut storage = create_storage();
-        let partitions = storage.as_partition_block_devices();
-        let mut ops = create_gbl_ops(&partitions);
+        let storage = create_storage();
+        let mut ops = create_gbl_ops(&storage);
 
         let expect_rollback = ops.avb_ops.rollbacks.clone();
         let zbi = &read_test_data(ZIRCON_A_ZBI_FILE);
@@ -202,9 +206,8 @@ mod test {
 
     #[test]
     fn test_verify_failed_on_corrupted_vbmetadata() {
-        let mut storage = create_storage();
-        let partitions = storage.as_partition_block_devices();
-        let mut ops = create_gbl_ops(&partitions);
+        let storage = create_storage();
+        let mut ops = create_gbl_ops(&storage);
 
         let expect_rollback = ops.avb_ops.rollbacks.clone();
         let zbi = &read_test_data(ZIRCON_A_ZBI_FILE);
@@ -223,9 +226,8 @@ mod test {
 
     #[test]
     fn test_verify_failed_on_rollback_protection() {
-        let mut storage = create_storage();
-        let partitions = storage.as_partition_block_devices();
-        let mut ops = create_gbl_ops(&partitions);
+        let storage = create_storage();
+        let mut ops = create_gbl_ops(&storage);
 
         let zbi = &read_test_data(ZIRCON_A_ZBI_FILE);
         // Adds extra bytes for device ZBI items.
@@ -234,7 +236,7 @@ mod test {
         let expect_load = load_buffer.to_vec();
         // vbmeta_a has rollback index value 2 at location 1. Setting min rollback value of 3 should
         // cause rollback protection failure.
-        ops.avb_ops.rollbacks.insert(1, 3);
+        ops.avb_ops.rollbacks.insert(1, Ok(3));
         let expect_rollback = ops.avb_ops.rollbacks.clone();
         assert!(zircon_verify_kernel(&mut ops, Some(SlotIndex::A), true, &mut load_buffer).is_err());
         // Failed while device is locked. ZBI items should not be appended.
@@ -245,9 +247,8 @@ mod test {
 
     #[test]
     fn test_verify_failure_when_unlocked() {
-        let mut storage = create_storage();
-        let partitions = storage.as_partition_block_devices();
-        let mut ops = create_gbl_ops(&partitions);
+        let storage = create_storage();
+        let mut ops = create_gbl_ops(&storage);
 
         ops.avb_ops.unlock_state = Ok(true);
         let expect_rollback = ops.avb_ops.rollbacks.clone();
@@ -272,9 +273,8 @@ mod test {
 
     #[test]
     fn test_verify_failure_by_corrupted_vbmetadata_unlocked() {
-        let mut storage = create_storage();
-        let partitions = storage.as_partition_block_devices();
-        let mut ops = create_gbl_ops(&partitions);
+        let storage = create_storage();
+        let mut ops = create_gbl_ops(&storage);
 
         ops.avb_ops.unlock_state = Ok(true);
         let expect_rollback = ops.avb_ops.rollbacks.clone();

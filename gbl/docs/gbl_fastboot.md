@@ -16,11 +16,11 @@ the needed protocol is available.
 Fastboot commands such as `fastboot flash`, `fastboot fetch` and
 `fastboot getvar partition-size` operate on partitions and requires a partition
 name argument. See this [doc](./partitions.md) for how GBL defines and handles
-partitions on storage devices. GBL fastboot additionaly supports accessing
-sub ranges of partitions and disambiguating betweeen same name partitions on
+partitions on storage devices. GBL fastboot additionaly supports accessing sub
+ranges of partitions and disambiguating betweeen same name partitions on
 multiple storage devices (i.e. in the presence of external or removable boot
-storage). The following summarizes the supported semantics for partition
-name argument in fastboot.
+storage). The following summarizes the supported syntaxes for partition name
+argument in fastboot.
 
 * Partition
   ```sh
@@ -43,11 +43,11 @@ name argument in fastboot.
   defaults to the rest of the partition after `offset` if not given.
 
   Examples:
-  * `fastboot flash boot_a` -- If a default storage ID is set via
-    `fastboot oem gbl-set-default-block <default ID>`, flashes in the entire
-    range of partition `boot_a` on storage device `<default ID>`. If not,
-    checks that `boot_a` can match to a unique partition among all storage
-    devices and flashes to it.
+  * `fastboot flash boot_a` -- If there is only one storage or a default
+    storage ID is set via `fastboot oem gbl-set-default-block <default ID>`,
+    flashes in the entire range of the storage. If not, checks that `boot_a`
+    can match to a unique partition among all storage devices and flashes to
+    it.
   * `fastboot flash boot_a/0x0` or `boot_a/0` -- Flashes in the entire range of
     partition "boot_a" on storage device 0.
   * `fastboot flash boot_a/0/200` -- Flashes only in range `[512, end)` of
@@ -76,9 +76,9 @@ name argument in fastboot.
   a raw storage partition or GPT device.
 
   Examples:
-  * `fastboot flash /` -- If a default storage ID is set via
-    `fastboot oem gbl-set-default-block <default ID>`, flashes in the entire
-    range of storage device `<default ID>`.
+  * `fastboot flash /` -- If there is only one storage or a default storage ID
+    is set via `fastboot oem gbl-set-default-block <default ID>`, flashes in
+    the entire range of the storage.
   * `fastboot flash /0x0` or `/0` -- Flashes in the entire range of storage
     device 0.
   * `fastboot flash /0/200` -- Flashes only in range `[512, end)` of storage
@@ -98,6 +98,50 @@ as might be expected. Instead, in this case, user should run
 `fastboot oem gbl-set-default-block 0` to set the default block to 0 first and
 then use `fastboot flash vendor_boot_a:<part size>` normally.
 
+### Updating GPT Partition Table
+
+GBL supports the following syntaxes for updating GPT partition table on a
+storage device:
+
+```
+fastboot flash gpt <path to MBR+primary GPT blob file>
+fastboot flash gpt/<storage_id> <path to MBR+primary GPT blob file>
+fastboot flash gpt/[<storage_id>][/resize] <path to MBR+primary GPT blob file>
+```
+
+User must provide an image file that contains a MBR block and the primary GPT
+header and entries. The above command will verify the given GPT and update it
+to the specified storage device. If the `resize` option is given, GBL will
+adjust the ending block of the last partition entry to cover the rest of the
+storage. This is useful for sharing one single GPT blob file for different
+devices with varying size of storage.
+
+Examples:
+  * `fastboot flash gpt` -- If there is only one storage or a default storage
+    ID is set via `fastboot oem gbl-set-default-block <default ID>`, updates
+    the GPT of that storage.
+  * `fastboot flash gpt//resize` -- Same as `fastboot flash gpt` but also
+    performs resizing.
+  * `fastboot flash gpt/0` -- Update GPT to storage device 0.
+  * `fastboot flash gpt/0/resize` -- Same as `fastboot flash gpt/0` but also
+    performs resizing.
+
+To erase existing GPT partition table on a storage device, use:
+
+```
+fastboot erase gpt
+fastboot erase gpt/<storage_id>
+```
+
+Note: The above only erases GPT partition table. Partition content remains
+unchanged.
+
+Examples:
+  * `fastboot erase gpt` -- If there is only one storage or a default storage
+    ID is set via `fastboot oem gbl-set-default-block <default ID>`, erase
+    the GPT of that storage.
+  * `fastboot flash gpt/0` -- Erase GPT to storage device 0.
+
 ## Non-blocking `fastboot flash`.
 
 If the UEFI firmware supports `EFI_BLOCK_IO2_PROTOCOL` for the storage devices,
@@ -110,13 +154,13 @@ between downloading and flashing when the host is flashing multiple images.
 Example:
 
 ```
-fastboot oem gbl-enable-async-block-io
+fastboot oem gbl-enable-async-task
 fastboot flash boot_a <image>
 fastboot flash boot_b <image>
 fastboot flash vendor_boot_a <image>
 ...
 fastboot oem gbl-sync-blocks
-fastboot oem gbl-disable-async-block-io
+fastboot oem gbl-disable-async-task
 ```
 
 If a storage device is busy processing a previous flash when a new image is
