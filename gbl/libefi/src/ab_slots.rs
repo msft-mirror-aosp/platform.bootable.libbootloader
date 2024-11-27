@@ -173,8 +173,7 @@ mod test {
     };
     use gbl::{
         ops::{
-            AvbIoResult, CertPermanentAttributes, RebootReason, SlotsMetadata, VarInfoSender,
-            SHA256_DIGEST_SIZE,
+            AvbIoResult, CertPermanentAttributes, RebootReason, SlotsMetadata, SHA256_DIGEST_SIZE,
         },
         partition::GblDisk,
         slots::{Bootability, Cursor, RecoveryTarget, UnbootableReason},
@@ -193,7 +192,6 @@ mod test {
         fmt::Write,
         mem::align_of,
         num::NonZeroUsize,
-        str::Split,
         sync::atomic::{AtomicBool, AtomicU32, Ordering},
     };
     use zbi::ZbiContainer;
@@ -401,16 +399,16 @@ mod test {
             unimplemented!();
         }
 
-        fn fastboot_variable(
+        fn fastboot_variable<'arg>(
             &mut self,
-            _: &str,
-            _: Split<'_, char>,
+            _: &CStr,
+            _: impl Iterator<Item = &'arg CStr> + Clone,
             _: &mut [u8],
         ) -> Result<usize> {
             unimplemented!()
         }
 
-        async fn fastboot_send_all_variables(&mut self, _: &mut impl VarInfoSender) -> Result<()> {
+        fn fastboot_visit_all_variables(&mut self, _: impl FnMut(&[&CStr], &CStr)) -> Result<()> {
             unimplemented!()
         }
 
