@@ -207,10 +207,20 @@ pub mod gbl_efi_avb {
     use super::*;
 
     /// Mock implementation of `GBL_EFI_AVB_PROTOCOL`.
+    /// We use a custom mock implementation instead of relying on `mockall` due to its limitations
+    /// regarding argument lifetimes. Specifically, in this case, `mockall` requires the
+    /// `validate_vbmeta_public_key.public_key_metadata` argument to have a `'static` lifetime,
+    /// which is not practical for our use case.
     #[derive(Clone, Default)]
     pub struct GblAvbProtocol {
         /// Expected return value from `validate_vbmeta_public_key`.
         pub validate_vbmeta_public_key_result: Option<Result<GblEfiAvbKeyValidationStatus>>,
+        /// Expected return value from `read_is_device_unlocked`.
+        pub read_is_device_unlocked_result: Option<Result<bool>>,
+        /// Expected return value from `read_rollback_index`.
+        pub read_rollback_index_result: Option<Result<u64>>,
+        /// Expected return value from `write_rollback_index`.
+        pub write_rollback_index_result: Option<Result<()>>,
     }
 
     impl GblAvbProtocol {
@@ -221,6 +231,25 @@ pub mod gbl_efi_avb {
             _public_key_metadata: Option<&[u8]>,
         ) -> Result<GblEfiAvbKeyValidationStatus> {
             self.validate_vbmeta_public_key_result.unwrap()
+        }
+
+        /// Wraps `GBL_EFI_AVB_PROTOCOL.read_is_device_unlocked()`.
+        pub fn read_is_device_unlocked(&self) -> Result<bool> {
+            self.read_is_device_unlocked_result.unwrap()
+        }
+
+        /// Wraps `GBL_EFI_AVB_PROTOCOL.read_rollback_index()`.
+        pub fn read_rollback_index(&self, _index_location: usize) -> Result<u64> {
+            self.read_rollback_index_result.unwrap()
+        }
+
+        /// Wraps `GBL_EFI_AVB_PROTOCOL.write_rollback_index()`.
+        pub fn write_rollback_index(
+            &self,
+            _index_location: usize,
+            _rollback_index: u64,
+        ) -> Result<()> {
+            self.write_rollback_index_result.unwrap()
         }
 
         /// Wraps `GBL_EFI_AVB_PROTOCOL.handle_verification_result()`.
