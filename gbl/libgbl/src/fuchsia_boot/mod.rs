@@ -348,9 +348,9 @@ mod test {
         let mut ops = FakeGblOps::new(&partitions);
         ops.avb_ops.unlock_state = Ok(false);
         ops.avb_ops.rollbacks = HashMap::from([
-            (TEST_ROLLBACK_INDEX_LOCATION, 0),
-            (AVB_CERT_PSK_VERSION_LOCATION.try_into().unwrap(), 0),
-            (AVB_CERT_PIK_VERSION_LOCATION.try_into().unwrap(), 0),
+            (TEST_ROLLBACK_INDEX_LOCATION, Ok(0)),
+            (AVB_CERT_PSK_VERSION_LOCATION.try_into().unwrap(), Ok(0)),
+            (AVB_CERT_PIK_VERSION_LOCATION.try_into().unwrap(), Ok(0)),
         ]);
         ops.avb_ops.use_cert = true;
         ops.avb_ops.cert_permanent_attributes = Some(
@@ -460,9 +460,15 @@ mod test {
         assert_eq!(
             ops.avb_ops.rollbacks,
             [
-                (TEST_ROLLBACK_INDEX_LOCATION, TEST_ROLLBACK_INDEX_VALUE),
-                (usize::try_from(AVB_CERT_PSK_VERSION_LOCATION).unwrap(), TEST_CERT_PSK_VERSION),
-                (usize::try_from(AVB_CERT_PIK_VERSION_LOCATION).unwrap(), TEST_CERT_PIK_VERSION)
+                (TEST_ROLLBACK_INDEX_LOCATION, Ok(TEST_ROLLBACK_INDEX_VALUE)),
+                (
+                    usize::try_from(AVB_CERT_PSK_VERSION_LOCATION).unwrap(),
+                    Ok(TEST_CERT_PSK_VERSION)
+                ),
+                (
+                    usize::try_from(AVB_CERT_PIK_VERSION_LOCATION).unwrap(),
+                    Ok(TEST_CERT_PIK_VERSION)
+                )
             ]
             .into()
         );

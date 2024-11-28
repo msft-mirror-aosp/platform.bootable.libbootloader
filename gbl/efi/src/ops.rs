@@ -341,22 +341,35 @@ where
     }
 
     fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
-        // TODO(b/337846185): Switch to use GBL Verified Boot EFI protocol when available.
-        Ok(true)
+        match self.efi_entry.system_table().boot_services().find_first_and_open::<GblAvbProtocol>()
+        {
+            Ok(protocol) => protocol.read_is_device_unlocked().map_err(efi_error_to_avb_error),
+            Err(_) => Err(AvbIoError::NotImplemented),
+        }
     }
 
-    fn avb_read_rollback_index(&mut self, _rollback_index_location: usize) -> AvbIoResult<u64> {
-        // TODO(b/337846185): Switch to use GBL Verified Boot EFI protocol when available.
-        Ok(0)
+    fn avb_read_rollback_index(&mut self, rollback_index_location: usize) -> AvbIoResult<u64> {
+        match self.efi_entry.system_table().boot_services().find_first_and_open::<GblAvbProtocol>()
+        {
+            Ok(protocol) => protocol
+                .read_rollback_index(rollback_index_location)
+                .map_err(efi_error_to_avb_error),
+            Err(_) => Err(AvbIoError::NotImplemented),
+        }
     }
 
     fn avb_write_rollback_index(
         &mut self,
-        _rollback_index_location: usize,
-        _index: u64,
+        rollback_index_location: usize,
+        index: u64,
     ) -> AvbIoResult<()> {
-        // TODO(b/337846185): Switch to use GBL Verified Boot EFI protocol when available.
-        Ok(())
+        match self.efi_entry.system_table().boot_services().find_first_and_open::<GblAvbProtocol>()
+        {
+            Ok(protocol) => protocol
+                .write_rollback_index(rollback_index_location, index)
+                .map_err(efi_error_to_avb_error),
+            Err(_) => Err(AvbIoError::NotImplemented),
+        }
     }
 
     fn avb_validate_vbmeta_public_key(
@@ -650,5 +663,125 @@ mod test {
         let ops = Ops::new(installed.entry(), &[], None);
 
         assert_eq!(ops.avb_validate_vbmeta_public_key(&[], None), Err(AvbIoError::NotImplemented));
+    }
+
+    #[test]
+    fn ops_avb_read_is_device_unlocked_returns_true() {
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        avb.read_is_device_unlocked_result = Some(Ok(true));
+        mock_efi.boot_services.expect_find_first_and_open::<GblAvbProtocol>().return_const(Ok(avb));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_read_is_device_unlocked(), Ok(true));
+    }
+
+    #[test]
+    fn ops_avb_read_is_device_unlocked_returns_false() {
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        avb.read_is_device_unlocked_result = Some(Ok(false));
+        mock_efi.boot_services.expect_find_first_and_open::<GblAvbProtocol>().return_const(Ok(avb));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_read_is_device_unlocked(), Ok(false));
+    }
+
+    #[test]
+    fn ops_avb_read_is_device_unlocked_protocol_not_found() {
+        let mut mock_efi = MockEfi::new();
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblAvbProtocol>()
+            .returning(|| Err(Error::NotFound));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_read_is_device_unlocked(), Err(AvbIoError::NotImplemented));
+    }
+
+    #[test]
+    fn ops_avb_read_rollback_index_success() {
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        avb.read_rollback_index_result = Some(Ok(12345));
+        mock_efi.boot_services.expect_find_first_and_open::<GblAvbProtocol>().return_const(Ok(avb));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_read_rollback_index(0), Ok(12345));
+    }
+
+    #[test]
+    fn ops_avb_read_rollback_index_error() {
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        avb.read_rollback_index_result = Some(Err(Error::OutOfResources));
+        mock_efi.boot_services.expect_find_first_and_open::<GblAvbProtocol>().return_const(Ok(avb));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_read_rollback_index(0), Err(AvbIoError::Oom));
+    }
+
+    #[test]
+    fn ops_avb_read_rollback_index_protocol_not_found() {
+        let mut mock_efi = MockEfi::new();
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblAvbProtocol>()
+            .returning(|| Err(Error::NotFound));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_read_rollback_index(0), Err(AvbIoError::NotImplemented));
+    }
+
+    #[test]
+    fn ops_avb_write_rollback_index_success() {
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        avb.write_rollback_index_result = Some(Ok(()));
+        mock_efi.boot_services.expect_find_first_and_open::<GblAvbProtocol>().return_const(Ok(avb));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        assert!(ops.avb_write_rollback_index(0, 12345).is_ok());
+    }
+
+    #[test]
+    fn ops_avb_write_rollback_index_error() {
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        avb.write_rollback_index_result = Some(Err(Error::InvalidInput));
+        mock_efi.boot_services.expect_find_first_and_open::<GblAvbProtocol>().return_const(Ok(avb));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_write_rollback_index(0, 12345), Err(AvbIoError::InvalidValueSize));
+    }
+
+    #[test]
+    fn ops_avb_write_rollback_index_protocol_not_found() {
+        let mut mock_efi = MockEfi::new();
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblAvbProtocol>()
+            .returning(|| Err(Error::NotFound));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_write_rollback_index(0, 12345), Err(AvbIoError::NotImplemented));
     }
 }

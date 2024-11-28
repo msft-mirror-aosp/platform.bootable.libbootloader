@@ -565,7 +565,7 @@ mod tests {
             public_key: testdata(TEST_PUBLIC_KEY_PATH),
             public_key_metadata: None,
         });
-        avb_ops.rollbacks.insert(TEST_VBMETA_ROLLBACK_LOCATION, 0);
+        avb_ops.rollbacks.insert(TEST_VBMETA_ROLLBACK_LOCATION, Ok(0));
         avb_ops.unlock_state = Ok(false);
 
         avb_ops
@@ -590,8 +590,8 @@ mod tests {
         avb_ops.cert_permanent_attributes_hash = Some(perm_attr_hash.try_into().unwrap());
 
         // Add the rollbacks for the cert keys.
-        avb_ops.rollbacks.insert(avb::CERT_PIK_VERSION_LOCATION, TEST_CERT_PIK_VERSION);
-        avb_ops.rollbacks.insert(avb::CERT_PSK_VERSION_LOCATION, TEST_CERT_PSK_VERSION);
+        avb_ops.rollbacks.insert(avb::CERT_PIK_VERSION_LOCATION, Ok(TEST_CERT_PIK_VERSION));
+        avb_ops.rollbacks.insert(avb::CERT_PSK_VERSION_LOCATION, Ok(TEST_CERT_PSK_VERSION));
 
         avb_ops
     }

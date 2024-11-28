@@ -229,15 +229,15 @@ pub trait GblOps<'a> {
     /// Reads the AVB rollback index at the given location
     ///
     /// The interface has the same requirement as `avb::Ops::read_rollback_index`.
-    fn avb_read_rollback_index(&mut self, _rollback_index_location: usize) -> AvbIoResult<u64>;
+    fn avb_read_rollback_index(&mut self, rollback_index_location: usize) -> AvbIoResult<u64>;
 
     /// Writes the AVB rollback index at the given location.
     ///
     /// The interface has the same requirement as `avb::Ops::write_rollback_index`.
     fn avb_write_rollback_index(
         &mut self,
-        _rollback_index_location: usize,
-        _index: u64,
+        rollback_index_location: usize,
+        index: u64,
     ) -> AvbIoResult<()>;
 
     /// Validate public key used to execute AVB.
