@@ -28,6 +28,8 @@
 #![cfg_attr(not(any(test, android_dylib)), no_std)]
 // TODO: b/312610985 - return warning for unused partitions
 #![allow(async_fn_in_trait)]
+// Needed for MaybeUninit::fill() experimental API
+#![feature(maybe_uninit_fill)]
 extern crate avb;
 extern crate core;
 extern crate gbl_storage;
@@ -36,10 +38,12 @@ extern crate zbi;
 
 use avb::{HashtreeErrorMode, SlotVerifyData, SlotVerifyError, SlotVerifyFlags};
 use core::ffi::CStr;
+use core::marker::PhantomData;
 
 pub mod android_boot;
 pub mod boot_mode;
 pub mod boot_reason;
+pub mod constants;
 pub mod decompress;
 pub mod device_tree;
 pub mod error;
@@ -164,26 +168,27 @@ pub fn get_images<'a: 'b, 'b: 'c, 'c, 'd>(
 }
 
 /// GBL object that provides implementation of helpers for boot process.
-pub struct Gbl<'a, G>
+pub struct Gbl<'a, 'd, G>
 where
-    G: GblOps<'a>,
+    G: GblOps<'a, 'd>,
 {
     ops: &'a mut G,
     boot_token: Option<BootToken>,
+    _get_image_buffer_lifetime: PhantomData<&'d ()>,
 }
 
 // TODO(b/312610985): Investigate whether to deprecate this and remove this allow.
 #[allow(unused_variables)]
-impl<'a, G> Gbl<'a, G>
+impl<'a, 'f, G> Gbl<'a, 'f, G>
 where
-    G: GblOps<'a>,
+    G: GblOps<'a, 'f>,
 {
     /// Returns a new [Gbl] object.
     ///
     /// # Arguments
     /// * `ops` - the [GblOps] callbacks to use
     pub fn new(ops: &'a mut G) -> Self {
-        Self { ops, boot_token: Some(BootToken(())) }
+        Self { ops, boot_token: Some(BootToken(())), _get_image_buffer_lifetime: PhantomData }
     }
 
     /// Verify + Load Image Into memory

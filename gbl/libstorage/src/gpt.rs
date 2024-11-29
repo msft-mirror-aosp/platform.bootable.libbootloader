@@ -676,7 +676,7 @@ impl<B: DerefMut<Target = [u8]>> Gpt<B> {
         // Loads the entries.
         let entries_size = SafeNum::from(header.entries_count) * GPT_ENTRY_SIZE;
         let entries_offset = SafeNum::from(header.entries) * blk_sz;
-        let out = &mut entries.as_bytes_mut().get_mut(..entries_size.try_into().unwrap()).ok_or(
+        let out = entries.as_bytes_mut().get_mut(..entries_size.try_into().unwrap()).ok_or(
             Error::BufferTooSmall(Some(
                 gpt_buffer_size(header.entries_count.try_into().unwrap()).unwrap(),
             )),

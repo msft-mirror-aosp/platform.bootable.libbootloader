@@ -148,9 +148,9 @@ impl<'a> DeviceTreeComponentsRegistry<'a> {
     /// Ensure components are 8 bytes aligned by using provided buffer to cut from. Returns remain
     /// buffer.
     /// TODO(b/363244924): Remove after partners migrated to DTB.
-    fn append_from_multifdt_buffer<'b>(
+    fn append_from_multifdt_buffer<'b, 'c>(
         &mut self,
-        ops: &mut impl GblOps<'b>,
+        ops: &mut impl GblOps<'b, 'c>,
         source: DeviceTreeComponentSource,
         data: &'a [u8],
         buffer: &'a mut [u8],
@@ -214,9 +214,9 @@ impl<'a> DeviceTreeComponentsRegistry<'a> {
     /// of such components are 8 bytes aligned by using provided `buffer` to cut from. Returns
     /// remain buffer.
     /// TODO(b/363244924): Remove multiple fdt support after partners migrated to DTB.
-    pub fn append<'b>(
+    pub fn append<'b, 'c>(
         &mut self,
-        ops: &mut impl GblOps<'b>,
+        ops: &mut impl GblOps<'b, 'c>,
         source: DeviceTreeComponentSource,
         fdt: &'a [u8],
         buffer: &'a mut [u8],
