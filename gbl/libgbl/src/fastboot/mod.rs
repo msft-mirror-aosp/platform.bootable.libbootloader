@@ -101,6 +101,7 @@ impl<'a, 'b, B: BlockIo, P: BufferPool> Task<'a, 'b, B, P> {
 /// * `'b`: Lifetime for the buffer allocated by `P`.
 /// * `'c`: Lifetime of the pinned [Future]s in task container `task`.
 /// * `'d`: Lifetime of the `tasks` and `gbl_ops` objects borrowed.
+/// * `'e`: Lifetime of the ImageBuffers returned by `get_image_buffer()`.
 ///
 /// # Generics
 ///
@@ -111,9 +112,9 @@ impl<'a, 'b, B: BlockIo, P: BufferPool> Task<'a, 'b, B, P> {
 /// * `P`: Type of `Self::buffer_pool` which implements [BufferPool].
 /// * `C`: Type of `Self::tasks` which implements [PinFutContainerTyped].
 /// * `F`: Type of [Future] stored by `Self::Tasks`.
-struct GblFastboot<'a, 'b, 'c, 'd, G, B, S, T, P, C, F>
+struct GblFastboot<'a, 'b, 'c, 'd, 'e, G, B, S, T, P, C, F>
 where
-    G: GblOps<'a>,
+    G: GblOps<'a, 'e>,
     B: BlockIo,
     S: DerefMut<Target = [u8]>,
     T: DerefMut<Target = [u8]>,
@@ -138,12 +139,14 @@ where
     // The constraint is expressed in the implementation block for the `FastbootImplementation`
     // trait.
     _tasks_context_lifetime: PhantomData<&'c P>,
+    _get_image_buffer_lifetime: PhantomData<&'e ()>,
 }
 
 // See definition of [GblFastboot] for docs on lifetimes and generics parameters.
-impl<'a: 'c, 'b: 'c, 'c, 'd, G, B, S, T, P, C, F> GblFastboot<'a, 'b, 'c, 'd, G, B, S, T, P, C, F>
+impl<'a: 'c, 'b: 'c, 'c, 'd, 'e, G, B, S, T, P, C, F>
+    GblFastboot<'a, 'b, 'c, 'd, 'e, G, B, S, T, P, C, F>
 where
-    G: GblOps<'a>,
+    G: GblOps<'a, 'e>,
     B: BlockIo,
     S: DerefMut<Target = [u8]>,
     T: DerefMut<Target = [u8]>,
@@ -188,6 +191,7 @@ where
             enable_async_task: false,
             default_block: None,
             _tasks_context_lifetime: PhantomData,
+            _get_image_buffer_lifetime: PhantomData,
         }
     }
 
@@ -494,10 +498,10 @@ where
 }
 
 // See definition of [GblFastboot] for docs on lifetimes and generics parameters.
-impl<'a: 'c, 'b: 'c, 'c, G, B, S, T, P, C, F> FastbootImplementation
-    for GblFastboot<'a, 'b, 'c, '_, G, B, S, T, P, C, F>
+impl<'a: 'c, 'b: 'c, 'c, 'e, G, B, S, T, P, C, F> FastbootImplementation
+    for GblFastboot<'a, 'b, 'c, '_, 'e, G, B, S, T, P, C, F>
 where
-    G: GblOps<'a>,
+    G: GblOps<'a, 'e>,
     B: BlockIo,
     S: DerefMut<Target = [u8]>,
     T: DerefMut<Target = [u8]>,
@@ -713,8 +717,8 @@ pub trait GblTcpStream: TcpStream {
 /// * `'a`: Lifetime of [GblOps].
 /// * `'b`: Lifetime of `download_buffers`.
 /// * `'c`: Lifetime of `tasks`.
-pub async fn run_gbl_fastboot<'a: 'c, 'b: 'c, 'c>(
-    gbl_ops: &mut impl GblOps<'a>,
+pub async fn run_gbl_fastboot<'a: 'c, 'b: 'c, 'c, 'd>(
+    gbl_ops: &mut impl GblOps<'a, 'd>,
     buffer_pool: &'b Shared<impl BufferPool>,
     tasks: impl PinFutContainer<'c> + 'c,
     usb: Option<impl GblUsbTransport>,
@@ -741,8 +745,8 @@ pub async fn run_gbl_fastboot<'a: 'c, 'b: 'c, 'c>(
 /// * `buffer_pool`: An implementation of [BufferPool].
 /// * `usb`: An optional implementation of [GblUsbTransport].
 /// * `tcp`: An optional implementation of [GblTcpStream].
-pub async fn run_gbl_fastboot_stack<'a, const N: usize>(
-    gbl_ops: &mut impl GblOps<'a>,
+pub async fn run_gbl_fastboot_stack<'a, 'b, const N: usize>(
+    gbl_ops: &mut impl GblOps<'a, 'b>,
     buffer_pool: impl BufferPool,
     usb: Option<impl GblUsbTransport>,
     tcp: Option<impl GblTcpStream>,

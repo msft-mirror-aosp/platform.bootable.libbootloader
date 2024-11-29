@@ -45,6 +45,7 @@ use fdt::Fdt;
 use gbl_storage::{BlockIo, Disk, Gpt};
 use liberror::{Error, Result};
 use libgbl::{
+    constants::{ImageName, BOOTCMD_SIZE},
     device_tree::{
         DeviceTreeComponent, DeviceTreeComponentSource, DeviceTreeComponentsRegistry,
         MAXIMUM_DEVICE_TREE_COMPONENTS,
@@ -191,7 +192,6 @@ impl<'a, 'b> Ops<'a, 'b> {
     /// Uses provided allocator.
     ///
     /// # Arguments
-    /// * `efi_entry` - EFI entry
     /// * `image_name` - image name to differentiate the buffer properties
     /// * `size` - requested buffer size
     ///
@@ -203,25 +203,13 @@ impl<'a, 'b> Ops<'a, 'b> {
     // ImageBuffer is not expected to be released, and is allocated to hold data necessary for next
     // boot stage (kernel boot). All allocated buffers are expected to be used by kernel.
     fn allocate_image_buffer(image_name: &str, size: NonZeroUsize) -> Result<ImageBuffer<'static>> {
-        const KERNEL_ALIGNMENT: usize = 2 * 1024 * 1024;
-        const FDT_ALIGNMENT: usize = 8;
-        const BOOTCMD_SIZE: usize = 16 * 1024;
         let size = match image_name {
-            "boot" => size.get(),
             "ramdisk" => (SafeNum::from(size.get()) + BOOTCMD_SIZE).try_into()?,
             _ => size.get(),
         };
         // Check for `from_raw_parts_mut()` safety requirements.
         assert!(size < isize::MAX.try_into().unwrap());
-        let align = match image_name {
-            "boot" => KERNEL_ALIGNMENT,
-            "fdt" => FDT_ALIGNMENT,
-            _ => 1,
-        };
-
-        if size == 0 {
-            return Err(Error::Other(Some("allocate_image_buffer() expects non zero size")));
-        }
+        let align = ImageName::try_from(image_name).map(|i| i.alignment()).unwrap_or(1);
 
         let layout = Layout::from_size_align(size, align).or(Err(Error::InvalidAlignment))?;
         // SAFETY:
@@ -257,7 +245,7 @@ impl Write for Ops<'_, '_> {
     }
 }
 
-impl<'a, 'b> GblOps<'b> for Ops<'a, 'b>
+impl<'a, 'b, 'd> GblOps<'b, 'd> for Ops<'a, 'b>
 where
     Self: 'b,
 {
@@ -434,11 +422,11 @@ where
         }
     }
 
-    fn get_image_buffer<'c>(
+    fn get_image_buffer(
         &mut self,
         image_name: &str,
         size: NonZeroUsize,
-    ) -> GblResult<ImageBuffer<'c>> {
+    ) -> GblResult<ImageBuffer<'d>> {
         self.get_buffer_image_loading(image_name, size)
             .or(Self::allocate_image_buffer(image_name, size)
                 .map_err(|e| libgbl::IntegrationError::UnificationError(e)))

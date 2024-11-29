@@ -23,6 +23,7 @@ use efi_types::{
     EfiBlockIo2Protocol, EfiBlockIo2Token, EfiBlockIoMedia, EfiGuid, EFI_STATUS_NOT_READY,
 };
 use gbl_async::{assert_return, yield_now};
+use gbl_storage::SliceMaybeUninit;
 use liberror::{efi_status_to_result, Error, Result};
 
 /// EFI_BLOCK_IO2_PROTOCOL
@@ -55,7 +56,11 @@ impl Protocol<'_, BlockIo2Protocol> {
     }
 
     /// Wraps `EfiBlockIo2Protocol.read_blocks_ex`.
-    pub async fn read_blocks_ex(&self, lba: u64, buffer: &mut [u8]) -> Result<()> {
+    pub async fn read_blocks_ex(
+        &self,
+        lba: u64,
+        buffer: &mut (impl SliceMaybeUninit + ?Sized),
+    ) -> Result<()> {
         let bs = self.efi_entry().system_table().boot_services();
         // UEFI spec requires that NOTIFY_WAIT event be always created with a callback.
         let mut notify_fn = &mut |_| ();
@@ -83,7 +88,7 @@ impl Protocol<'_, BlockIo2Protocol> {
                 lba,
                 &mut token,
                 buffer.len(),
-                buffer.as_mut_ptr() as _
+                buffer.as_mut().as_mut_ptr() as _
             )?;
         }
         assert_return(self.wait_io_completion(&event)).await?;

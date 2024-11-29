@@ -53,7 +53,7 @@ pub struct GblAvbOps<'a, T> {
     key_validation_status: Option<KeyValidationStatus>,
 }
 
-impl<'a, 'p, T: GblOps<'p>> GblAvbOps<'a, T> {
+impl<'a, 'p, 'q, T: GblOps<'p, 'q>> GblAvbOps<'a, T> {
     /// Creates a new [GblAvbOps].
     pub fn new(
         gbl_ops: &'a mut T,
@@ -154,7 +154,7 @@ fn cstr_to_str<E>(s: &CStr, err: E) -> Result<&str, E> {
 /// # Lifetimes
 /// * `'a`: preloaded data lifetime
 /// * `'b`: [GblOps] partition lifetime
-impl<'a, 'b, T: GblOps<'b>> AvbOps<'a> for GblAvbOps<'a, T> {
+impl<'a, 'b, 'c, T: GblOps<'b, 'c>> AvbOps<'a> for GblAvbOps<'a, T> {
     fn read_from_partition(
         &mut self,
         partition: &CStr,
@@ -295,7 +295,7 @@ impl<'a, 'b, T: GblOps<'b>> AvbOps<'a> for GblAvbOps<'a, T> {
 }
 
 /// [GblAvbOps] always implements [CertOps], but it's only used if `use_cert` is set.
-impl<'a, T: GblOps<'a>> CertOps for GblAvbOps<'_, T> {
+impl<'a, 'b, T: GblOps<'a, 'b>> CertOps for GblAvbOps<'_, T> {
     fn read_permanent_attributes(
         &mut self,
         attributes: &mut CertPermanentAttributes,
@@ -333,8 +333,8 @@ impl<'a, T: GblOps<'a>> CertOps for GblAvbOps<'_, T> {
     }
 }
 
-fn fallback_not_implemented<'a, T>(
-    ops: &mut impl GblOps<'a>,
+fn fallback_not_implemented<'a, 'b, T>(
+    ops: &mut impl GblOps<'a, 'b>,
     error: IoError,
     method_name: &str,
     value: T,
