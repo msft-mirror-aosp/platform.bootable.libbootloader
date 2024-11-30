@@ -613,7 +613,8 @@ mod test {
         sb.write_back(&mut |data: &mut [u8]| {
             Ok(block_on(blk.write_gpt_partition(&mut gpt, PARTITION, OFFSET, data))?)
         });
-        let res = block_on(blk.read_gpt_partition(&mut gpt, PARTITION, OFFSET, &mut read_buffer));
+        let res =
+            block_on(blk.read_gpt_partition(&mut gpt, PARTITION, OFFSET, &mut read_buffer[..]));
         assert!(res.is_ok());
         assert_eq!(read_buffer, [0; std::mem::size_of::<AbrData>()]);
 
@@ -625,7 +626,8 @@ mod test {
         sb.write_back(&mut |data: &mut [u8]| {
             Ok(block_on(blk.write_gpt_partition(&mut gpt, PARTITION, OFFSET, data))?)
         });
-        let res = block_on(blk.read_gpt_partition(&mut gpt, PARTITION, OFFSET, &mut read_buffer));
+        let res =
+            block_on(blk.read_gpt_partition(&mut gpt, PARTITION, OFFSET, &mut read_buffer[..]));
         assert!(res.is_ok());
         assert_eq!(read_buffer, sb.get_data().as_bytes());
         assert_eq!(sb.cache_status(), CacheStatus::Clean);
@@ -652,7 +654,8 @@ mod test {
             assert!(cursor.ctx.set_active_slot('b'.into()).is_ok());
         }
 
-        let res = block_on(blk.read_gpt_partition(&mut gpt, PARTITION, OFFSET, &mut read_buffer));
+        let res =
+            block_on(blk.read_gpt_partition(&mut gpt, PARTITION, OFFSET, &mut read_buffer[..]));
         assert!(res.is_ok());
         assert_eq!(read_buffer, sb.get_data().as_bytes());
     }

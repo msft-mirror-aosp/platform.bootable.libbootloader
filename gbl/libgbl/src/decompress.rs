@@ -31,8 +31,8 @@ use zune_inflate::DeflateDecoder;
 /// # Returns
 /// The offset of the decompressed kernel in `buffer`. If the kernel was not compressed. this
 /// function is a no-op and will return `kernel_start` unchanged.
-pub fn decompress_kernel<'a>(
-    ops: &mut impl GblOps<'a>,
+pub fn decompress_kernel<'a, 'b>(
+    ops: &mut impl GblOps<'a, 'b>,
     buffer: &mut [u8],
     kernel_start: usize,
 ) -> Result<usize> {
