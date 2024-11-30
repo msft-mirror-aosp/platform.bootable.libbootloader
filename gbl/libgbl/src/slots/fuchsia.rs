@@ -302,7 +302,7 @@ mod test {
     use super::*;
     use crate::slots::{partition::CacheStatus, Cursor};
     use gbl_async::block_on;
-    use gbl_storage_testlib::TestBlockDevice;
+    use gbl_storage::{new_gpt_max, Disk, RamBlockIo};
 
     #[test]
     fn test_slot_block_defaults() {
@@ -598,13 +598,15 @@ mod test {
         assert_eq!(sb.slots_iter().next().unwrap().bootability, Bootability::Successful);
     }
 
+    type TestDisk = Disk<RamBlockIo<Vec<u8>>, Vec<u8>>;
+
     #[test]
     fn test_writeback() {
         const PARTITION: &str = "test_partition";
         const OFFSET: u64 = 2112; // Deliberately wrong to test propagation of parameter.
-        let mut block_dev: TestBlockDevice =
-            include_bytes!("../../testdata/writeback_test_disk.bin").as_slice().into();
-        let (blk, mut gpt) = block_dev.new_blk_and_gpt();
+        let disk = include_bytes!("../../testdata/writeback_test_disk.bin").to_vec();
+        let mut blk = TestDisk::new_ram_alloc(512, 512, disk).unwrap();
+        let mut gpt = new_gpt_max();
         block_on(blk.sync_gpt(&mut gpt)).unwrap();
         let mut sb: SlotBlock<AbrData> = Default::default();
         let mut read_buffer: [u8; size_of::<AbrData>()] = Default::default();
@@ -637,9 +639,9 @@ mod test {
     fn test_writeback_with_cursor() {
         const PARTITION: &str = "test_partition";
         const OFFSET: u64 = 2112; // Deliberately wrong to test propagation of parameter.
-        let mut block_dev: TestBlockDevice =
-            include_bytes!("../../testdata/writeback_test_disk.bin").as_slice().into();
-        let (blk, mut gpt) = block_dev.new_blk_and_gpt();
+        let disk = include_bytes!("../../testdata/writeback_test_disk.bin").to_vec();
+        let mut blk = TestDisk::new_ram_alloc(512, 512, disk).unwrap();
+        let mut gpt = new_gpt_max();
         block_on(blk.sync_gpt(&mut gpt)).unwrap();
         let mut read_buffer: [u8; size_of::<AbrData>()] = Default::default();
 

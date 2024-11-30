@@ -364,6 +364,7 @@ pub trait GblOps<'a, 'd> {
         sender: &mut impl VarInfoSender,
     ) -> Result<(), Error>;
 }
+
 /// Prints with `GblOps::console_out()`.
 #[macro_export]
 macro_rules! gbl_print {
@@ -430,9 +431,8 @@ pub(crate) mod test {
         /// Adds a GPT disk.
         pub(crate) fn add_gpt_device(&mut self, data: impl AsRef<[u8]>) {
             // For test GPT images, all block sizes are 512.
-            let ram_blk = RamBlockIo::new(512, 512, data.as_ref().to_vec());
             self.0.push(TestGblDisk::new_gpt(
-                Disk::new_alloc_scratch(ram_blk).unwrap(),
+                Disk::new_ram_alloc(512, 512, data.as_ref().to_vec()).unwrap(),
                 new_gpt_max(),
             ));
             let _ = block_on(self.0.last().unwrap().sync_gpt());
@@ -441,10 +441,9 @@ pub(crate) mod test {
         /// Adds a raw partition disk.
         pub(crate) fn add_raw_device(&mut self, name: &CStr, data: impl AsRef<[u8]>) {
             // For raw partition, use block_size=alignment=1 for simplicity.
-            let ram_blk = RamBlockIo::new(1, 1, data.as_ref().to_vec());
-            self.0.push(
-                TestGblDisk::new_raw(Disk::new_alloc_scratch(ram_blk).unwrap(), name).unwrap(),
-            )
+            TestGblDisk::new_raw(Disk::new_ram_alloc(1, 1, data.as_ref().to_vec()).unwrap(), name)
+                .and_then(|v| Ok(self.0.push(v)))
+                .unwrap()
         }
     }
 

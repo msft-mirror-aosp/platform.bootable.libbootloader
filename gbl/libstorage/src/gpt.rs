@@ -1116,14 +1116,13 @@ fn crc32(data: &[u8]) -> u32 {
 #[cfg(test)]
 pub(crate) mod test {
     use super::*;
-    use crate::{test::TestDisk, RamBlockIo};
+    use crate::test::TestDisk;
     use gbl_async::block_on;
 
     /// A helper for creating a [TestDisk] from given data.
     fn test_disk(data: impl AsRef<[u8]>) -> TestDisk {
         // All tests cases use pre-generated GPT disk of 512 block size.
-        let ram_blk = RamBlockIo::new(512, 512, data.as_ref().to_vec());
-        TestDisk::new_alloc_scratch(ram_blk).unwrap()
+        TestDisk::new_ram_alloc(512, 512, data.as_ref().to_vec()).unwrap()
     }
 
     /// A helper for creating a [TestDisk] from given data and a [Gpt] for 128 entries.
