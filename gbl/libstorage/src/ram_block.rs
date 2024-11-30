@@ -14,7 +14,7 @@
 
 //! This module provides an implementation of [BlockIo] backed by RAM.
 
-use crate::{is_aligned, is_buffer_aligned, BlockInfo, BlockIo};
+use crate::{is_aligned, is_buffer_aligned, BlockInfo, BlockIo, SliceMaybeUninit};
 use core::ops::DerefMut;
 use gbl_async::yield_now;
 use liberror::Error;
@@ -56,8 +56,12 @@ impl<T: DerefMut<Target = [u8]>> RamBlockIo<T> {
 
     /// Checks injected error, simulates async waiting, checks read/write parameters and returns the
     /// offset in number of bytes.
-    async fn checks(&mut self, blk_offset: u64, buf: &mut [u8]) -> Result<usize, Error> {
-        assert!(is_buffer_aligned(buf, self.alignment).unwrap_or(false));
+    async fn checks(
+        &mut self,
+        blk_offset: u64,
+        buf: &(impl SliceMaybeUninit + ?Sized),
+    ) -> Result<usize, Error> {
+        assert!(is_buffer_aligned(buf.as_ref(), self.alignment).unwrap_or(false));
         assert!(is_aligned(buf.len(), self.block_size).unwrap_or(false));
         yield_now().await;
         self.error.take().map(|e| Err(e)).unwrap_or(Ok(()))?;
@@ -65,7 +69,9 @@ impl<T: DerefMut<Target = [u8]>> RamBlockIo<T> {
     }
 }
 
-impl<T: DerefMut<Target = [u8]>> BlockIo for RamBlockIo<T> {
+// SAFETY:
+// `read_blocks` clones `out.len()` bytes to output which initializes all elements in `out`
+unsafe impl<T: DerefMut<Target = [u8]>> BlockIo for RamBlockIo<T> {
     fn info(&mut self) -> BlockInfo {
         BlockInfo {
             block_size: self.block_size,
@@ -74,13 +80,18 @@ impl<T: DerefMut<Target = [u8]>> BlockIo for RamBlockIo<T> {
         }
     }
 
-    async fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> Result<(), Error> {
+    async fn read_blocks(
+        &mut self,
+        blk_offset: u64,
+        out: &mut (impl SliceMaybeUninit + ?Sized),
+    ) -> Result<(), Error> {
         let offset = self.checks(blk_offset, out).await?;
-        Ok(out.clone_from_slice(&self.storage[offset..][..out.len()]))
+        let out_len = out.len();
+        Ok(out.clone_from_slice(&self.storage[offset..][..out_len]))
     }
 
     async fn write_blocks(&mut self, blk_offset: u64, data: &mut [u8]) -> Result<(), Error> {
-        let offset = self.checks(blk_offset, data).await?;
+        let offset = self.checks(blk_offset, &mut *data).await?;
         Ok(self.storage[offset..][..data.len()].clone_from_slice(data))
     }
 }
