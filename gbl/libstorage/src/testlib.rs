@@ -345,9 +345,9 @@ mod test {
 
         let (blk, mut gpt) = block_dev.new_blk_and_gpt();
         block_on(blk.sync_gpt(&mut gpt)).unwrap();
-        block_on(blk.read_gpt_partition(&mut gpt, "squid", 0, &mut actual)).unwrap();
+        block_on(blk.read_gpt_partition(&mut gpt, "squid", 0, &mut actual[..])).unwrap();
         assert_eq!(actual, data);
-        block_on(blk.read_gpt_partition(&mut gpt, "clam", 0, &mut actual)).unwrap();
+        block_on(blk.read_gpt_partition(&mut gpt, "clam", 0, &mut actual[..])).unwrap();
         assert_eq!(actual, [0u8; 8]);
     }
 }

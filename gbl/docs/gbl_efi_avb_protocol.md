@@ -32,8 +32,11 @@ backwards-incompatible ways.
 ```c
 typedef struct _GBL_EFI_AVB_PROTOCOL {
   UINT64 Revision;
-  GBL_EFI_AVB_VALIDATE_VBMETA_PUBLIC_KEY ValidateVbmetaPublicKey,
-  GBL_EFI_AVB_HANDLE_VERIFICATION_RESULT HandleVerificationResult,
+  GBL_EFI_AVB_VALIDATE_VBMETA_PUBLIC_KEY ValidateVbmetaPublicKey;
+  GBL_EFI_AVB_READ_IS_DEVICE_UNLOCKED ReadIsDeviceUnlocked;
+  GBL_EFI_AVB_READ_ROLLBACK_INDEX ReadRollbackIndex;
+  GBL_EFI_AVB_WRITE_ROLLBACK_INDEX WriteRollbackIndex;
+  GBL_EFI_AVB_HANDLE_VERIFICATION_RESULT HandleVerificationResult;
 } GBL_EFI_AVB_PROTOCOL;
 ```
 
@@ -47,6 +50,18 @@ backwards compatible, a different GUID must be used.
 #### ValidateVbmetaPublicKey
 Validate proper public key is used to sign HLOS artifacts.
 [`ValidateVbmetaPublicKey()`](#ValidateVbmetaPublicKey).
+
+#### ReadIsDeviceUnlocked
+Gets whether the device is unlocked.
+[`ReadIsDeviceUnlocked()`](#ReadIsDeviceUnlocked).
+
+#### ReadRollbackIndex
+Gets the rollback index corresponding to the location given by `index_location`.
+[`ReadRollbackIndex()`](#ReadRollbackIndex).
+
+#### WriteRollbackIndex
+Sets the rollback index corresponding to the location given by `index_location` to `rollback_index`.
+[`WriteRollbackIndex()`](#WriteRollbackIndex).
 
 #### HandleVerificationResult
 Handle AVB verification result (i.e update ROT, set device state, display UI
