@@ -180,7 +180,9 @@ mod test {
     };
     use gbl_storage::{BlockIo, BlockIoNull, Disk, Gpt};
     use libgbl::{
-        device_tree::DeviceTreeComponentsRegistry, gbl_avb::state::BootStateColor, ops::ImageBuffer,
+        device_tree::DeviceTreeComponentsRegistry,
+        gbl_avb::state::{BootStateColor, KeyValidationStatus},
+        ops::ImageBuffer,
     };
     // TODO(b/350526796): use ptr.is_aligned() when Rust 1.79 is in Android
     use core::ops::DerefMut;
@@ -304,6 +306,14 @@ mod test {
             _rollback_index_location: usize,
             _index: u64,
         ) -> AvbIoResult<()> {
+            unimplemented!();
+        }
+
+        fn avb_validate_vbmeta_public_key(
+            &self,
+            _public_key: &[u8],
+            _public_key_metadata: Option<&[u8]>,
+        ) -> AvbIoResult<KeyValidationStatus> {
             unimplemented!();
         }
 

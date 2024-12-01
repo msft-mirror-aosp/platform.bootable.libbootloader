@@ -14,7 +14,10 @@
 
 //! Gbl AVB operations.
 
-use crate::{gbl_avb::state::BootStateColor, GblOps};
+use crate::{
+    gbl_avb::state::{BootStateColor, KeyValidationStatus},
+    gbl_print, gbl_println, GblOps,
+};
 use avb::{
     cert_validate_vbmeta_public_key, CertOps, CertPermanentAttributes, IoError, IoResult,
     Ops as AvbOps, PublicKeyForPartitionInfo, SlotVerifyData, SHA256_DIGEST_SIZE,
@@ -45,6 +48,9 @@ pub struct GblAvbOps<'a, T> {
     pub key_versions: [Option<(usize, u64)>; AVB_CERT_NUM_KEY_VERSIONS],
     /// True to use the AVB cert extensions.
     use_cert: bool,
+    /// Avb public key validation status reported by validate_vbmeta_public_key.
+    /// https://source.android.com/docs/security/features/verifiedboot/boot-flow#locked-devices-with-custom-root-of-trust
+    key_validation_status: Option<KeyValidationStatus>,
 }
 
 impl<'a, 'p, T: GblOps<'p>> GblAvbOps<'a, T> {
@@ -59,6 +65,7 @@ impl<'a, 'p, T: GblOps<'p>> GblAvbOps<'a, T> {
             preloaded_partitions,
             key_versions: [None; AVB_CERT_NUM_KEY_VERSIONS],
             use_cert,
+            key_validation_status: None,
         }
     }
 
@@ -130,9 +137,12 @@ impl<'a, 'p, T: GblOps<'p>> GblAvbOps<'a, T> {
             system_security_patch,
             vendor_os_version,
             vendor_security_patch,
-        )?;
+        )
+    }
 
-        Ok(())
+    /// Get vbmeta public key validation status reported by validate_vbmeta_public_key.
+    pub fn key_validation_status(&self) -> IoResult<KeyValidationStatus> {
+        self.key_validation_status.ok_or(IoError::NotImplemented)
     }
 }
 
@@ -186,26 +196,53 @@ impl<'a, 'b, T: GblOps<'b>> AvbOps<'a> for GblAvbOps<'a, T> {
         public_key: &[u8],
         public_key_metadata: Option<&[u8]>,
     ) -> IoResult<bool> {
-        match self.use_cert {
-            true => cert_validate_vbmeta_public_key(self, public_key, public_key_metadata),
-            false => {
-                // Not needed yet; eventually we will plumb this through [GblOps].
-                // For now just trust any vbmeta signature.
-                Ok(true)
+        let status = if self.use_cert {
+            match cert_validate_vbmeta_public_key(self, public_key, public_key_metadata)? {
+                true => KeyValidationStatus::Valid,
+                false => KeyValidationStatus::Invalid,
             }
-        }
+        } else {
+            self.gbl_ops.avb_validate_vbmeta_public_key(public_key, public_key_metadata).or_else(
+                |err| {
+                    // TODO(b/337846185): Remove fallback once AVB protocol implementation is
+                    // forced.
+                    fallback_not_implemented(
+                        self.gbl_ops,
+                        err,
+                        "validate_vbmeta_public_key",
+                        KeyValidationStatus::ValidCustomKey,
+                    )
+                },
+            )?
+        };
+
+        self.key_validation_status = Some(status);
+
+        Ok(matches!(status, KeyValidationStatus::Valid | KeyValidationStatus::ValidCustomKey))
     }
 
     fn read_rollback_index(&mut self, rollback_index_location: usize) -> IoResult<u64> {
-        self.gbl_ops.avb_read_rollback_index(rollback_index_location)
+        self.gbl_ops.avb_read_rollback_index(rollback_index_location).or_else(|err| {
+            // TODO(b/337846185): Remove fallback once AVB protocol implementation is
+            // forced.
+            fallback_not_implemented(self.gbl_ops, err, "read_rollback_index", 0)
+        })
     }
 
     fn write_rollback_index(&mut self, rollback_index_location: usize, index: u64) -> IoResult<()> {
-        self.gbl_ops.avb_write_rollback_index(rollback_index_location, index)
+        self.gbl_ops.avb_write_rollback_index(rollback_index_location, index).or_else(|err| {
+            // TODO(b/337846185): Remove fallback once AVB protocol implementation is
+            // forced.
+            fallback_not_implemented(self.gbl_ops, err, "write_rollback_index", ())
+        })
     }
 
     fn read_is_device_unlocked(&mut self) -> IoResult<bool> {
-        self.gbl_ops.avb_read_is_device_unlocked()
+        self.gbl_ops.avb_read_is_device_unlocked().or_else(|err| {
+            // TODO(b/337846185): Remove fallback once AVB protocol implementation is
+            // forced.
+            fallback_not_implemented(self.gbl_ops, err, "read_is_device_unlocked", true)
+        })
     }
 
     fn get_unique_guid_for_partition(&mut self, partition: &CStr) -> IoResult<Uuid> {
@@ -293,6 +330,26 @@ impl<'a, T: GblOps<'a>> CertOps for GblAvbOps<'_, T> {
     fn get_random(&mut self, _: &mut [u8]) -> IoResult<()> {
         // Not needed yet; eventually we will plumb this through [GblOps].
         unimplemented!()
+    }
+}
+
+fn fallback_not_implemented<'a, T>(
+    ops: &mut impl GblOps<'a>,
+    error: IoError,
+    method_name: &str,
+    value: T,
+) -> IoResult<T> {
+    match error {
+        IoError::NotImplemented => {
+            gbl_println!(
+                ops,
+                "WARNING: UEFI GblEfiAvbProtocol.{} implementation is missing. This will not be \
+                permitted in the future.",
+                method_name,
+            );
+            Ok(value)
+        }
+        err => Err(err),
     }
 }
 
@@ -436,5 +493,150 @@ mod test {
         avb_ops.set_key_version(5, 10);
         avb_ops.set_key_version(20, 40);
         avb_ops.set_key_version(40, 100);
+    }
+
+    #[test]
+    fn validate_vbmeta_public_key_valid() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_key_validation_status = Some(Ok(KeyValidationStatus::Valid));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.validate_vbmeta_public_key(&[], None), Ok(true));
+        assert_eq!(avb_ops.key_validation_status(), Ok(KeyValidationStatus::Valid));
+    }
+
+    #[test]
+    fn validate_vbmeta_public_key_valid_custom_key() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_key_validation_status = Some(Ok(KeyValidationStatus::ValidCustomKey));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.validate_vbmeta_public_key(&[], None), Ok(true));
+        assert_eq!(avb_ops.key_validation_status(), Ok(KeyValidationStatus::ValidCustomKey));
+    }
+
+    #[test]
+    fn validate_vbmeta_public_key_invalid() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_key_validation_status = Some(Ok(KeyValidationStatus::Invalid));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.validate_vbmeta_public_key(&[], None), Ok(false));
+        assert_eq!(avb_ops.key_validation_status(), Ok(KeyValidationStatus::Invalid));
+    }
+
+    #[test]
+    fn validate_vbmeta_public_key_failed() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_key_validation_status = Some(Err(IoError::Io));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.validate_vbmeta_public_key(&[], None), Err(IoError::Io));
+        assert!(avb_ops.key_validation_status().is_err());
+    }
+
+    // TODO(b/337846185): Remove test once AVB protocol implementation is forced.
+    #[test]
+    fn validate_vbmeta_public_key_not_implemented() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_key_validation_status = Some(Err(IoError::NotImplemented));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+
+        assert_eq!(avb_ops.validate_vbmeta_public_key(&[], None), Ok(true));
+        assert_eq!(avb_ops.key_validation_status(), Ok(KeyValidationStatus::ValidCustomKey));
+    }
+
+    #[test]
+    fn read_rollback_index_read_value() {
+        const EXPECTED_INDEX: usize = 1;
+        const EXPECTED_VALUE: u64 = 100;
+
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.rollbacks.insert(EXPECTED_INDEX, Ok(EXPECTED_VALUE));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.read_rollback_index(EXPECTED_INDEX), Ok(EXPECTED_VALUE));
+    }
+
+    #[test]
+    fn read_rollback_index_error_handled() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.read_rollback_index(0), Err(IoError::Io));
+    }
+
+    // TODO(b/337846185): Remove test once AVB protocol implementation is forced.
+    #[test]
+    fn read_rollback_index_not_implemented() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.rollbacks.insert(0, Err(IoError::NotImplemented));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.read_rollback_index(0), Ok(0));
+    }
+
+    #[test]
+    fn write_rollback_index_write_value() {
+        const EXPECTED_INDEX: usize = 1;
+        const EXPECTED_VALUE: u64 = 100;
+
+        let mut gbl_ops = FakeGblOps::new(&[]);
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.write_rollback_index(EXPECTED_INDEX, EXPECTED_VALUE), Ok(()));
+        assert_eq!(
+            gbl_ops.avb_ops.rollbacks.get(&EXPECTED_INDEX),
+            Some(Ok(EXPECTED_VALUE)).as_ref()
+        );
+    }
+
+    #[test]
+    fn write_rollback_index_error_handled() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.rollbacks.insert(0, Err(IoError::Io));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.write_rollback_index(0, 0), Err(IoError::Io));
+    }
+
+    // TODO(b/337846185): Remove test once AVB protocol implementation is forced.
+    #[test]
+    fn write_rollback_index_not_implemented() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.rollbacks.insert(0, Err(IoError::NotImplemented));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.write_rollback_index(0, 0), Ok(()));
+    }
+
+    #[test]
+    fn read_is_device_unlocked_value_obtained() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.unlock_state = Ok(true);
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+
+        assert_eq!(avb_ops.read_is_device_unlocked(), Ok(true));
+    }
+
+    #[test]
+    fn read_is_device_unlocked_error_handled() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.unlock_state = Err(IoError::Io);
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.read_is_device_unlocked(), Err(IoError::Io));
+    }
+
+    // TODO(b/337846185): Remove test once AVB protocol implementation is forced.
+    #[test]
+    fn read_is_device_unlocked_not_implemented() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.unlock_state = Err(IoError::NotImplemented);
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.read_is_device_unlocked(), Ok(true));
     }
 }

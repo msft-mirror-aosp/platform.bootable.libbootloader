@@ -18,7 +18,7 @@ pub use crate::image_buffer::ImageBuffer;
 use crate::{
     error::Result as GblResult,
     fuchsia_boot::GblAbrOps,
-    gbl_avb::state::BootStateColor,
+    gbl_avb::state::{BootStateColor, KeyValidationStatus},
     partition::{check_part_unique, read_unique_partition, write_unique_partition, GblDisk},
 };
 pub use abr::{set_one_shot_bootloader, set_one_shot_recovery, SlotIndex};
@@ -52,7 +52,6 @@ pub enum Os {
 //
 /* TODO: b/312612203 - needed callbacks:
 missing:
-- validate_public_key_for_partition: None,
 - key management => atx extension in callback =>  atx_ops: ptr::null_mut(), // support optional ATX.
 */
 /// Trait that defines callbacks that can be provided to Gbl.
@@ -230,16 +229,25 @@ pub trait GblOps<'a> {
     /// Reads the AVB rollback index at the given location
     ///
     /// The interface has the same requirement as `avb::Ops::read_rollback_index`.
-    fn avb_read_rollback_index(&mut self, _rollback_index_location: usize) -> AvbIoResult<u64>;
+    fn avb_read_rollback_index(&mut self, rollback_index_location: usize) -> AvbIoResult<u64>;
 
     /// Writes the AVB rollback index at the given location.
     ///
     /// The interface has the same requirement as `avb::Ops::write_rollback_index`.
     fn avb_write_rollback_index(
         &mut self,
-        _rollback_index_location: usize,
-        _index: u64,
+        rollback_index_location: usize,
+        index: u64,
     ) -> AvbIoResult<()>;
+
+    /// Validate public key used to execute AVB.
+    ///
+    /// Used by `avb::CertOps::read_permanent_attributes_hash` so have similar requirements.
+    fn avb_validate_vbmeta_public_key(
+        &self,
+        public_key: &[u8],
+        public_key_metadata: Option<&[u8]>,
+    ) -> AvbIoResult<KeyValidationStatus>;
 
     /// Reads AVB certificate extension permanent attributes.
     ///
@@ -469,6 +477,9 @@ pub(crate) mod test {
 
         /// For return by `Self::expected_os()`
         pub os: Option<Os>,
+
+        /// For return by `Self::avb_validate_vbmeta_public_key`
+        pub avb_key_validation_status: Option<AvbIoResult<KeyValidationStatus>>,
     }
 
     /// Print `console_out` output, which can be useful for debugging.
@@ -586,6 +597,14 @@ pub(crate) mod test {
             index: u64,
         ) -> AvbIoResult<()> {
             self.avb_ops.write_rollback_index(rollback_index_location, index)
+        }
+
+        fn avb_validate_vbmeta_public_key(
+            &self,
+            _public_key: &[u8],
+            _public_key_metadata: Option<&[u8]>,
+        ) -> AvbIoResult<KeyValidationStatus> {
+            self.avb_key_validation_status.clone().unwrap()
         }
 
         fn avb_cert_read_permanent_attributes(

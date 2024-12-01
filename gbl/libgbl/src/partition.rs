@@ -21,8 +21,6 @@ use core::{
     mem::swap,
     ops::{Deref, DerefMut},
 };
-use fastboot::CommandError;
-use gbl_async::yield_now;
 use gbl_storage::{BlockInfo, BlockIo, Disk, Gpt, GptSyncResult, Partition as GptPartition};
 use liberror::Error;
 use safemath::SafeNum;
@@ -96,7 +94,7 @@ pub enum BlockStatus {
     /// An IO in progress.
     Pending,
     /// Error.
-    Error,
+    Error(Error),
 }
 
 impl BlockStatus {
@@ -105,7 +103,15 @@ impl BlockStatus {
         match self {
             BlockStatus::Idle => "idle",
             BlockStatus::Pending => "IO pending",
-            BlockStatus::Error => "error",
+            BlockStatus::Error(_) => "error",
+        }
+    }
+
+    /// Converts to result.
+    pub fn result(&self) -> Result<(), Error> {
+        match self {
+            Self::Error(e) => Err(*e),
+            _ => Ok(()),
         }
     }
 }
@@ -160,7 +166,7 @@ where
     pub fn status(&self) -> BlockStatus {
         match self.disk.try_borrow_mut().ok() {
             None => BlockStatus::Pending,
-            Some(v) if v.1.is_err() => BlockStatus::Error,
+            Some(v) if v.1.is_err() => BlockStatus::Error(v.1.unwrap_err()),
             _ => BlockStatus::Idle,
         }
     }
@@ -175,17 +181,6 @@ where
                 (&mut v.0, &mut v.1)
             });
         Ok(PartitionIo { disk: Disk::from_ref_mut(disk), last_err, part_start, part_end })
-    }
-
-    /// Same as `partition_io` except that the method will spin wait asynchronously if the IO is not
-    /// ready.
-    pub async fn wait_partition_io(&self, part: Option<&str>) -> Result<PartitionIo<'_, B>, Error> {
-        loop {
-            match self.partition_io(part) {
-                Err(Error::NotReady) => yield_now().await,
-                v => return v,
-            }
-        }
     }
 
     /// Finds a partition.
@@ -246,8 +241,8 @@ where
     /// # Args
     ///
     /// * `mbr_primary`: A buffer containing the MBR block, primary GPT header and entries.
-    /// * `resize`: If set to true, the method updates the value of last usable block in the header
-    ///   and the extends last partition to cover the rest of the storage.
+    /// * `resize`: If set to true, the method updates the last partition to cover the rest of the
+    ///    storage.
     ///
     /// # Returns
     ///
@@ -260,6 +255,22 @@ where
             PartitionTable::Gpt(ref mut gpt) => {
                 let mut blk = self.disk.try_borrow_mut().map_err(|_| Error::NotReady)?;
                 blk.0.update_gpt(mbr_primary, resize, gpt).await
+            }
+        }
+    }
+
+    /// Erases GPT on the disk.
+    ///
+    /// # Returns
+    ///
+    /// * Return `Err(Error::NotReady)` if device is busy.
+    /// * Return `Err(Error::Unsupported)` if partition type is not GPT.
+    pub async fn erase_gpt(&self) -> Result<(), Error> {
+        match self.partitions.try_borrow_mut().map_err(|_| Error::NotReady)?.deref_mut() {
+            PartitionTable::Raw(_, _) => Err(Error::Unsupported),
+            PartitionTable::Gpt(ref mut gpt) => {
+                let mut disk = self.disk.try_borrow_mut().map_err(|_| Error::NotReady)?;
+                disk.0.erase_gpt(gpt).await
             }
         }
     }
@@ -294,47 +305,37 @@ impl<'a, B: BlockIo> PartitionIo<'a, B> {
         Ok((SafeNum::from(self.part_start) + off).try_into()?)
     }
 
-    /// A helper to do write for simplifying error handling.
-    async fn do_write(&mut self, off: u64, data: &mut [u8]) -> Result<(), Error> {
-        self.check_rw_range(off, data.len()).map(|v| self.disk.write(v, data))?.await
-    }
-
     /// Writes to the partition.
     pub async fn write(&mut self, off: u64, data: &mut [u8]) -> Result<(), Error> {
-        let res = self.do_write(off, data).await;
+        let res =
+            async { self.disk.write(self.check_rw_range(off, data.len())?, data).await }.await;
         *self.last_err = res.and(*self.last_err);
         res
-    }
-
-    /// A helper to do read for simplifying error handling.
-    async fn do_read(&mut self, off: u64, out: &mut [u8]) -> Result<(), Error> {
-        self.check_rw_range(off, out.len()).map(|v| self.disk.read(v, out))?.await
     }
 
     /// Reads from the partition.
     pub async fn read(&mut self, off: u64, out: &mut [u8]) -> Result<(), Error> {
-        let res = self.do_read(off, out).await;
+        let res = async { self.disk.read(self.check_rw_range(off, out.len())?, out).await }.await;
         *self.last_err = res.and(*self.last_err);
         res
     }
 
-    /// A helper to do sparse write for simplifying error handling.
-    async fn do_write_sparse(&mut self, off: u64, img: &mut [u8]) -> Result<(), Error> {
-        let off = self.check_rw_range(
-            off,
-            is_sparse_image(img).map_err(|_| Error::InvalidInput)?.data_size(),
-        )?;
-        write_sparse_image(img, &mut (off, &mut self.disk))
-            .await
-            .map_err(|_| "Sparse write failed")?;
-        Ok(())
+    /// Writes zeroes to the partition.
+    pub async fn zeroize(&mut self, scratch: &mut [u8]) -> Result<(), Error> {
+        let res = async { self.disk.fill(self.part_start, self.size(), 0, scratch).await }.await;
+        *self.last_err = res.and(*self.last_err);
+        *self.last_err
     }
 
     /// Writes sparse image to the partition.
     pub async fn write_sparse(&mut self, off: u64, img: &mut [u8]) -> Result<(), Error> {
-        let res = self.do_write_sparse(off, img).await;
-        *self.last_err = res.and(*self.last_err);
-        res
+        let res = async {
+            let sz = is_sparse_image(img).map_err(|_| Error::InvalidInput)?.data_size();
+            write_sparse_image(img, &mut (self.check_rw_range(off, sz)?, &mut self.disk)).await
+        }
+        .await;
+        *self.last_err = res.map(|_| ()).and(*self.last_err);
+        *self.last_err
     }
 
     /// Turns this IO into one for a subrange in the partition.
@@ -365,7 +366,7 @@ where
     B: BlockIo,
     S: DerefMut<Target = [u8]>,
 {
-    async fn write(&mut self, off: u64, data: &mut [u8]) -> Result<(), CommandError> {
+    async fn write(&mut self, off: u64, data: &mut [u8]) -> Result<(), Error> {
         Ok(self.1.write((SafeNum::from(off) + self.0).try_into()?, data).await?)
     }
 }

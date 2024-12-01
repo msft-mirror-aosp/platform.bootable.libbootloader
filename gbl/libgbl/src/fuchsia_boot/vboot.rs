@@ -40,19 +40,20 @@ pub(crate) fn zircon_verify_kernel<'a, 'b>(
     let (kernel, desc_buf) = zbi_split_unused_buffer(&mut zbi_kernel[..])?;
     let desc_zbi_off = kernel.len();
 
-    // Determines verify flags and error mode.
-    let unlocked = gbl_ops.avb_read_is_device_unlocked()?;
-    let mode = HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_EIO; // Don't care for fuchsia
-    let flag = match unlocked {
-        true => SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_ALLOW_VERIFICATION_ERROR,
-        _ => SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_NONE,
-    };
-
     {
         // Verifies the kernel.
         let part = zircon_part_name(slot);
         let preloaded = [(part, &kernel[..])];
         let mut avb_ops = GblAvbOps::new(gbl_ops, &preloaded[..], true);
+
+        // Determines verify flags and error mode.
+        let unlocked = avb_ops.read_is_device_unlocked()?;
+        let mode = HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_EIO; // Don't care for fuchsia
+        let flag = match unlocked {
+            true => SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_ALLOW_VERIFICATION_ERROR,
+            _ => SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_NONE,
+        };
+
         // TODO(b/334962583): Supports optional additional partitions to verify.
         let verify_res = slot_verify(&mut avb_ops, &[c"zircon"], slot_suffix(slot), flag, mode);
         let verified_success = verify_res.is_ok();
@@ -169,9 +170,15 @@ mod test {
         assert_eq!(
             ops.avb_ops.rollbacks,
             [
-                (1, 2),
-                (usize::try_from(AVB_CERT_PSK_VERSION_LOCATION).unwrap(), TEST_CERT_PSK_VERSION),
-                (usize::try_from(AVB_CERT_PIK_VERSION_LOCATION).unwrap(), TEST_CERT_PIK_VERSION)
+                (1, Ok(2)),
+                (
+                    usize::try_from(AVB_CERT_PSK_VERSION_LOCATION).unwrap(),
+                    Ok(TEST_CERT_PSK_VERSION)
+                ),
+                (
+                    usize::try_from(AVB_CERT_PIK_VERSION_LOCATION).unwrap(),
+                    Ok(TEST_CERT_PIK_VERSION)
+                )
             ]
             .into()
         );
@@ -229,7 +236,7 @@ mod test {
         let expect_load = load_buffer.to_vec();
         // vbmeta_a has rollback index value 2 at location 1. Setting min rollback value of 3 should
         // cause rollback protection failure.
-        ops.avb_ops.rollbacks.insert(1, 3);
+        ops.avb_ops.rollbacks.insert(1, Ok(3));
         let expect_rollback = ops.avb_ops.rollbacks.clone();
         assert!(zircon_verify_kernel(&mut ops, Some(SlotIndex::A), true, &mut load_buffer).is_err());
         // Failed while device is locked. ZBI items should not be appended.
