@@ -94,7 +94,6 @@ rust_test(
         "@avb//:avb_test",
         "@gbl//libasync:cyclic_executor",
         "@gbl//libavb:sysdeps",
-        "@gbl//libstorage:libstorage_testlib",
         "@itertools",
         "@itertools_noalloc",
         "@static_assertions",

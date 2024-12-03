@@ -859,7 +859,7 @@ mod test {
     };
     use fastboot::{test_utils::TestUploadBuilder, MAX_RESPONSE_SIZE};
     use gbl_async::{block_on, poll, poll_n_times};
-    use gbl_storage_testlib::{BackingStore, TestBlockDeviceBuilder};
+    use gbl_storage::GPT_GUID_LEN;
     use liberror::Error;
     use spin::{Mutex, MutexGuard};
     use std::{collections::VecDeque, io::Read};
@@ -1291,14 +1291,14 @@ mod test {
         // Creates two block devices for writing raw and sparse image.
         let sparse_raw = include_bytes!("../../testdata/sparse_test_raw.bin");
         let sparse = include_bytes!("../../testdata/sparse_test.bin");
-        let mut dev_sparse = TestBlockDeviceBuilder::new()
-            .add_partition("sparse", BackingStore::Size(sparse_raw.len()))
-            .build();
-        let dl_buffers = Shared::from(vec![vec![0u8; 128 * 1024]; 2]);
         let mut storage = FakeGblOpsStorage::default();
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
-        storage.add_gpt_device(dev_sparse.disk.io().storage());
+        storage.add_gpt_device(vec![0u8; sparse_raw.len() + 67 * 512]);
+        let mut gpt_builder = storage[1].gpt_builder().unwrap();
+        gpt_builder.add("sparse", [1u8; GPT_GUID_LEN], [1u8; GPT_GUID_LEN], 0, None).unwrap();
+        block_on(gpt_builder.persist()).unwrap();
         let mut gbl_ops = FakeGblOps::new(&storage);
+        let dl_buffers = Shared::from(vec![vec![0u8; 128 * 1024]; 2]);
         let tasks = vec![].into();
         let parts = gbl_ops.disks();
         let mut gbl_fb =
