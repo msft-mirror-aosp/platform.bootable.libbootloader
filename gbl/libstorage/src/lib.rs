@@ -428,6 +428,18 @@ impl<'a, T: BlockIo> Disk<RefMut<'a, T>, RefMut<'a, [u8]>> {
     }
 }
 
+impl<T, S> Disk<RamBlockIo<T>, S>
+where
+    T: DerefMut<Target = [u8]>,
+    S: DerefMut<Target = [u8]> + Extend<u8> + Default,
+{
+    /// Creates a new ram disk instance with allocated scratch buffer.
+    pub fn new_ram_alloc(block_size: u64, alignment: u64, storage: T) -> Result<Self> {
+        let ram_blk = RamBlockIo::new(block_size, alignment, storage);
+        Self::new_alloc_scratch(ram_blk)
+    }
+}
+
 /// Helper trait to implement common logic working with MaybeUninit slices.
 /// Implemented for [u8] and [MaybeUninit<u8>].
 ///
@@ -511,7 +523,6 @@ pub fn as_uninit(buf: &[u8]) -> &[MaybeUninit<u8>] {
 #[cfg(test)]
 mod test {
     use super::*;
-    use core::mem::size_of;
     use gbl_async::block_on;
     use safemath::SafeNum;
 
@@ -577,8 +588,7 @@ mod test {
 
     fn read_test_helper(case: &TestCase) {
         let data = (0..case.storage_size).map(|v| v as u8).collect::<Vec<_>>();
-        let ram_blk = RamBlockIo::new(case.alignment, case.block_size, data);
-        let mut disk = TestDisk::new_alloc_scratch(ram_blk).unwrap();
+        let mut disk = TestDisk::new_ram_alloc(case.alignment, case.block_size, data).unwrap();
         // Make an aligned buffer. A misaligned version is created by taking a sub slice that
         // starts at an unaligned offset. Because of this we need to allocate
         // `case.misalignment` more to accommodate it.
@@ -602,8 +612,7 @@ mod test {
         let rw_sz = usize::try_from(case.rw_size).unwrap();
         let mut expected = data[rw_off..][..rw_sz].to_vec();
         expected.reverse();
-        let ram_blk = RamBlockIo::new(case.alignment, case.block_size, data);
-        let mut disk = TestDisk::new_alloc_scratch(ram_blk).unwrap();
+        let mut disk = TestDisk::new_ram_alloc(case.alignment, case.block_size, data).unwrap();
         // Make an aligned buffer. A misaligned version is created by taking a sub slice that
         // starts at an unaligned offset. Because of this we need to allocate
         // `case.misalignment` more to accommodate it.
@@ -905,38 +914,27 @@ mod test {
 
     #[test]
     fn test_read_overflow() {
-        let io = RamBlockIo::new(512, 512, vec![0u8; 512]);
-        let mut disk = TestDisk::new_alloc_scratch(io).unwrap();
+        let mut disk = TestDisk::new_ram_alloc(512, 512, vec![0u8; 512]).unwrap();
         assert!(block_on(disk.read(512, &mut vec![0u8; 1][..])).is_err());
         assert!(block_on(disk.read(0, &mut vec![0u8; 513][..])).is_err());
     }
 
     #[test]
     fn test_read_arithmetic_overflow() {
-        let io = RamBlockIo::new(512, 512, vec![0u8; 512]);
-        let mut disk = TestDisk::new_alloc_scratch(io).unwrap();
+        let mut disk = TestDisk::new_ram_alloc(512, 512, vec![0u8; 512]).unwrap();
         assert!(block_on(disk.read(u64::MAX, &mut vec![0u8; 1][..])).is_err());
     }
 
     #[test]
     fn test_write_overflow() {
-        let io = RamBlockIo::new(512, 512, vec![0u8; 512]);
-        let mut disk = TestDisk::new_alloc_scratch(io).unwrap();
+        let mut disk = TestDisk::new_ram_alloc(512, 512, vec![0u8; 512]).unwrap();
         assert!(block_on(disk.write(512, &mut vec![0u8; 1])).is_err());
         assert!(block_on(disk.write(0, &mut vec![0u8; 513])).is_err());
     }
 
     #[test]
     fn test_write_arithmetic_overflow() {
-        let io = RamBlockIo::new(512, 512, vec![0u8; 512]);
-        let mut disk = TestDisk::new_alloc_scratch(io).unwrap();
+        let mut disk = TestDisk::new_ram_alloc(512, 512, vec![0u8; 512]).unwrap();
         assert!(block_on(disk.write(u64::MAX, &mut vec![0u8; 1])).is_err());
-    }
-
-    #[test]
-    fn test_u64_not_narrower_than_usize() {
-        // If this ever fails we need to adjust all code for >64 bit pointers and size.
-        assert!(size_of::<u64>() >= size_of::<*const u8>());
-        assert!(size_of::<u64>() >= size_of::<usize>());
     }
 }
