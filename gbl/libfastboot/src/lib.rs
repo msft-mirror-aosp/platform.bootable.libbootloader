@@ -386,6 +386,20 @@ pub trait FastbootImplementation {
     /// Backend for `fastboot set_active`.
     async fn set_active(&mut self, slot: &str, responder: impl InfoSender) -> CommandResult<()>;
 
+    /// Backend for `fastboot boot`
+    ///
+    /// # Args
+    ///
+    /// * `responder`: An instance of `InfoSender + OkaySender`. Implementation should call
+    ///   `responder.send_okay("")` right before boot to notify the remote host that the
+    ///   operation is successful.
+    ///
+    /// # Returns
+    ///
+    /// * The method is always return OK to let fastboot continue.
+    /// * Returns `Err(e)` on error.
+    async fn boot(&mut self, responder: impl InfoSender + OkaySender) -> CommandResult<()>;
+
     /// Backend for `fastboot oem ...`.
     ///
     /// # Args
@@ -854,6 +868,19 @@ async fn reboot(
     reply_fail!(resp, "{}", e.to_str())
 }
 
+// Handles `fastboot boot`
+async fn boot(
+    transport: &mut impl Transport,
+    fb_impl: &mut impl FastbootImplementation,
+) -> Result<()> {
+    let mut resp = Responder::new(transport);
+    let boot_res = async { fb_impl.boot(&mut resp).await }.await;
+    match boot_res {
+        Err(e) => reply_fail!(resp, "{}", e.to_str()),
+        _ => reply_okay!(resp, "boot_command"),
+    }
+}
+
 // Handles `fastboot continue`
 async fn r#continue(
     transport: &mut impl Transport,
@@ -926,6 +953,10 @@ pub async fn process_next_command(
         return transport.send_packet(fastboot_fail!(packet, "No command")).await.map(|_| false);
     };
     match cmd {
+        "boot" => {
+            boot(transport, fb_impl).await?;
+            return Ok(true);
+        }
         "continue" => {
             r#continue(transport, fb_impl).await?;
             return Ok(true);
@@ -1154,6 +1185,10 @@ mod test {
                 .await?)
         }
 
+        async fn boot(&mut self, mut responder: impl InfoSender + OkaySender) -> CommandResult<()> {
+            Ok(responder.send_info("Boot to boot.img...").await?)
+        }
+
         async fn reboot(
             &mut self,
             mode: RebootMode,
@@ -1253,6 +1288,19 @@ mod test {
             data.iter().for_each(|v| self.out_queue.push_back(*v));
             Ok(())
         }
+    }
+
+    #[test]
+    fn test_boot() {
+        let mut fastboot_impl: FastbootTest = Default::default();
+        fastboot_impl.download_buffer = vec![0u8; 1024];
+        let mut transport = TestTransport::new();
+        transport.add_input(b"boot");
+        let _ = block_on(run(&mut transport, &mut fastboot_impl));
+        assert_eq!(
+            transport.out_queue,
+            VecDeque::<Vec<u8>>::from([b"INFOBoot to boot.img...".into()])
+        );
     }
 
     #[test]

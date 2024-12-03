@@ -67,7 +67,7 @@ pub fn fuchsia_boot_demo(efi_entry: EfiEntry) -> Result<()> {
         let mut ops = Ops::new(&efi_entry, &blks[..], Some(Os::Fuchsia));
         // Checks whether to enter fastboot mode.
         if zircon_check_enter_fastboot(&mut ops) {
-            fastboot(&mut ops)?;
+            fastboot(&mut ops, &mut [])?;
         }
         zircon_load_verify_abr(&mut ops)?
     };
