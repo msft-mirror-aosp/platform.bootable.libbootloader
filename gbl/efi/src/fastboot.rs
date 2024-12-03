@@ -199,7 +199,7 @@ impl<'a> PinFutContainer<'a> for VecPinFut<'a> {
     }
 }
 
-pub fn fastboot(efi_gbl_ops: &mut Ops) -> Result<()> {
+pub fn fastboot(efi_gbl_ops: &mut Ops, bootimg_buf: &mut [u8]) -> Result<()> {
     let efi_entry = efi_gbl_ops.efi_entry;
     efi_println!(efi_entry, "Entering fastboot mode...");
 
@@ -224,6 +224,16 @@ pub fn fastboot(efi_gbl_ops: &mut Ops) -> Result<()> {
     let tcp = tcp.as_mut().map(|v| EfiFastbootTcpTransport::new(v));
 
     let download_buffers = vec![vec![0u8; 512 * 1024 * 1024]; 2].into();
-    block_on(run_gbl_fastboot(efi_gbl_ops, &download_buffers, VecPinFut::default(), usb, tcp));
+    block_on(run_gbl_fastboot(
+        efi_gbl_ops,
+        &download_buffers,
+        VecPinFut::default(),
+        usb,
+        tcp,
+        bootimg_buf,
+    ));
+
+    efi_println!(efi_entry, "Leaving fastboot mode...");
+
     Ok(())
 }
