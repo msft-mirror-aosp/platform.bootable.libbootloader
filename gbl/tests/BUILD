@@ -35,7 +35,6 @@ test_suite(
         "@gbl//libsafemath:libsafemath_test",
         "@gbl//libstorage:libstorage_doc_test",
         "@gbl//libstorage:libstorage_test",
-        "@gbl//libstorage:libstorage_testlib_test",
         "@gbl//libutils:test",
         "@zbi//:zbi_test",
     ],

@@ -769,8 +769,8 @@ impl<B: DerefMut<Target = [u8]>> Gpt<B> {
 fn is_consistent(primary: &GptHeader, secondary: &GptHeader) -> bool {
     let mut expected_secondary = *primary;
     expected_secondary.crc32 = secondary.crc32;
-    expected_secondary.current = primary.backup;
-    expected_secondary.backup = primary.current;
+    expected_secondary.current = secondary.current;
+    expected_secondary.backup = 1;
     expected_secondary.entries = secondary.entries;
     &expected_secondary == secondary
 }
@@ -826,8 +826,9 @@ pub(crate) async fn update_gpt(
     // caught during `check_header()`.
     let entries_blk = SafeNum::from(GPT_MAX_NUM_ENTRIES_SIZE) / blk_sz;
     // Reserves only secondary GPT header and entries.
-    header.last =
-        (SafeNum::from(disk.io().info().num_blocks) - entries_blk - 2).try_into().unwrap();
+    let num_blks = SafeNum::from(disk.io().info().num_blocks);
+    header.last = (num_blks - entries_blk - 2).try_into().unwrap();
+    header.backup = (num_blks - 1).try_into().unwrap();
     header.update_crc();
 
     check_header(disk.io(), &header, true)?;
@@ -1116,14 +1117,13 @@ fn crc32(data: &[u8]) -> u32 {
 #[cfg(test)]
 pub(crate) mod test {
     use super::*;
-    use crate::{test::TestDisk, RamBlockIo};
+    use crate::test::TestDisk;
     use gbl_async::block_on;
 
     /// A helper for creating a [TestDisk] from given data.
     fn test_disk(data: impl AsRef<[u8]>) -> TestDisk {
         // All tests cases use pre-generated GPT disk of 512 block size.
-        let ram_blk = RamBlockIo::new(512, 512, data.as_ref().to_vec());
-        TestDisk::new_alloc_scratch(ram_blk).unwrap()
+        TestDisk::new_ram_alloc(512, 512, data.as_ref().to_vec()).unwrap()
     }
 
     /// A helper for creating a [TestDisk] from given data and a [Gpt] for 128 entries.
@@ -1487,6 +1487,7 @@ pub(crate) mod test {
         let secondary_hdr = GptHeader::from_bytes_mut(secondary);
         // Header's last usable block is updated.
         assert_eq!({ primary_hdr.last }, expected_last.try_into().unwrap());
+        assert_eq!({ primary_hdr.backup }, (disk.len() / 512 - 1).try_into().unwrap());
         assert_eq!({ secondary_hdr.last }, expected_last.try_into().unwrap());
     }
 
