@@ -62,18 +62,18 @@ pub fn is_fuchsia_gpt(efi_entry: &EfiEntry) -> Result<()> {
 pub fn fuchsia_boot_demo(efi_entry: EfiEntry) -> Result<()> {
     efi_println!(efi_entry, "Try booting as Fuchsia/Zircon");
 
-    // Allocates buffer for load.
-    let mut load_buffer = vec![0u8; 128 * 1024 * 1024]; // 128MB
-    let (_zbi_items, _kernel, slot) = {
+    let (mut zbi_items_buffer, mut _kernel_buffer, slot) = {
         let blks = find_block_devices(&efi_entry)?;
         let mut ops = Ops::new(&efi_entry, &blks[..], Some(Os::Fuchsia));
         // Checks whether to enter fastboot mode.
         if zircon_check_enter_fastboot(&mut ops) {
-            fastboot(&mut ops)?;
+            fastboot(&mut ops, &mut [])?;
         }
-        zircon_load_verify_abr(&mut ops, &mut load_buffer)?
+        zircon_load_verify_abr(&mut ops)?
     };
     efi_println!(efi_entry, "Booting from slot: {}", zircon_part_name(Some(slot)));
+
+    let _zbi_items = zbi_items_buffer.used_mut();
 
     #[cfg(target_arch = "aarch64")]
     {
@@ -86,7 +86,7 @@ pub fn fuchsia_boot_demo(efi_entry: EfiEntry) -> Result<()> {
         let _ = efi::exit_boot_services(efi_entry, remains).unwrap();
         // SAFETY: The kernel has passed libavb verification or device is unlocked, in which case we
         // assume the caller has addressed all safety and security concerns.
-        unsafe { boot::aarch64::jump_zircon_el2_or_lower(_kernel, _zbi_items) };
+        unsafe { boot::aarch64::jump_zircon_el2_or_lower(_kernel_buffer.used_mut(), _zbi_items) };
     }
 
     #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
@@ -104,7 +104,7 @@ pub fn fuchsia_boot_demo(efi_entry: EfiEntry) -> Result<()> {
 
         // SAFETY: The kernel has passed libavb verification or device is unlocked, in which case we
         // assume the caller has addressed all safety and security concerns.
-        unsafe { boot::x86::zbi_boot(_kernel, _zbi_items) };
+        unsafe { boot::x86::zbi_boot(_kernel_buffer.used_mut(), _zbi_items) };
     }
 
     #[cfg(target_arch = "riscv64")]
