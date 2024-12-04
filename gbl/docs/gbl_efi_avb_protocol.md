@@ -36,6 +36,8 @@ typedef struct _GBL_EFI_AVB_PROTOCOL {
   GBL_EFI_AVB_READ_IS_DEVICE_UNLOCKED ReadIsDeviceUnlocked;
   GBL_EFI_AVB_READ_ROLLBACK_INDEX ReadRollbackIndex;
   GBL_EFI_AVB_WRITE_ROLLBACK_INDEX WriteRollbackIndex;
+  GBL_EFI_AVB_READ_PERSISTENT_VALUE ReadPersistentValue;
+  GBL_EFI_AVB_WRITE_PERSISTENT_VALUE WritePersistentValue;
   GBL_EFI_AVB_HANDLE_VERIFICATION_RESULT HandleVerificationResult;
 } GBL_EFI_AVB_PROTOCOL;
 ```
@@ -62,6 +64,14 @@ Gets the rollback index corresponding to the location given by `index_location`.
 #### WriteRollbackIndex
 Sets the rollback index corresponding to the location given by `index_location` to `rollback_index`.
 [`WriteRollbackIndex()`](#WriteRollbackIndex).
+
+#### ReadPersistentValue
+Gets the persistent value for the corresponding `name`.
+[`ReadPersistentValue()`](#ReadPersistentValue).
+
+#### WritePersistentValue
+Sets or erases the persistent value for the corresponding `name`.
+[`WritePersistentValue()`](#WritePersistentValue).
 
 #### HandleVerificationResult
 Handle AVB verification result (i.e update ROT, set device state, display UI
