@@ -1299,7 +1299,10 @@ mod test {
         let _ = block_on(run(&mut transport, &mut fastboot_impl));
         assert_eq!(
             transport.out_queue,
-            VecDeque::<Vec<u8>>::from([b"INFOBoot to boot.img...".into()])
+            VecDeque::<Vec<u8>>::from([
+                b"INFOBoot to boot.img...".into(),
+                b"OKAYboot_command".into()
+            ])
         );
     }
 
