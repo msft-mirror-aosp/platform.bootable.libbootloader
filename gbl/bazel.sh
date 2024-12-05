@@ -1,10 +1,11 @@
+#!/bin/bash -e
 # Copyright (C) 2024 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+#       http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,18 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@rules_pkg//pkg:install.bzl", "pkg_install")
-load("@rules_pkg//pkg:mappings.bzl", "pkg_files", "strip_prefix")
+# Use host readlink. b/348003050
+MYPATH=$(readlink -f "$0")
+MYDIR=${MYPATH%/*}
+WORKSPACE_DIR=${MYDIR%bootable/libbootloader/gbl}
+WORKSPACE_DIR=${WORKSPACE_DIR%/}
 
-pkg_files(
-    name = "gbl_efi_dist_files",
-    srcs = ["@gbl//efi:all_platforms"],
-    strip_prefix = strip_prefix.files_only(),
-    visibility = ["//visibility:private"],
-)
-
-pkg_install(
-    name = "gbl_efi_dist",
-    srcs = [":gbl_efi_dist_files"],
-    destdir = "out/gbl_efi/",
-)
+exec "$WORKSPACE_DIR"/prebuilts/build-tools/path/linux-x86/python3 "$MYDIR"/bazel.py "$@"

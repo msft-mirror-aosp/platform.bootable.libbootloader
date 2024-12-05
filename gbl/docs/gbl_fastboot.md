@@ -100,7 +100,7 @@ then use `fastboot flash vendor_boot_a:<part size>` normally.
 
 ### Updating GPT Partition Table
 
-GBL also supports the following syntaxes for updating GPT partition table on a
+GBL supports the following syntaxes for updating GPT partition table on a
 storage device:
 
 ```
@@ -112,10 +112,9 @@ fastboot flash gpt/[<storage_id>][/resize] <path to MBR+primary GPT blob file>
 User must provide an image file that contains a MBR block and the primary GPT
 header and entries. The above command will verify the given GPT and update it
 to the specified storage device. If the `resize` option is given, GBL will
-adjust the `last usable block` field in the GPT header and the ending block of
-the last partition entry to cover the rest of the storage. This is useful for
-sharing one single GPT blob file for different devices with varying size of
-storage.
+adjust the ending block of the last partition entry to cover the rest of the
+storage. This is useful for sharing one single GPT blob file for different
+devices with varying size of storage.
 
 Examples:
   * `fastboot flash gpt` -- If there is only one storage or a default storage
@@ -127,6 +126,21 @@ Examples:
   * `fastboot flash gpt/0/resize` -- Same as `fastboot flash gpt/0` but also
     performs resizing.
 
+To erase existing GPT partition table on a storage device, use:
+
+```
+fastboot erase gpt
+fastboot erase gpt/<storage_id>
+```
+
+Note: The above only erases GPT partition table. Partition content remains
+unchanged.
+
+Examples:
+  * `fastboot erase gpt` -- If there is only one storage or a default storage
+    ID is set via `fastboot oem gbl-set-default-block <default ID>`, erase
+    the GPT of that storage.
+  * `fastboot flash gpt/0` -- Erase GPT to storage device 0.
 
 ## Non-blocking `fastboot flash`.
 
@@ -140,13 +154,13 @@ between downloading and flashing when the host is flashing multiple images.
 Example:
 
 ```
-fastboot oem gbl-enable-async-block-io
+fastboot oem gbl-enable-async-task
 fastboot flash boot_a <image>
 fastboot flash boot_b <image>
 fastboot flash vendor_boot_a <image>
 ...
 fastboot oem gbl-sync-blocks
-fastboot oem gbl-disable-async-block-io
+fastboot oem gbl-disable-async-task
 ```
 
 If a storage device is busy processing a previous flash when a new image is

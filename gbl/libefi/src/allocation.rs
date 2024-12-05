@@ -12,12 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::EfiEntry;
+use crate::{EfiEntry, RuntimeServices};
 use efi_types::EFI_MEMORY_TYPE_LOADER_DATA;
 
-use core::alloc::{GlobalAlloc, Layout};
 use core::mem::size_of_val;
 use core::ptr::null_mut;
+use core::{
+    alloc::{GlobalAlloc, Layout},
+    fmt::Write,
+};
 use liberror::{Error, Result};
 use safemath::SafeNum;
 
@@ -28,18 +31,34 @@ use safemath::SafeNum;
 /// ```
 /// #[no_mangle]
 /// #[global_allocator]
-/// static mut EFI_GLOBAL_ALLOCATOR: EfiAllocator = EfiAllocator::Uninitialized;
+/// static mut EFI_GLOBAL_ALLOCATOR: EfiAllocator = EfiState::new();
 /// ```
 ///
 /// This is only useful for real UEFI applications; attempting to install the `EFI_GLOBAL_ALLOCATOR`
 /// for host-side unit tests will cause the test to panic immediately.
-pub enum EfiAllocator {
+pub struct EfiAllocator {
+    state: EfiState,
+    runtime_services: Option<RuntimeServices>,
+}
+
+/// Represents the global EFI state.
+enum EfiState {
     /// Initial state, no UEFI entry point has been set, global hooks will not work.
     Uninitialized,
     /// [EfiEntry] is registered, global hooks are active.
     Initialized(EfiEntry),
     /// ExitBootServices has been called, global hooks will not work.
     Exited,
+}
+
+impl EfiState {
+    /// Returns a reference to the EfiEntry.
+    fn efi_entry(&self) -> Option<&EfiEntry> {
+        match self {
+            EfiState::Initialized(ref entry) => Some(entry),
+            _ => None,
+        }
+    }
 }
 
 // This is a bit ugly, but we only expect this library to be used by our EFI application so it
@@ -49,14 +68,34 @@ extern "Rust" {
     static mut EFI_GLOBAL_ALLOCATOR: EfiAllocator;
 }
 
-/// An internal API to obtain library internal global EfiEntry.
-pub(crate) fn internal_efi_entry() -> Option<&'static EfiEntry> {
+/// An internal API to obtain library internal global EfiEntry and RuntimeServices.
+pub(crate) fn internal_efi_entry_and_rt(
+) -> (Option<&'static EfiEntry>, Option<&'static RuntimeServices>) {
     // SAFETY:
-    // For now, `EfiAllocator` is only modified in `init_efi_global_alloc()` when `EfiAllocator` is
-    // being initialized or in `exit_efi_global_alloc` after `EFI_BOOT_SERVICES.
-    // ExitBootServices()` is called, where there should be no event/notification function that can
-    // be triggered. Therefore, it should be safe from race condition.
-    unsafe { EFI_GLOBAL_ALLOCATOR.get_efi_entry() }
+    // EFI_GLOBAL_ALLOCATOR is only read by `internal_efi_entry_and_rt()` and modified by
+    // `init_efi_global_alloc()` and `exit_efi_global_alloc()`. The safety requirements of
+    // `init_efi_global_alloc()` and `exit_efi_global_alloc()` mandate that there can be no EFI
+    // event/notification/interrupt that can be triggered when they are called. This suggests that
+    // there cannot be concurrent read and modification on `EFI_GLOBAL_ALLOCATOR` possible. Thus its
+    // access is safe from race condition.
+    unsafe { EFI_GLOBAL_ALLOCATOR.get_efi_entry_and_rt() }
+}
+
+/// Try to print via `EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL` in `EFI_SYSTEM_TABLE.ConOut`.
+///
+/// Errors are ignored.
+#[macro_export]
+macro_rules! efi_try_print {
+    ($( $x:expr ),* $(,)? ) => {
+        {
+            let _ = (|| -> Result<()> {
+                if let Some(entry) = crate::allocation::internal_efi_entry_and_rt().0 {
+                    write!(entry.system_table_checked()?.con_out()?, $($x,)*)?;
+                }
+                Ok(())
+            })();
+        }
+    };
 }
 
 /// Initializes global allocator.
@@ -67,11 +106,13 @@ pub(crate) fn internal_efi_entry() -> Option<&'static EfiEntry> {
 /// there is no event/notification function that can be triggered or modify it. Otherwise there
 /// is a risk of race condition.
 pub(crate) unsafe fn init_efi_global_alloc(efi_entry: EfiEntry) -> Result<()> {
-    // SAFETY: See SAFETY of `internal_efi_entry()`
+    // SAFETY: See SAFETY of `internal_efi_entry_and_rt()`
     unsafe {
-        match EFI_GLOBAL_ALLOCATOR {
-            EfiAllocator::Uninitialized => {
-                EFI_GLOBAL_ALLOCATOR = EfiAllocator::Initialized(efi_entry);
+        EFI_GLOBAL_ALLOCATOR.runtime_services =
+            efi_entry.system_table_checked().and_then(|v| v.runtime_services_checked()).ok();
+        match EFI_GLOBAL_ALLOCATOR.state {
+            EfiState::Uninitialized => {
+                EFI_GLOBAL_ALLOCATOR.state = EfiState::Initialized(efi_entry);
                 Ok(())
             }
             _ => Err(Error::AlreadyStarted),
@@ -87,41 +128,46 @@ pub(crate) unsafe fn init_efi_global_alloc(efi_entry: EfiEntry) -> Result<()> {
 /// there is no event/notification function that can be triggered or modify it. Otherwise there
 /// is a risk of race condition.
 pub(crate) unsafe fn exit_efi_global_alloc() {
-    // SAFETY: See SAFETY of `internal_efi_entry()`
+    // SAFETY: See SAFETY of `internal_efi_entry_and_rt()`
     unsafe {
-        EFI_GLOBAL_ALLOCATOR = EfiAllocator::Exited;
+        EFI_GLOBAL_ALLOCATOR.state = EfiState::Exited;
     }
 }
 
 impl EfiAllocator {
-    /// Returns a reference to the EfiEntry.
-    fn get_efi_entry(&self) -> Option<&EfiEntry> {
-        match self {
-            EfiAllocator::Initialized(ref entry) => Some(entry),
-            _ => None,
-        }
+    /// Creates a new instance.
+    pub const fn new() -> Self {
+        Self { state: EfiState::Uninitialized, runtime_services: None }
+    }
+
+    /// Gets EfiEntry and RuntimeServices
+    fn get_efi_entry_and_rt(&self) -> (Option<&EfiEntry>, Option<&RuntimeServices>) {
+        (self.state.efi_entry(), self.runtime_services.as_ref())
     }
 
     /// Allocate memory via EFI_BOOT_SERVICES.
     fn allocate(&self, size: usize) -> *mut u8 {
-        match self
-            .get_efi_entry()
-            .unwrap()
-            .system_table()
-            .boot_services()
-            .allocate_pool(EFI_MEMORY_TYPE_LOADER_DATA, size)
-        {
-            Ok(p) => p as *mut _,
-            _ => null_mut(),
-        }
+        self.state
+            .efi_entry()
+            .ok_or(Error::InvalidState)
+            .and_then(|v| v.system_table_checked())
+            .and_then(|v| v.boot_services_checked())
+            .and_then(|v| v.allocate_pool(EFI_MEMORY_TYPE_LOADER_DATA, size))
+            .inspect_err(|e| efi_try_print!("failed to allocate: {e}"))
+            .unwrap_or(null_mut()) as _
     }
 
-    /// Deallocate memory previously allocated by `Self::allocate()`. Passing invalid pointer will
-    /// cause the method to panic.
+    /// Deallocate memory previously allocated by `Self::allocate()`.
+    ///
+    /// Errors are logged but ignored.
     fn deallocate(&self, ptr: *mut u8) {
-        match self.get_efi_entry() {
+        match self.state.efi_entry() {
             Some(ref entry) => {
-                entry.system_table().boot_services().free_pool(ptr as *mut _).unwrap();
+                let _ = entry
+                    .system_table_checked()
+                    .and_then(|v| v.boot_services_checked())
+                    .and_then(|v| v.free_pool(ptr as *mut _))
+                    .inspect_err(|e| efi_try_print!("failed to deallocate: {e}"));
             }
             // After EFI_BOOT_SERVICES.ExitBootServices(), all allocated memory is considered
             // leaked and under full ownership of subsequent OS loader code.

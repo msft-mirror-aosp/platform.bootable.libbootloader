@@ -15,8 +15,11 @@
 //! Android boot support.
 
 use crate::{
-    avb_ops::GblAvbOps,
     device_tree::{DeviceTreeComponentSource, DeviceTreeComponentsRegistry, FDT_ALIGNMENT},
+    gbl_avb::{
+        ops::GblAvbOps,
+        state::{BootStateColor, KeyValidationStatus},
+    },
     gbl_print, gbl_println, GblOps, IntegrationError, Result,
 };
 use arrayvec::ArrayVec;
@@ -61,8 +64,8 @@ fn cstr_bytes_to_str(data: &[u8]) -> core::result::Result<&str, Error> {
 ///
 /// # Returns
 /// `()` on success, error if the images fail to verify or we fail to update the bootconfig.
-fn avb_verify_slot<'a>(
-    ops: &mut impl GblOps<'a>,
+fn avb_verify_slot<'a, 'b>(
+    ops: &mut impl GblOps<'a, 'b>,
     kernel: &[u8],
     vendor_boot: &[u8],
     init_boot: &[u8],
@@ -85,21 +88,29 @@ fn avb_verify_slot<'a>(
         }
     }
 
+    // TODO(b/337846185): Pass AVB_SLOT_VERIFY_FLAGS_RESTART_CAUSED_BY_HASHTREE_CORRUPTION in
+    // case verity corruption is detected by HLOS.
     let mut avb_ops = GblAvbOps::new(ops, &preloaded[..], false);
-    let avb_state = match avb_ops.read_is_device_unlocked()? {
-        true => "orange",
-        _ => "green",
-    };
-
     let res = slot_verify(
         &mut avb_ops,
         &partitions,
         Some(c"_a"),
         SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_NONE,
-        // For demo, we use the same setting as Cuttlefish u-boot.
+        // TODO(b/337846185): For demo, we use the same setting as Cuttlefish u-boot.
+        // Pass AVB_HASHTREE_ERROR_MODE_MANAGED_RESTART_AND_EIO and handle EIO.
         HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_RESTART_AND_INVALIDATE,
     )
     .map_err(|e| IntegrationError::from(e.without_verify_data()))?;
+
+    // TODO(b/337846185): Handle RED and RED_EIO (AVB_HASHTREE_ERROR_MODE_EIO).
+    let color = match avb_ops.read_is_device_unlocked()? {
+        false if avb_ops.key_validation_status()? == KeyValidationStatus::ValidCustomKey => {
+            BootStateColor::Yellow
+        }
+        false => BootStateColor::Green,
+        true => BootStateColor::Orange,
+    };
+    avb_ops.handle_verification_result(&res, color)?;
 
     // Append avb generated bootconfig.
     for cmdline_arg in res.cmdline().to_str().unwrap().split(' ') {
@@ -107,7 +118,7 @@ fn avb_verify_slot<'a>(
     }
 
     // Append "androidboot.verifiedbootstate="
-    write!(bootconfig_builder, "androidboot.verifiedbootstate={}\n", avb_state)
+    write!(bootconfig_builder, "androidboot.verifiedbootstate={}\n", color)
         .or(Err(Error::BufferTooSmall(None)))?;
     Ok(())
 }
@@ -206,8 +217,8 @@ fn vendor_header_elements<B: ByteSlice + PartialEq>(
 /// # Returns
 /// Returns a tuple of 4 slices corresponding to:
 ///   (ramdisk load buffer, FDT load buffer, kernel load buffer, unused buffer).
-pub fn load_android_simple<'a, 'b>(
-    ops: &mut impl GblOps<'b>,
+pub fn load_android_simple<'a, 'b, 'c>(
+    ops: &mut impl GblOps<'b, 'c>,
     load: &'a mut [u8],
 ) -> Result<(&'a mut [u8], &'a mut [u8], &'a mut [u8], &'a mut [u8])> {
     const PAGE_SIZE: usize = 4096; // V3/V4 image has fixed page size 4096;
@@ -491,11 +502,10 @@ pub fn load_android_simple<'a, 'b>(
     gbl_println!(ops, "linux,initrd-end: {:#x}", ramdisk_end);
 
     // Update the FDT commandline.
-    let device_tree_commandline_length =
-        CStr::from_bytes_until_nul(fdt.get_property("chosen", BOOTARGS_PROP)?)
-            .map_err(Error::from)?
-            .to_bytes()
-            .len();
+    let device_tree_commandline_length = match fdt.get_property("chosen", BOOTARGS_PROP) {
+        Ok(val) => CStr::from_bytes_until_nul(val).map_err(Error::from)?.to_bytes().len(),
+        Err(_) => 0,
+    };
 
     // Reserve 1024 bytes for separators and fixup.
     let final_commandline_len =

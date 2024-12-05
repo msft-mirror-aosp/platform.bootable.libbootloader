@@ -94,9 +94,19 @@ pub struct EfiEntry {
 
 impl EfiEntry {
     /// Gets an instance of `SystemTable`.
+    ///
+    /// Panics if the pointer is NULL.
     pub fn system_table(&self) -> SystemTable {
+        self.system_table_checked().unwrap()
+    }
+
+    /// Gets an instance of `SystemTable` if pointer is valid.
+    pub fn system_table_checked(&self) -> Result<SystemTable> {
         // SAFETY: Pointers to UEFI data strucutres.
-        SystemTable { efi_entry: self, table: unsafe { self.systab_ptr.as_ref() }.unwrap() }
+        Ok(SystemTable {
+            efi_entry: self,
+            table: unsafe { self.systab_ptr.as_ref() }.ok_or(Error::Unsupported)?,
+        })
     }
 
     /// Gets the image handle.
@@ -131,15 +141,14 @@ pub unsafe fn initialize(
     image_handle: EfiHandle,
     systab_ptr: *const EfiSystemTable,
 ) -> Result<EfiEntry> {
-    let efi_entry = EfiEntry { image_handle, systab_ptr };
     // SAFETY: By safety requirement of this function, `initialize` is only called once upon
     // entering EFI application, where there should be no event notify function that can be
     // triggered.
     unsafe {
-        // Create another one for internal global allocator.
+        // Create one for internal global allocator.
         allocation::init_efi_global_alloc(EfiEntry { image_handle, systab_ptr })?;
     }
-    Ok(efi_entry)
+    Ok(EfiEntry { image_handle, systab_ptr })
 }
 
 /// Exits boot service and returns the memory map in the given buffer.
@@ -174,20 +183,38 @@ pub struct SystemTable<'a> {
 
 impl<'a> SystemTable<'a> {
     /// Creates an instance of `BootServices`
+    ///
+    /// Panics if not implemented by UEFI.
     pub fn boot_services(&self) -> BootServices<'a> {
-        BootServices {
+        self.boot_services_checked().unwrap()
+    }
+
+    /// Creates an instance of `BootServices`
+    ///
+    /// Returns Err(()) if not implemented by UEFI.
+    pub fn boot_services_checked(&self) -> Result<BootServices<'a>> {
+        Ok(BootServices {
             efi_entry: self.efi_entry,
             // SAFETY: Pointers to UEFI data strucutres.
-            boot_services: unsafe { self.table.boot_services.as_ref() }.unwrap(),
-        }
+            boot_services: unsafe { self.table.boot_services.as_ref() }
+                .ok_or(Error::Unsupported)?,
+        })
     }
 
     /// Creates an instance of `RuntimeServices`
-    pub fn runtime_services(&self) -> RuntimeServices<'a> {
-        RuntimeServices {
+    ///
+    /// Panics if run time services is not implemented.
+    pub fn runtime_services(&self) -> RuntimeServices {
+        self.runtime_services_checked().unwrap()
+    }
+
+    /// Creates an instance of `RuntimeServices` if available from system table.
+    pub fn runtime_services_checked(&self) -> Result<RuntimeServices> {
+        Ok(RuntimeServices {
             // SAFETY: Pointers to UEFI data strucutres.
-            runtime_services: unsafe { self.table.runtime_services.as_ref() }.unwrap(),
-        }
+            runtime_services: *unsafe { self.table.runtime_services.as_ref() }
+                .ok_or(Error::Unsupported)?,
+        })
     }
 
     /// Gets the `EFI_SYSTEM_TABLE.ConOut` field.
@@ -480,11 +507,11 @@ impl<'a> BootServices<'a> {
 
 /// `RuntimeServices` provides methods for accessing various EFI_RUNTIME_SERVICES interfaces.
 #[derive(Clone, Copy)]
-pub struct RuntimeServices<'a> {
-    runtime_services: &'a EfiRuntimeService,
+pub struct RuntimeServices {
+    runtime_services: EfiRuntimeService,
 }
 
-impl<'a> RuntimeServices<'a> {
+impl RuntimeServices {
     /// Wrapper of `EFI_RUNTIME_SERVICES.GetVariable()`.
     pub fn get_variable(&self, guid: &EfiGuid, name: &str, out: &mut [u8]) -> Result<usize> {
         let mut size = out.len();
@@ -888,23 +915,25 @@ macro_rules! efi_println {
     };
 }
 
+/// Resets system. Hangs if not supported.
+#[cfg(not(test))]
+pub fn reset() -> ! {
+    efi_try_print!("Resetting...\r\n");
+    match allocation::internal_efi_entry_and_rt().1 {
+        Some(rt) => rt.cold_reset(),
+        _ => efi_try_print!("Runtime services not supported. Hangs...\r\n"),
+    }
+    loop {}
+}
+
 /// Provides a builtin panic handler.
 /// In the long term, to improve flexibility, consider allowing application to install a custom
 /// handler into `EfiEntry` to be called here.
 /// Don't set this as the panic handler so that other crates' tests can depend on libefi.
 #[cfg(not(test))]
 pub fn panic(panic: &PanicInfo) -> ! {
-    // If there is a valid internal `efi_entry` from global allocator, print the panic info.
-    let entry = allocation::internal_efi_entry();
-    if let Some(e) = entry {
-        match e.system_table().con_out() {
-            Ok(mut con_out) => {
-                let _ = write!(con_out, "Panics! {}\r\n", panic);
-            }
-            _ => {}
-        }
-    }
-    loop {}
+    efi_try_print!("Panics! {}\r\n", panic);
+    reset();
 }
 
 #[cfg(test)]
