@@ -148,9 +148,9 @@ This protocol was proposed by U-Boot and is currently used by the Kernel UEFI st
 These protocols are defined by GBL to provide specific functionality that is
 not available elsewhere.
 
-None of these custom protocols are required, with the intention that dev boards
-that support a typical set of UEFI protocols should be able to use GBL without
-any firmware modifications and still get some basic booting functionality.
+Majority of these custom protocols aren't required, with the intention that dev
+boards that support a typical set of UEFI protocols should be able to use GBL
+with a minimal firmware modifications and still get some basic booting functionality.
 
 However, without these protocols GBL will be missing key features such as
 USB fastboot and verified boot, so production targets and more full-featured dev
@@ -213,3 +213,13 @@ Used to provide buffers to load the images for verification and boot process.
 In addition this protocol provides a list of additional custom partitions to be
 verified before booting, for boards that want to verify data in addition to the
 standard boot partitions.
+
+### GblAvbProtocol
+
+* [`GBL_EFI_AVB_PROTOCOL`](./gbl_avb_protocol.md)
+* required for production devices: enables AVB-related firmware callbacks.
+
+This protocol delegates some of AVB-related logic to the firmware, including
+tasks such as verifying public keys, handling verification results, and
+managing the device’s secure state (e.g., ROT, lock state, rollback indexes,
+etc.).

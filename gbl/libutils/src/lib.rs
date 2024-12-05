@@ -46,6 +46,23 @@ where
     Ok(bytes.get_mut(aligned_offset..).ok_or(Error::BufferTooSmall(Some(aligned_offset)))?)
 }
 
+/// A helper for getting the offset of the first byte with and aligned address.
+///
+/// # Arguments
+/// * `bytes`: the byte slice
+/// * `alignment`: the desired starting alignment.
+///
+/// # Returns
+///
+/// * Returns Ok(offset) on success, Err() on integer overflow.
+pub fn aligned_offset<T>(buffer: &[u8], alignment: T) -> Result<usize>
+where
+    T: Copy + Into<SafeNum>,
+{
+    let addr = SafeNum::from(buffer.as_ptr() as usize);
+    (addr.round_up(alignment) - addr).try_into().map_err(From::from)
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

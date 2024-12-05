@@ -1,3 +1,65 @@
+# Lock down the PATH variable in actions to /usr/bin and /usr/local/bin.
+build --incompatible_strict_action_env
+
+# By default, output all the logs to stdout/stderr by disabling the console limit
+build --experimental_ui_max_stdouterr_bytes=-1
+
+# Make output directories writable so `rm -rf out/` works.
+build --experimental_writable_outputs
+
+# NOTE: To ensure a strict no external access policy, the following three flags
+#   need to be set/unset, see https://github.com/bazelbuild/bazel/discussions/18281
+#   for more details about this.
+# An empty string as argument requests the cache to be disabled.
+common --repository_cache=
+# Additional places to search for archives before accessing the network to download them.
+common --distdir=
+# If set, downloading using ctx.download{,_and_extract} is not allowed during repository fetching.
+common --repository_disable_download
+
+# bzlmod
+common --enable_bzlmod
+common --registry=file://%workspace%/external/bazelbuild-bazel-central-registry
+# Set --lockfile_mode=off to prevent generation of MODULE.bazel.lock
+# and caching of source declarations in the registry.
+# See https://github.com/bazelbuild/bazel/issues/20477
+# Note: If the registry files are modified, one needs to run `bazel shutdown`
+#   as well as setting this flag. Usually, files are only added to the registry.
+common --lockfile_mode=off
+
+# CC toolchain
+# Use --platforms to select toolchains, not the legacy --cpu --cross_top --compiler.
+# See https://bazel.build/concepts/platforms#cxx
+build --incompatible_enable_cc_toolchain_resolution
+
+# Do not use host toolchain
+build --action_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
+
 build --@rules_rust//rust/settings:experimental_toolchain_generated_sysroot=false
-common --config=bzlmod
 common --extra_toolchains=@gbl//toolchain:all
+test  --test_output=errors
+
+# Set up remote caching
+# https://developers.google.com/remote-build-execution/docs/set-up/set-up-caching
+test:ants --remote_cache=grpcs://remotebuildexecution.googleapis.com
+test:ants --google_default_credentials=true
+test:ants --remote_instance_name=projects/android-build-farm/instances/default_instance
+test:ants --noremote_upload_local_results
+
+# Upload results to BES backend.
+# Refer to go/bazel-ants-docs
+test:ants --bes_backend=buildeventservice-pa.googleapis.com
+test:ants --bes_keywords=android-test-storage
+test:ants --bes_instance_name=android-build-farm
+test:ants --build_metadata=run_type=critical
+
+# Show URI to test results
+test:ants --build_metadata=generate_test_uri=fusion
+
+# These need to be set in the command line
+# test:ants --build_metadata="ab_build_id=${BUILD_ID}"
+# test:ants --build_metadata="ab_target=???",
+# test:ants --build_metadata="test_definition_name=kernel/kleaf/???"
+
+common:android_ci --noshow_progress
+test:android_ci --config=ants

@@ -17,6 +17,7 @@
 use crate::efi_call;
 use crate::protocol::{Protocol, ProtocolInfo};
 use efi_types::{EfiBlockIoMedia, EfiBlockIoProtocol, EfiGuid};
+use gbl_storage::SliceMaybeUninit;
 use liberror::{Error, Result};
 
 /// EFI_BLOCK_IO_PROTOCOL
@@ -32,7 +33,11 @@ impl ProtocolInfo for BlockIoProtocol {
 // Protocol interface wrappers.
 impl Protocol<'_, BlockIoProtocol> {
     /// Wrapper of `EFI_BLOCK_IO_PROTOCOL.read_blocks()`
-    pub fn read_blocks(&self, lba: u64, buffer: &mut [u8]) -> Result<()> {
+    pub fn read_blocks(
+        &self,
+        lba: u64,
+        buffer: &mut (impl SliceMaybeUninit + ?Sized),
+    ) -> Result<()> {
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
         // established by `Protocol::new()`.
@@ -45,7 +50,7 @@ impl Protocol<'_, BlockIoProtocol> {
                 self.media()?.media_id,
                 lba,
                 buffer.len(),
-                buffer.as_mut_ptr() as *mut _
+                buffer.as_mut().as_mut_ptr() as *mut _
             )
         }
     }
