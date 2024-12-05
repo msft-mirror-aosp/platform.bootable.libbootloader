@@ -428,6 +428,7 @@ where
     fn avb_handle_verification_result(
         &mut self,
         color: BootStateColor,
+        digest: Option<&CStr>,
         boot_os_version: Option<&[u8]>,
         boot_security_patch: Option<&[u8]>,
         system_os_version: Option<&[u8]>,
@@ -440,6 +441,7 @@ where
             Ok(protocol) => protocol
                 .handle_verification_result(&GblEfiAvbVerificationResult {
                     color: avb_color_to_efi_color(color),
+                    digest: digest.map_or(null(), |p| p.as_ptr() as _),
                     boot_version: boot_os_version.map_or(null(), |p| p.as_ptr()),
                     boot_security_patch: boot_security_patch.map_or(null(), |p| p.as_ptr()),
                     system_version: system_os_version.map_or(null(), |p| p.as_ptr()),
@@ -740,6 +742,7 @@ impl<'a, 'd, T: GblOps<'a, 'd>> GblOps<'a, 'd> for RambootOps<'_, T> {
     fn avb_handle_verification_result(
         &mut self,
         color: BootStateColor,
+        digest: Option<&CStr>,
         boot_os_version: Option<&[u8]>,
         boot_security_patch: Option<&[u8]>,
         system_os_version: Option<&[u8]>,
@@ -749,6 +752,7 @@ impl<'a, 'd, T: GblOps<'a, 'd>> GblOps<'a, 'd> for RambootOps<'_, T> {
     ) -> AvbIoResult<()> {
         self.ops.avb_handle_verification_result(
             color,
+            digest,
             boot_os_version,
             boot_security_patch,
             system_os_version,

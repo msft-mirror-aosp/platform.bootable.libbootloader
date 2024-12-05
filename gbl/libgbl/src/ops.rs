@@ -284,6 +284,7 @@ pub trait GblOps<'a, 'd> {
     fn avb_handle_verification_result(
         &mut self,
         color: BootStateColor,
+        digest: Option<&CStr>,
         boot_os_version: Option<&[u8]>,
         boot_security_patch: Option<&[u8]>,
         system_os_version: Option<&[u8]>,
@@ -659,6 +660,7 @@ pub(crate) mod test {
         fn avb_handle_verification_result(
             &mut self,
             _color: BootStateColor,
+            _digest: Option<&CStr>,
             _boot_os_version: Option<&[u8]>,
             _boot_security_patch: Option<&[u8]>,
             _system_os_version: Option<&[u8]>,

@@ -131,6 +131,8 @@ impl<'a, 'p, 'q, T: GblOps<'p, 'q>> GblAvbOps<'a, T> {
 
         self.gbl_ops.avb_handle_verification_result(
             color,
+            // TODO(b/337846185): extract VBH from the command line provided by libavb.
+            None,
             boot_os_version,
             boot_security_patch,
             system_os_version,

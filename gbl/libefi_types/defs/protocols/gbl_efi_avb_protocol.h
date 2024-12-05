@@ -46,9 +46,11 @@ typedef struct {
   // GblEfiAvbBootStateColor
   uint32_t color;
 
-  // TODO(b/337846185): Add result vbmeta digest.
+  // Pointer to nul-terminated ASCII hex digest calculated by libavb. May be
+  // null in case of verification failed (RED boot state color).
+  const char8_t* digest;
 
-  // Pointers to zero terminated os versions and security_patches for different
+  // Pointers to nul-terminated os versions and security_patches for different
   // boot components. NULL is provided in case value isn't presented in the boot
   // artifacts or fatal AVB failure.
   // https://source.android.com/docs/core/architecture/bootloader/version-info-avb
