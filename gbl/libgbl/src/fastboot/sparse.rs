@@ -16,7 +16,7 @@ use core::{
     cmp::{max, min},
     mem::size_of,
 };
-use fastboot::CommandError;
+use liberror::Error;
 use static_assertions::const_assert;
 use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
 
@@ -66,7 +66,7 @@ const ERR_ARITHMETIC_OVERFLOW: &str = "Arithmetic Overflow";
 const ERR_IMAGE_SIZE: &str = "Bad image. Invalid image size";
 
 /// Checks if a sparse image is valid and returns the sparse header.
-pub fn is_sparse_image(sparse_img: &[u8]) -> Result<SparseHeader, CommandError> {
+pub fn is_sparse_image(sparse_img: &[u8]) -> Result<SparseHeader, Error> {
     let sparse_header: SparseHeader = copy_from(sparse_img)?;
     if sparse_header.magic != HEADER_MAGIC {
         return Err("Sparse magic mismatch".into());
@@ -135,7 +135,7 @@ const_assert!(size_of::<FillInfo>() < size_of::<ChunkHeader>());
 /// `SparseRawWriter` defines an interface for writing to raw storage used by `write_sparse_image`.
 pub(crate) trait SparseRawWriter {
     /// Writes bytes from `data` to the destination storage at offset `off`
-    async fn write(&mut self, off: u64, data: &mut [u8]) -> Result<(), CommandError>;
+    async fn write(&mut self, off: u64, data: &mut [u8]) -> Result<(), Error>;
 }
 
 /// Write a sparse image in `sparse_img`.
@@ -152,7 +152,7 @@ pub(crate) trait SparseRawWriter {
 pub async fn write_sparse_image(
     sparse_img: &mut [u8],
     writer: &mut impl SparseRawWriter,
-) -> Result<u64, CommandError> {
+) -> Result<u64, Error> {
     let sparse_header: SparseHeader = is_sparse_image(sparse_img)?;
     let mut curr: usize = size_of::<SparseHeader>();
     let mut write_offset = 0u64;
@@ -224,7 +224,7 @@ struct FillBuffer<'a> {
 
 impl FillBuffer<'_> {
     /// Get a buffer up to `size` number of bytes filled with `val`.
-    fn get(&mut self, val: u32, size: u64) -> Result<&mut [u8], CommandError> {
+    fn get(&mut self, val: u32, size: u64) -> Result<&mut [u8], Error> {
         let aligned_len = self.buffer.len() - (self.buffer.len() % size_of::<u32>());
         let size: usize = min(to_u64(aligned_len)?, size).try_into().unwrap();
         if Some(val) != self.curr_val {
@@ -244,7 +244,7 @@ fn get_mut<L: TryInto<usize>, R: TryInto<usize>>(
     bytes: &mut [u8],
     start: L,
     end: R,
-) -> Result<&mut [u8], CommandError> {
+) -> Result<&mut [u8], Error> {
     bytes.get_mut(to_usize(start)?..to_usize(end)?).ok_or(ERR_IMAGE_SIZE.into())
 }
 
@@ -253,39 +253,42 @@ fn get<L: TryInto<usize>, R: TryInto<usize>>(
     bytes: &[u8],
     start: L,
     end: R,
-) -> Result<&[u8], CommandError> {
+) -> Result<&[u8], Error> {
     bytes.get(to_usize(start)?..to_usize(end)?).ok_or(ERR_IMAGE_SIZE.into())
 }
 
 /// A helper to return a copy of a zerocopy object from bytes.
-fn copy_from<T: AsBytes + FromBytes + Default>(bytes: &[u8]) -> Result<T, CommandError> {
+fn copy_from<T: AsBytes + FromBytes + Default>(bytes: &[u8]) -> Result<T, Error> {
     let mut res: T = Default::default();
     res.as_bytes_mut().clone_from_slice(get(bytes, 0, size_of::<T>())?);
     Ok(res)
 }
 
+// Investigate switching the following to use SafeNum. A naive replacement results in too many
+// `try_into()?` callsites which looks chaotics. Some proper wrapper might still be needed.
+
 /// Checks and converts an integer into usize.
-fn to_usize<T: TryInto<usize>>(val: T) -> Result<usize, CommandError> {
+fn to_usize<T: TryInto<usize>>(val: T) -> Result<usize, Error> {
     Ok(val.try_into().map_err(|_| ERR_ARITHMETIC_OVERFLOW)?)
 }
 
 /// Adds two usize convertible numbers and checks overflow.
-fn usize_add<L: TryInto<usize>, R: TryInto<usize>>(lhs: L, rhs: R) -> Result<usize, CommandError> {
+fn usize_add<L: TryInto<usize>, R: TryInto<usize>>(lhs: L, rhs: R) -> Result<usize, Error> {
     Ok(to_usize(lhs)?.checked_add(to_usize(rhs)?).ok_or(ERR_ARITHMETIC_OVERFLOW)?)
 }
 
 /// Checks and converts an integer into u64
-fn to_u64<T: TryInto<u64>>(val: T) -> Result<u64, CommandError> {
+fn to_u64<T: TryInto<u64>>(val: T) -> Result<u64, Error> {
     Ok(val.try_into().map_err(|_| ERR_ARITHMETIC_OVERFLOW)?)
 }
 
 /// Adds two u64 convertible numbers and checks overflow.
-fn u64_add<L: TryInto<u64>, R: TryInto<u64>>(lhs: L, rhs: R) -> Result<u64, CommandError> {
+fn u64_add<L: TryInto<u64>, R: TryInto<u64>>(lhs: L, rhs: R) -> Result<u64, Error> {
     Ok(to_u64(lhs)?.checked_add(to_u64(rhs)?).ok_or(ERR_ARITHMETIC_OVERFLOW)?)
 }
 
 /// Multiplies two u64 convertible numbers and checks overflow.
-fn u64_mul<L: TryInto<u64>, R: TryInto<u64>>(lhs: L, rhs: R) -> Result<u64, CommandError> {
+fn u64_mul<L: TryInto<u64>, R: TryInto<u64>>(lhs: L, rhs: R) -> Result<u64, Error> {
     Ok(to_u64(lhs)?.checked_mul(to_u64(rhs)?).ok_or(ERR_ARITHMETIC_OVERFLOW)?)
 }
 
@@ -295,7 +298,7 @@ mod test {
     use gbl_async::block_on;
 
     impl SparseRawWriter for Vec<u8> {
-        async fn write(&mut self, off: u64, data: &mut [u8]) -> Result<(), CommandError> {
+        async fn write(&mut self, off: u64, data: &mut [u8]) -> Result<(), Error> {
             self[off.try_into().unwrap()..][..data.len()].clone_from_slice(data);
             Ok(())
         }

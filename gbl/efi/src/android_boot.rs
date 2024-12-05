@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{efi_blocks::find_block_devices, fastboot::fastboot, ops::Ops};
+use crate::{efi_blocks::find_block_devices, fastboot::fastboot, ops::Ops, ops::RambootOps};
 use efi::{exit_boot_services, EfiEntry};
-use libgbl::{android_boot::load_android_simple, gbl_print, gbl_println, GblOps, Result};
+use libgbl::{android_boot::load_android_simple, gbl_print, gbl_println, GblOps, Os, Result};
 
 // The following implements a demo for booting Android from disk. It can be run from
 // Cuttlefish by adding `--android_efi_loader=<path of this EFI binary>` to the command line.
@@ -30,19 +30,17 @@ use libgbl::{android_boot::load_android_simple, gbl_print, gbl_println, GblOps, 
 // flow in libgbl, which will eventually replace this demo. The demo is currently used as an
 // end-to-end test for libraries developed so far.
 pub fn android_boot_demo(entry: EfiEntry) -> Result<()> {
-    let mut blks = find_block_devices(&entry)?;
-    let partitions = &blks.as_gbl_parts()?;
-    let mut ops = Ops::new(&entry, partitions);
+    let blks = find_block_devices(&entry)?;
+    let mut ops = Ops::new(&entry, &blks[..], Some(Os::Android));
+    let mut bootimg_buffer = &mut vec![0u8; 128 * 1024 * 1024][..]; // 128 MB
 
     match ops.should_stop_in_fastboot() {
-        Ok(true) => {
-            fastboot(&mut ops)?;
-        }
-        Ok(false) => {}
+        Ok(true) => fastboot(&mut ops, &mut bootimg_buffer)?,
         Err(e) => {
             gbl_println!(ops, "Warning: error while checking fastboot trigger ({:?})", e);
             gbl_println!(ops, "Ignoring error and continuing with normal boot");
         }
+        _ => {}
     }
 
     gbl_println!(ops, "Try booting as Android");
@@ -50,7 +48,12 @@ pub fn android_boot_demo(entry: EfiEntry) -> Result<()> {
     // Allocate buffer for load.
     let mut load_buffer = vec![0u8; 128 * 1024 * 1024]; // 128MB
 
-    let (ramdisk, fdt, kernel, remains) = load_android_simple(&mut ops, &mut load_buffer[..])?;
+    let (ramdisk, fdt, kernel, remains) = if bootimg_buffer.starts_with(b"ANDROID!") {
+        let mut ramboot_ops = RambootOps { ops: &mut ops, bootimg_buffer };
+        load_android_simple(&mut ramboot_ops, &mut load_buffer[..])?
+    } else {
+        load_android_simple(&mut ops, &mut load_buffer[..])?
+    };
 
     gbl_println!(ops, "");
     gbl_println!(
