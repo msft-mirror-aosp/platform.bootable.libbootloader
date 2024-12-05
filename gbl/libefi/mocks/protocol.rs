@@ -221,6 +221,10 @@ pub mod gbl_efi_avb {
         pub read_rollback_index_result: Option<Result<u64>>,
         /// Expected return value from `write_rollback_index`.
         pub write_rollback_index_result: Option<Result<()>>,
+        /// Expected return value from `read_persistent_value`.
+        pub read_persistent_value_result: Option<Result<usize>>,
+        /// Expected return value from `write_persistent_value`.
+        pub write_persistent_value_result: Option<Result<()>>,
     }
 
     impl GblAvbProtocol {
@@ -250,6 +254,16 @@ pub mod gbl_efi_avb {
             _rollback_index: u64,
         ) -> Result<()> {
             self.write_rollback_index_result.unwrap()
+        }
+
+        /// Wraps `GBL_EFI_AVB_PROTOCOL.read_persistent_value()`.
+        pub fn read_persistent_value(&self, _name: &CStr, _value: &mut [u8]) -> Result<usize> {
+            self.read_persistent_value_result.unwrap()
+        }
+
+        /// Wraps `GBL_EFI_AVB_PROTOCOL.write_persistent_value()`.
+        pub fn write_persistent_value(&self, _name: &CStr, _value: Option<&[u8]>) -> Result<()> {
+            self.write_persistent_value_result.unwrap()
         }
 
         /// Wraps `GBL_EFI_AVB_PROTOCOL.handle_verification_result()`.

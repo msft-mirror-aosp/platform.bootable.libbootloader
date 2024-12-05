@@ -241,6 +241,21 @@ pub trait GblOps<'a, 'd> {
         index: u64,
     ) -> AvbIoResult<()>;
 
+    /// Reads the AVB persistent value for the given name.
+    ///
+    /// The interface has the same requirement as `avb::Ops::read_persistent_value`.
+    fn avb_read_persistent_value(&mut self, name: &CStr, value: &mut [u8]) -> AvbIoResult<usize>;
+
+    /// Writes the AVB persistent value for the given name.
+    ///
+    /// The interface has the same requirement as `avb::Ops::write_persistent_value`.
+    fn avb_write_persistent_value(&mut self, name: &CStr, value: &[u8]) -> AvbIoResult<()>;
+
+    /// Erases the AVB persistent value for the given name.
+    ///
+    /// The interface has the same requirement as `avb::Ops::erase_persistent_value`.
+    fn avb_erase_persistent_value(&mut self, name: &CStr) -> AvbIoResult<()>;
+
     /// Validate public key used to execute AVB.
     ///
     /// Used by `avb::CertOps::read_permanent_attributes_hash` so have similar requirements.
@@ -623,6 +638,22 @@ pub(crate) mod test {
             &mut self,
         ) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
             self.avb_ops.read_permanent_attributes_hash()
+        }
+
+        fn avb_read_persistent_value(
+            &mut self,
+            name: &CStr,
+            value: &mut [u8],
+        ) -> AvbIoResult<usize> {
+            self.avb_ops.read_persistent_value(name, value)
+        }
+
+        fn avb_write_persistent_value(&mut self, name: &CStr, value: &[u8]) -> AvbIoResult<()> {
+            self.avb_ops.write_persistent_value(name, value)
+        }
+
+        fn avb_erase_persistent_value(&mut self, name: &CStr) -> AvbIoResult<()> {
+            self.avb_ops.erase_persistent_value(name)
         }
 
         fn avb_handle_verification_result(
