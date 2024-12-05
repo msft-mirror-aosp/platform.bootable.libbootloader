@@ -66,15 +66,23 @@ enum TargetOs {
 #[cfg(not(test))]
 fn get_target_os(entry: &EfiEntry) -> TargetOs {
     let mut buf = [0u8; 1];
-    if fuchsia_boot::is_fuchsia_gpt(&entry).is_ok()
-        || entry
-            .system_table()
-            .runtime_services()
-            .get_variable(&efi::GBL_EFI_VENDOR_GUID, efi::GBL_EFI_OS_BOOT_TARGET_VARNAME, &mut buf)
-            .is_ok()
+    if entry
+        .system_table()
+        .runtime_services()
+        .get_variable(&efi::GBL_EFI_VENDOR_GUID, efi::GBL_EFI_OS_BOOT_TARGET_VARNAME, &mut buf)
+        .is_ok()
     {
+        efi_println!(
+            entry,
+            "`{}` is set. Proceeding as Fuchsia.",
+            efi::GBL_EFI_OS_BOOT_TARGET_VARNAME
+        );
+        TargetOs::Fuchsia
+    } else if fuchsia_boot::is_fuchsia_gpt(&entry).is_ok() {
+        efi_println!(entry, "Partition layout looks like Fuchsia. Proceeding as Fuchsia");
         TargetOs::Fuchsia
     } else {
+        efi_println!(entry, "Proceeding as Android");
         TargetOs::Android
     }
 }

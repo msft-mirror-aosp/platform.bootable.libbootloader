@@ -19,7 +19,10 @@ use crate::{
     protocol::{Protocol, ProtocolInfo},
 };
 use arrayvec::ArrayVec;
-use core::str::{from_utf8, Split};
+use core::{
+    ffi::CStr,
+    str::{from_utf8, Split},
+};
 use efi_types::{
     EfiGuid, GblEfiFastbootArg, GblEfiFastbootPolicy, GblEfiFastbootProtocol, GblEfiFastbootToken,
 };
@@ -56,29 +59,18 @@ impl Token {
 
 impl Protocol<'_, GblFastbootProtocol> {
     /// Hint-free wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.get_var()`
-    pub fn get_var(&self, args: Split<'_, char>, buffer: &mut [u8]) -> Result<usize> {
-        self.get_var_with_hint(args, buffer, Token::new())
+    pub fn get_var(&self, name: &str, args: Split<'_, char>, buffer: &mut [u8]) -> Result<usize> {
+        self.get_var_with_hint(name, args, buffer, Token::new())
     }
 
     /// Wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.get_var() with hint.`
-    pub fn get_var_with_hint(
+    fn get_var_with_hint_internal(
         &self,
-        args: Split<'_, char>,
+        call_args: &[GblEfiFastbootArg],
         buffer: &mut [u8],
         hint: Token,
     ) -> Result<usize> {
         let mut bufsize = buffer.len();
-        let mut call_args: [GblEfiFastbootArg; MAX_ARGS + 1] = Default::default();
-        let mut call_args_len = 0usize;
-        for (a, ca) in core::iter::zip(args, call_args.iter_mut()) {
-            ca.str_utf8 = a.as_ptr();
-            ca.len = a.len();
-            call_args_len += 1;
-        }
-
-        if call_args_len == MAX_ARGS + 1 {
-            return Err(Error::InvalidInput);
-        }
 
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
@@ -91,13 +83,36 @@ impl Protocol<'_, GblFastbootProtocol> {
                 self.interface()?.get_var,
                 self.interface,
                 call_args.as_ptr(),
-                call_args_len,
+                call_args.len(),
                 buffer.as_mut_ptr(),
                 &mut bufsize,
                 hint.0,
             )?
         };
         Ok(bufsize)
+    }
+
+    /// Gets value of the variable of the given name and additional arguments.
+    pub fn get_var_with_hint(
+        &self,
+        name: &str,
+        args: Split<'_, char>,
+        buffer: &mut [u8],
+        hint: Token,
+    ) -> Result<usize> {
+        let mut call_args: [GblEfiFastbootArg; MAX_ARGS + 1] = Default::default();
+        let mut call_args_len = 1usize;
+        call_args[0] = GblEfiFastbootArg { str_utf8: name.as_ptr(), len: name.len() };
+        for (a, ca) in core::iter::zip(args, call_args[1..].iter_mut()) {
+            ca.str_utf8 = a.as_ptr();
+            ca.len = a.len();
+            call_args_len += 1;
+        }
+
+        if call_args_len == MAX_ARGS + 1 {
+            return Err(Error::InvalidInput);
+        }
+        self.get_var_with_hint_internal(&call_args[..call_args_len], buffer, hint)
     }
 
     fn start_var_iterator(&self) -> Result<Token> {
@@ -248,6 +263,32 @@ impl Protocol<'_, GblFastbootProtocol> {
     }
 }
 
+/// Item type for `VarIterator`
+pub struct Var<'a> {
+    protocol: &'a Protocol<'a, GblFastbootProtocol>,
+    args: ArrayVec<GblEfiFastbootArg, MAX_ARGS>,
+    token: Token,
+}
+
+impl Var<'_> {
+    /// Gets name, arguments and the value.
+    pub fn get<'s>(
+        &self,
+        out: &'s mut [u8],
+    ) -> Result<(&'static str, impl Iterator<Item = &'static str> + '_, &'s str)> {
+        // SAFETY: By UEFI interface spec, the pointer returned from UEFI firmware for the argument
+        // string must point to a static buffer containing a NULL terminated string.
+        let mut args = self
+            .args
+            .iter()
+            .map(|v| unsafe { CStr::from_ptr(v.str_utf8 as _).to_str().unwrap_or("?") });
+        let name = args.next().ok_or(Error::Other(Some("variable/arguments are empty")))?;
+        let sz = self.protocol.get_var_with_hint_internal(&self.args[..], out, self.token)?;
+        let val = from_utf8(&out[..sz])?;
+        Ok((name, args, val))
+    }
+}
+
 /// Iterator over fastboot variables.
 pub struct VarIterator<'a> {
     protocol: &'a Protocol<'a, GblFastbootProtocol>,
@@ -264,7 +305,7 @@ impl<'a> VarIterator<'a> {
 }
 
 impl<'a> Iterator for VarIterator<'a> {
-    type Item = (ArrayVec<GblEfiFastbootArg, MAX_ARGS>, Token);
+    type Item = Var<'a>;
     fn next(&mut self) -> Option<Self::Item> {
         let mut args = [GblEfiFastbootArg::default(); MAX_ARGS];
 
@@ -277,7 +318,7 @@ impl<'a> Iterator for VarIterator<'a> {
         } else {
             let mut args = ArrayVec::from(args);
             args.truncate(len);
-            Some((args, prev_token))
+            Some(Var { protocol: self.protocol, args, token: prev_token })
         }
     }
 }
@@ -526,9 +567,8 @@ mod test {
             // SAFETY:
             // All elements of `VARS`, and therefore all elements of `var_iter`,
             // contain valid UTF-8 encoded strings.
-            let actual: Vec<String> = var_iter
-                .map(|(args, _token): (_, Token)| unsafe { join_args(&args, ":") })
-                .collect();
+            let actual: Vec<String> =
+                var_iter.map(|v| unsafe { join_args(&v.args, ":") }).collect();
 
             let expected = &[
                 "bivalve:",
@@ -548,14 +588,15 @@ mod test {
             let efi_entry = EfiEntry { image_handle, systab_ptr };
             let protocol = generate_protocol::<GblFastbootProtocol>(&efi_entry, &mut fb);
 
-            let args = "cephalopod:coleoid".split(':');
+            let args = "coleoid".split(':');
             let mut buffer = [0u8; 32];
-            let len = protocol.get_var(args, &mut buffer).unwrap();
+            let len = protocol.get_var("cephalopod", args, &mut buffer).unwrap();
             let actual = std::str::from_utf8(&buffer[..len]).unwrap();
             assert_eq!(actual, "squid");
 
-            let args = "cephalopod:nautiloid".split(':');
-            let len = protocol.get_var_with_hint(args, &mut buffer, Token::new()).unwrap();
+            let args = "nautiloid".split(':');
+            let len =
+                protocol.get_var_with_hint("cephalopod", args, &mut buffer, Token::new()).unwrap();
             let actual = std::str::from_utf8(&buffer[..len]).unwrap();
             assert_eq!(actual, "nautilus");
         });

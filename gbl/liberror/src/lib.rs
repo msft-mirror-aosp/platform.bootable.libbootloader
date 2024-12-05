@@ -44,6 +44,8 @@ use efi_types as efi;
 /// Gpt related errors.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum GptError {
+    /// Secondary header is valid, but different from primary.
+    DifferentFromPrimary,
     /// Disk size is not enough to accommodate maximum allowed entries.
     DiskTooSmall,
     /// GPT entries buffer is too small for the expected number of entries.
@@ -92,6 +94,13 @@ pub enum GptError {
         entries: u32,
         /// Maximum allowed.
         max_allowed: usize,
+    },
+    /// Two partitions overlap.
+    PartitionRangeOverlap {
+        /// Previous partition in overlap. (partition index, first, last)
+        prev: (usize, u64, u64),
+        /// Next partition in overlap. (partition index, first, last)
+        next: (usize, u64, u64),
     },
     /// Unexpected GPT header size.
     UnexpectedEntrySize {

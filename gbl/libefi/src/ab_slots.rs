@@ -173,19 +173,25 @@ mod test {
         GBL_EFI_BOOT_REASON_GBL_EFI_WATCHDOG as REASON_WATCHDOG,
     };
     use gbl::{
-        ops::{AvbIoResult, CertPermanentAttributes, SHA256_DIGEST_SIZE},
-        partition::PartitionBlockDevice,
+        ops::{AvbIoResult, CertPermanentAttributes, VarInfoSender, SHA256_DIGEST_SIZE},
+        partition::GblDisk,
         slots::{Bootability, Cursor, RecoveryTarget, UnbootableReason},
-        Gbl, GblOps, Result as GblResult,
+        Gbl, GblOps, Os, Result as GblResult,
     };
-    use gbl_storage::BlockIoNull;
-    use libgbl::{device_tree::DeviceTreeComponentsRegistry, ops::ImageBuffer};
+    use gbl_storage::{BlockIo, BlockIoNull, Disk, Gpt};
+    use libgbl::{
+        device_tree::DeviceTreeComponentsRegistry,
+        gbl_avb::state::{BootStateColor, KeyValidationStatus},
+        ops::ImageBuffer,
+    };
     // TODO(b/350526796): use ptr.is_aligned() when Rust 1.79 is in Android
+    use core::ops::DerefMut;
     use std::{
         ffi::CStr,
         fmt::Write,
         mem::align_of,
         num::NonZeroUsize,
+        str::Split,
         sync::atomic::{AtomicBool, AtomicU32, Ordering},
     };
     use zbi::ZbiContainer;
@@ -244,12 +250,7 @@ mod test {
         }
     }
 
-    impl<'a> GblOps<'a> for TestGblOps<'_>
-    where
-        Self: 'a,
-    {
-        type PartitionBlockIo = BlockIoNull;
-
+    impl<'a, 'd> GblOps<'a, 'd> for TestGblOps<'_> {
         fn console_out(&mut self) -> Option<&mut dyn Write> {
             unimplemented!();
         }
@@ -262,8 +263,17 @@ mod test {
             unimplemented!();
         }
 
-        fn partitions(&self) -> Result<&'a [PartitionBlockDevice<'a, Self::PartitionBlockIo>]> {
-            unimplemented!();
+        fn disks(
+            &self,
+        ) -> &'a [GblDisk<
+            Disk<impl BlockIo + 'a, impl DerefMut<Target = [u8]> + 'a>,
+            Gpt<impl DerefMut<Target = [u8]> + 'a>,
+        >] {
+            &[] as &[GblDisk<Disk<BlockIoNull, &mut [u8]>, Gpt<&mut [u8]>>]
+        }
+
+        fn expected_os(&mut self) -> Result<Option<Os>> {
+            Ok(None)
         }
 
         fn zircon_add_device_zbi_items(&mut self, _: &mut ZbiContainer<&mut [u8]>) -> Result<()> {
@@ -299,6 +309,14 @@ mod test {
             unimplemented!();
         }
 
+        fn avb_validate_vbmeta_public_key(
+            &self,
+            _public_key: &[u8],
+            _public_key_metadata: Option<&[u8]>,
+        ) -> AvbIoResult<KeyValidationStatus> {
+            unimplemented!();
+        }
+
         fn avb_cert_read_permanent_attributes(
             &mut self,
             _attributes: &mut CertPermanentAttributes,
@@ -312,11 +330,24 @@ mod test {
             unimplemented!();
         }
 
-        fn get_image_buffer<'c>(
+        fn avb_handle_verification_result(
+            &mut self,
+            _color: BootStateColor,
+            _boot_os_version: Option<&[u8]>,
+            _boot_security_patch: Option<&[u8]>,
+            _system_os_version: Option<&[u8]>,
+            _system_security_patch: Option<&[u8]>,
+            _vendor_os_version: Option<&[u8]>,
+            _vendor_security_patch: Option<&[u8]>,
+        ) -> AvbIoResult<()> {
+            unimplemented!();
+        }
+
+        fn get_image_buffer(
             &mut self,
             _image_name: &str,
             _size: NonZeroUsize,
-        ) -> GblResult<ImageBuffer<'c>> {
+        ) -> GblResult<ImageBuffer<'d>> {
             unimplemented!();
         }
 
@@ -349,6 +380,19 @@ mod test {
             _components: &mut DeviceTreeComponentsRegistry,
         ) -> Result<()> {
             unimplemented!();
+        }
+
+        fn fastboot_variable(
+            &mut self,
+            _: &str,
+            _: Split<'_, char>,
+            _: &mut [u8],
+        ) -> Result<usize> {
+            unimplemented!()
+        }
+
+        async fn fastboot_send_all_variables(&mut self, _: &mut impl VarInfoSender) -> Result<()> {
+            unimplemented!()
         }
     }
 
