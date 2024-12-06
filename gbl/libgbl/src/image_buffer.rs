@@ -43,9 +43,21 @@ pub struct ImageBuffer<'a> {
 // Calling this when the content is not yet fully initialized causes undefined behavior.
 #[inline(always)]
 unsafe fn slice_assume_init_mut<T>(slice: &mut [MaybeUninit<T>]) -> &mut [T] {
-    // SAFETY: similar to safety notes for `slice_get_ref`, but we have a
-    // mutable reference which is also guaranteed to be valid for writes.
+    // SAFETY: Caller must make sure provided data is initialized.
     unsafe { &mut *(slice as *mut [MaybeUninit<T>] as *mut [T]) }
+}
+
+// Assuming all the elements are initialized, get a slice of them.
+//
+// # Safety
+//
+// It is up to the caller to guarantee that the `MaybeUninit<T>` elements
+// really are in an initialized state.
+// Calling this when the content is not yet fully initialized causes undefined behavior.
+#[inline(always)]
+unsafe fn slice_assume_init_ref<T>(slice: &[MaybeUninit<T>]) -> &[T] {
+    // SAFETY: Caller must make sure provided data is initialized.
+    unsafe { &*(slice as *const [MaybeUninit<T>] as *const [T]) }
 }
 
 impl ImageBuffer<'_> {
@@ -79,9 +91,20 @@ impl ImageBuffer<'_> {
     }
 
     /// Return used and tail parts of the buffer
-    pub fn get_split(&mut self) -> (&mut [u8], &mut [MaybeUninit<u8>]) {
+    pub fn get_split(&self) -> (&[u8], &[MaybeUninit<u8>]) {
+        let (used, tail) = self.buffer.as_ref().unwrap().split_at(self.used_bytes);
+        // SAFETY:
+        //
+        // ImageBuffer user guarantees that changing used elements means they were initialized.
+        // And object assumes initialized only for slice [..used_bytes]
+        let initialized = unsafe { slice_assume_init_ref(used) };
+        (initialized, tail)
+    }
+
+    /// Return used and tail parts of the buffer
+    pub fn get_split_mut(&mut self) -> (&mut [u8], &mut [MaybeUninit<u8>]) {
         let (used, tail) = self.buffer.as_mut().unwrap().split_at_mut(self.used_bytes);
-        // SAFETY
+        // SAFETY:
         //
         // ImageBuffer user guaranties that changing used elements means they were initialized.
         // And object assumes initialized only for slice [..used_bytes]
@@ -90,14 +113,20 @@ impl ImageBuffer<'_> {
     }
 
     /// Slice of the buffer that is used
-    pub fn used(&mut self) -> &mut [u8] {
+    pub fn used(&self) -> &[u8] {
         let (used, _) = self.get_split();
+        used
+    }
+
+    /// Slice of the buffer that is used
+    pub fn used_mut(&mut self) -> &mut [u8] {
+        let (used, _) = self.get_split_mut();
         used
     }
 
     /// Return part of the buffer that is not used
     pub fn tail(&mut self) -> &mut [MaybeUninit<u8>] {
-        let (_, tail) = self.get_split();
+        let (_, tail) = self.get_split_mut();
         tail
     }
 }
@@ -114,13 +143,26 @@ impl AsMut<[MaybeUninit<u8>]> for ImageBuffer<'_> {
     }
 }
 
-#[cfg(test)]
-mod test {
-    use super::*;
+impl PartialEq for ImageBuffer<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.used() == other.used()
+    }
+}
 
-    // Helper to create ImageBuffers from Vec<u8>
-    struct ImageBufferVec {
-        buf: Vec<u8>,
+#[cfg(test)]
+/// Helper to create ImageBuffers from Vec<u8>
+pub struct ImageBufferVec {
+    buf: Vec<u8>,
+}
+
+#[cfg(test)]
+impl ImageBufferVec {
+    pub fn new(buf: Vec<u8>) -> Self {
+        Self { buf }
+    }
+
+    pub fn get(&mut self) -> ImageBuffer {
+        ImageBuffer::new(Self::slice_assume_not_init_mut(self.buf.as_mut_slice()))
     }
 
     fn slice_assume_not_init_mut<T>(slice: &mut [T]) -> &mut [MaybeUninit<T>] {
@@ -128,16 +170,11 @@ mod test {
         // mutable reference which is also guaranteed to be valid for writes.
         unsafe { &mut *(slice as *mut [T] as *mut [MaybeUninit<T>]) }
     }
+}
 
-    impl ImageBufferVec {
-        fn new(buf: Vec<u8>) -> Self {
-            Self { buf }
-        }
-
-        fn get(&mut self) -> ImageBuffer {
-            ImageBuffer::new(slice_assume_not_init_mut(self.buf.as_mut_slice()))
-        }
-    }
+#[cfg(test)]
+mod test {
+    use super::*;
 
     #[test]
     fn test_image_buffer_capacity() {
@@ -156,14 +193,17 @@ mod test {
         let mut img_buf_vec = ImageBufferVec::new(vec![0u8; 100]);
         let mut img_buf = img_buf_vec.get();
         assert_eq!(img_buf.used().len(), 0);
+        assert_eq!(img_buf.used_mut().len(), 0);
         // SAFETY:
         // All data in img_buf is initialized since it was created from vec
         unsafe { img_buf.advance_used(1).unwrap() };
         assert_eq!(img_buf.used().len(), 1);
+        assert_eq!(img_buf.used_mut().len(), 1);
         // SAFETY:
         // All data in img_buf is initialized since it was created from vec
         unsafe { img_buf.advance_used(3).unwrap() };
         assert_eq!(img_buf.used().len(), 4);
+        assert_eq!(img_buf.used_mut().len(), 4);
         assert_eq!(
             // SAFETY:
             // All data in img_buf is initialized since it was created from vec
@@ -171,6 +211,7 @@ mod test {
             Err(Error::BufferTooSmall(Some(1028)))
         );
         assert_eq!(img_buf.used().len(), 4);
+        assert_eq!(img_buf.used_mut().len(), 4);
     }
 
     #[test]
@@ -178,28 +219,83 @@ mod test {
         let mut img_buf_vec = ImageBufferVec::new(vec![0u8, 1, 2, 3]);
         let mut img_buf = img_buf_vec.get();
 
-        assert_eq!(img_buf.used(), [].as_mut_slice());
+        assert_eq!(img_buf.used(), [].as_slice());
+        assert_eq!(img_buf.used_mut(), [].as_mut_slice());
         assert_eq!(img_buf.tail().len(), 4);
         let (used, tail) = img_buf.get_split();
+        assert_eq!(used, [].as_slice());
+        assert_eq!(tail.len(), 4);
+
+        let (used, tail) = img_buf.get_split_mut();
         assert_eq!(used, [].as_mut_slice());
         assert_eq!(tail.len(), 4);
 
         // SAFETY:
         // All data in img_buf is initialized since it was created from vec
         unsafe { img_buf.advance_used(2).unwrap() };
-        assert_eq!(img_buf.used(), [0, 1].as_mut_slice());
+        assert_eq!(img_buf.used(), [0, 1].as_slice());
+        assert_eq!(img_buf.used_mut(), [0, 1].as_mut_slice());
         assert_eq!(img_buf.tail().len(), 2);
         let (used, tail) = img_buf.get_split();
+        assert_eq!(used, [0, 1].as_slice());
+        assert_eq!(tail.len(), 2);
+        let (used, tail) = img_buf.get_split_mut();
         assert_eq!(used, [0, 1].as_mut_slice());
         assert_eq!(tail.len(), 2);
 
         // SAFETY:
         // All data in img_buf is initialized since it was created from vec
         unsafe { img_buf.advance_used(2).unwrap() };
-        assert_eq!(img_buf.used(), [0, 1, 2, 3].as_mut_slice());
+        assert_eq!(img_buf.used(), [0, 1, 2, 3].as_slice());
+        assert_eq!(img_buf.used_mut(), [0, 1, 2, 3].as_mut_slice());
         assert_eq!(img_buf.tail().len(), 0);
         let (used, tail) = img_buf.get_split();
+        assert_eq!(used, [0, 1, 2, 3].as_slice());
+        assert_eq!(tail.len(), 0);
+        let (used, tail) = img_buf.get_split_mut();
         assert_eq!(used, [0, 1, 2, 3].as_mut_slice());
         assert_eq!(tail.len(), 0);
+    }
+
+    #[test]
+    fn test_image_buffer_eq_not_init() {
+        assert_eq!(
+            ImageBufferVec::new(vec![0u8, 1, 2]).get(),
+            ImageBufferVec::new(vec![0u8, 1, 2]).get()
+        );
+    }
+
+    #[test]
+    fn test_image_buffer_eq_init_same() {
+        let mut v1 = ImageBufferVec::new(vec![0u8, 1, 2]);
+        let mut v2 = ImageBufferVec::new(vec![0u8, 1, 2]);
+        let mut image_buffer_1 = v1.get();
+        let mut image_buffer_2 = v2.get();
+
+        // SAFETY:
+        // Buffers initialised on creation.
+        unsafe {
+            image_buffer_1.advance_used(3).unwrap();
+            image_buffer_2.advance_used(3).unwrap();
+        }
+
+        assert_eq!(image_buffer_1, image_buffer_2);
+    }
+
+    #[test]
+    fn test_image_buffer_eq_diff_capacity() {
+        let mut v1 = ImageBufferVec::new(vec![0u8, 1, 2]);
+        let mut v2 = ImageBufferVec::new(vec![0u8, 1, 2, 3]);
+        let mut image_buffer_1 = v1.get();
+        let mut image_buffer_2 = v2.get();
+
+        // SAFETY:
+        // Buffers initialised on creation.
+        unsafe {
+            image_buffer_1.advance_used(2).unwrap();
+            image_buffer_2.advance_used(2).unwrap();
+        }
+
+        assert_eq!(image_buffer_1, image_buffer_2);
     }
 }

@@ -250,7 +250,7 @@ mod test {
         }
     }
 
-    impl<'a> GblOps<'a> for TestGblOps<'_> {
+    impl<'a, 'd> GblOps<'a, 'd> for TestGblOps<'_> {
         fn console_out(&mut self) -> Option<&mut dyn Write> {
             unimplemented!();
         }
@@ -330,9 +330,26 @@ mod test {
             unimplemented!();
         }
 
+        fn avb_read_persistent_value(
+            &mut self,
+            _name: &CStr,
+            _value: &mut [u8],
+        ) -> AvbIoResult<usize> {
+            unimplemented!();
+        }
+
+        fn avb_write_persistent_value(&mut self, _name: &CStr, _value: &[u8]) -> AvbIoResult<()> {
+            unimplemented!();
+        }
+
+        fn avb_erase_persistent_value(&mut self, _name: &CStr) -> AvbIoResult<()> {
+            unimplemented!();
+        }
+
         fn avb_handle_verification_result(
             &mut self,
             _color: BootStateColor,
+            _digest: Option<&CStr>,
             _boot_os_version: Option<&[u8]>,
             _boot_security_patch: Option<&[u8]>,
             _system_os_version: Option<&[u8]>,
@@ -343,11 +360,11 @@ mod test {
             unimplemented!();
         }
 
-        fn get_image_buffer<'c>(
+        fn get_image_buffer(
             &mut self,
             _image_name: &str,
             _size: NonZeroUsize,
-        ) -> GblResult<ImageBuffer<'c>> {
+        ) -> GblResult<ImageBuffer<'d>> {
             unimplemented!();
         }
 
