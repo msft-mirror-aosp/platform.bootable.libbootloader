@@ -360,6 +360,36 @@ where
         }
     }
 
+    fn avb_read_persistent_value(&mut self, name: &CStr, value: &mut [u8]) -> AvbIoResult<usize> {
+        match self.efi_entry.system_table().boot_services().find_first_and_open::<GblAvbProtocol>()
+        {
+            Ok(protocol) => {
+                protocol.read_persistent_value(name, value).map_err(efi_error_to_avb_error)
+            }
+            Err(_) => Err(AvbIoError::NotImplemented),
+        }
+    }
+
+    fn avb_write_persistent_value(&mut self, name: &CStr, value: &[u8]) -> AvbIoResult<()> {
+        match self.efi_entry.system_table().boot_services().find_first_and_open::<GblAvbProtocol>()
+        {
+            Ok(protocol) => {
+                protocol.write_persistent_value(name, Some(value)).map_err(efi_error_to_avb_error)
+            }
+            Err(_) => Err(AvbIoError::NotImplemented),
+        }
+    }
+
+    fn avb_erase_persistent_value(&mut self, name: &CStr) -> AvbIoResult<()> {
+        match self.efi_entry.system_table().boot_services().find_first_and_open::<GblAvbProtocol>()
+        {
+            Ok(protocol) => {
+                protocol.write_persistent_value(name, None).map_err(efi_error_to_avb_error)
+            }
+            Err(_) => Err(AvbIoError::NotImplemented),
+        }
+    }
+
     fn avb_validate_vbmeta_public_key(
         &self,
         public_key: &[u8],
@@ -398,6 +428,7 @@ where
     fn avb_handle_verification_result(
         &mut self,
         color: BootStateColor,
+        digest: Option<&CStr>,
         boot_os_version: Option<&[u8]>,
         boot_security_patch: Option<&[u8]>,
         system_os_version: Option<&[u8]>,
@@ -410,6 +441,7 @@ where
             Ok(protocol) => protocol
                 .handle_verification_result(&GblEfiAvbVerificationResult {
                     color: avb_color_to_efi_color(color),
+                    digest: digest.map_or(null(), |p| p.as_ptr() as _),
                     boot_version: boot_os_version.map_or(null(), |p| p.as_ptr()),
                     boot_security_patch: boot_security_patch.map_or(null(), |p| p.as_ptr()),
                     system_version: system_os_version.map_or(null(), |p| p.as_ptr()),
@@ -564,8 +596,7 @@ where
 }
 
 /// Inherits everything from `ops` but override a few such as read boot_a from
-/// bootimg_buffer,
-/// avb_write_rollback_index(), slot operation etc
+/// bootimg_buffer, avb_write_rollback_index(), slot operation etc
 pub struct RambootOps<'b, T> {
     pub ops: &'b mut T,
     pub bootimg_buffer: &'b mut [u8],
@@ -626,6 +657,20 @@ impl<'a, 'd, T: GblOps<'a, 'd>> GblOps<'a, 'd> for RambootOps<'_, T> {
 
     fn avb_write_rollback_index(&mut self, _: usize, _: u64) -> AvbIoResult<()> {
         // We don't want to persist AVB related data such as updating antirollback indices.
+        Ok(())
+    }
+
+    fn avb_read_persistent_value(&mut self, name: &CStr, value: &mut [u8]) -> AvbIoResult<usize> {
+        self.ops.avb_read_persistent_value(name, value)
+    }
+
+    fn avb_write_persistent_value(&mut self, _: &CStr, _: &[u8]) -> AvbIoResult<()> {
+        // We don't want to persist AVB related data such as updating current VBH.
+        Ok(())
+    }
+
+    fn avb_erase_persistent_value(&mut self, _: &CStr) -> AvbIoResult<()> {
+        // We don't want to persist AVB related data such as updating current VBH.
         Ok(())
     }
 
@@ -697,6 +742,7 @@ impl<'a, 'd, T: GblOps<'a, 'd>> GblOps<'a, 'd> for RambootOps<'_, T> {
     fn avb_handle_verification_result(
         &mut self,
         color: BootStateColor,
+        digest: Option<&CStr>,
         boot_os_version: Option<&[u8]>,
         boot_security_patch: Option<&[u8]>,
         system_os_version: Option<&[u8]>,
@@ -706,6 +752,7 @@ impl<'a, 'd, T: GblOps<'a, 'd>> GblOps<'a, 'd> for RambootOps<'_, T> {
     ) -> AvbIoResult<()> {
         self.ops.avb_handle_verification_result(
             color,
+            digest,
             boot_os_version,
             boot_security_patch,
             system_os_version,
@@ -945,5 +992,133 @@ mod test {
         let mut ops = Ops::new(installed.entry(), &[], None);
 
         assert_eq!(ops.avb_write_rollback_index(0, 12345), Err(AvbIoError::NotImplemented));
+    }
+
+    #[test]
+    fn ops_avb_read_persistent_value_success() {
+        const EXPECTED_LEN: usize = 4;
+
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        avb.read_persistent_value_result = Some(Ok(EXPECTED_LEN));
+        mock_efi.boot_services.expect_find_first_and_open::<GblAvbProtocol>().return_const(Ok(avb));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        let mut buffer = [0u8; EXPECTED_LEN];
+        assert_eq!(ops.avb_read_persistent_value(c"test", &mut buffer), Ok(EXPECTED_LEN));
+    }
+
+    #[test]
+    fn ops_avb_read_persistent_value_error() {
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        avb.read_persistent_value_result = Some(Err(Error::OutOfResources));
+        mock_efi.boot_services.expect_find_first_and_open::<GblAvbProtocol>().return_const(Ok(avb));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        let mut buffer = [0u8; 0];
+        assert_eq!(ops.avb_read_persistent_value(c"test", &mut buffer), Err(AvbIoError::Oom));
+    }
+
+    #[test]
+    fn ops_avb_read_persistent_value_protocol_not_found() {
+        let mut mock_efi = MockEfi::new();
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblAvbProtocol>()
+            .returning(|| Err(Error::NotFound));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        let mut buffer = [0u8; 0];
+        assert_eq!(
+            ops.avb_read_persistent_value(c"test", &mut buffer),
+            Err(AvbIoError::NotImplemented)
+        );
+    }
+
+    #[test]
+    fn ops_avb_write_persistent_value_success() {
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        avb.write_persistent_value_result = Some(Ok(()));
+        mock_efi.boot_services.expect_find_first_and_open::<GblAvbProtocol>().return_const(Ok(avb));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_write_persistent_value(c"test", b""), Ok(()));
+    }
+
+    #[test]
+    fn ops_avb_write_persistent_value_error() {
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        avb.write_persistent_value_result = Some(Err(Error::InvalidInput));
+        mock_efi.boot_services.expect_find_first_and_open::<GblAvbProtocol>().return_const(Ok(avb));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_write_persistent_value(c"test", b""), Err(AvbIoError::InvalidValueSize));
+    }
+
+    #[test]
+    fn ops_avb_write_persistent_value_protocol_not_found() {
+        let mut mock_efi = MockEfi::new();
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblAvbProtocol>()
+            .returning(|| Err(Error::NotFound));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_write_persistent_value(c"test", b""), Err(AvbIoError::NotImplemented));
+    }
+
+    #[test]
+    fn ops_avb_erase_persistent_value_success() {
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        avb.write_persistent_value_result = Some(Ok(()));
+        mock_efi.boot_services.expect_find_first_and_open::<GblAvbProtocol>().return_const(Ok(avb));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_erase_persistent_value(c"test"), Ok(()));
+    }
+
+    #[test]
+    fn ops_avb_erase_persistent_value_error() {
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        avb.write_persistent_value_result = Some(Err(Error::DeviceError));
+        mock_efi.boot_services.expect_find_first_and_open::<GblAvbProtocol>().return_const(Ok(avb));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_erase_persistent_value(c"test"), Err(AvbIoError::Io));
+    }
+
+    #[test]
+    fn ops_avb_erase_persistent_value_protocol_not_found() {
+        let mut mock_efi = MockEfi::new();
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblAvbProtocol>()
+            .returning(|| Err(Error::NotFound));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_erase_persistent_value(c"test"), Err(AvbIoError::NotImplemented));
     }
 }
