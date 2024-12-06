@@ -19,8 +19,13 @@ use crate::{
     protocol::{Protocol, ProtocolInfo},
 };
 use arrayvec::ArrayVec;
-use core::str::{from_utf8, Split};
-use efi_types::{EfiGuid, GblEfiFastbootArg, GblEfiFastbootPolicy, GblEfiFastbootProtocol};
+use core::{
+    ffi::CStr,
+    str::{from_utf8, Split},
+};
+use efi_types::{
+    EfiGuid, GblEfiFastbootArg, GblEfiFastbootPolicy, GblEfiFastbootProtocol, GblEfiFastbootToken,
+};
 use liberror::{Error, Result};
 
 /// GBL_EFI_FASTBOOT_PROTOCOL
@@ -44,7 +49,7 @@ impl ProtocolInfo for GblFastbootProtocol {
 /// They can also be passed in get_var() to give the backend a hint
 /// on where to find a variable entry.
 #[derive(Copy, Clone, Debug)]
-pub struct Token(*const core::ffi::c_void);
+pub struct Token(GblEfiFastbootToken);
 
 impl Token {
     const fn new() -> Self {
@@ -54,29 +59,18 @@ impl Token {
 
 impl Protocol<'_, GblFastbootProtocol> {
     /// Hint-free wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.get_var()`
-    pub fn get_var(&self, args: Split<'_, char>, buffer: &mut [u8]) -> Result<usize> {
-        self.get_var_with_hint(args, buffer, Token::new())
+    pub fn get_var(&self, name: &str, args: Split<'_, char>, buffer: &mut [u8]) -> Result<usize> {
+        self.get_var_with_hint(name, args, buffer, Token::new())
     }
 
     /// Wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.get_var() with hint.`
-    pub fn get_var_with_hint(
+    fn get_var_with_hint_internal(
         &self,
-        args: Split<'_, char>,
+        call_args: &[GblEfiFastbootArg],
         buffer: &mut [u8],
         hint: Token,
     ) -> Result<usize> {
         let mut bufsize = buffer.len();
-        let mut call_args: [GblEfiFastbootArg; MAX_ARGS + 1] = Default::default();
-        let mut call_args_len = 0usize;
-        for (a, ca) in core::iter::zip(args, call_args.iter_mut()) {
-            ca.str_utf8 = a.as_ptr();
-            ca.len = a.len();
-            call_args_len += 1;
-        }
-
-        if call_args_len == MAX_ARGS + 1 {
-            return Err(Error::InvalidInput);
-        }
 
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
@@ -89,13 +83,36 @@ impl Protocol<'_, GblFastbootProtocol> {
                 self.interface()?.get_var,
                 self.interface,
                 call_args.as_ptr(),
-                call_args_len,
+                call_args.len(),
                 buffer.as_mut_ptr(),
                 &mut bufsize,
                 hint.0,
             )?
         };
         Ok(bufsize)
+    }
+
+    /// Gets value of the variable of the given name and additional arguments.
+    pub fn get_var_with_hint(
+        &self,
+        name: &str,
+        args: Split<'_, char>,
+        buffer: &mut [u8],
+        hint: Token,
+    ) -> Result<usize> {
+        let mut call_args: [GblEfiFastbootArg; MAX_ARGS + 1] = Default::default();
+        let mut call_args_len = 1usize;
+        call_args[0] = GblEfiFastbootArg { str_utf8: name.as_ptr(), len: name.len() };
+        for (a, ca) in core::iter::zip(args, call_args[1..].iter_mut()) {
+            ca.str_utf8 = a.as_ptr();
+            ca.len = a.len();
+            call_args_len += 1;
+        }
+
+        if call_args_len == MAX_ARGS + 1 {
+            return Err(Error::InvalidInput);
+        }
+        self.get_var_with_hint_internal(&call_args[..call_args_len], buffer, hint)
     }
 
     fn start_var_iterator(&self) -> Result<Token> {
@@ -148,6 +165,9 @@ impl Protocol<'_, GblFastbootProtocol> {
     /// Wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.run_oem_function()`
     pub fn run_oem_function(&self, cmd: &str, buffer: &mut [u8]) -> Result<usize> {
         let mut bufsize = buffer.len();
+        if !buffer.is_empty() {
+            buffer[0] = 0;
+        }
 
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
@@ -165,7 +185,7 @@ impl Protocol<'_, GblFastbootProtocol> {
                 &mut bufsize,
             )?
         };
-        Ok(bufsize)
+        Ok(core::cmp::min(bufsize, buffer.iter().position(|c| *c == 0).unwrap_or(buffer.len())))
     }
 
     /// Wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.get_policy()`
@@ -232,12 +252,40 @@ impl Protocol<'_, GblFastbootProtocol> {
 
     /// Wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.serial_number`
     pub fn serial_number(&self) -> Result<&str> {
-        Ok(from_utf8(self.interface()?.serial_number.as_slice())?)
+        let serial_number = &self.interface()?.serial_number;
+        let null_idx = serial_number.iter().position(|c| *c == 0).unwrap_or(serial_number.len());
+        Ok(from_utf8(&serial_number[..null_idx])?)
     }
 
     /// Wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.version`
     pub fn version(&self) -> Result<u32> {
         Ok(self.interface()?.version)
+    }
+}
+
+/// Item type for `VarIterator`
+pub struct Var<'a> {
+    protocol: &'a Protocol<'a, GblFastbootProtocol>,
+    args: ArrayVec<GblEfiFastbootArg, MAX_ARGS>,
+    token: Token,
+}
+
+impl Var<'_> {
+    /// Gets name, arguments and the value.
+    pub fn get<'s>(
+        &self,
+        out: &'s mut [u8],
+    ) -> Result<(&'static str, impl Iterator<Item = &'static str> + '_, &'s str)> {
+        // SAFETY: By UEFI interface spec, the pointer returned from UEFI firmware for the argument
+        // string must point to a static buffer containing a NULL terminated string.
+        let mut args = self
+            .args
+            .iter()
+            .map(|v| unsafe { CStr::from_ptr(v.str_utf8 as _).to_str().unwrap_or("?") });
+        let name = args.next().ok_or(Error::Other(Some("variable/arguments are empty")))?;
+        let sz = self.protocol.get_var_with_hint_internal(&self.args[..], out, self.token)?;
+        let val = from_utf8(&out[..sz])?;
+        Ok((name, args, val))
     }
 }
 
@@ -257,7 +305,7 @@ impl<'a> VarIterator<'a> {
 }
 
 impl<'a> Iterator for VarIterator<'a> {
-    type Item = (ArrayVec<GblEfiFastbootArg, MAX_ARGS>, Token);
+    type Item = Var<'a>;
     fn next(&mut self) -> Option<Self::Item> {
         let mut args = [GblEfiFastbootArg::default(); MAX_ARGS];
 
@@ -270,7 +318,7 @@ impl<'a> Iterator for VarIterator<'a> {
         } else {
             let mut args = ArrayVec::from(args);
             args.truncate(len);
-            Some((args, prev_token))
+            Some(Var { protocol: self.protocol, args, token: prev_token })
         }
     }
 }
@@ -386,7 +434,7 @@ mod test {
         args_len: usize,
         buffer: *mut u8,
         bufsize: *mut usize,
-        _token: *const c_void,
+        _token: GblEfiFastbootToken,
     ) -> EfiStatus {
         if args.is_null() || buffer.is_null() || bufsize.is_null() {
             return EFI_STATUS_INVALID_PARAMETER;
@@ -429,7 +477,7 @@ mod test {
 
     unsafe extern "C" fn start_var_iterator(
         _: *mut GblEfiFastbootProtocol,
-        token: *mut *const c_void,
+        token: *mut GblEfiFastbootToken,
     ) -> EfiStatus {
         if token.is_null() {
             return EFI_STATUS_INVALID_PARAMETER;
@@ -448,7 +496,7 @@ mod test {
         _: *mut GblEfiFastbootProtocol,
         args: *mut GblEfiFastbootArg,
         args_len: *mut usize,
-        token: *mut *const c_void,
+        token: *mut GblEfiFastbootToken,
     ) -> EfiStatus {
         if args.is_null() || args_len.is_null() || token.is_null() {
             return EFI_STATUS_INVALID_PARAMETER;
@@ -519,9 +567,8 @@ mod test {
             // SAFETY:
             // All elements of `VARS`, and therefore all elements of `var_iter`,
             // contain valid UTF-8 encoded strings.
-            let actual: Vec<String> = var_iter
-                .map(|(args, _token): (_, Token)| unsafe { join_args(&args, ":") })
-                .collect();
+            let actual: Vec<String> =
+                var_iter.map(|v| unsafe { join_args(&v.args, ":") }).collect();
 
             let expected = &[
                 "bivalve:",
@@ -541,16 +588,60 @@ mod test {
             let efi_entry = EfiEntry { image_handle, systab_ptr };
             let protocol = generate_protocol::<GblFastbootProtocol>(&efi_entry, &mut fb);
 
-            let args = "cephalopod:coleoid".split(':');
+            let args = "coleoid".split(':');
             let mut buffer = [0u8; 32];
-            let len = protocol.get_var(args, &mut buffer).unwrap();
+            let len = protocol.get_var("cephalopod", args, &mut buffer).unwrap();
             let actual = std::str::from_utf8(&buffer[..len]).unwrap();
             assert_eq!(actual, "squid");
 
-            let args = "cephalopod:nautiloid".split(':');
-            let len = protocol.get_var_with_hint(args, &mut buffer, Token::new()).unwrap();
+            let args = "nautiloid".split(':');
+            let len =
+                protocol.get_var_with_hint("cephalopod", args, &mut buffer, Token::new()).unwrap();
             let actual = std::str::from_utf8(&buffer[..len]).unwrap();
             assert_eq!(actual, "nautilus");
+        });
+    }
+
+    #[test]
+    fn test_serial_number() {
+        run_test(|image_handle, systab_ptr| {
+            // Serial number is shorter than max length and contains non-ASCII unicode.
+            let austria = "Österreich";
+
+            let mut fb = GblEfiFastbootProtocol { ..Default::default() };
+            fb.serial_number.as_mut_slice()[..austria.len()].copy_from_slice(austria.as_bytes());
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+
+            let protocol = generate_protocol::<GblFastbootProtocol>(&efi_entry, &mut fb);
+
+            // Don't include trailing Null terminators.
+            assert_eq!(protocol.serial_number().unwrap().len(), 11);
+            assert_eq!(protocol.serial_number().unwrap(), austria);
+        });
+    }
+
+    #[test]
+    fn test_serial_number_max_length() {
+        run_test(|image_handle, systab_ptr| {
+            let mut fb = GblEfiFastbootProtocol { serial_number: [71u8; 32], ..Default::default() };
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+
+            let protocol = generate_protocol::<GblFastbootProtocol>(&efi_entry, &mut fb);
+
+            assert_eq!(protocol.serial_number().unwrap().len(), 32);
+            assert_eq!(protocol.serial_number().unwrap(), "GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG");
+        });
+    }
+
+    #[test]
+    fn test_serial_number_invalid_utf8() {
+        run_test(|image_handle, systab_ptr| {
+            let mut fb = GblEfiFastbootProtocol { serial_number: [0xF8; 32], ..Default::default() };
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+
+            let protocol = generate_protocol::<GblFastbootProtocol>(&efi_entry, &mut fb);
+
+            assert_eq!(protocol.serial_number(), Err(Error::InvalidInput));
         });
     }
 }

@@ -32,6 +32,7 @@ rust_library(
         "@gbl//libgbl",
         "@gbl//libsafemath",
         "@gbl//libstorage",
+        "@gbl//libutils",
         "@spin",
         "@zerocopy",
     ],
@@ -43,8 +44,7 @@ rust_test(
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@gbl//libavb:sysdeps",
-        "@gbl//libstorage:libstorage_testlib",
-        "@gbl//third_party/libzbi",
+        "@zbi",
     ],
 )
 

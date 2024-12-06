@@ -12,11 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//build/bazel_common_rules/dist:dist.bzl", "copy_to_dist_dir")
+load("@rules_pkg//pkg:install.bzl", "pkg_install")
+load("@rules_pkg//pkg:mappings.bzl", "pkg_files", "strip_prefix")
 
-copy_to_dist_dir(
+pkg_files(
+    name = "gbl_efi_dist_files",
+    srcs = ["@gbl//efi:all_platforms"],
+    strip_prefix = strip_prefix.files_only(),
+    visibility = ["//visibility:private"],
+)
+
+pkg_install(
     name = "gbl_efi_dist",
-    data = ["@gbl//efi:all_platforms"],
-    dist_dir = "out/gbl_efi/",
-    flat = True,
+    srcs = [":gbl_efi_dist_files"],
+    destdir = "out/gbl_efi/",
 )

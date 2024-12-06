@@ -19,17 +19,17 @@
 //! The intended users of this library are firmware, bootloader, and bring-up teams at OEMs and SOC
 //! Vendors
 //!
-//! # Features
-//! * `alloc` - enables AVB ops related logic that relies on allocation and depends on allocation.
+//! This library is `no_std` as it is intended for use in bootloaders that typically will not
+//! support the Rust standard library. However, it does require `alloc` with a global allocator,
+//! currently used for:
+//! * libavb
+//! * kernel decompression
 
-// This code is intended for use in bootloaders that typically will not support
-// the Rust standard library
 #![cfg_attr(not(any(test, android_dylib)), no_std)]
 // TODO: b/312610985 - return warning for unused partitions
-#![allow(unused_variables, dead_code)]
 #![allow(async_fn_in_trait)]
-#![feature(associated_type_defaults)]
-// TODO: b/312608163 - Adding ZBI library usage to check dependencies
+// Needed for MaybeUninit::fill() experimental API
+#![feature(maybe_uninit_fill)]
 extern crate avb;
 extern crate core;
 extern crate gbl_storage;
@@ -38,20 +38,27 @@ extern crate zbi;
 
 use avb::{HashtreeErrorMode, SlotVerifyData, SlotVerifyError, SlotVerifyFlags};
 use core::ffi::CStr;
+use core::marker::PhantomData;
 
+pub mod android_boot;
 pub mod boot_mode;
 pub mod boot_reason;
+pub mod constants;
+pub mod decompress;
+pub mod device_tree;
 pub mod error;
 pub mod fastboot;
 pub mod fuchsia_boot;
-mod image_buffer;
+pub mod gbl_avb;
 pub mod ops;
-mod overlap;
 pub mod partition;
 
 /// The 'slots' module, containing types and traits for
 /// querying and modifying slotted boot behavior.
 pub mod slots;
+
+mod image_buffer;
+mod overlap;
 
 use slots::{BootTarget, BootToken, Cursor, OneShot, SuffixBytes, UnbootableReason};
 
@@ -60,7 +67,7 @@ pub use boot_mode::BootMode;
 pub use boot_reason::KnownBootReason;
 pub use error::{IntegrationError, Result};
 use liberror::Error;
-pub use ops::{AndroidBootImages, BootImages, DefaultGblOps, FuchsiaBootImages, GblOps};
+pub use ops::{GblOps, Os};
 
 use overlap::is_overlap;
 
@@ -79,12 +86,10 @@ pub struct PartitionRamMap<'b, 'c> {
     /// Optional memory region to load partitions.
     /// If it's not provided default values will be used.
     pub address: Option<&'c mut [u8]>,
-
-    loaded: bool,
-    verified: bool,
 }
 
 /// Boot Image in memory
+#[allow(dead_code)]
 pub struct BootImage<'a>(&'a mut [u8]);
 
 /// Vendor Boot Image in memory
@@ -94,19 +99,21 @@ pub struct VendorBootImage<'a>(&'a mut [u8]);
 pub struct InitBootImage<'a>(&'a mut [u8]);
 
 /// Kernel Image in memory
+#[allow(dead_code)]
 pub struct KernelImage<'a>(&'a mut [u8]);
 
 /// Ramdisk in memory
 pub struct Ramdisk<'a>(&'a mut [u8]);
 /// Bootconfig in memory
+#[allow(dead_code)]
 pub struct Bootconfig<'a>(&'a mut [u8]);
 /// DTB in memory
+#[allow(dead_code)]
 pub struct Dtb<'a>(&'a mut [u8]);
 
 /// Create Boot Image from corresponding partition for `partitions_ram_map` and `avb_descriptors`
 /// lists
 pub fn get_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
-    verified_data: &mut SlotVerifyData<'d>,
     partitions_ram_map: &'a mut [PartitionRamMap<'b, 'c>],
 ) -> (Option<BootImage<'c>>, &'a mut [PartitionRamMap<'b, 'c>]) {
     match partitions_ram_map.len() {
@@ -121,7 +128,6 @@ pub fn get_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
 /// Create Vendor Boot Image from corresponding partition for `partitions_ram_map` and
 /// `avb_descriptors` lists
 pub fn get_vendor_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
-    verified_data: &mut SlotVerifyData<'d>,
     partitions_ram_map: &'a mut [PartitionRamMap<'b, 'c>],
 ) -> (Option<VendorBootImage<'c>>, &'a mut [PartitionRamMap<'b, 'c>]) {
     match partitions_ram_map.len() {
@@ -135,7 +141,6 @@ pub fn get_vendor_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
 
 /// Create Init Boot Image from corresponding partition for `partitions` and `avb_descriptors` lists
 pub fn get_init_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
-    verified_data: &mut SlotVerifyData<'d>,
     partitions_ram_map: &'a mut [PartitionRamMap<'b, 'c>],
 ) -> (Option<InitBootImage<'c>>, &'a mut [PartitionRamMap<'b, 'c>]) {
     match partitions_ram_map.len() {
@@ -149,7 +154,6 @@ pub fn get_init_boot_image<'a: 'b, 'b: 'c, 'c, 'd>(
 
 /// Create separate image types from [avb::Descriptor]
 pub fn get_images<'a: 'b, 'b: 'c, 'c, 'd>(
-    verified_data: &mut SlotVerifyData<'d>,
     partitions_ram_map: &'a mut [PartitionRamMap<'b, 'c>],
 ) -> (
     Option<BootImage<'c>>,
@@ -157,33 +161,34 @@ pub fn get_images<'a: 'b, 'b: 'c, 'c, 'd>(
     Option<VendorBootImage<'c>>,
     &'a mut [PartitionRamMap<'b, 'c>],
 ) {
-    let (boot_image, partitions_ram_map) = get_boot_image(verified_data, partitions_ram_map);
-    let (init_boot_image, partitions_ram_map) =
-        get_init_boot_image(verified_data, partitions_ram_map);
-    let (vendor_boot_image, partitions_ram_map) =
-        get_vendor_boot_image(verified_data, partitions_ram_map);
+    let (boot_image, partitions_ram_map) = get_boot_image(partitions_ram_map);
+    let (init_boot_image, partitions_ram_map) = get_init_boot_image(partitions_ram_map);
+    let (vendor_boot_image, partitions_ram_map) = get_vendor_boot_image(partitions_ram_map);
     (boot_image, init_boot_image, vendor_boot_image, partitions_ram_map)
 }
 
 /// GBL object that provides implementation of helpers for boot process.
-pub struct Gbl<'a, G>
+pub struct Gbl<'a, 'd, G>
 where
-    G: GblOps<'a>,
+    G: GblOps<'a, 'd>,
 {
     ops: &'a mut G,
     boot_token: Option<BootToken>,
+    _get_image_buffer_lifetime: PhantomData<&'d ()>,
 }
 
-impl<'a, G> Gbl<'a, G>
+// TODO(b/312610985): Investigate whether to deprecate this and remove this allow.
+#[allow(unused_variables)]
+impl<'a, 'f, G> Gbl<'a, 'f, G>
 where
-    G: GblOps<'a>,
+    G: GblOps<'a, 'f>,
 {
     /// Returns a new [Gbl] object.
     ///
     /// # Arguments
     /// * `ops` - the [GblOps] callbacks to use
     pub fn new(ops: &'a mut G) -> Self {
-        Self { ops, boot_token: Some(BootToken(())) }
+        Self { ops, boot_token: Some(BootToken(())), _get_image_buffer_lifetime: PhantomData }
     }
 
     /// Verify + Load Image Into memory
@@ -230,12 +235,12 @@ where
     ///
     /// * `Ok(Cursor)` - Cursor object that manages a Manager
     /// * `Err(Error)` - on failure
-    pub fn load_slot_interface<B: gbl_storage::AsBlockDevice>(
+    pub fn load_slot_interface(
         &'a mut self,
-        block_device: &'a mut B,
-    ) -> Result<Cursor<'a, B>> {
+        persist: &'a mut dyn FnMut(&mut [u8]) -> core::result::Result<(), Error>,
+    ) -> Result<Cursor<'a>> {
         let boot_token = self.boot_token.take().ok_or(Error::OperationProhibited)?;
-        self.ops.load_slot_interface::<B>(block_device, boot_token)
+        self.ops.load_slot_interface(persist, boot_token)
     }
 
     /// Info Load
@@ -380,13 +385,13 @@ where
     /// * `Err(Error)` - on failure
     // Nevertype could be used here when it is stable https://github.com/serde-rs/serde/issues/812
     #[allow(clippy::too_many_arguments)]
-    pub fn load_verify_boot<'b: 'c, 'c, 'd: 'b, B: gbl_storage::AsBlockDevice>(
+    pub fn load_verify_boot<'b: 'c, 'c, 'd: 'b>(
         &mut self,
         avb_ops: &mut impl avb::Ops<'b>,
         partitions_to_verify: &[&CStr],
         partitions_ram_map: &'d mut [PartitionRamMap<'b, 'c>],
         slot_verify_flags: SlotVerifyFlags,
-        slot_cursor: Cursor<B>,
+        slot_cursor: Cursor,
         kernel_load_buffer: &mut [u8],
         ramdisk_load_buffer: &mut [u8],
         fdt: &mut [u8],
@@ -429,7 +434,7 @@ where
         false
     }
 
-    fn lvb_inner<'b: 'c, 'c, 'd: 'b, 'e, B: gbl_storage::AsBlockDevice>(
+    fn lvb_inner<'b: 'c, 'c, 'd: 'b, 'e>(
         &mut self,
         avb_ops: &mut impl avb::Ops<'b>,
         ramdisk: &mut Ramdisk,
@@ -437,25 +442,17 @@ where
         partitions_to_verify: &[&CStr],
         partitions_ram_map: &'d mut [PartitionRamMap<'b, 'c>],
         slot_verify_flags: SlotVerifyFlags,
-        mut slot_cursor: Cursor<B>,
+        slot_cursor: Cursor,
     ) -> Result<(KernelImage<'e>, BootToken)> {
-        let mut oneshot_status = slot_cursor.ctx.get_oneshot_status();
+        let oneshot_status = slot_cursor.ctx.get_oneshot_status();
         slot_cursor.ctx.clear_oneshot_status();
-
-        if oneshot_status == Some(OneShot::Bootloader) {
-            match self.ops.do_fastboot(&mut slot_cursor) {
-                Ok(_) => oneshot_status = slot_cursor.ctx.get_oneshot_status(),
-                Err(IntegrationError::UnificationError(Error::NotImplemented)) => (),
-                Err(e) => return Err(e),
-            }
-        }
 
         let boot_target = match oneshot_status {
             None | Some(OneShot::Bootloader) => slot_cursor.ctx.get_boot_target()?,
             Some(OneShot::Continue(recovery)) => BootTarget::Recovery(recovery),
         };
 
-        let mut verify_data = self
+        let verify_data = self
             .load_and_verify_image(
                 avb_ops,
                 partitions_to_verify,
@@ -482,8 +479,7 @@ where
                 e
             })?;
 
-        let (boot_image, init_boot_image, vendor_boot_image, _) =
-            get_images(&mut verify_data, partitions_ram_map);
+        let (boot_image, init_boot_image, vendor_boot_image, _) = get_images(partitions_ram_map);
         let boot_image = boot_image.ok_or(Error::MissingImage)?;
         let vendor_boot_image = vendor_boot_image.ok_or(Error::MissingImage)?;
         let init_boot_image = init_boot_image.ok_or(Error::MissingImage)?;
@@ -522,6 +518,7 @@ mod tests {
     extern crate avb_sysdeps;
     extern crate avb_test;
     use super::*;
+    use crate::ops::test::FakeGblOps;
     use avb::{CertPermanentAttributes, SlotVerifyError};
     use avb_test::{FakeVbmetaKey, TestOps};
     use std::{fs, path::Path};
@@ -573,7 +570,7 @@ mod tests {
             public_key: testdata(TEST_PUBLIC_KEY_PATH),
             public_key_metadata: None,
         });
-        avb_ops.rollbacks.insert(TEST_VBMETA_ROLLBACK_LOCATION, 0);
+        avb_ops.rollbacks.insert(TEST_VBMETA_ROLLBACK_LOCATION, Ok(0));
         avb_ops.unlock_state = Ok(false);
 
         avb_ops
@@ -598,15 +595,15 @@ mod tests {
         avb_ops.cert_permanent_attributes_hash = Some(perm_attr_hash.try_into().unwrap());
 
         // Add the rollbacks for the cert keys.
-        avb_ops.rollbacks.insert(avb::CERT_PIK_VERSION_LOCATION, TEST_CERT_PIK_VERSION);
-        avb_ops.rollbacks.insert(avb::CERT_PSK_VERSION_LOCATION, TEST_CERT_PSK_VERSION);
+        avb_ops.rollbacks.insert(avb::CERT_PIK_VERSION_LOCATION, Ok(TEST_CERT_PIK_VERSION));
+        avb_ops.rollbacks.insert(avb::CERT_PSK_VERSION_LOCATION, Ok(TEST_CERT_PSK_VERSION));
 
         avb_ops
     }
 
     #[test]
     fn test_load_and_verify_image_success() {
-        let mut gbl_ops = DefaultGblOps {};
+        let mut gbl_ops = FakeGblOps::default();
         let mut gbl = Gbl::new(&mut gbl_ops);
         let mut avb_ops = test_avb_ops();
 
@@ -621,7 +618,7 @@ mod tests {
 
     #[test]
     fn test_load_and_verify_image_verification_error() {
-        let mut gbl_ops = DefaultGblOps {};
+        let mut gbl_ops = FakeGblOps::default();
         let mut gbl = Gbl::new(&mut gbl_ops);
         let mut avb_ops = test_avb_ops();
 
@@ -643,7 +640,7 @@ mod tests {
 
     #[test]
     fn test_load_and_verify_image_io_error() {
-        let mut gbl_ops = DefaultGblOps {};
+        let mut gbl_ops = FakeGblOps::default();
         let mut gbl = Gbl::new(&mut gbl_ops);
         let mut avb_ops = test_avb_ops();
 
@@ -661,7 +658,7 @@ mod tests {
 
     #[test]
     fn test_load_and_verify_image_with_cert_success() {
-        let mut gbl_ops = DefaultGblOps {};
+        let mut gbl_ops = FakeGblOps::default();
         let mut gbl = Gbl::new(&mut gbl_ops);
         let mut avb_ops = test_avb_cert_ops();
 
@@ -676,7 +673,7 @@ mod tests {
 
     #[test]
     fn test_load_and_verify_image_with_cert_permanent_attribute_mismatch_error() {
-        let mut gbl_ops = DefaultGblOps {};
+        let mut gbl_ops = FakeGblOps::default();
         let mut gbl = Gbl::new(&mut gbl_ops);
         let mut avb_ops = test_avb_cert_ops();
 

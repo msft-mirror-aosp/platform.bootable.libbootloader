@@ -121,14 +121,36 @@ to specify their own custom fastboot triggers.
 Used for logging and debugging. Implementations must provide this protocol, but
 the functions may be no-ops.
 
+## Community Protocols
+
+Protocols defined by a community and used across the ecosystem, but not officially
+part of the UEFI specification. None of these protocols are required.
+
+### DtFixupProtocol
+
+* original [proposal](https://github.com/U-Boot-EFI/EFI_DT_FIXUP_PROTOCOL)
+* [upstream](https://github.com/u-boot/u-boot/blob/master/include/efi_dt_fixup.h)
+* optional: allows FW to modify the final device tree
+
+This protocol allows the firmware (FW) to inspect the final device tree and apply
+necessary fixups.
+
+GBL will validate the applied changes and prevent booting if any of the security
+limitations (listed below) are violated. Any errors will be reported through the
+UEFI log.
+
+TODO (b/353272981): Add limitations
+
+This protocol was proposed by U-Boot and is currently used by the Kernel UEFI stub.
+
 ## GBL Custom Protocols
 
 These protocols are defined by GBL to provide specific functionality that is
 not available elsewhere.
 
-None of these custom protocols are required, with the intention that dev boards
-that support a typical set of UEFI protocols should be able to use GBL without
-any firmware modifications and still get some basic booting functionality.
+Majority of these custom protocols aren't required, with the intention that dev
+boards that support a typical set of UEFI protocols should be able to use GBL
+with a minimal firmware modifications and still get some basic booting functionality.
 
 However, without these protocols GBL will be missing key features such as
 USB fastboot and verified boot, so production targets and more full-featured dev
@@ -136,7 +158,7 @@ boards will need to implement them.
 
 ### GblFastbootProtocol
 
-* [`GBL_EFI_FASTBOOT_PROTOCOL`](./GBL_FASTBOOT_PROTOCOL.md)
+* [`GBL_EFI_FASTBOOT_PROTOCOL`](./gbl_efi_fastboot_protocol.md)
 * optional: enables custom fastboot functionality.
 
 Used to provide an interface for
@@ -191,3 +213,13 @@ Used to provide buffers to load the images for verification and boot process.
 In addition this protocol provides a list of additional custom partitions to be
 verified before booting, for boards that want to verify data in addition to the
 standard boot partitions.
+
+### GblAvbProtocol
+
+* [`GBL_EFI_AVB_PROTOCOL`](./gbl_avb_protocol.md)
+* required for production devices: enables AVB-related firmware callbacks.
+
+This protocol delegates some of AVB-related logic to the firmware, including
+tasks such as verifying public keys, handling verification results, and
+managing the device’s secure state (e.g., ROT, lock state, rollback indexes,
+etc.).

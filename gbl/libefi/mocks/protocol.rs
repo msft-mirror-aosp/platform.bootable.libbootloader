@@ -18,9 +18,13 @@
 //! to either one using the same path.
 
 use crate::{DeviceHandle, MOCK_EFI};
+use core::ffi::CStr;
 use core::fmt::Write;
 use efi::protocol::gbl_efi_image_loading::EfiImageBuffer;
-use efi_types::{EfiInputKey, GblEfiImageInfo, GblEfiPartitionName};
+use efi_types::{
+    EfiInputKey, GblEfiAvbKeyValidationStatus, GblEfiAvbVerificationResult, GblEfiImageInfo,
+    GblEfiPartitionName, GblEfiVerifiedDeviceTree,
+};
 use liberror::Result;
 use mockall::mock;
 
@@ -147,4 +151,163 @@ pub mod gbl_efi_image_loading {
 
     /// Map to the libefi name so code under test can just use one name.
     pub type GblImageLoadingProtocol = MockGblImageLoadingProtocol;
+}
+
+/// Mock os_configuration protocol.
+pub mod gbl_efi_os_configuration {
+    use super::*;
+
+    mock! {
+        /// Mock [efi::OsConfigurationProtocol].
+        pub GblOsConfigurationProtocol {
+            /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.fixup_kernel_commandline()`
+            pub fn fixup_kernel_commandline(
+                &self,
+                commandline: &CStr,
+                fixup: &[u8],
+            ) -> Result<()>;
+
+            /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.fixup_bootconfig()`
+            pub fn fixup_bootconfig(
+                &self,
+                bootconfig: &[u8],
+                fixup: &mut [u8],
+            ) -> Result<usize>;
+
+            /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.select_device_trees()`
+            pub fn select_device_trees(
+                &self,
+                components: &mut [GblEfiVerifiedDeviceTree],
+            ) -> Result<()>;
+        }
+    }
+
+    /// Map to the libefi name so code under test can just use one name.
+    pub type GblOsConfigurationProtocol = MockGblOsConfigurationProtocol;
+}
+
+/// Mock dt_fixup protocol.
+pub mod dt_fixup {
+    use super::*;
+
+    mock! {
+        /// Mock [efi::DtFixupProtocol].
+        pub DtFixupProtocol {
+            /// Wraps `EFI_DT_FIXUP_PROTOCOL.fixup()`
+            pub fn fixup(&self, device_tree: &mut [u8]) -> Result<()>;
+        }
+    }
+
+    /// Map to the libefi name so code under test can just use one name.
+    pub type DtFixupProtocol = MockDtFixupProtocol;
+}
+
+/// Mock avb protocol.
+pub mod gbl_efi_avb {
+    use super::*;
+
+    /// Mock implementation of `GBL_EFI_AVB_PROTOCOL`.
+    /// We use a custom mock implementation instead of relying on `mockall` due to its limitations
+    /// regarding argument lifetimes. Specifically, in this case, `mockall` requires the
+    /// `validate_vbmeta_public_key.public_key_metadata` argument to have a `'static` lifetime,
+    /// which is not practical for our use case.
+    #[derive(Clone, Default)]
+    pub struct GblAvbProtocol {
+        /// Expected return value from `validate_vbmeta_public_key`.
+        pub validate_vbmeta_public_key_result: Option<Result<GblEfiAvbKeyValidationStatus>>,
+        /// Expected return value from `read_is_device_unlocked`.
+        pub read_is_device_unlocked_result: Option<Result<bool>>,
+        /// Expected return value from `read_rollback_index`.
+        pub read_rollback_index_result: Option<Result<u64>>,
+        /// Expected return value from `write_rollback_index`.
+        pub write_rollback_index_result: Option<Result<()>>,
+        /// Expected return value from `read_persistent_value`.
+        pub read_persistent_value_result: Option<Result<usize>>,
+        /// Expected return value from `write_persistent_value`.
+        pub write_persistent_value_result: Option<Result<()>>,
+    }
+
+    impl GblAvbProtocol {
+        /// Wraps `GBL_EFI_AVB_PROTOCOL.validate_vbmeta_public_key()`.
+        pub fn validate_vbmeta_public_key(
+            &self,
+            _public_key: &[u8],
+            _public_key_metadata: Option<&[u8]>,
+        ) -> Result<GblEfiAvbKeyValidationStatus> {
+            self.validate_vbmeta_public_key_result.unwrap()
+        }
+
+        /// Wraps `GBL_EFI_AVB_PROTOCOL.read_is_device_unlocked()`.
+        pub fn read_is_device_unlocked(&self) -> Result<bool> {
+            self.read_is_device_unlocked_result.unwrap()
+        }
+
+        /// Wraps `GBL_EFI_AVB_PROTOCOL.read_rollback_index()`.
+        pub fn read_rollback_index(&self, _index_location: usize) -> Result<u64> {
+            self.read_rollback_index_result.unwrap()
+        }
+
+        /// Wraps `GBL_EFI_AVB_PROTOCOL.write_rollback_index()`.
+        pub fn write_rollback_index(
+            &self,
+            _index_location: usize,
+            _rollback_index: u64,
+        ) -> Result<()> {
+            self.write_rollback_index_result.unwrap()
+        }
+
+        /// Wraps `GBL_EFI_AVB_PROTOCOL.read_persistent_value()`.
+        pub fn read_persistent_value(&self, _name: &CStr, _value: &mut [u8]) -> Result<usize> {
+            self.read_persistent_value_result.unwrap()
+        }
+
+        /// Wraps `GBL_EFI_AVB_PROTOCOL.write_persistent_value()`.
+        pub fn write_persistent_value(&self, _name: &CStr, _value: Option<&[u8]>) -> Result<()> {
+            self.write_persistent_value_result.unwrap()
+        }
+
+        /// Wraps `GBL_EFI_AVB_PROTOCOL.handle_verification_result()`.
+        pub fn handle_verification_result(
+            &self,
+            _verification_result: &GblEfiAvbVerificationResult,
+        ) -> Result<()> {
+            unimplemented!();
+        }
+    }
+}
+
+/// Mock gbl_efi_fastboot protocol.
+pub mod gbl_efi_fastboot {
+    use super::*;
+
+    mock! {
+        /// Mock [efi::protocol::gbl_efi_fastboot::Var].
+        pub Var {
+            /// Get name, arguments and corresponding value.
+            pub fn get<'s>(&self, out: &mut [u8])
+                -> Result<(&'static str, [&'static str; 1], &'static str)>;
+        }
+    }
+
+    mock! {
+        /// Mock [efi::GblFastbootProtocol].
+        pub GblFastbootProtocol {
+            /// Protocol<'_, GblFastbootProtocol>::get_var.
+            pub fn get_var<'a>(
+                &self,
+                name: &str,
+                args: core::str::Split<'a, char>,
+                buffer: &mut [u8],
+            ) -> Result<usize>;
+
+            /// Returns an iterator over backend fastboot variables.
+            pub fn var_iter(&self) -> Result<&'static [Var]> ;
+        }
+    }
+
+    /// Map to the libefi name so code under test can just use one name.
+    pub type Var = MockVar;
+
+    /// Map to the libefi name so code under test can just use one name.
+    pub type GblFastbootProtocol = MockGblFastbootProtocol;
 }

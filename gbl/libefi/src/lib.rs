@@ -69,18 +69,21 @@ use core::{fmt::Write, panic::PanicInfo};
 
 use core::{marker::PhantomData, ptr::null_mut, slice::from_raw_parts};
 use efi_types::{
-    EfiBootService, EfiConfigurationTable, EfiEvent, EfiGuid, EfiHandle, EfiMemoryDescriptor,
-    EfiMemoryType, EfiRuntimeService, EfiSystemTable, EfiTimerDelay, EFI_EVENT_TYPE_NOTIFY_SIGNAL,
-    EFI_EVENT_TYPE_NOTIFY_WAIT, EFI_EVENT_TYPE_RUNTIME, EFI_EVENT_TYPE_SIGNAL_EXIT_BOOT_SERVICES,
+    EfiBootService, EfiConfigurationTable, EfiEvent, EfiGuid, EfiHandle,
+    EfiMemoryAttributesTableHeader, EfiMemoryDescriptor, EfiMemoryType, EfiRuntimeService,
+    EfiSystemTable, EfiTimerDelay, EFI_EVENT_TYPE_NOTIFY_SIGNAL, EFI_EVENT_TYPE_NOTIFY_WAIT,
+    EFI_EVENT_TYPE_RUNTIME, EFI_EVENT_TYPE_SIGNAL_EXIT_BOOT_SERVICES,
     EFI_EVENT_TYPE_SIGNAL_VIRTUAL_ADDRESS_CHANGE, EFI_EVENT_TYPE_TIMER,
     EFI_LOCATE_HANDLE_SEARCH_TYPE_BY_PROTOCOL, EFI_OPEN_PROTOCOL_ATTRIBUTE_BY_HANDLE_PROTOCOL,
+    EFI_RESET_TYPE, EFI_RESET_TYPE_EFI_RESET_COLD, EFI_STATUS, EFI_STATUS_SUCCESS,
 };
 use liberror::{Error, Result};
+use libutils::aligned_subslice;
 use protocol::{
     simple_text_output::SimpleTextOutputProtocol,
     {Protocol, ProtocolInfo},
 };
-use zerocopy::Ref;
+use zerocopy::{FromBytes, Ref};
 
 /// `EfiEntry` stores the EFI system table pointer and image handle passed from the entry point.
 /// It's the root data structure that derives all other wrapper APIs and structures.
@@ -91,9 +94,19 @@ pub struct EfiEntry {
 
 impl EfiEntry {
     /// Gets an instance of `SystemTable`.
+    ///
+    /// Panics if the pointer is NULL.
     pub fn system_table(&self) -> SystemTable {
+        self.system_table_checked().unwrap()
+    }
+
+    /// Gets an instance of `SystemTable` if pointer is valid.
+    pub fn system_table_checked(&self) -> Result<SystemTable> {
         // SAFETY: Pointers to UEFI data strucutres.
-        SystemTable { efi_entry: self, table: unsafe { self.systab_ptr.as_ref() }.unwrap() }
+        Ok(SystemTable {
+            efi_entry: self,
+            table: unsafe { self.systab_ptr.as_ref() }.ok_or(Error::Unsupported)?,
+        })
     }
 
     /// Gets the image handle.
@@ -105,6 +118,10 @@ impl EfiEntry {
 /// The vendor GUID for UEFI variables defined by GBL.
 pub const GBL_EFI_VENDOR_GUID: EfiGuid =
     EfiGuid::new(0x5a6d92f3, 0xa2d0, 0x4083, [0x91, 0xa1, 0xa5, 0x0f, 0x6c, 0x3d, 0x98, 0x30]);
+
+/// GUID for UEFI Memory Attributes Table
+pub const EFI_MEMORY_ATTRIBUTES_GUID: EfiGuid =
+    EfiGuid::new(0xdcfa911d, 0x26eb, 0x469f, [0xa2, 0x20, 0x38, 0xb7, 0xdc, 0x46, 0x12, 0x20]);
 
 /// The name of the UEFI variable that GBL defines to determine whether to boot Fuchsia.
 /// The value of the variable is ignored: if the variable is present,
@@ -124,26 +141,14 @@ pub unsafe fn initialize(
     image_handle: EfiHandle,
     systab_ptr: *const EfiSystemTable,
 ) -> Result<EfiEntry> {
-    let efi_entry = EfiEntry { image_handle, systab_ptr };
     // SAFETY: By safety requirement of this function, `initialize` is only called once upon
     // entering EFI application, where there should be no event notify function that can be
     // triggered.
     unsafe {
-        // Create another one for internal global allocator.
+        // Create one for internal global allocator.
         allocation::init_efi_global_alloc(EfiEntry { image_handle, systab_ptr })?;
     }
-    Ok(efi_entry)
-}
-
-/// A helper for getting a subslice with an aligned address.
-pub fn aligned_subslice(buffer: &mut [u8], alignment: usize) -> Option<&mut [u8]> {
-    let addr = buffer.as_ptr() as usize;
-    let aligned_offset = addr
-        .checked_add(alignment - 1)?
-        .checked_div(alignment)?
-        .checked_mul(alignment)?
-        .checked_sub(addr)?;
-    buffer.get_mut(aligned_offset..)
+    Ok(EfiEntry { image_handle, systab_ptr })
 }
 
 /// Exits boot service and returns the memory map in the given buffer.
@@ -155,8 +160,7 @@ pub fn aligned_subslice(buffer: &mut [u8], alignment: usize) -> Option<&mut [u8]
 /// Existing heap allocated memories will maintain their states. All system memory including them
 /// will be under onwership of the subsequent OS or OS loader code.
 pub fn exit_boot_services(entry: EfiEntry, mmap_buffer: &mut [u8]) -> Result<EfiMemoryMap> {
-    let aligned = aligned_subslice(mmap_buffer, core::mem::align_of::<EfiMemoryDescriptor>())
-        .ok_or(Error::BufferTooSmall(None))?;
+    let aligned = aligned_subslice(mmap_buffer, core::mem::align_of::<EfiMemoryDescriptor>())?;
 
     let res = entry.system_table().boot_services().get_memory_map(aligned)?;
     entry.system_table().boot_services().exit_boot_services(&res)?;
@@ -179,20 +183,38 @@ pub struct SystemTable<'a> {
 
 impl<'a> SystemTable<'a> {
     /// Creates an instance of `BootServices`
+    ///
+    /// Panics if not implemented by UEFI.
     pub fn boot_services(&self) -> BootServices<'a> {
-        BootServices {
+        self.boot_services_checked().unwrap()
+    }
+
+    /// Creates an instance of `BootServices`
+    ///
+    /// Returns Err(()) if not implemented by UEFI.
+    pub fn boot_services_checked(&self) -> Result<BootServices<'a>> {
+        Ok(BootServices {
             efi_entry: self.efi_entry,
             // SAFETY: Pointers to UEFI data strucutres.
-            boot_services: unsafe { self.table.boot_services.as_ref() }.unwrap(),
-        }
+            boot_services: unsafe { self.table.boot_services.as_ref() }
+                .ok_or(Error::Unsupported)?,
+        })
     }
 
     /// Creates an instance of `RuntimeServices`
-    pub fn runtime_services(&self) -> RuntimeServices<'a> {
-        RuntimeServices {
+    ///
+    /// Panics if run time services is not implemented.
+    pub fn runtime_services(&self) -> RuntimeServices {
+        self.runtime_services_checked().unwrap()
+    }
+
+    /// Creates an instance of `RuntimeServices` if available from system table.
+    pub fn runtime_services_checked(&self) -> Result<RuntimeServices> {
+        Ok(RuntimeServices {
             // SAFETY: Pointers to UEFI data strucutres.
-            runtime_services: unsafe { self.table.runtime_services.as_ref() }.unwrap(),
-        }
+            runtime_services: *unsafe { self.table.runtime_services.as_ref() }
+                .ok_or(Error::Unsupported)?,
+        })
     }
 
     /// Gets the `EFI_SYSTEM_TABLE.ConOut` field.
@@ -485,11 +507,11 @@ impl<'a> BootServices<'a> {
 
 /// `RuntimeServices` provides methods for accessing various EFI_RUNTIME_SERVICES interfaces.
 #[derive(Clone, Copy)]
-pub struct RuntimeServices<'a> {
-    runtime_services: &'a EfiRuntimeService,
+pub struct RuntimeServices {
+    runtime_services: EfiRuntimeService,
 }
 
-impl<'a> RuntimeServices<'a> {
+impl RuntimeServices {
     /// Wrapper of `EFI_RUNTIME_SERVICES.GetVariable()`.
     pub fn get_variable(&self, guid: &EfiGuid, name: &str, out: &mut [u8]) -> Result<usize> {
         let mut size = out.len();
@@ -532,6 +554,37 @@ impl<'a> RuntimeServices<'a> {
                 data.as_ptr() as *const core::ffi::c_void
             )
         }
+    }
+
+    /// Wrapper of `EFI_RUNTIME_SERVICES.reset_system`.
+    pub fn reset_system(
+        &self,
+        reset_type: EFI_RESET_TYPE,
+        reset_status: EFI_STATUS,
+        reset_data: Option<&mut [u8]>,
+    ) -> ! {
+        let (reset_data_len, reset_data_ptr) = match reset_data {
+            Some(v) => (v.len(), v.as_mut_ptr() as _),
+            _ => (0, null_mut()),
+        };
+        // SAFETY:
+        // * `reset_data_ptr` is either a valid pointer or NULL which by UEFI spec is allowed.
+        // * The call reboots the device and thus is not expected to return.
+        unsafe {
+            self.runtime_services.reset_system.unwrap()(
+                reset_type,
+                reset_status,
+                reset_data_len,
+                reset_data_ptr,
+            );
+        }
+
+        unreachable!();
+    }
+
+    /// Performs a cold reset without status code or data.
+    pub fn cold_reset(&self) -> ! {
+        self.reset_system(EFI_RESET_TYPE_EFI_RESET_COLD, EFI_STATUS_SUCCESS, None)
     }
 }
 
@@ -646,6 +699,7 @@ unsafe extern "C" fn efi_event_cb(event: EfiEvent, ctx: *mut core::ffi::c_void) 
 }
 
 /// A type for accessing memory map.
+#[derive(Debug)]
 pub struct EfiMemoryMap<'a> {
     buffer: &'a mut [u8],
     map_key: usize,
@@ -713,6 +767,89 @@ impl<'a: 'b, 'b> IntoIterator for &'b EfiMemoryMap<'a> {
     }
 }
 
+/// A type for accessing Memory attributes table
+pub struct EfiMemoryAttributesTable<'a> {
+    /// EfiMemoryAttributesTable header
+    pub header: &'a EfiMemoryAttributesTableHeader,
+    tail: &'a [u8],
+}
+
+/// Iterator for traversing `EfiMemoryAttributesTable` descriptors.
+pub struct EfiMemoryAttributesTableIter<'a> {
+    descriptor_size: usize,
+    tail: &'a [u8],
+}
+
+impl<'a> Iterator for EfiMemoryAttributesTableIter<'a> {
+    type Item = &'a EfiMemoryDescriptor;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Descriptor size can be greater than `EfiMemoryDescriptor`, so we potentially slice off
+        // pieces greater than struct size. Thus can't just convert buffer to slice of
+        // corresponding type.
+        if let Some((desc_bytes, tail_new)) = self.tail.split_at_checked(self.descriptor_size) {
+            let desc =
+                Ref::<_, EfiMemoryDescriptor>::new_from_prefix(desc_bytes).unwrap().0.into_ref();
+            self.tail = tail_new;
+            Some(desc)
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a> EfiMemoryAttributesTable<'a> {
+    /// Creates a new instance with the given parameters obtained from `get_memory_map()`.
+    ///
+    /// # Returns
+    /// Ok(EfiMemoryAttributesTable) - on success
+    /// Err(Error::NotFound) - if table type is incorrect
+    /// Err(e) - if error `e` occurred parsing table buffer
+    //
+    // SAFETY:
+    // `configuration_table` must be valid EFI Configuration Table object.
+    pub unsafe fn new(
+        configuration_table: EfiConfigurationTable,
+    ) -> Result<EfiMemoryAttributesTable<'a>> {
+        if configuration_table.vendor_guid != EFI_MEMORY_ATTRIBUTES_GUID {
+            return Err(Error::NotFound);
+        }
+        let buf = configuration_table.vendor_table;
+
+        // SAFETY: Buffer provided by EFI configuration table.
+        let header = unsafe {
+            let header_bytes =
+                from_raw_parts(buf as *const u8, size_of::<EfiMemoryAttributesTableHeader>());
+            EfiMemoryAttributesTableHeader::ref_from(header_bytes).ok_or(Error::InvalidInput)?
+        };
+
+        // Note: `descriptor_size` may be bigger than `EfiMemoryDescriptor`.
+        let descriptor_size: usize = header.descriptor_size.try_into().unwrap();
+        let descriptors_count: usize = header.number_of_entries.try_into().unwrap();
+
+        // SAFETY: Buffer provided by EFI configuration table.
+        let tail = unsafe {
+            from_raw_parts(
+                (buf as *const u8).add(core::mem::size_of_val(header)),
+                descriptors_count * descriptor_size,
+            )
+        };
+
+        Ok(Self { header, tail })
+    }
+}
+
+impl<'a> IntoIterator for &EfiMemoryAttributesTable<'a> {
+    type Item = &'a EfiMemoryDescriptor;
+    type IntoIter = EfiMemoryAttributesTableIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let descriptor_size = usize::try_from(self.header.descriptor_size).unwrap();
+        let tail = &self.tail[..];
+        EfiMemoryAttributesTableIter { descriptor_size, tail }
+    }
+}
+
 /// A type representing a UEFI handle to a UEFI device.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct DeviceHandle(EfiHandle);
@@ -770,12 +907,23 @@ macro_rules! efi_print {
 /// Similar to [efi_print!], but automatically adds the UEFI newline sequence (`\r\n`).
 #[macro_export]
 macro_rules! efi_println {
-    ( $efi_entry:expr, $( $x:expr ),* ) => {
+    ( $efi_entry:expr, $( $x:expr ),* $(,)? ) => {
         {
             efi_print!($efi_entry, $($x,)*);
             efi_print!($efi_entry, "\r\n");
         }
     };
+}
+
+/// Resets system. Hangs if not supported.
+#[cfg(not(test))]
+pub fn reset() -> ! {
+    efi_try_print!("Resetting...\r\n");
+    match allocation::internal_efi_entry_and_rt().1 {
+        Some(rt) => rt.cold_reset(),
+        _ => efi_try_print!("Runtime services not supported. Hangs...\r\n"),
+    }
+    loop {}
 }
 
 /// Provides a builtin panic handler.
@@ -784,17 +932,8 @@ macro_rules! efi_println {
 /// Don't set this as the panic handler so that other crates' tests can depend on libefi.
 #[cfg(not(test))]
 pub fn panic(panic: &PanicInfo) -> ! {
-    // If there is a valid internal `efi_entry` from global allocator, print the panic info.
-    let entry = allocation::internal_efi_entry();
-    if let Some(e) = entry {
-        match e.system_table().con_out() {
-            Ok(mut con_out) => {
-                let _ = write!(con_out, "Panics! {}\r\n", panic);
-            }
-            _ => {}
-        }
-    }
-    loop {}
+    efi_try_print!("Panics! {}\r\n", panic);
+    reset();
 }
 
 #[cfg(test)]

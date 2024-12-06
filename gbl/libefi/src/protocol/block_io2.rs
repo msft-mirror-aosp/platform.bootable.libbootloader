@@ -22,7 +22,8 @@ use crate::{
 use efi_types::{
     EfiBlockIo2Protocol, EfiBlockIo2Token, EfiBlockIoMedia, EfiGuid, EFI_STATUS_NOT_READY,
 };
-use gbl_async::yield_now;
+use gbl_async::{assert_return, yield_now};
+use gbl_storage::SliceMaybeUninit;
 use liberror::{efi_status_to_result, Error, Result};
 
 /// EFI_BLOCK_IO2_PROTOCOL
@@ -55,7 +56,11 @@ impl Protocol<'_, BlockIo2Protocol> {
     }
 
     /// Wraps `EfiBlockIo2Protocol.read_blocks_ex`.
-    pub async fn read_blocks_ex(&self, lba: u64, buffer: &mut [u8]) -> Result<()> {
+    pub async fn read_blocks_ex(
+        &self,
+        lba: u64,
+        buffer: &mut (impl SliceMaybeUninit + ?Sized),
+    ) -> Result<()> {
         let bs = self.efi_entry().system_table().boot_services();
         // UEFI spec requires that NOTIFY_WAIT event be always created with a callback.
         let mut notify_fn = &mut |_| ();
@@ -67,12 +72,14 @@ impl Protocol<'_, BlockIo2Protocol> {
             EfiBlockIo2Token { event: event.efi_event, transaction_status: EFI_STATUS_NOT_READY };
         // SAFETY:
         // * `self.interface()?` guarantees self.interface is non-null and points to a valid object
-        //   established by `Protocol::new()`.
+        //    established by `Protocol::new()`.
         // * `self.interface` is input parameter and will not be retained. It outlives the call.
-        // * `Self::wait_io_completion()` is called immediately after. It makes sure the IO is either
-        //   completed successfully or is reset if `check_event` fails. Thus it's guaranteed that
-        //   after `Self::wait_io_completion()` returns, `buffer` and `token` are not being retained
-        //   by the UEFI firmware anymore.
+        // * `Self::wait_io_completion()` is called immediately after. It makes sure the IO is
+        //   either completed successfully or is reset if `check_event` fails. Thus it's
+        //   guaranteed that after `Self::wait_io_completion()` returns, `buffer` and `token` are
+        //   not being retained by the UEFI firmware anymore.
+        // * `assert_return` asserts that `wait_io_completion` returns eventually. Otherwise it
+        //   panics if the top level Future gets dropped before it returns.
         unsafe {
             efi_call!(
                 self.interface()?.read_blocks_ex,
@@ -81,10 +88,10 @@ impl Protocol<'_, BlockIo2Protocol> {
                 lba,
                 &mut token,
                 buffer.len(),
-                buffer.as_mut_ptr() as _
+                buffer.as_mut().as_mut_ptr() as _
             )?;
         }
-        self.wait_io_completion(&event).await?;
+        assert_return(self.wait_io_completion(&event)).await?;
         efi_status_to_result(token.transaction_status)
     }
 
@@ -110,7 +117,7 @@ impl Protocol<'_, BlockIo2Protocol> {
                 buffer.as_mut_ptr() as _
             )?;
         }
-        self.wait_io_completion(&event).await?;
+        assert_return(self.wait_io_completion(&event)).await?;
         efi_status_to_result(token.transaction_status)
     }
 
@@ -125,10 +132,8 @@ impl Protocol<'_, BlockIo2Protocol> {
         let mut token =
             EfiBlockIo2Token { event: event.efi_event, transaction_status: EFI_STATUS_NOT_READY };
         // SAFETY: See safety comment for `Self::read_blocks_ex()`.
-        unsafe {
-            efi_call!(self.interface()?.flush_blocks_ex, self.interface, &mut token,)?;
-        }
-        self.wait_io_completion(&event).await?;
+        unsafe { efi_call!(self.interface()?.flush_blocks_ex, self.interface, &mut token) }?;
+        assert_return(self.wait_io_completion(&event)).await?;
         efi_status_to_result(token.transaction_status)
     }
 
