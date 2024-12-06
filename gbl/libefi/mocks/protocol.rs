@@ -311,3 +311,36 @@ pub mod gbl_efi_fastboot {
     /// Map to the libefi name so code under test can just use one name.
     pub type GblFastbootProtocol = MockGblFastbootProtocol;
 }
+
+/// Mock gbl_efi_ab_slot
+pub mod gbl_efi_ab_slot {
+    use super::*;
+    use efi::protocol::gbl_efi_ab_slot::GblSlot;
+    use efi_types::{GblEfiBootReason, GblEfiSlotMetadataBlock};
+
+    mock! {
+        /// Mock of [GblSlotProtocol]
+        pub GblSlotProtocol {
+            /// Mock of GblSlotProtocol::get_current_slot.
+            pub fn get_current_slot(&self) -> Result<GblSlot>;
+
+            /// Mock of GblSlotProtocol::get_next_slot.
+            pub fn get_next_slot(&self, mark_boot_attempt: bool) -> Result<GblSlot>;
+
+            /// Mock of GblSlotProtocol::load_boot_data.
+            pub fn load_boot_data(&self) -> Result<GblEfiSlotMetadataBlock>;
+
+            /// Mock of GblSlotProtocol::set_active_slot.
+            pub fn set_active_slot(&self, idx: u8) -> Result<()>;
+
+            /// Mock of GblSlotProtocol::set_boot_reason.
+            pub fn set_boot_reason(&self, reason: GblEfiBootReason, subreason: &[u8]) -> Result<()>;
+
+            /// Mock of GblSlotProtocol::get_boot_reason.
+            pub fn get_boot_reason(&self, subreason: &mut [u8]) -> Result<(GblEfiBootReason, usize)>;
+        }
+    }
+
+    /// Map to the libefi name so code under test can just use one name.
+    pub type GblSlotProtocol = MockGblSlotProtocol;
+}
