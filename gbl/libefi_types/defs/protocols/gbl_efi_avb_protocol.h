@@ -80,6 +80,14 @@ typedef struct GblEfiAvbProtocol {
                                     size_t index_location,
                                     uint64_t rollback_index);
 
+  EfiStatus (*read_persistent_value)(struct GblEfiAvbProtocol* self,
+                                     const char* name, uint8_t* value,
+                                     size_t* value_size);
+
+  EfiStatus (*write_persistent_value)(struct GblEfiAvbProtocol* self,
+                                      const char* name, const uint8_t* value,
+                                      size_t value_size);
+
   EfiStatus (*handle_verification_result)(
       struct GblEfiAvbProtocol* self,
       const GblEfiAvbVerificationResult* result);

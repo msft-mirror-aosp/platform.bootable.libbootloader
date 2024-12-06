@@ -261,19 +261,28 @@ impl<'a, 'b, 'c, T: GblOps<'b, 'c>> AvbOps<'a> for GblAvbOps<'a, T> {
         }
     }
 
-    fn read_persistent_value(&mut self, _name: &CStr, _value: &mut [u8]) -> IoResult<usize> {
-        // Not needed yet; eventually we will plumb this through [GblOps].
-        unimplemented!();
+    fn read_persistent_value(&mut self, name: &CStr, value: &mut [u8]) -> IoResult<usize> {
+        self.gbl_ops.avb_read_persistent_value(name, value).or_else(|err| {
+            // TODO(b/337846185): Remove fallback once AVB protocol implementation is
+            // forced.
+            fallback_not_implemented(self.gbl_ops, err, "read_persistent_value", 0)
+        })
     }
 
-    fn write_persistent_value(&mut self, _name: &CStr, _value: &[u8]) -> IoResult<()> {
-        // Not needed yet; eventually we will plumb this through [GblOps].
-        unreachable!();
+    fn write_persistent_value(&mut self, name: &CStr, value: &[u8]) -> IoResult<()> {
+        self.gbl_ops.avb_write_persistent_value(name, value).or_else(|err| {
+            // TODO(b/337846185): Remove fallback once AVB protocol implementation is
+            // forced.
+            fallback_not_implemented(self.gbl_ops, err, "write_persistent_value", ())
+        })
     }
 
-    fn erase_persistent_value(&mut self, _name: &CStr) -> IoResult<()> {
-        // Not needed yet; eventually we will plumb this through [GblOps].
-        unreachable!();
+    fn erase_persistent_value(&mut self, name: &CStr) -> IoResult<()> {
+        self.gbl_ops.avb_erase_persistent_value(name).or_else(|err| {
+            // TODO(b/337846185): Remove fallback once AVB protocol implementation is
+            // forced.
+            fallback_not_implemented(self.gbl_ops, err, "erase_persistent_value", ())
+        })
     }
 
     fn validate_public_key_for_partition(
@@ -638,5 +647,130 @@ mod test {
 
         let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
         assert_eq!(avb_ops.read_is_device_unlocked(), Ok(true));
+    }
+
+    #[test]
+    fn read_persistent_value_success() {
+        const EXPECTED_NAME: &CStr = c"test";
+        const EXPECTED_VALUE: &[u8] = b"test";
+
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.add_persistent_value(EXPECTED_NAME.to_str().unwrap(), Ok(EXPECTED_VALUE));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        let mut buffer = [0u8; EXPECTED_VALUE.len()];
+        assert_eq!(
+            avb_ops.read_persistent_value(EXPECTED_NAME, &mut buffer),
+            Ok(EXPECTED_VALUE.len())
+        );
+        assert_eq!(buffer, EXPECTED_VALUE);
+    }
+
+    #[test]
+    fn read_persistent_value_error() {
+        const EXPECTED_NAME: &CStr = c"test";
+
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.add_persistent_value(EXPECTED_NAME.to_str().unwrap(), Err(IoError::Io));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        let mut buffer = [0u8; 4];
+        assert_eq!(avb_ops.read_persistent_value(EXPECTED_NAME, &mut buffer), Err(IoError::Io));
+    }
+
+    // TODO(b/337846185): Remove test once AVB protocol implementation is forced.
+    #[test]
+    fn read_persistent_value_not_implemented() {
+        const EXPECTED_NAME: &CStr = c"test";
+
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops
+            .avb_ops
+            .add_persistent_value(EXPECTED_NAME.to_str().unwrap(), Err(IoError::NotImplemented));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        let mut buffer = [0u8; 0];
+        assert_eq!(avb_ops.read_persistent_value(EXPECTED_NAME, &mut buffer), Ok(0));
+    }
+
+    #[test]
+    fn write_persistent_value_success() {
+        const EXPECTED_NAME: &CStr = c"test";
+        const EXPECTED_VALUE: &[u8] = b"test";
+
+        let mut gbl_ops = FakeGblOps::new(&[]);
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.write_persistent_value(EXPECTED_NAME, EXPECTED_VALUE), Ok(()));
+
+        assert_eq!(
+            gbl_ops.avb_ops.persistent_values.get(EXPECTED_NAME.to_str().unwrap()),
+            Some(Ok(EXPECTED_VALUE.to_vec())).as_ref()
+        );
+    }
+
+    #[test]
+    fn write_persistent_value_error() {
+        const EXPECTED_NAME: &CStr = c"test";
+        const EXPECTED_VALUE: &[u8] = b"test";
+
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.add_persistent_value(EXPECTED_NAME.to_str().unwrap(), Err(IoError::Io));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.write_persistent_value(EXPECTED_NAME, EXPECTED_VALUE), Err(IoError::Io));
+    }
+
+    // TODO(b/337846185): Remove test once AVB protocol implementation is forced.
+    #[test]
+    fn write_persistent_value_not_implemented() {
+        const EXPECTED_NAME: &CStr = c"test";
+        const EXPECTED_VALUE: &[u8] = b"test";
+
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops
+            .avb_ops
+            .add_persistent_value(EXPECTED_NAME.to_str().unwrap(), Err(IoError::NotImplemented));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.write_persistent_value(EXPECTED_NAME, EXPECTED_VALUE), Ok(()));
+    }
+
+    #[test]
+    fn erase_persistent_value_success() {
+        const EXPECTED_NAME: &CStr = c"test";
+
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.add_persistent_value(EXPECTED_NAME.to_str().unwrap(), Ok(b"test"));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.erase_persistent_value(EXPECTED_NAME), Ok(()));
+
+        assert!(!gbl_ops.avb_ops.persistent_values.contains_key(EXPECTED_NAME.to_str().unwrap()));
+    }
+
+    #[test]
+    fn erase_persistent_value_error() {
+        const EXPECTED_NAME: &CStr = c"test";
+
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.add_persistent_value(EXPECTED_NAME.to_str().unwrap(), Err(IoError::Io));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.erase_persistent_value(EXPECTED_NAME), Err(IoError::Io));
+    }
+
+    // TODO(b/337846185): Remove test once AVB protocol implementation is forced.
+    #[test]
+    fn erase_persistent_value_not_implemented() {
+        const EXPECTED_NAME: &CStr = c"test";
+
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops
+            .avb_ops
+            .add_persistent_value(EXPECTED_NAME.to_str().unwrap(), Err(IoError::NotImplemented));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.erase_persistent_value(EXPECTED_NAME), Ok(()));
     }
 }

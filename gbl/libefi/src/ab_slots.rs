@@ -330,6 +330,22 @@ mod test {
             unimplemented!();
         }
 
+        fn avb_read_persistent_value(
+            &mut self,
+            _name: &CStr,
+            _value: &mut [u8],
+        ) -> AvbIoResult<usize> {
+            unimplemented!();
+        }
+
+        fn avb_write_persistent_value(&mut self, _name: &CStr, _value: &[u8]) -> AvbIoResult<()> {
+            unimplemented!();
+        }
+
+        fn avb_erase_persistent_value(&mut self, _name: &CStr) -> AvbIoResult<()> {
+            unimplemented!();
+        }
+
         fn avb_handle_verification_result(
             &mut self,
             _color: BootStateColor,
