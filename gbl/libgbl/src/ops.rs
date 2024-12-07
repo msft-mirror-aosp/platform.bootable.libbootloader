@@ -34,6 +34,7 @@ pub use avb::{
 pub use fastboot::VarInfoSender;
 pub use gbl_storage::{BlockIo, Disk, Gpt};
 use liberror::Error;
+pub use slots::{Slot, SlotsMetadata};
 pub use zbi::{ZbiContainer, ZBI_ALIGNMENT_USIZE};
 
 use super::device_tree;
@@ -46,6 +47,19 @@ pub enum Os {
     Android,
     /// Fuchsia
     Fuchsia,
+}
+
+/// Contains reboot reasons for instructing GBL to boot to different modes.
+#[derive(PartialEq, Debug, Copy, Clone)]
+pub enum RebootReason {
+    /// Normal boot.
+    Normal,
+    /// Bootloader Fastboot mode.
+    Bootloader,
+    /// Userspace Fastboot mode.
+    FastbootD,
+    /// Recovery mode.
+    Recovery,
 }
 
 // https://stackoverflow.com/questions/41081240/idiomatic-callbacks-in-rust
@@ -85,8 +99,7 @@ pub trait GblOps<'a, 'd> {
     /// On success, returns a closure that performs the reboot.
     fn reboot_recovery(&mut self) -> Result<impl FnOnce() + '_, Error> {
         if self.expected_os_is_fuchsia()? {
-            // TODO(b/363075013): Checks and prioritizes platform specific
-            // `set_boot_reason()`.
+            // TODO(b/363075013): Checks and prioritizes platform specific `set_boot_reason()`.
             set_one_shot_recovery(&mut GblAbrOps(self), true)?;
             return Ok(|| self.reboot());
         }
@@ -98,8 +111,7 @@ pub trait GblOps<'a, 'd> {
     /// On success, returns a closure that performs the reboot.
     fn reboot_bootloader(&mut self) -> Result<impl FnOnce() + '_, Error> {
         if self.expected_os_is_fuchsia()? {
-            // TODO(b/363075013): Checks and prioritizes platform specific
-            // `set_boot_reason()`.
+            // TODO(b/363075013): Checks and prioritizes platform specific `set_boot_reason()`.
             set_one_shot_bootloader(&mut GblAbrOps(self), true)?;
             return Ok(|| self.reboot());
         }
@@ -284,6 +296,7 @@ pub trait GblOps<'a, 'd> {
     fn avb_handle_verification_result(
         &mut self,
         color: BootStateColor,
+        digest: Option<&CStr>,
         boot_os_version: Option<&[u8]>,
         boot_security_patch: Option<&[u8]>,
         system_os_version: Option<&[u8]>,
@@ -378,6 +391,41 @@ pub trait GblOps<'a, 'd> {
         &mut self,
         sender: &mut impl VarInfoSender,
     ) -> Result<(), Error>;
+
+    /// Returns a [SlotsMetadata] for the platform.
+    fn slots_metadata(&mut self) -> Result<SlotsMetadata, Error>;
+
+    /// Gets the currently booted bootloader slot.
+    ///
+    /// # Returns
+    ///
+    /// * Returns Ok(Some(slot index)) if bootloader is slotted.
+    /// * Returns Ok(Errorr::Unsupported) if bootloader is not slotted.
+    /// * Returns Err() on error.
+    fn get_current_slot(&mut self) -> Result<Slot, Error>;
+
+    /// Gets the slot for the next A/B decision.
+    ///
+    /// # Args
+    ///
+    /// * `mark_boot_attempt`: Passes true if the caller attempts to boot the returned slot and
+    ///   would like implementation to perform necessary update to the state of slot such as retry
+    ///   counter. Passes false if the caller only wants to query the slot decision and not cause
+    ///   any state change.
+    fn get_next_slot(&mut self, _mark_boot_attempt: bool) -> Result<Slot, Error>;
+
+    /// Sets the active slot for the next A/B decision.
+    ///
+    /// # Args
+    ///
+    /// * `slot`: The numeric index of the slot.
+    fn set_active_slot(&mut self, _slot: u8) -> Result<(), Error>;
+
+    /// Sets the reboot reason for the next reboot.
+    fn set_reboot_reason(&mut self, _reason: RebootReason) -> Result<(), Error>;
+
+    /// Gets the reboot reason for this boot.
+    fn get_reboot_reason(&mut self) -> Result<RebootReason, Error>;
 }
 
 /// Prints with `GblOps::console_out()`.
@@ -659,6 +707,7 @@ pub(crate) mod test {
         fn avb_handle_verification_result(
             &mut self,
             _color: BootStateColor,
+            _digest: Option<&CStr>,
             _boot_os_version: Option<&[u8]>,
             _boot_security_patch: Option<&[u8]>,
             _system_os_version: Option<&[u8]>,
@@ -749,6 +798,30 @@ pub(crate) mod test {
                     format!("{}:2", Self::GBL_TEST_VAR_VAL).as_str(),
                 )
                 .await
+        }
+
+        fn slots_metadata(&mut self) -> Result<SlotsMetadata, Error> {
+            unimplemented!();
+        }
+
+        fn get_current_slot(&mut self) -> Result<Slot, Error> {
+            unimplemented!()
+        }
+
+        fn get_next_slot(&mut self, _: bool) -> Result<Slot, Error> {
+            unimplemented!()
+        }
+
+        fn set_active_slot(&mut self, _: u8) -> Result<(), Error> {
+            unimplemented!()
+        }
+
+        fn set_reboot_reason(&mut self, _: RebootReason) -> Result<(), Error> {
+            unimplemented!()
+        }
+
+        fn get_reboot_reason(&mut self) -> Result<RebootReason, Error> {
+            unimplemented!()
         }
     }
 
