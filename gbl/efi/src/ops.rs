@@ -31,15 +31,17 @@ use core::{
 use efi::{
     efi_print, efi_println,
     protocol::{
-        dt_fixup::DtFixupProtocol, gbl_efi_avb::GblAvbProtocol,
+        dt_fixup::DtFixupProtocol, gbl_efi_ab_slot::GblSlotProtocol, gbl_efi_avb::GblAvbProtocol,
         gbl_efi_fastboot::GblFastbootProtocol, gbl_efi_image_loading::GblImageLoadingProtocol,
         gbl_efi_os_configuration::GblOsConfigurationProtocol,
     },
     EfiEntry,
 };
 use efi_types::{
-    GblEfiAvbKeyValidationStatus, GblEfiAvbVerificationResult, GblEfiDeviceTreeMetadata,
-    GblEfiImageInfo, GblEfiVerifiedDeviceTree, PARTITION_NAME_LEN_U16,
+    GblEfiAvbKeyValidationStatus, GblEfiAvbVerificationResult, GblEfiBootReason,
+    GblEfiDeviceTreeMetadata, GblEfiImageInfo, GblEfiVerifiedDeviceTree,
+    GBL_EFI_BOOT_REASON_BOOTLOADER, GBL_EFI_BOOT_REASON_COLD, GBL_EFI_BOOT_REASON_FASTBOOTD,
+    GBL_EFI_BOOT_REASON_RECOVERY, PARTITION_NAME_LEN_U16,
 };
 use fdt::Fdt;
 use gbl_storage::{BlockIo, Disk, Gpt, SliceMaybeUninit};
@@ -52,8 +54,8 @@ use libgbl::{
     },
     gbl_avb::state::{BootStateColor, KeyValidationStatus},
     ops::{
-        AvbIoError, AvbIoResult, CertPermanentAttributes, ImageBuffer, VarInfoSender,
-        SHA256_DIGEST_SIZE,
+        AvbIoError, AvbIoResult, CertPermanentAttributes, ImageBuffer, RebootReason, Slot,
+        SlotsMetadata, VarInfoSender, SHA256_DIGEST_SIZE,
     },
     partition::GblDisk,
     slots::{BootToken, Cursor},
@@ -245,10 +247,7 @@ impl Write for Ops<'_, '_> {
     }
 }
 
-impl<'a, 'b, 'd> GblOps<'b, 'd> for Ops<'a, 'b>
-where
-    Self: 'b,
-{
+impl<'a, 'b, 'd> GblOps<'b, 'd> for Ops<'a, 'b> {
     fn console_out(&mut self) -> Option<&mut dyn Write> {
         Some(self)
     }
@@ -593,6 +592,86 @@ where
         }
         Ok(())
     }
+
+    fn slots_metadata(&mut self) -> Result<SlotsMetadata> {
+        Ok(SlotsMetadata {
+            slot_count: self
+                .efi_entry
+                .system_table()
+                .boot_services()
+                .find_first_and_open::<GblSlotProtocol>()?
+                .load_boot_data()?
+                .slot_count
+                .try_into()
+                .unwrap(),
+        })
+    }
+
+    fn get_current_slot(&mut self) -> Result<Slot> {
+        // TODO(b/363075013): Refactors the opening of slot protocol into a common helper once
+        // `MockBootServices::find_first_and_open` is updated to return Protocol<'_, T>.
+        self.efi_entry
+            .system_table()
+            .boot_services()
+            .find_first_and_open::<GblSlotProtocol>()?
+            .get_current_slot()?
+            .try_into()
+    }
+
+    fn get_next_slot(&mut self, mark_boot_attempt: bool) -> Result<Slot> {
+        self.efi_entry
+            .system_table()
+            .boot_services()
+            .find_first_and_open::<GblSlotProtocol>()?
+            .get_next_slot(mark_boot_attempt)?
+            .try_into()
+    }
+
+    fn set_active_slot(&mut self, slot: u8) -> Result<()> {
+        self.efi_entry
+            .system_table()
+            .boot_services()
+            .find_first_and_open::<GblSlotProtocol>()?
+            .set_active_slot(slot)
+    }
+
+    fn set_reboot_reason(&mut self, reason: RebootReason) -> Result<()> {
+        self.efi_entry
+            .system_table()
+            .boot_services()
+            .find_first_and_open::<GblSlotProtocol>()?
+            .set_boot_reason(gbl_to_efi_boot_reason(reason), b"")
+    }
+
+    fn get_reboot_reason(&mut self) -> Result<RebootReason> {
+        let mut subreason = [0u8; 128];
+        self.efi_entry
+            .system_table()
+            .boot_services()
+            .find_first_and_open::<GblSlotProtocol>()?
+            .get_boot_reason(&mut subreason[..])
+            .map(|(v, _)| efi_to_gbl_boot_reason(v))
+    }
+}
+
+/// Converts a [GblEfiBootReason] to [RebootReason].
+fn efi_to_gbl_boot_reason(reason: GblEfiBootReason) -> RebootReason {
+    match reason {
+        GBL_EFI_BOOT_REASON_RECOVERY => RebootReason::Recovery,
+        GBL_EFI_BOOT_REASON_BOOTLOADER => RebootReason::Bootloader,
+        GBL_EFI_BOOT_REASON_FASTBOOTD => RebootReason::FastbootD,
+        _ => RebootReason::Normal,
+    }
+}
+
+/// Converts a [RebootReason] to [GblEfiBootReason].
+fn gbl_to_efi_boot_reason(reason: RebootReason) -> GblEfiBootReason {
+    match reason {
+        RebootReason::Recovery => GBL_EFI_BOOT_REASON_RECOVERY,
+        RebootReason::Bootloader => GBL_EFI_BOOT_REASON_BOOTLOADER,
+        RebootReason::FastbootD => GBL_EFI_BOOT_REASON_FASTBOOTD,
+        RebootReason::Normal => GBL_EFI_BOOT_REASON_COLD,
+    }
 }
 
 /// Inherits everything from `ops` but override a few such as read boot_a from
@@ -782,12 +861,47 @@ impl<'a, 'd, T: GblOps<'a, 'd>> GblOps<'a, 'd> for RambootOps<'_, T> {
     ) -> AvbIoResult<KeyValidationStatus> {
         self.ops.avb_validate_vbmeta_public_key(public_key, public_key_metadata)
     }
+
+    fn slots_metadata(&mut self) -> Result<SlotsMetadata> {
+        // Ramboot is not suppose to call this interface.
+        unreachable!()
+    }
+
+    fn get_current_slot(&mut self) -> Result<Slot> {
+        // Ramboot is slotless
+        Err(Error::Unsupported)
+    }
+
+    fn get_next_slot(&mut self, _: bool) -> Result<Slot> {
+        // Ramboot is not suppose to call this interface.
+        unreachable!()
+    }
+
+    fn set_active_slot(&mut self, _: u8) -> Result<()> {
+        // Ramboot is not suppose to call this interface.
+        unreachable!()
+    }
+
+    fn set_reboot_reason(&mut self, _: RebootReason) -> Result<()> {
+        // Ramboot is not suppose to call this interface.
+        unreachable!()
+    }
+
+    fn get_reboot_reason(&mut self) -> Result<RebootReason> {
+        // Assumes that ramboot use normal boot mode. But we might consider supporting recovery
+        // if there is a usecase.
+        Ok(RebootReason::Normal)
+    }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use efi_mocks::{protocol::gbl_efi_avb::GblAvbProtocol, MockEfi};
+    use efi_mocks::{
+        protocol::{gbl_efi_ab_slot::GblSlotProtocol, gbl_efi_avb::GblAvbProtocol},
+        MockEfi,
+    };
+    use efi_types::GBL_EFI_BOOT_REASON;
     use mockall::predicate::eq;
 
     #[test]
@@ -1120,5 +1234,78 @@ mod test {
         let mut ops = Ops::new(installed.entry(), &[], None);
 
         assert_eq!(ops.avb_erase_persistent_value(c"test"), Err(AvbIoError::NotImplemented));
+    }
+
+    /// Helper for testing `set_boot_reason`
+    fn test_set_reboot_reason(input: RebootReason, expect: GBL_EFI_BOOT_REASON) {
+        let mut mock_efi = MockEfi::new();
+        mock_efi.boot_services.expect_find_first_and_open::<GblSlotProtocol>().times(1).returning(
+            move || {
+                let mut slot = GblSlotProtocol::default();
+                slot.expect_set_boot_reason().times(1).returning(move |reason, _| {
+                    assert_eq!(reason, expect);
+                    Ok(())
+                });
+                Ok(slot)
+            },
+        );
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+        assert_eq!(ops.set_reboot_reason(input), Ok(()));
+    }
+
+    #[test]
+    fn test_set_reboot_reason_normal() {
+        test_set_reboot_reason(RebootReason::Normal, GBL_EFI_BOOT_REASON_COLD);
+    }
+
+    #[test]
+    fn test_set_reboot_reason_recovery() {
+        test_set_reboot_reason(RebootReason::Recovery, GBL_EFI_BOOT_REASON_RECOVERY);
+    }
+
+    #[test]
+    fn test_set_reboot_reason_bootloader() {
+        test_set_reboot_reason(RebootReason::Bootloader, GBL_EFI_BOOT_REASON_BOOTLOADER);
+    }
+
+    #[test]
+    fn test_set_reboot_reason_fastbootd() {
+        test_set_reboot_reason(RebootReason::FastbootD, GBL_EFI_BOOT_REASON_FASTBOOTD);
+    }
+
+    /// Helper for testing `get_boot_reason`
+    fn test_get_reboot_reason(input: GBL_EFI_BOOT_REASON, expect: RebootReason) {
+        let mut mock_efi = MockEfi::new();
+        mock_efi.boot_services.expect_find_first_and_open::<GblSlotProtocol>().times(1).returning(
+            move || {
+                let mut slot = GblSlotProtocol::default();
+                slot.expect_get_boot_reason().times(1).returning(move |_| Ok((input, 0)));
+                Ok(slot)
+            },
+        );
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+        assert_eq!(ops.get_reboot_reason().unwrap(), expect)
+    }
+
+    #[test]
+    fn test_get_reboot_reason_normal() {
+        test_get_reboot_reason(GBL_EFI_BOOT_REASON_COLD, RebootReason::Normal);
+    }
+
+    #[test]
+    fn test_get_reboot_reason_recovery() {
+        test_get_reboot_reason(GBL_EFI_BOOT_REASON_RECOVERY, RebootReason::Recovery);
+    }
+
+    #[test]
+    fn test_get_reboot_reason_bootloader() {
+        test_get_reboot_reason(GBL_EFI_BOOT_REASON_BOOTLOADER, RebootReason::Bootloader);
+    }
+
+    #[test]
+    fn test_get_reboot_reason_fastbootd() {
+        test_get_reboot_reason(GBL_EFI_BOOT_REASON_FASTBOOTD, RebootReason::FastbootD);
     }
 }
