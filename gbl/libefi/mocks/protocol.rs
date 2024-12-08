@@ -289,27 +289,28 @@ pub mod gbl_efi_fastboot {
         }
     }
 
-    mock! {
-        /// Mock [efi::GblFastbootProtocol].
-        pub GblFastbootProtocol {
-            /// Protocol<'_, GblFastbootProtocol>::get_var.
-            pub fn get_var<'a>(
-                &self,
-                name: &str,
-                args: core::str::Split<'a, char>,
-                buffer: &mut [u8],
-            ) -> Result<usize>;
+    /// Mock [efi::GblFastbootProtocol].
+    pub struct GblFastbootProtocol {}
 
-            /// Returns an iterator over backend fastboot variables.
-            pub fn var_iter(&self) -> Result<&'static [Var]> ;
+    impl GblFastbootProtocol {
+        /// Protocol<'_, GblFastbootProtocol>::get_var.
+        pub fn get_var<'a>(
+            &self,
+            _: &CStr,
+            _: impl Iterator<Item = &'a CStr> + Clone,
+            _: &mut [u8],
+        ) -> Result<usize> {
+            unimplemented!()
+        }
+
+        /// Protocol<'_, GblFastbootProtocol>::get_var_all.
+        pub fn get_var_all(&self, _: impl FnMut(&[&CStr], &CStr)) -> Result<()> {
+            unimplemented!()
         }
     }
 
     /// Map to the libefi name so code under test can just use one name.
     pub type Var = MockVar;
-
-    /// Map to the libefi name so code under test can just use one name.
-    pub type GblFastbootProtocol = MockGblFastbootProtocol;
 }
 
 /// Mock gbl_efi_ab_slot
