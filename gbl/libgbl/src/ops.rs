@@ -24,6 +24,7 @@ use crate::{
 pub use abr::{set_one_shot_bootloader, set_one_shot_recovery, SlotIndex};
 use core::{ffi::CStr, fmt::Write, num::NonZeroUsize, ops::DerefMut, result::Result, str::Split};
 use gbl_async::block_on;
+use gbl_storage::SliceMaybeUninit;
 use libutils::aligned_subslice;
 
 // Re-exports of types from other dependencies that appear in the APIs of this library.
@@ -55,7 +56,7 @@ missing:
 - key management => atx extension in callback =>  atx_ops: ptr::null_mut(), // support optional ATX.
 */
 /// Trait that defines callbacks that can be provided to Gbl.
-pub trait GblOps<'a> {
+pub trait GblOps<'a, 'd> {
     /// Gets a console for logging messages.
     fn console_out(&mut self) -> Option<&mut dyn Write>;
 
@@ -125,7 +126,7 @@ pub trait GblOps<'a> {
         &mut self,
         part: &str,
         off: u64,
-        out: &mut [u8],
+        out: &mut (impl SliceMaybeUninit + ?Sized),
     ) -> Result<(), Error> {
         read_unique_partition(self.disks(), part, off, out).await
     }
@@ -135,7 +136,7 @@ pub trait GblOps<'a> {
         &mut self,
         part: &str,
         off: u64,
-        out: &mut [u8],
+        out: &mut (impl SliceMaybeUninit + ?Sized),
     ) -> Result<(), Error> {
         block_on(self.read_from_partition(part, off, out))
     }
@@ -277,11 +278,11 @@ pub trait GblOps<'a> {
     ) -> AvbIoResult<()>;
 
     /// Get buffer for specific image of requested size.
-    fn get_image_buffer<'c>(
+    fn get_image_buffer(
         &mut self,
         image_name: &str,
         size: NonZeroUsize,
-    ) -> GblResult<ImageBuffer<'c>>;
+    ) -> GblResult<ImageBuffer<'d>>;
 
     /// Returns the custom device tree to use, if any.
     ///
@@ -363,6 +364,7 @@ pub trait GblOps<'a> {
         sender: &mut impl VarInfoSender,
     ) -> Result<(), Error>;
 }
+
 /// Prints with `GblOps::console_out()`.
 #[macro_export]
 macro_rules! gbl_print {
@@ -389,6 +391,7 @@ macro_rules! gbl_println {
 #[cfg(test)]
 pub(crate) mod test {
     use super::*;
+    use crate::error::IntegrationError;
     use crate::partition::GblDisk;
     use abr::{get_and_clear_one_shot_bootloader, get_boot_slot};
     use avb::{CertOps, Ops};
@@ -401,6 +404,7 @@ pub(crate) mod test {
     use fastboot::{snprintf, FormattedBytes};
     use gbl_async::block_on;
     use gbl_storage::{new_gpt_max, Disk, GptMax, RamBlockIo};
+    use std::collections::{HashMap, LinkedList};
     use zbi::{ZbiFlags, ZbiType};
 
     /// Type of [GblDisk] in tests.
@@ -427,9 +431,8 @@ pub(crate) mod test {
         /// Adds a GPT disk.
         pub(crate) fn add_gpt_device(&mut self, data: impl AsRef<[u8]>) {
             // For test GPT images, all block sizes are 512.
-            let ram_blk = RamBlockIo::new(512, 512, data.as_ref().to_vec());
             self.0.push(TestGblDisk::new_gpt(
-                Disk::new_alloc_scratch(ram_blk).unwrap(),
+                Disk::new_ram_alloc(512, 512, data.as_ref().to_vec()).unwrap(),
                 new_gpt_max(),
             ));
             let _ = block_on(self.0.last().unwrap().sync_gpt());
@@ -438,10 +441,9 @@ pub(crate) mod test {
         /// Adds a raw partition disk.
         pub(crate) fn add_raw_device(&mut self, name: &CStr, data: impl AsRef<[u8]>) {
             // For raw partition, use block_size=alignment=1 for simplicity.
-            let ram_blk = RamBlockIo::new(1, 1, data.as_ref().to_vec());
-            self.0.push(
-                TestGblDisk::new_raw(Disk::new_alloc_scratch(ram_blk).unwrap(), name).unwrap(),
-            )
+            TestGblDisk::new_raw(Disk::new_ram_alloc(1, 1, data.as_ref().to_vec()).unwrap(), name)
+                .and_then(|v| Ok(self.0.push(v)))
+                .unwrap()
         }
     }
 
@@ -455,7 +457,7 @@ pub(crate) mod test {
 
     /// Fake [GblOps] implementation for testing.
     #[derive(Default)]
-    pub(crate) struct FakeGblOps<'a> {
+    pub(crate) struct FakeGblOps<'a, 'd> {
         /// Partition data to expose.
         pub partitions: &'a [TestGblDisk],
 
@@ -480,16 +482,19 @@ pub(crate) mod test {
 
         /// For return by `Self::avb_validate_vbmeta_public_key`
         pub avb_key_validation_status: Option<AvbIoResult<KeyValidationStatus>>,
+
+        /// For return by `Self::get_image_buffer()`
+        pub image_buffers: HashMap<String, LinkedList<ImageBuffer<'d>>>,
     }
 
     /// Print `console_out` output, which can be useful for debugging.
-    impl Write for FakeGblOps<'_> {
+    impl<'a, 'd> Write for FakeGblOps<'a, 'd> {
         fn write_str(&mut self, s: &str) -> Result<(), std::fmt::Error> {
             Ok(print!("{s}"))
         }
     }
 
-    impl<'a> FakeGblOps<'a> {
+    impl<'a, 'd> FakeGblOps<'a, 'd> {
         /// For now we've just hardcoded the `zircon_add_device_zbi_items()` callback to add a
         /// single commandline ZBI item with these contents; if necessary we can generalize this
         /// later and allow tests to configure the ZBI modifications.
@@ -530,7 +535,7 @@ pub(crate) mod test {
         }
     }
 
-    impl<'a> GblOps<'a> for FakeGblOps<'a> {
+    impl<'a, 'd> GblOps<'a, 'd> for FakeGblOps<'a, 'd> {
         fn console_out(&mut self) -> Option<&mut dyn Write> {
             Some(self)
         }
@@ -633,8 +638,21 @@ pub(crate) mod test {
             unimplemented!();
         }
 
-        fn get_image_buffer<'c>(&mut self, _: &str, _: NonZeroUsize) -> GblResult<ImageBuffer<'c>> {
-            unimplemented!();
+        fn get_image_buffer(
+            &mut self,
+            image_name: &str,
+            _size: NonZeroUsize,
+        ) -> GblResult<ImageBuffer<'d>> {
+            if let Some(buf_list) = self.image_buffers.get_mut(image_name) {
+                if let Some(buf) = buf_list.pop_front() {
+                    return Ok(buf);
+                };
+            };
+
+            gbl_println!(self, "FakeGblOps.get_image_buffer({image_name}) no buffer for the image");
+            Err(IntegrationError::UnificationError(Error::Other(Some(
+                "No buffer provided. Add sufficient buffers to FakeGblOps.image_buffers",
+            ))))
         }
 
         fn get_custom_device_tree(&mut self) -> Option<&'static [u8]> {

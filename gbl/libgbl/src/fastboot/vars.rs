@@ -27,9 +27,10 @@ use fastboot::{next_arg, next_arg_u64, snprintf, CommandResult, FormattedBytes, 
 use gbl_storage::BlockIo;
 
 // See definition of [GblFastboot] for docs on lifetimes and generics parameters.
-impl<'a: 'c, 'b: 'c, 'c, 'd, G, B, S, T, P, C, F> GblFastboot<'a, 'b, 'c, 'd, G, B, S, T, P, C, F>
+impl<'a: 'c, 'b: 'c, 'c, 'd, 'e, G, B, S, T, P, C, F>
+    GblFastboot<'a, 'b, 'c, 'd, 'e, G, B, S, T, P, C, F>
 where
-    G: GblOps<'a>,
+    G: GblOps<'a, 'e>,
     B: BlockIo,
     S: DerefMut<Target = [u8]>,
     T: DerefMut<Target = [u8]>,
