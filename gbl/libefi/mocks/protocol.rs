@@ -221,6 +221,10 @@ pub mod gbl_efi_avb {
         pub read_rollback_index_result: Option<Result<u64>>,
         /// Expected return value from `write_rollback_index`.
         pub write_rollback_index_result: Option<Result<()>>,
+        /// Expected return value from `read_persistent_value`.
+        pub read_persistent_value_result: Option<Result<usize>>,
+        /// Expected return value from `write_persistent_value`.
+        pub write_persistent_value_result: Option<Result<()>>,
     }
 
     impl GblAvbProtocol {
@@ -252,6 +256,16 @@ pub mod gbl_efi_avb {
             self.write_rollback_index_result.unwrap()
         }
 
+        /// Wraps `GBL_EFI_AVB_PROTOCOL.read_persistent_value()`.
+        pub fn read_persistent_value(&self, _name: &CStr, _value: &mut [u8]) -> Result<usize> {
+            self.read_persistent_value_result.unwrap()
+        }
+
+        /// Wraps `GBL_EFI_AVB_PROTOCOL.write_persistent_value()`.
+        pub fn write_persistent_value(&self, _name: &CStr, _value: Option<&[u8]>) -> Result<()> {
+            self.write_persistent_value_result.unwrap()
+        }
+
         /// Wraps `GBL_EFI_AVB_PROTOCOL.handle_verification_result()`.
         pub fn handle_verification_result(
             &self,
@@ -275,25 +289,59 @@ pub mod gbl_efi_fastboot {
         }
     }
 
-    mock! {
-        /// Mock [efi::GblFastbootProtocol].
-        pub GblFastbootProtocol {
-            /// Protocol<'_, GblFastbootProtocol>::get_var.
-            pub fn get_var<'a>(
-                &self,
-                name: &str,
-                args: core::str::Split<'a, char>,
-                buffer: &mut [u8],
-            ) -> Result<usize>;
+    /// Mock [efi::GblFastbootProtocol].
+    pub struct GblFastbootProtocol {}
 
-            /// Returns an iterator over backend fastboot variables.
-            pub fn var_iter(&self) -> Result<&'static [Var]> ;
+    impl GblFastbootProtocol {
+        /// Protocol<'_, GblFastbootProtocol>::get_var.
+        pub fn get_var<'a>(
+            &self,
+            _: &CStr,
+            _: impl Iterator<Item = &'a CStr> + Clone,
+            _: &mut [u8],
+        ) -> Result<usize> {
+            unimplemented!()
+        }
+
+        /// Protocol<'_, GblFastbootProtocol>::get_var_all.
+        pub fn get_var_all(&self, _: impl FnMut(&[&CStr], &CStr)) -> Result<()> {
+            unimplemented!()
         }
     }
 
     /// Map to the libefi name so code under test can just use one name.
     pub type Var = MockVar;
+}
+
+/// Mock gbl_efi_ab_slot
+pub mod gbl_efi_ab_slot {
+    use super::*;
+    use efi::protocol::gbl_efi_ab_slot::GblSlot;
+    use efi_types::{GblEfiBootReason, GblEfiSlotMetadataBlock};
+
+    mock! {
+        /// Mock of [GblSlotProtocol]
+        pub GblSlotProtocol {
+            /// Mock of GblSlotProtocol::get_current_slot.
+            pub fn get_current_slot(&self) -> Result<GblSlot>;
+
+            /// Mock of GblSlotProtocol::get_next_slot.
+            pub fn get_next_slot(&self, mark_boot_attempt: bool) -> Result<GblSlot>;
+
+            /// Mock of GblSlotProtocol::load_boot_data.
+            pub fn load_boot_data(&self) -> Result<GblEfiSlotMetadataBlock>;
+
+            /// Mock of GblSlotProtocol::set_active_slot.
+            pub fn set_active_slot(&self, idx: u8) -> Result<()>;
+
+            /// Mock of GblSlotProtocol::set_boot_reason.
+            pub fn set_boot_reason(&self, reason: GblEfiBootReason, subreason: &[u8]) -> Result<()>;
+
+            /// Mock of GblSlotProtocol::get_boot_reason.
+            pub fn get_boot_reason(&self, subreason: &mut [u8]) -> Result<(GblEfiBootReason, usize)>;
+        }
+    }
 
     /// Map to the libefi name so code under test can just use one name.
-    pub type GblFastbootProtocol = MockGblFastbootProtocol;
+    pub type GblSlotProtocol = MockGblSlotProtocol;
 }

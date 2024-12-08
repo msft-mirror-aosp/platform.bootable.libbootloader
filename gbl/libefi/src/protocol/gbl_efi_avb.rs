@@ -16,6 +16,7 @@
 
 use crate::efi_call;
 use crate::protocol::{Protocol, ProtocolInfo};
+use core::ffi::CStr;
 use core::ptr::null;
 use efi_types::{
     EfiGuid, GblEfiAvbKeyValidationStatus, GblEfiAvbProtocol, GblEfiAvbVerificationResult,
@@ -116,6 +117,62 @@ impl Protocol<'_, GblAvbProtocol> {
         Ok(())
     }
 
+    /// Wraps `GBL_EFI_AVB_PROTOCOL.read_persistent_value()`.
+    pub fn read_persistent_value(&self, name: &CStr, value: &mut [u8]) -> Result<usize> {
+        let mut value_buffer_size = value.len();
+
+        let value_ptr = match value.is_empty() {
+            true => core::ptr::null_mut(),
+            false => value.as_mut_ptr(),
+        };
+
+        // SAFETY:
+        // * `self.interface()?` guarantees `self.interface` is non-null and points to a valid
+        //   object established by `Protocol::new()`.
+        // * `name` is a valid pointer to a null-terminated string used only within the call.
+        // * `value_ptr` is either a valid pointer to a writable buffer or a null pointer, used only
+        //   within the call
+        // * `value_buffer_size` holds a mutable reference to `usize`, used only within the call.
+        unsafe {
+            efi_call!(
+                @bufsize value_buffer_size,
+                self.interface()?.read_persistent_value,
+                self.interface,
+                name.as_ptr(),
+                value_ptr,
+                &mut value_buffer_size,
+            )?
+        }
+
+        Ok(value_buffer_size)
+    }
+
+    /// Wraps `GBL_EFI_AVB_PROTOCOL.write_persistent_value()`.
+    pub fn write_persistent_value(&self, name: &CStr, value: Option<&[u8]>) -> Result<()> {
+        let (value_ptr, value_len) = match value {
+            Some(v) => (v.as_ptr(), v.len()),
+            None => (core::ptr::null(), 0),
+        };
+
+        // SAFETY:
+        // * `self.interface()?` guarantees `self.interface` is non-null and points to a valid
+        //   object established by `Protocol::new()`.
+        // * `name` is a valid pointer to a null-terminated string used only within the call.
+        // * `value_ptr` is a valid pointer to `value_len` sized buffer or null, used only within
+        //   the call.
+        unsafe {
+            efi_call!(
+                self.interface()?.write_persistent_value,
+                self.interface,
+                name.as_ptr(),
+                value_ptr,
+                value_len,
+            )?
+        }
+
+        Ok(())
+    }
+
     /// Wraps `GBL_EFI_AVB_PROTOCOL.handle_verification_result()`.
     pub fn handle_verification_result(
         &self,
@@ -138,9 +195,9 @@ impl Protocol<'_, GblAvbProtocol> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::test::run_test_with_mock_protocol;
+    use crate::{protocol::EFI_STATUS_BUFFER_TOO_SMALL, test::run_test_with_mock_protocol, Error};
     use efi_types::{EfiStatus, EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_SUCCESS};
-    use std::slice;
+    use std::{ffi::c_char, ptr, slice};
 
     #[test]
     fn validate_vbmeta_public_key_status_provided() {
@@ -426,6 +483,218 @@ mod test {
 
         run_test_with_mock_protocol(c_interface, |avb_protocol| {
             assert!(avb_protocol.write_rollback_index(0, 0).is_err());
+        });
+    }
+
+    #[test]
+    fn read_persistent_value_success() {
+        const EXPECTED_NAME: &CStr = c"test_key";
+        const EXPECTED_VALUE: &[u8] = b"test_value";
+
+        /// C callback implementation.
+        ///
+        /// # Safety:
+        /// * Caller must guaranteed that `name` points to a valid null-terminated string.
+        /// * Caller must guaranteed that `value` points to non-null `value_size` sized bytes
+        ///   buffer.
+        /// * Caller must guaranteed that `value_size` points to a valid usize available to write
+        ///   value buffer.
+        unsafe extern "C" fn c_read_persistent_value_success(
+            _: *mut GblEfiAvbProtocol,
+            name: *const c_char,
+            value: *mut u8,
+            value_size: *mut usize,
+        ) -> EfiStatus {
+            assert_eq!(
+                // SAFETY:
+                // * `name` is a valid pointer to null-terminated string.
+                unsafe { CStr::from_ptr(name) },
+                EXPECTED_NAME
+            );
+            assert_eq!(
+                // SAFETY:
+                // * `value_size` is a valid non-null pointer to `usize` value.
+                unsafe { ptr::read(value_size) },
+                EXPECTED_VALUE.len()
+            );
+
+            // SAFETY:
+            // * `value` is non-null pointer available for write.
+            let value_buffer = unsafe { slice::from_raw_parts_mut(value, EXPECTED_VALUE.len()) };
+            value_buffer.copy_from_slice(EXPECTED_VALUE);
+
+            return EFI_STATUS_SUCCESS;
+        }
+
+        let c_interface = GblEfiAvbProtocol {
+            read_persistent_value: Some(c_read_persistent_value_success),
+            ..Default::default()
+        };
+
+        run_test_with_mock_protocol(c_interface, |avb_protocol| {
+            let mut buffer = [0u8; EXPECTED_VALUE.len()];
+
+            assert_eq!(
+                avb_protocol.read_persistent_value(EXPECTED_NAME, &mut buffer),
+                Ok(EXPECTED_VALUE.len())
+            );
+            assert_eq!(&buffer, EXPECTED_VALUE);
+        });
+    }
+
+    #[test]
+    fn read_persistent_value_buffer_too_small() {
+        const EXPECTED_BUFFER_SIZE: usize = 12;
+
+        /// C callback implementation.
+        ///
+        /// # Safety:
+        /// * Caller must guaranteed that `value_size` points to a valid usize available to write
+        ///   value buffer.
+        unsafe extern "C" fn c_read_persistent_value_buffer_too_small(
+            _: *mut GblEfiAvbProtocol,
+            _: *const c_char,
+            _: *mut u8,
+            value_size: *mut usize,
+        ) -> EfiStatus {
+            // SAFETY:
+            // * `value_size` is a valid non-null pointer to `usize` value.
+            unsafe { ptr::write(value_size, EXPECTED_BUFFER_SIZE) };
+
+            return EFI_STATUS_BUFFER_TOO_SMALL;
+        }
+
+        let c_interface = GblEfiAvbProtocol {
+            read_persistent_value: Some(c_read_persistent_value_buffer_too_small),
+            ..Default::default()
+        };
+
+        run_test_with_mock_protocol(c_interface, |avb_protocol| {
+            let mut buffer = [0u8; 0];
+
+            assert_eq!(
+                avb_protocol.read_persistent_value(c"name", &mut buffer),
+                Err(Error::BufferTooSmall(Some(EXPECTED_BUFFER_SIZE)))
+            );
+        });
+    }
+
+    #[test]
+    fn write_persistent_value_success() {
+        const EXPECTED_NAME: &CStr = c"test_key";
+        const EXPECTED_VALUE: &[u8] = b"test_value";
+
+        /// C callback implementation.
+        ///
+        /// # Safety:
+        /// * Caller must guarantee that `name` points to a valid null-terminated string.
+        /// * Caller must guarantee that `value` points to a valid `value_size` sized bytes buffer.
+        unsafe extern "C" fn c_write_persistent_value_success(
+            _: *mut GblEfiAvbProtocol,
+            name: *const c_char,
+            value: *const u8,
+            value_size: usize,
+        ) -> EfiStatus {
+            assert_eq!(
+                // SAFETY:
+                // * `name` is a valid pointer to null-terminated string.
+                unsafe { CStr::from_ptr(name) },
+                EXPECTED_NAME
+            );
+            assert_eq!(value_size, EXPECTED_VALUE.len());
+
+            // SAFETY:
+            // * `value` is a valid pointer to `value_size` bytes.
+            let value_buffer = unsafe { slice::from_raw_parts(value, value_size) };
+            assert_eq!(value_buffer, EXPECTED_VALUE);
+
+            return EFI_STATUS_SUCCESS;
+        }
+
+        let c_interface = GblEfiAvbProtocol {
+            write_persistent_value: Some(c_write_persistent_value_success),
+            ..Default::default()
+        };
+
+        run_test_with_mock_protocol(c_interface, |avb_protocol| {
+            assert_eq!(
+                avb_protocol.write_persistent_value(EXPECTED_NAME, Some(EXPECTED_VALUE)),
+                Ok(())
+            );
+        });
+    }
+
+    #[test]
+    fn write_persistent_value_delete() {
+        const EXPECTED_NAME: &CStr = c"test_key";
+
+        /// C callback implementation for deleting a persistent value.
+        ///
+        /// # Safety:
+        /// * Caller must guarantee that `name` points to a valid null-terminated string.
+        unsafe extern "C" fn c_write_persistent_value_delete(
+            _: *mut GblEfiAvbProtocol,
+            name: *const c_char,
+            value: *const u8,
+            value_size: usize,
+        ) -> EfiStatus {
+            assert_eq!(
+                // SAFETY:
+                // * `name` is a valid pointer to null-terminated string.
+                unsafe { CStr::from_ptr(name) },
+                EXPECTED_NAME
+            );
+            assert!(value.is_null());
+            assert_eq!(value_size, 0);
+
+            return EFI_STATUS_SUCCESS;
+        }
+
+        let c_interface = GblEfiAvbProtocol {
+            write_persistent_value: Some(c_write_persistent_value_delete),
+            ..Default::default()
+        };
+
+        run_test_with_mock_protocol(c_interface, |avb_protocol| {
+            assert_eq!(avb_protocol.write_persistent_value(EXPECTED_NAME, None), Ok(()));
+        });
+    }
+
+    #[test]
+    fn write_persistent_value_error_handled() {
+        const EXPECTED_NAME: &CStr = c"test_key";
+        const EXPECTED_VALUE: &[u8] = b"test_value";
+
+        /// C callback implementation that returns an error.
+        ///
+        /// # Safety:
+        /// * Caller must guarantee that `name` points to a valid null-terminated string.
+        unsafe extern "C" fn c_write_persistent_value_error(
+            _: *mut GblEfiAvbProtocol,
+            name: *const c_char,
+            _: *const u8,
+            _: usize,
+        ) -> EfiStatus {
+            assert_eq!(
+                // SAFETY:
+                // * `name` is a valid pointer to null-terminated string.
+                unsafe { CStr::from_ptr(name) },
+                EXPECTED_NAME
+            );
+
+            return EFI_STATUS_INVALID_PARAMETER;
+        }
+
+        let c_interface = GblEfiAvbProtocol {
+            write_persistent_value: Some(c_write_persistent_value_error),
+            ..Default::default()
+        };
+
+        run_test_with_mock_protocol(c_interface, |avb_protocol| {
+            assert_eq!(
+                avb_protocol.write_persistent_value(EXPECTED_NAME, Some(EXPECTED_VALUE)),
+                Err(Error::InvalidInput),
+            );
         });
     }
 }
