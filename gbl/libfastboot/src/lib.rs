@@ -69,6 +69,7 @@
 
 use core::{
     cmp::min,
+    ffi::CStr,
     fmt::{Debug, Display, Formatter, Write},
     str::{from_utf8, Split},
 };
@@ -233,8 +234,8 @@ pub trait FastbootImplementation {
     /// TODO(b/322540167): Figure out other reserved variables.
     async fn get_var(
         &mut self,
-        var: &str,
-        args: Split<char>,
+        var: &CStr,
+        args: impl Iterator<Item = &'_ CStr> + Clone,
         out: &mut [u8],
         responder: impl InfoSender,
     ) -> CommandResult<usize>;
@@ -242,8 +243,8 @@ pub trait FastbootImplementation {
     /// A helper API for getting the value of a fastboot variable and decoding it into string.
     async fn get_var_as_str<'s>(
         &mut self,
-        var: &str,
-        args: Split<'_, char>,
+        var: &CStr,
+        args: impl Iterator<Item = &'_ CStr> + Clone,
         responder: impl InfoSender,
         out: &'s mut [u8],
     ) -> CommandResult<&'s str> {
@@ -385,6 +386,20 @@ pub trait FastbootImplementation {
 
     /// Backend for `fastboot set_active`.
     async fn set_active(&mut self, slot: &str, responder: impl InfoSender) -> CommandResult<()>;
+
+    /// Backend for `fastboot boot`
+    ///
+    /// # Args
+    ///
+    /// * `responder`: An instance of `InfoSender + OkaySender`. Implementation should call
+    ///   `responder.send_okay("")` right before boot to notify the remote host that the
+    ///   operation is successful.
+    ///
+    /// # Returns
+    ///
+    /// * The method is always return OK to let fastboot continue.
+    /// * Returns `Err(e)` on error.
+    async fn boot(&mut self, responder: impl InfoSender + OkaySender) -> CommandResult<()>;
 
     /// Backend for `fastboot oem ...`.
     ///
@@ -663,25 +678,35 @@ pub mod test_utils {
 
 const MAX_DOWNLOAD_SIZE_NAME: &'static str = "max-download-size";
 
+/// Converts a null-terminated command line string where arguments are separated by ':' into an
+/// iterator of individual argument as CStr.
+fn cmd_to_c_string_args(cmd: &mut [u8]) -> impl Iterator<Item = &CStr> + Clone {
+    let end = cmd.iter().position(|v| *v == 0).unwrap();
+    // Replace ':' with NULL.
+    cmd.iter_mut().filter(|v| **v == b':').for_each(|v| *v = 0);
+    cmd[..end + 1].split_inclusive(|v| *v == 0).map(|v| CStr::from_bytes_until_nul(v).unwrap())
+}
+
 /// Helper for handling "fastboot getvar ..."
 async fn get_var(
-    mut args: Split<'_, char>,
+    cmd: &mut [u8],
     transport: &mut impl Transport,
     fb_impl: &mut impl FastbootImplementation,
 ) -> Result<()> {
     let mut resp = Responder::new(transport);
+    let mut args = cmd_to_c_string_args(cmd).skip(1);
     let Some(var) = args.next() else {
         return reply_fail!(resp, "Missing variable");
     };
 
-    match var {
+    match var.to_str()? {
         "all" => return get_var_all(transport, fb_impl).await,
         MAX_DOWNLOAD_SIZE_NAME => {
             return reply_okay!(resp, "{:#x}", fb_impl.get_download_buffer().await.len());
         }
-        v => {
+        _ => {
             let mut val = [0u8; MAX_RESPONSE_SIZE];
-            match fb_impl.get_var_as_str(v, args, &mut resp, &mut val[..]).await {
+            match fb_impl.get_var_as_str(var, args, &mut resp, &mut val[..]).await {
                 Ok(s) => reply_okay!(resp, "{}", s),
                 Err(e) => reply_fail!(resp, "{}", e.to_str()),
             }
@@ -854,6 +879,19 @@ async fn reboot(
     reply_fail!(resp, "{}", e.to_str())
 }
 
+// Handles `fastboot boot`
+async fn boot(
+    transport: &mut impl Transport,
+    fb_impl: &mut impl FastbootImplementation,
+) -> Result<()> {
+    let mut resp = Responder::new(transport);
+    let boot_res = async { fb_impl.boot(&mut resp).await }.await;
+    match boot_res {
+        Err(e) => reply_fail!(resp, "{}", e.to_str()),
+        _ => reply_okay!(resp, "boot_command"),
+    }
+}
+
 // Handles `fastboot continue`
 async fn r#continue(
     transport: &mut impl Transport,
@@ -912,8 +950,8 @@ pub async fn process_next_command(
     transport: &mut impl Transport,
     fb_impl: &mut impl FastbootImplementation,
 ) -> Result<bool> {
-    let mut packet = [0u8; MAX_COMMAND_SIZE];
-    let cmd_size = match transport.receive_packet(&mut packet[..]).await? {
+    let mut packet = [0u8; MAX_COMMAND_SIZE + 1];
+    let cmd_size = match transport.receive_packet(&mut packet[..MAX_COMMAND_SIZE]).await? {
         0 => return Ok(false),
         v => v,
     };
@@ -926,6 +964,10 @@ pub async fn process_next_command(
         return transport.send_packet(fastboot_fail!(packet, "No command")).await.map(|_| false);
     };
     match cmd {
+        "boot" => {
+            boot(transport, fb_impl).await?;
+            return Ok(true);
+        }
         "continue" => {
             r#continue(transport, fb_impl).await?;
             return Ok(true);
@@ -934,7 +976,7 @@ pub async fn process_next_command(
         "erase" => erase(cmd_str, transport, fb_impl).await,
         "fetch" => fetch(cmd_str, args, transport, fb_impl).await,
         "flash" => flash(cmd_str, transport, fb_impl).await,
-        "getvar" => get_var(args, transport, fb_impl).await,
+        "getvar" => get_var(&mut packet[..], transport, fb_impl).await,
         "reboot" => reboot(RebootMode::Normal, transport, fb_impl).await,
         "reboot-bootloader" => reboot(RebootMode::Bootloader, transport, fb_impl).await,
         "reboot-fastboot" => reboot(RebootMode::Fastboot, transport, fb_impl).await,
@@ -1086,13 +1128,13 @@ mod test {
     impl FastbootImplementation for FastbootTest {
         async fn get_var(
             &mut self,
-            var: &str,
-            args: Split<'_, char>,
+            var: &CStr,
+            args: impl Iterator<Item = &'_ CStr> + Clone,
             out: &mut [u8],
             _: impl InfoSender,
         ) -> CommandResult<usize> {
-            let args = args.collect::<Vec<_>>();
-            match self.vars.get(&(var, &args[..])) {
+            let args = args.map(|v| v.to_str().unwrap()).collect::<Vec<_>>();
+            match self.vars.get(&(var.to_str()?, &args[..])) {
                 Some(v) => {
                     out[..v.len()].clone_from_slice(v.as_bytes());
                     Ok(v.len())
@@ -1152,6 +1194,10 @@ mod test {
             Ok(uploader
                 .upload(&data[offset.try_into().unwrap()..][..size.try_into().unwrap()])
                 .await?)
+        }
+
+        async fn boot(&mut self, mut responder: impl InfoSender + OkaySender) -> CommandResult<()> {
+            Ok(responder.send_info("Boot to boot.img...").await?)
         }
 
         async fn reboot(
@@ -1253,6 +1299,22 @@ mod test {
             data.iter().for_each(|v| self.out_queue.push_back(*v));
             Ok(())
         }
+    }
+
+    #[test]
+    fn test_boot() {
+        let mut fastboot_impl: FastbootTest = Default::default();
+        fastboot_impl.download_buffer = vec![0u8; 1024];
+        let mut transport = TestTransport::new();
+        transport.add_input(b"boot");
+        let _ = block_on(run(&mut transport, &mut fastboot_impl));
+        assert_eq!(
+            transport.out_queue,
+            VecDeque::<Vec<u8>>::from([
+                b"INFOBoot to boot.img...".into(),
+                b"OKAYboot_command".into()
+            ])
+        );
     }
 
     #[test]
