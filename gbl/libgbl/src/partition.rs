@@ -22,7 +22,8 @@ use core::{
     ops::{Deref, DerefMut},
 };
 use gbl_storage::{
-    BlockInfo, BlockIo, Disk, Gpt, GptSyncResult, Partition as GptPartition, SliceMaybeUninit,
+    BlockInfo, BlockIo, Disk, Gpt, GptBuilder, GptSyncResult, Partition as GptPartition,
+    SliceMaybeUninit,
 };
 use liberror::Error;
 use safemath::SafeNum;
@@ -173,15 +174,20 @@ where
         }
     }
 
+    /// Borrows disk and last_err separately
+    fn get_disk_and_last_err(
+        &self,
+    ) -> Result<(RefMut<'_, Disk<B, S>>, RefMut<'_, Result<(), Error>>), Error> {
+        let res = self.disk.try_borrow_mut().map_err(|_| Error::NotReady)?;
+        Ok(RefMut::map_split(res, |v| (&mut v.0, &mut v.1)))
+    }
+
     /// Gets an instance of `PartitionIo` for a partition.
     ///
     /// If `part` is `None`, an IO for the whole block device is returned.
     pub fn partition_io(&self, part: Option<&str>) -> Result<PartitionIo<'_, B>, Error> {
         let (part_start, part_end) = self.find_partition(part)?.absolute_range()?;
-        let (disk, last_err) =
-            RefMut::map_split(self.disk.try_borrow_mut().map_err(|_| Error::NotReady)?, |v| {
-                (&mut v.0, &mut v.1)
-            });
+        let (disk, last_err) = self.get_disk_and_last_err()?;
         Ok(PartitionIo { disk: Disk::from_ref_mut(disk), last_err, part_start, part_end })
     }
 
@@ -273,6 +279,25 @@ where
             PartitionTable::Gpt(ref mut gpt) => {
                 let mut disk = self.disk.try_borrow_mut().map_err(|_| Error::NotReady)?;
                 disk.0.erase_gpt(gpt).await
+            }
+        }
+    }
+
+    /// Creates an instance of GptBuilder.
+    pub fn gpt_builder(
+        &self,
+    ) -> Result<GptBuilder<RefMut<'_, Disk<B, S>>, RefMut<'_, Gpt<T>>>, Error> {
+        let mut parts = self.partitions.try_borrow_mut().map_err(|_| Error::NotReady)?;
+        match parts.deref_mut() {
+            PartitionTable::Raw(_, _) => Err(Error::Unsupported),
+            PartitionTable::Gpt(_) => {
+                let gpt = RefMut::map(parts, |v| match v {
+                    PartitionTable::Gpt(v) => v,
+                    _ => unreachable!(),
+                });
+                let (disk, err) = self.get_disk_and_last_err()?;
+                (*err)?;
+                Ok(GptBuilder::new(disk, gpt)?.0)
             }
         }
     }

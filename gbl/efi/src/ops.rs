@@ -25,24 +25,26 @@ use alloc::{
 };
 use arrayvec::ArrayVec;
 use core::{
-    ffi::CStr, fmt::Write, mem::MaybeUninit, num::NonZeroUsize, ops::DerefMut, ptr::null,
-    slice::from_raw_parts_mut, str::Split,
+    cmp::min, ffi::CStr, fmt::Write, mem::MaybeUninit, num::NonZeroUsize, ops::DerefMut, ptr::null,
+    slice::from_raw_parts_mut,
 };
 use efi::{
     efi_print, efi_println,
     protocol::{
-        dt_fixup::DtFixupProtocol, gbl_efi_avb::GblAvbProtocol,
+        dt_fixup::DtFixupProtocol, gbl_efi_ab_slot::GblSlotProtocol, gbl_efi_avb::GblAvbProtocol,
         gbl_efi_fastboot::GblFastbootProtocol, gbl_efi_image_loading::GblImageLoadingProtocol,
         gbl_efi_os_configuration::GblOsConfigurationProtocol,
     },
     EfiEntry,
 };
 use efi_types::{
-    GblEfiAvbKeyValidationStatus, GblEfiAvbVerificationResult, GblEfiDeviceTreeMetadata,
-    GblEfiImageInfo, GblEfiVerifiedDeviceTree, PARTITION_NAME_LEN_U16,
+    GblEfiAvbKeyValidationStatus, GblEfiAvbVerificationResult, GblEfiBootReason,
+    GblEfiDeviceTreeMetadata, GblEfiImageInfo, GblEfiVerifiedDeviceTree,
+    GBL_EFI_BOOT_REASON_BOOTLOADER, GBL_EFI_BOOT_REASON_COLD, GBL_EFI_BOOT_REASON_FASTBOOTD,
+    GBL_EFI_BOOT_REASON_RECOVERY, PARTITION_NAME_LEN_U16,
 };
 use fdt::Fdt;
-use gbl_storage::{BlockIo, Disk, Gpt};
+use gbl_storage::{BlockIo, Disk, Gpt, SliceMaybeUninit};
 use liberror::{Error, Result};
 use libgbl::{
     constants::{ImageName, BOOTCMD_SIZE},
@@ -52,8 +54,8 @@ use libgbl::{
     },
     gbl_avb::state::{BootStateColor, KeyValidationStatus},
     ops::{
-        AvbIoError, AvbIoResult, CertPermanentAttributes, ImageBuffer, VarInfoSender,
-        SHA256_DIGEST_SIZE,
+        AvbIoError, AvbIoResult, CertPermanentAttributes, ImageBuffer, RebootReason, Slot,
+        SlotsMetadata, SHA256_DIGEST_SIZE,
     },
     partition::GblDisk,
     slots::{BootToken, Cursor},
@@ -245,10 +247,7 @@ impl Write for Ops<'_, '_> {
     }
 }
 
-impl<'a, 'b, 'd> GblOps<'b, 'd> for Ops<'a, 'b>
-where
-    Self: 'b,
-{
+impl<'a, 'b, 'd> GblOps<'b, 'd> for Ops<'a, 'b> {
     fn console_out(&mut self) -> Option<&mut dyn Write> {
         Some(self)
     }
@@ -360,6 +359,36 @@ where
         }
     }
 
+    fn avb_read_persistent_value(&mut self, name: &CStr, value: &mut [u8]) -> AvbIoResult<usize> {
+        match self.efi_entry.system_table().boot_services().find_first_and_open::<GblAvbProtocol>()
+        {
+            Ok(protocol) => {
+                protocol.read_persistent_value(name, value).map_err(efi_error_to_avb_error)
+            }
+            Err(_) => Err(AvbIoError::NotImplemented),
+        }
+    }
+
+    fn avb_write_persistent_value(&mut self, name: &CStr, value: &[u8]) -> AvbIoResult<()> {
+        match self.efi_entry.system_table().boot_services().find_first_and_open::<GblAvbProtocol>()
+        {
+            Ok(protocol) => {
+                protocol.write_persistent_value(name, Some(value)).map_err(efi_error_to_avb_error)
+            }
+            Err(_) => Err(AvbIoError::NotImplemented),
+        }
+    }
+
+    fn avb_erase_persistent_value(&mut self, name: &CStr) -> AvbIoResult<()> {
+        match self.efi_entry.system_table().boot_services().find_first_and_open::<GblAvbProtocol>()
+        {
+            Ok(protocol) => {
+                protocol.write_persistent_value(name, None).map_err(efi_error_to_avb_error)
+            }
+            Err(_) => Err(AvbIoError::NotImplemented),
+        }
+    }
+
     fn avb_validate_vbmeta_public_key(
         &self,
         public_key: &[u8],
@@ -398,6 +427,7 @@ where
     fn avb_handle_verification_result(
         &mut self,
         color: BootStateColor,
+        digest: Option<&CStr>,
         boot_os_version: Option<&[u8]>,
         boot_security_patch: Option<&[u8]>,
         system_os_version: Option<&[u8]>,
@@ -410,6 +440,7 @@ where
             Ok(protocol) => protocol
                 .handle_verification_result(&GblEfiAvbVerificationResult {
                     color: avb_color_to_efi_color(color),
+                    digest: digest.map_or(null(), |p| p.as_ptr() as _),
                     boot_version: boot_os_version.map_or(null(), |p| p.as_ptr()),
                     boot_security_patch: boot_security_patch.map_or(null(), |p| p.as_ptr()),
                     system_version: system_os_version.map_or(null(), |p| p.as_ptr()),
@@ -535,10 +566,10 @@ where
         }
     }
 
-    fn fastboot_variable(
+    fn fastboot_variable<'arg>(
         &mut self,
-        name: &str,
-        args: Split<'_, char>,
+        name: &CStr,
+        args: impl Iterator<Item = &'arg CStr> + Clone,
         out: &mut [u8],
     ) -> Result<usize> {
         self.efi_entry
@@ -548,25 +579,325 @@ where
             .get_var(name, args, out)
     }
 
-    async fn fastboot_send_all_variables(&mut self, sender: &mut impl VarInfoSender) -> Result<()> {
-        let mut out = [0u8; fastboot::MAX_RESPONSE_SIZE];
-        let protocol = self
-            .efi_entry
+    fn fastboot_visit_all_variables(&mut self, cb: impl FnMut(&[&CStr], &CStr)) -> Result<()> {
+        self.efi_entry
             .system_table()
             .boot_services()
-            .find_first_and_open::<GblFastbootProtocol>()?;
-        for ele in protocol.var_iter()? {
-            let (name, args, val) = ele.get(&mut out[..])?;
-            sender.send_var_info(name, args, val).await?;
-        }
+            .find_first_and_open::<GblFastbootProtocol>()?
+            .get_var_all(cb)
+    }
+
+    fn slots_metadata(&mut self) -> Result<SlotsMetadata> {
+        Ok(SlotsMetadata {
+            slot_count: self
+                .efi_entry
+                .system_table()
+                .boot_services()
+                .find_first_and_open::<GblSlotProtocol>()?
+                .load_boot_data()?
+                .slot_count
+                .try_into()
+                .unwrap(),
+        })
+    }
+
+    fn get_current_slot(&mut self) -> Result<Slot> {
+        // TODO(b/363075013): Refactors the opening of slot protocol into a common helper once
+        // `MockBootServices::find_first_and_open` is updated to return Protocol<'_, T>.
+        self.efi_entry
+            .system_table()
+            .boot_services()
+            .find_first_and_open::<GblSlotProtocol>()?
+            .get_current_slot()?
+            .try_into()
+    }
+
+    fn get_next_slot(&mut self, mark_boot_attempt: bool) -> Result<Slot> {
+        self.efi_entry
+            .system_table()
+            .boot_services()
+            .find_first_and_open::<GblSlotProtocol>()?
+            .get_next_slot(mark_boot_attempt)?
+            .try_into()
+    }
+
+    fn set_active_slot(&mut self, slot: u8) -> Result<()> {
+        self.efi_entry
+            .system_table()
+            .boot_services()
+            .find_first_and_open::<GblSlotProtocol>()?
+            .set_active_slot(slot)
+    }
+
+    fn set_reboot_reason(&mut self, reason: RebootReason) -> Result<()> {
+        self.efi_entry
+            .system_table()
+            .boot_services()
+            .find_first_and_open::<GblSlotProtocol>()?
+            .set_boot_reason(gbl_to_efi_boot_reason(reason), b"")
+    }
+
+    fn get_reboot_reason(&mut self) -> Result<RebootReason> {
+        let mut subreason = [0u8; 128];
+        self.efi_entry
+            .system_table()
+            .boot_services()
+            .find_first_and_open::<GblSlotProtocol>()?
+            .get_boot_reason(&mut subreason[..])
+            .map(|(v, _)| efi_to_gbl_boot_reason(v))
+    }
+}
+
+/// Converts a [GblEfiBootReason] to [RebootReason].
+fn efi_to_gbl_boot_reason(reason: GblEfiBootReason) -> RebootReason {
+    match reason {
+        GBL_EFI_BOOT_REASON_RECOVERY => RebootReason::Recovery,
+        GBL_EFI_BOOT_REASON_BOOTLOADER => RebootReason::Bootloader,
+        GBL_EFI_BOOT_REASON_FASTBOOTD => RebootReason::FastbootD,
+        _ => RebootReason::Normal,
+    }
+}
+
+/// Converts a [RebootReason] to [GblEfiBootReason].
+fn gbl_to_efi_boot_reason(reason: RebootReason) -> GblEfiBootReason {
+    match reason {
+        RebootReason::Recovery => GBL_EFI_BOOT_REASON_RECOVERY,
+        RebootReason::Bootloader => GBL_EFI_BOOT_REASON_BOOTLOADER,
+        RebootReason::FastbootD => GBL_EFI_BOOT_REASON_FASTBOOTD,
+        RebootReason::Normal => GBL_EFI_BOOT_REASON_COLD,
+    }
+}
+
+/// Inherits everything from `ops` but override a few such as read boot_a from
+/// bootimg_buffer, avb_write_rollback_index(), slot operation etc
+pub struct RambootOps<'b, T> {
+    pub ops: &'b mut T,
+    pub bootimg_buffer: &'b mut [u8],
+}
+
+impl<'a, 'd, T: GblOps<'a, 'd>> GblOps<'a, 'd> for RambootOps<'_, T> {
+    fn console_out(&mut self) -> Option<&mut dyn Write> {
+        self.ops.console_out()
+    }
+
+    fn should_stop_in_fastboot(&mut self) -> Result<bool> {
+        self.ops.should_stop_in_fastboot()
+    }
+
+    fn reboot(&mut self) {
+        self.ops.reboot()
+    }
+
+    fn disks(
+        &self,
+    ) -> &'a [GblDisk<
+        Disk<impl BlockIo + 'a, impl DerefMut<Target = [u8]> + 'a>,
+        Gpt<impl DerefMut<Target = [u8]> + 'a>,
+    >] {
+        self.ops.disks()
+    }
+
+    fn expected_os(&mut self) -> Result<Option<Os>> {
+        self.ops.expected_os()
+    }
+
+    fn zircon_add_device_zbi_items(
+        &mut self,
+        container: &mut ZbiContainer<&mut [u8]>,
+    ) -> Result<()> {
+        self.ops.zircon_add_device_zbi_items(container)
+    }
+
+    fn get_zbi_bootloader_files_buffer(&mut self) -> Option<&mut [u8]> {
+        self.ops.get_zbi_bootloader_files_buffer()
+    }
+
+    fn load_slot_interface<'c>(
+        &'c mut self,
+        _fnmut: &'c mut dyn FnMut(&mut [u8]) -> Result<()>,
+        _boot_token: BootToken,
+    ) -> GblResult<Cursor<'c>> {
+        self.ops.load_slot_interface(_fnmut, _boot_token)
+    }
+
+    fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
+        self.ops.avb_read_is_device_unlocked()
+    }
+
+    fn avb_read_rollback_index(&mut self, _rollback_index_location: usize) -> AvbIoResult<u64> {
+        self.ops.avb_read_rollback_index(_rollback_index_location)
+    }
+
+    fn avb_write_rollback_index(&mut self, _: usize, _: u64) -> AvbIoResult<()> {
+        // We don't want to persist AVB related data such as updating antirollback indices.
         Ok(())
+    }
+
+    fn avb_read_persistent_value(&mut self, name: &CStr, value: &mut [u8]) -> AvbIoResult<usize> {
+        self.ops.avb_read_persistent_value(name, value)
+    }
+
+    fn avb_write_persistent_value(&mut self, _: &CStr, _: &[u8]) -> AvbIoResult<()> {
+        // We don't want to persist AVB related data such as updating current VBH.
+        Ok(())
+    }
+
+    fn avb_erase_persistent_value(&mut self, _: &CStr) -> AvbIoResult<()> {
+        // We don't want to persist AVB related data such as updating current VBH.
+        Ok(())
+    }
+
+    fn avb_cert_read_permanent_attributes(
+        &mut self,
+        attributes: &mut CertPermanentAttributes,
+    ) -> AvbIoResult<()> {
+        self.ops.avb_cert_read_permanent_attributes(attributes)
+    }
+
+    fn avb_cert_read_permanent_attributes_hash(&mut self) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
+        self.ops.avb_cert_read_permanent_attributes_hash()
+    }
+
+    fn get_image_buffer(
+        &mut self,
+        image_name: &str,
+        size: NonZeroUsize,
+    ) -> GblResult<ImageBuffer<'d>> {
+        self.ops.get_image_buffer(image_name, size)
+    }
+
+    fn get_custom_device_tree(&mut self) -> Option<&'a [u8]> {
+        self.ops.get_custom_device_tree()
+    }
+
+    fn fixup_os_commandline<'c>(
+        &mut self,
+        commandline: &CStr,
+        fixup_buffer: &'c mut [u8],
+    ) -> Result<Option<&'c str>> {
+        self.ops.fixup_os_commandline(commandline, fixup_buffer)
+    }
+
+    fn fixup_bootconfig<'c>(
+        &mut self,
+        bootconfig: &[u8],
+        fixup_buffer: &'c mut [u8],
+    ) -> Result<Option<&'c [u8]>> {
+        self.ops.fixup_bootconfig(bootconfig, fixup_buffer)
+    }
+
+    fn fixup_device_tree(&mut self, device_tree: &mut [u8]) -> Result<()> {
+        self.ops.fixup_device_tree(device_tree)
+    }
+
+    fn select_device_trees(
+        &mut self,
+        components_registry: &mut DeviceTreeComponentsRegistry,
+    ) -> Result<()> {
+        self.ops.select_device_trees(components_registry)
+    }
+
+    fn read_from_partition_sync(
+        &mut self,
+        part: &str,
+        off: u64,
+        out: &mut (impl SliceMaybeUninit + ?Sized),
+    ) -> Result<()> {
+        if part == "boot_a" {
+            let len = min(self.bootimg_buffer.len() - off as usize, out.len());
+            out.clone_from_slice(&self.bootimg_buffer[off as usize..off as usize + len]);
+            Ok(())
+        } else {
+            self.ops.read_from_partition_sync(part, off, out)
+        }
+    }
+
+    fn avb_handle_verification_result(
+        &mut self,
+        color: BootStateColor,
+        digest: Option<&CStr>,
+        boot_os_version: Option<&[u8]>,
+        boot_security_patch: Option<&[u8]>,
+        system_os_version: Option<&[u8]>,
+        system_security_patch: Option<&[u8]>,
+        vendor_os_version: Option<&[u8]>,
+        vendor_security_patch: Option<&[u8]>,
+    ) -> AvbIoResult<()> {
+        self.ops.avb_handle_verification_result(
+            color,
+            digest,
+            boot_os_version,
+            boot_security_patch,
+            system_os_version,
+            system_security_patch,
+            vendor_os_version,
+            vendor_security_patch,
+        )
+    }
+
+    fn avb_validate_vbmeta_public_key(
+        &self,
+        public_key: &[u8],
+        public_key_metadata: Option<&[u8]>,
+    ) -> AvbIoResult<KeyValidationStatus> {
+        self.ops.avb_validate_vbmeta_public_key(public_key, public_key_metadata)
+    }
+
+    fn slots_metadata(&mut self) -> Result<SlotsMetadata> {
+        // Ramboot is not suppose to call this interface.
+        unreachable!()
+    }
+
+    fn get_current_slot(&mut self) -> Result<Slot> {
+        // Ramboot is slotless
+        Err(Error::Unsupported)
+    }
+
+    fn get_next_slot(&mut self, _: bool) -> Result<Slot> {
+        // Ramboot is not suppose to call this interface.
+        unreachable!()
+    }
+
+    fn set_active_slot(&mut self, _: u8) -> Result<()> {
+        // Ramboot is not suppose to call this interface.
+        unreachable!()
+    }
+
+    fn set_reboot_reason(&mut self, _: RebootReason) -> Result<()> {
+        // Ramboot is not suppose to call this interface.
+        unreachable!()
+    }
+
+    fn get_reboot_reason(&mut self) -> Result<RebootReason> {
+        // Assumes that ramboot use normal boot mode. But we might consider supporting recovery
+        // if there is a usecase.
+        Ok(RebootReason::Normal)
+    }
+
+    fn fastboot_variable<'arg>(
+        &mut self,
+        _: &CStr,
+        _: impl Iterator<Item = &'arg CStr> + Clone,
+        _: &mut [u8],
+    ) -> Result<usize> {
+        // Ramboot should not need this.
+        unreachable!();
+    }
+
+    fn fastboot_visit_all_variables(&mut self, _: impl FnMut(&[&CStr], &CStr)) -> Result<()> {
+        // Ramboot should not need this.
+        unreachable!();
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use efi_mocks::{protocol::gbl_efi_avb::GblAvbProtocol, MockEfi};
+    use efi_mocks::{
+        protocol::{gbl_efi_ab_slot::GblSlotProtocol, gbl_efi_avb::GblAvbProtocol},
+        MockEfi,
+    };
+    use efi_types::GBL_EFI_BOOT_REASON;
     use mockall::predicate::eq;
 
     #[test]
@@ -771,5 +1102,206 @@ mod test {
         let mut ops = Ops::new(installed.entry(), &[], None);
 
         assert_eq!(ops.avb_write_rollback_index(0, 12345), Err(AvbIoError::NotImplemented));
+    }
+
+    #[test]
+    fn ops_avb_read_persistent_value_success() {
+        const EXPECTED_LEN: usize = 4;
+
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        avb.read_persistent_value_result = Some(Ok(EXPECTED_LEN));
+        mock_efi.boot_services.expect_find_first_and_open::<GblAvbProtocol>().return_const(Ok(avb));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        let mut buffer = [0u8; EXPECTED_LEN];
+        assert_eq!(ops.avb_read_persistent_value(c"test", &mut buffer), Ok(EXPECTED_LEN));
+    }
+
+    #[test]
+    fn ops_avb_read_persistent_value_error() {
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        avb.read_persistent_value_result = Some(Err(Error::OutOfResources));
+        mock_efi.boot_services.expect_find_first_and_open::<GblAvbProtocol>().return_const(Ok(avb));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        let mut buffer = [0u8; 0];
+        assert_eq!(ops.avb_read_persistent_value(c"test", &mut buffer), Err(AvbIoError::Oom));
+    }
+
+    #[test]
+    fn ops_avb_read_persistent_value_protocol_not_found() {
+        let mut mock_efi = MockEfi::new();
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblAvbProtocol>()
+            .returning(|| Err(Error::NotFound));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        let mut buffer = [0u8; 0];
+        assert_eq!(
+            ops.avb_read_persistent_value(c"test", &mut buffer),
+            Err(AvbIoError::NotImplemented)
+        );
+    }
+
+    #[test]
+    fn ops_avb_write_persistent_value_success() {
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        avb.write_persistent_value_result = Some(Ok(()));
+        mock_efi.boot_services.expect_find_first_and_open::<GblAvbProtocol>().return_const(Ok(avb));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_write_persistent_value(c"test", b""), Ok(()));
+    }
+
+    #[test]
+    fn ops_avb_write_persistent_value_error() {
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        avb.write_persistent_value_result = Some(Err(Error::InvalidInput));
+        mock_efi.boot_services.expect_find_first_and_open::<GblAvbProtocol>().return_const(Ok(avb));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_write_persistent_value(c"test", b""), Err(AvbIoError::InvalidValueSize));
+    }
+
+    #[test]
+    fn ops_avb_write_persistent_value_protocol_not_found() {
+        let mut mock_efi = MockEfi::new();
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblAvbProtocol>()
+            .returning(|| Err(Error::NotFound));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_write_persistent_value(c"test", b""), Err(AvbIoError::NotImplemented));
+    }
+
+    #[test]
+    fn ops_avb_erase_persistent_value_success() {
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        avb.write_persistent_value_result = Some(Ok(()));
+        mock_efi.boot_services.expect_find_first_and_open::<GblAvbProtocol>().return_const(Ok(avb));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_erase_persistent_value(c"test"), Ok(()));
+    }
+
+    #[test]
+    fn ops_avb_erase_persistent_value_error() {
+        let mut mock_efi = MockEfi::new();
+        let mut avb = GblAvbProtocol::default();
+        avb.write_persistent_value_result = Some(Err(Error::DeviceError));
+        mock_efi.boot_services.expect_find_first_and_open::<GblAvbProtocol>().return_const(Ok(avb));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_erase_persistent_value(c"test"), Err(AvbIoError::Io));
+    }
+
+    #[test]
+    fn ops_avb_erase_persistent_value_protocol_not_found() {
+        let mut mock_efi = MockEfi::new();
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblAvbProtocol>()
+            .returning(|| Err(Error::NotFound));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        assert_eq!(ops.avb_erase_persistent_value(c"test"), Err(AvbIoError::NotImplemented));
+    }
+
+    /// Helper for testing `set_boot_reason`
+    fn test_set_reboot_reason(input: RebootReason, expect: GBL_EFI_BOOT_REASON) {
+        let mut mock_efi = MockEfi::new();
+        mock_efi.boot_services.expect_find_first_and_open::<GblSlotProtocol>().times(1).returning(
+            move || {
+                let mut slot = GblSlotProtocol::default();
+                slot.expect_set_boot_reason().times(1).returning(move |reason, _| {
+                    assert_eq!(reason, expect);
+                    Ok(())
+                });
+                Ok(slot)
+            },
+        );
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+        assert_eq!(ops.set_reboot_reason(input), Ok(()));
+    }
+
+    #[test]
+    fn test_set_reboot_reason_normal() {
+        test_set_reboot_reason(RebootReason::Normal, GBL_EFI_BOOT_REASON_COLD);
+    }
+
+    #[test]
+    fn test_set_reboot_reason_recovery() {
+        test_set_reboot_reason(RebootReason::Recovery, GBL_EFI_BOOT_REASON_RECOVERY);
+    }
+
+    #[test]
+    fn test_set_reboot_reason_bootloader() {
+        test_set_reboot_reason(RebootReason::Bootloader, GBL_EFI_BOOT_REASON_BOOTLOADER);
+    }
+
+    #[test]
+    fn test_set_reboot_reason_fastbootd() {
+        test_set_reboot_reason(RebootReason::FastbootD, GBL_EFI_BOOT_REASON_FASTBOOTD);
+    }
+
+    /// Helper for testing `get_boot_reason`
+    fn test_get_reboot_reason(input: GBL_EFI_BOOT_REASON, expect: RebootReason) {
+        let mut mock_efi = MockEfi::new();
+        mock_efi.boot_services.expect_find_first_and_open::<GblSlotProtocol>().times(1).returning(
+            move || {
+                let mut slot = GblSlotProtocol::default();
+                slot.expect_get_boot_reason().times(1).returning(move |_| Ok((input, 0)));
+                Ok(slot)
+            },
+        );
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+        assert_eq!(ops.get_reboot_reason().unwrap(), expect)
+    }
+
+    #[test]
+    fn test_get_reboot_reason_normal() {
+        test_get_reboot_reason(GBL_EFI_BOOT_REASON_COLD, RebootReason::Normal);
+    }
+
+    #[test]
+    fn test_get_reboot_reason_recovery() {
+        test_get_reboot_reason(GBL_EFI_BOOT_REASON_RECOVERY, RebootReason::Recovery);
+    }
+
+    #[test]
+    fn test_get_reboot_reason_bootloader() {
+        test_get_reboot_reason(GBL_EFI_BOOT_REASON_BOOTLOADER, RebootReason::Bootloader);
+    }
+
+    #[test]
+    fn test_get_reboot_reason_fastbootd() {
+        test_get_reboot_reason(GBL_EFI_BOOT_REASON_FASTBOOTD, RebootReason::FastbootD);
     }
 }
