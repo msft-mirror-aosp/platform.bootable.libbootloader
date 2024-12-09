@@ -22,15 +22,8 @@ use crate::{
 };
 pub use abr::{mark_slot_active, set_one_shot_bootloader, set_one_shot_recovery, SlotIndex};
 use core::{
-    array::from_fn,
-    cmp::min,
-    fmt::Write,
-    future::Future,
-    marker::PhantomData,
-    mem::take,
-    ops::DerefMut,
-    pin::Pin,
-    str::{from_utf8, Split},
+    array::from_fn, cmp::min, ffi::CStr, fmt::Write, future::Future, marker::PhantomData,
+    mem::take, ops::DerefMut, pin::Pin, str::from_utf8,
 };
 use fastboot::{
     next_arg, next_arg_u64, process_next_command, run_tcp_session, snprintf, CommandError,
@@ -514,8 +507,8 @@ where
 {
     async fn get_var(
         &mut self,
-        var: &str,
-        args: Split<'_, char>,
+        var: &CStr,
+        args: impl Iterator<Item = &'_ CStr> + Clone,
         out: &mut [u8],
         _: impl InfoSender,
     ) -> CommandResult<usize> {
@@ -862,6 +855,7 @@ mod test {
     use gbl_storage::GPT_GUID_LEN;
     use liberror::Error;
     use spin::{Mutex, MutexGuard};
+    use std::ffi::CString;
     use std::{collections::VecDeque, io::Read};
     use zerocopy::AsBytes;
 
@@ -895,9 +889,12 @@ mod test {
     /// Helper to test fastboot variable value.
     fn check_var(gbl_fb: &mut impl FastbootImplementation, var: &str, args: &str, expected: &str) {
         let resp: TestResponder = Default::default();
+        let args_c = args.split(':').map(|v| CString::new(v).unwrap()).collect::<Vec<_>>();
+        let args_c = args_c.iter().map(|v| v.as_c_str());
+        let var_c = CString::new(var).unwrap();
         let mut out = vec![0u8; MAX_RESPONSE_SIZE];
         let val =
-            block_on(gbl_fb.get_var_as_str(var, args.split(':'), &resp, &mut out[..])).unwrap();
+            block_on(gbl_fb.get_var_as_str(var_c.as_c_str(), args_c, &resp, &mut out[..])).unwrap();
         assert_eq!(val, expected, "var {}:{} = {} != {}", var, args, val, expected,);
     }
 
@@ -974,8 +971,8 @@ mod test {
         let resp: TestResponder = Default::default();
         let mut out = vec![0u8; MAX_RESPONSE_SIZE];
         assert!(block_on(gbl_fb.get_var_as_str(
-            "partition",
-            "non-existent".split(':'),
+            c"partition",
+            [c"non-existent"].into_iter(),
             &resp,
             &mut out[..],
         ))
