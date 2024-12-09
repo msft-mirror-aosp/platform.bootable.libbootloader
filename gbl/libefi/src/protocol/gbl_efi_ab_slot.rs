@@ -106,27 +106,8 @@ impl<'a> Protocol<'a, GblSlotProtocol> {
         // established by `Protocol::new()`.
         // `self.interface` is an input parameter and will not be retained. It outlives the call.
         // `info` is an output parameter and will not be retained. It outlives the call.
-        unsafe { efi_call!(self.interface()?.get_current_slot, self.interface, &mut info)? };
+        unsafe { efi_call!(self.interface()?.get_current_slot, self.interface, &mut info)? }
         Ok(info.into())
-    }
-
-    /// Wrapper of `GBL_EFI_SLOT_PROTOCOL.GetNextSlot()`
-    pub fn get_next_slot(&self, mark_boot_attempt: bool) -> Result<GblSlot> {
-        let mut info = GblEfiSlotInfo::default();
-        // SAFETY:
-        // `self.interface()?` guarantees self.interface is non-null and points to a valid object
-        // established by `Protocol::new()`.
-        // `self.interface`, `info` are input/output parameter and will not be retained. It
-        // outlives the call.
-        unsafe {
-            efi_call!(
-                self.interface()?.get_next_slot,
-                self.interface,
-                mark_boot_attempt,
-                &mut info as _
-            )?;
-        }
-        Ok(GblSlot::from(info))
     }
 
     /// Wrapper of `GBL_EFI_SLOT_PROTOCOL.set_active_slot()`
@@ -146,6 +127,15 @@ impl<'a> Protocol<'a, GblSlotProtocol> {
         // established by `Protocol::new()`.
         // `self.interface` is an input parameter and will not be retained. It outlives the call.
         unsafe { efi_call!(self.interface()?.set_slot_unbootable, self.interface, idx, reason) }
+    }
+
+    /// Wrapper of `GBL_EFI_SLOT_PROTOCOL.mark_boot_attempt()`
+    pub fn mark_boot_attempt(&self) -> Result<()> {
+        // SAFETY:
+        // `self.interface()?` guarantees self.interface is non-null and points to a valid object
+        // established by `Protocol::new()`.
+        // `self.interface` is an input parameter and will not be retained. It outlives the call.
+        unsafe { efi_call!(self.interface()?.mark_boot_attempt, self.interface) }
     }
 
     /// Wrapper of `GBL_EFI_SLOT_PROTOCOL.reinitialize()`

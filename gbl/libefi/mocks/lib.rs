@@ -26,7 +26,6 @@ use efi_types::{EfiConfigurationTable, EfiTimerDelay};
 use liberror::Result;
 use mockall::mock;
 use protocol::{
-    gbl_efi_ab_slot::GblSlotProtocol,
     gbl_efi_avb::GblAvbProtocol,
     simple_text_output::{passthrough_con_out, MockSimpleTextOutputProtocol},
 };
@@ -241,12 +240,6 @@ fn passthrough_boot_services() -> MockBootServices {
             efi.as_mut().unwrap().boot_services.find_first_and_open::<GblAvbProtocol>()
         })
     });
-    services.expect_find_first_and_open::<GblSlotProtocol>().returning(|| {
-        MOCK_EFI.with_borrow_mut(|efi| {
-            efi.as_mut().unwrap().boot_services.find_first_and_open::<GblSlotProtocol>()
-        })
-    });
-
     services
 }
 

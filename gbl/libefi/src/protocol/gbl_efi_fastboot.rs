@@ -18,13 +18,14 @@ use crate::{
     efi_call,
     protocol::{Protocol, ProtocolInfo},
 };
+use arrayvec::ArrayVec;
 use core::{
-    ffi::{c_char, c_void, CStr},
-    ptr::null,
-    slice::from_raw_parts,
-    str::from_utf8,
+    ffi::CStr,
+    str::{from_utf8, Split},
 };
-use efi_types::{EfiGuid, GblEfiFastbootPolicy, GblEfiFastbootProtocol};
+use efi_types::{
+    EfiGuid, GblEfiFastbootArg, GblEfiFastbootPolicy, GblEfiFastbootProtocol, GblEfiFastbootToken,
+};
 use liberror::{Error, Result};
 
 /// GBL_EFI_FASTBOOT_PROTOCOL
@@ -42,94 +43,123 @@ impl ProtocolInfo for GblFastbootProtocol {
         EfiGuid::new(0xc67e48a0, 0x5eb8, 0x4127, [0xbe, 0x89, 0xdf, 0x2e, 0xd9, 0x3d, 0x8a, 0x9a]);
 }
 
+/// Wrapper type for get_next_var_args() tokens.
+///
+/// Tokens are opaque values used to store the iterator's position.
+/// They can also be passed in get_var() to give the backend a hint
+/// on where to find a variable entry.
+#[derive(Copy, Clone, Debug)]
+pub struct Token(GblEfiFastbootToken);
+
+impl Token {
+    const fn new() -> Self {
+        Self(core::ptr::null())
+    }
+}
+
 impl Protocol<'_, GblFastbootProtocol> {
-    /// Wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.get_var`
-    pub fn get_var<'a>(
+    /// Hint-free wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.get_var()`
+    pub fn get_var(&self, name: &str, args: Split<'_, char>, buffer: &mut [u8]) -> Result<usize> {
+        self.get_var_with_hint(name, args, buffer, Token::new())
+    }
+
+    /// Wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.get_var() with hint.`
+    fn get_var_with_hint_internal(
         &self,
-        var: &CStr,
-        args: impl Iterator<Item = &'a CStr> + Clone,
-        out: &mut [u8],
+        call_args: &[GblEfiFastbootArg],
+        buffer: &mut [u8],
+        hint: Token,
     ) -> Result<usize> {
-        let mut args_arr = [null(); MAX_ARGS];
-        let num_args = safemath::SafeNum::from(1) + args.clone().count();
-        let args_arr = args_arr.get_mut(..num_args.try_into()?).ok_or(Error::InvalidInput)?;
-        args_arr[0] = var.as_ptr();
-        args_arr[1..].iter_mut().zip(args).for_each(|(l, r)| *l = r.as_ptr());
-        let mut bufsize = out.len();
+        let mut bufsize = buffer.len();
+
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
         // established by `Protocol::new()`.
-        // No parameters are retained, all parameters outlive the call, and no pointers are Null.
+        // No parameter is Null except optionally `hint`, and all parameters outlive the call.
+        // Null is a valid value for hint.
         unsafe {
             efi_call!(
                 @bufsize bufsize,
                 self.interface()?.get_var,
                 self.interface,
-                args_arr.as_ptr(),
-                args_arr.len(),
-                out.as_mut_ptr(),
-                &mut bufsize
+                call_args.as_ptr(),
+                call_args.len(),
+                buffer.as_mut_ptr(),
+                &mut bufsize,
+                hint.0,
             )?
         };
         Ok(bufsize)
     }
 
-    /// Wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.get_var_all`
-    pub fn get_var_all(&self, mut cb: impl FnMut(&[&CStr], &CStr)) -> Result<()> {
-        struct Callback<'a>(&'a mut dyn FnMut(&[&CStr], &CStr));
-
-        /// Callback C function to be passed to the `get_var_all` function.
-        ///
-        /// # Safety
-        ///
-        /// * Caller must guarantee that `ctx` points to a valid instance of `Callback`, outlives
-        ///   the call, and not being referenced elsewhere.
-        /// * Caller must guarantee that `args` points to an array of NULL-terminated strings with
-        ///   size `len` and outlives the call.
-        /// * Caller must guarantee that `val` points to valid NULL-terminated strings and outlives
-        ///   the call.
-        unsafe extern "C" fn get_var_all_cb(
-            ctx: *mut c_void,
-            args: *const *const c_char,
-            len: usize,
-            val: *const c_char,
-        ) {
-            // SAFETY: By safety requirement of this function, `args` points to an array of
-            // NULL-terminated strings of length `len`.
-            let args =
-                unsafe { from_raw_parts(args, len) }.iter().map(|v| unsafe { CStr::from_ptr(*v) });
-            // SAFETY: By requirement of this function, `ctx` points to a `Callback`.
-            let cb = unsafe { (ctx as *mut Callback).as_mut() }.unwrap();
-            // Checks number of arguments and stores them in an array.
-            let mut args_arr = [c""; MAX_ARGS];
-            match args_arr.get_mut(..len) {
-                Some(v) => {
-                    v.iter_mut().zip(args).for_each(|(l, r)| *l = r);
-                    // SAFETY: By safety requirement of this function `val` points to a
-                    // NULL-terminated string.
-                    (cb.0)(&v, unsafe { CStr::from_ptr(val) })
-                }
-                _ => (cb.0)(&[c"<Number of arguments exceeds limit>"], c""),
-            }
+    /// Gets value of the variable of the given name and additional arguments.
+    pub fn get_var_with_hint(
+        &self,
+        name: &str,
+        args: Split<'_, char>,
+        buffer: &mut [u8],
+        hint: Token,
+    ) -> Result<usize> {
+        let mut call_args: [GblEfiFastbootArg; MAX_ARGS + 1] = Default::default();
+        let mut call_args_len = 1usize;
+        call_args[0] = GblEfiFastbootArg { str_utf8: name.as_ptr(), len: name.len() };
+        for (a, ca) in core::iter::zip(args, call_args[1..].iter_mut()) {
+            ca.str_utf8 = a.as_ptr();
+            ca.len = a.len();
+            call_args_len += 1;
         }
 
+        if call_args_len == MAX_ARGS + 1 {
+            return Err(Error::InvalidInput);
+        }
+        self.get_var_with_hint_internal(&call_args[..call_args_len], buffer, hint)
+    }
+
+    fn start_var_iterator(&self) -> Result<Token> {
+        let mut token = Token::new();
+
         // SAFETY:
-        // *`self.interface()?` guarantees self.interface is non-null and points to a valid object
-        // * established by `Protocol::new()`.
-        // * The `ctx` parameter is a valid `Callback` object, outlives the call and not being
-        //   referenced elsewhere(declared inline at the parameter site).
-        // * By UEFI interface requirement, vendor firmware passes array of C strings to
-        //   `get_var_all_cb` that remains valid for the call.
+        // `self.interface()?` guarantees self.interface is non-null and points to a valid object
+        // established by `Protocol::new()`.
+        // `self.interface` is an input parameter and will not be retained. It outlives the call.
+        // `token.0` is an output parameter. It is not retained, and it outlives the call.
+        // Null is a valid value for token.
+        unsafe { efi_call!(self.interface()?.start_var_iterator, self.interface, &mut token.0)? };
+
+        Ok(token)
+    }
+
+    /// Wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.get_next_var_args()`
+    fn get_next_var_args(
+        &self,
+        args: &mut [GblEfiFastbootArg],
+        token: Token,
+    ) -> Result<(usize, Token)> {
+        let mut bufsize = args.len();
+        let mut new_token = token;
+
+        // SAFETY:
+        // `self.interface()?` guarantees self.interface is non-null and points to a valid object
+        // established by `Protocol::new()`.
+        // No parameter is retained, and all parameters outlive the call.
+        // No parameter is Null except possibly `new_token.0`
+        // Null is a valid value for `new_token.0`.
         unsafe {
             efi_call!(
-                self.interface()?.get_var_all,
+                @bufsize bufsize,
+                self.interface()?.get_next_var_args,
                 self.interface,
-                &mut Callback(&mut cb) as *mut _ as _,
-                Some(get_var_all_cb),
+                args.as_mut_ptr(),
+                &mut bufsize,
+                &mut new_token.0
             )?
         };
+        Ok((bufsize, new_token))
+    }
 
-        Ok(())
+    /// Returns an iterator over backend fastboot variables.
+    pub fn var_iter(&self) -> Result<VarIterator> {
+        VarIterator::try_new(self)
     }
 
     /// Wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.run_oem_function()`
@@ -165,7 +195,8 @@ impl Protocol<'_, GblFastbootProtocol> {
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
         // established by `Protocol::new()`.
-        // No parameters are retained, all parameters outlive the call, and no pointers are Null.
+        // No parameters are retained, all parameters outlive the call,
+        // and no pointers are Null.
         unsafe { efi_call!(self.interface()?.get_policy, self.interface, &mut policy)? };
 
         Ok(policy)
@@ -196,7 +227,8 @@ impl Protocol<'_, GblFastbootProtocol> {
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
         // established by `Protocol::new()`.
-        // No parameters are retained, all parameters outlive the call, and no pointers are Null.
+        // No parameters are retained, all parameters outlive the call,
+        // and no pointers are Null.
         unsafe {
             efi_call!(
                 self.interface()?.get_partition_permissions,
@@ -231,19 +263,344 @@ impl Protocol<'_, GblFastbootProtocol> {
     }
 }
 
+/// Item type for `VarIterator`
+pub struct Var<'a> {
+    protocol: &'a Protocol<'a, GblFastbootProtocol>,
+    args: ArrayVec<GblEfiFastbootArg, MAX_ARGS>,
+    token: Token,
+}
+
+impl Var<'_> {
+    /// Gets name, arguments and the value.
+    pub fn get<'s>(
+        &self,
+        out: &'s mut [u8],
+    ) -> Result<(&'static str, impl Iterator<Item = &'static str> + '_, &'s str)> {
+        // SAFETY: By UEFI interface spec, the pointer returned from UEFI firmware for the argument
+        // string must point to a static buffer containing a NULL terminated string.
+        let mut args = self
+            .args
+            .iter()
+            .map(|v| unsafe { CStr::from_ptr(v.str_utf8 as _).to_str().unwrap_or("?") });
+        let name = args.next().ok_or(Error::Other(Some("variable/arguments are empty")))?;
+        let sz = self.protocol.get_var_with_hint_internal(&self.args[..], out, self.token)?;
+        let val = from_utf8(&out[..sz])?;
+        Ok((name, args, val))
+    }
+}
+
+/// Iterator over fastboot variables.
+pub struct VarIterator<'a> {
+    protocol: &'a Protocol<'a, GblFastbootProtocol>,
+    token: Token,
+}
+
+impl<'a> VarIterator<'a> {
+    /// Tries to construct a new iterator over fastboot variables.
+    /// Returns Err if the call to protocol.start_var_iterator fails.
+    pub fn try_new(protocol: &'a Protocol<'a, GblFastbootProtocol>) -> Result<Self> {
+        let token = protocol.start_var_iterator()?;
+        Ok(Self { protocol, token })
+    }
+}
+
+impl<'a> Iterator for VarIterator<'a> {
+    type Item = Var<'a>;
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut args = [GblEfiFastbootArg::default(); MAX_ARGS];
+
+        let prev_token = self.token;
+        let (len, token) = self.protocol.get_next_var_args(&mut args, self.token).ok()?;
+        self.token = token;
+
+        if len == 0 {
+            None
+        } else {
+            let mut args = ArrayVec::from(args);
+            args.truncate(len);
+            Some(Var { protocol: self.protocol, args, token: prev_token })
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{
-        protocol::GetVarAllCallback,
-        test::{generate_protocol, run_test},
-        EfiEntry,
-    };
+    use crate::test::{generate_protocol, run_test};
+    use crate::EfiEntry;
+    use core::slice;
     use core::{
         ffi::{c_void, CStr},
-        slice::from_raw_parts_mut,
+        ptr::addr_of,
     };
-    use efi_types::{EfiStatus, EFI_STATUS_SUCCESS};
+    use efi_types::{
+        EfiStatus, EFI_STATUS_BUFFER_TOO_SMALL, EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_NOT_FOUND,
+        EFI_STATUS_SUCCESS,
+    };
+
+    #[derive(Copy, Clone, Debug)]
+    struct VarEntry<'a, 'b> {
+        var_args: &'a [GblEfiFastbootArg],
+        val: &'b CStr,
+    }
+
+    // SAFETY:
+    // All VarEntry entities are immutable and static.
+    unsafe impl Sync for VarEntry<'static, 'static> {}
+
+    fn count_bytes_cstr(cstr: &CStr) -> usize {
+        cstr.to_bytes_with_nul().iter().position(|c| *c == 0).unwrap()
+    }
+
+    unsafe fn join_args(args: &[GblEfiFastbootArg], conjunction: &str) -> String {
+        args.iter()
+            .map(|arg| {
+                // SAFETY: It is the caller's responsibility to verify that `arg.str_utf8`
+                // points to a byte slice of length `arg.len`.
+                core::str::from_utf8(unsafe { slice::from_raw_parts(arg.str_utf8, arg.len) })
+                    .unwrap()
+            })
+            .fold(String::new(), |mut acc, s| {
+                acc.push_str(s);
+                acc.push_str(conjunction);
+                acc
+            })
+    }
+
+    const fn from_str(s: &str) -> GblEfiFastbootArg {
+        GblEfiFastbootArg { str_utf8: s.as_ptr(), len: s.len() }
+    }
+
+    static VARS: &[VarEntry] = &[
+        VarEntry { var_args: &[from_str("bivalve")], val: c"clam" },
+        VarEntry { var_args: &[from_str("cephalopod"), from_str("nautiloid")], val: c"nautilus" },
+        VarEntry { var_args: &[from_str("cephalopod"), from_str("coleoid")], val: c"squid" },
+        VarEntry {
+            var_args: &[from_str("gastropod"), from_str("muricidae"), from_str("nucella")],
+            val: c"whelk",
+        },
+    ];
+
+    #[derive(Copy, Clone, Debug)]
+    struct PtrWrapper<T> {
+        ptr: *const T,
+    }
+
+    impl<T> PtrWrapper<T> {
+        const fn new(ptr: *const T) -> Self {
+            Self { ptr }
+        }
+        const fn get(&self) -> *const T {
+            self.ptr
+        }
+    }
+
+    static VARS_ADDR: PtrWrapper<VarEntry> = PtrWrapper::new(addr_of!(VARS[0]));
+    // SAFETY
+    // `VARS_ADDR` is a known valid pointer to a known-length array of VarEntry.
+    // `VARS_ADDR + VARS.len()` is extremely unlikely to overwrap,
+    // and `VARS_END` is never dereferenced.
+    static VARS_END: PtrWrapper<VarEntry> =
+        PtrWrapper::new(unsafe { VARS_ADDR.get().add(VARS.len()) });
+
+    // SAFETY
+    // PtrWrapper and the pointer it wraps are immutable.
+    unsafe impl<T> Sync for PtrWrapper<T> {}
+
+    unsafe fn arg_slices_equal_p(lhs: &[GblEfiFastbootArg], rhs: &[GblEfiFastbootArg]) -> bool {
+        if lhs.len() != rhs.len() {
+            return false;
+        }
+
+        // SAFETY:
+        // It is the caller's responsibility to guarantee that for each element
+        // 'arg' of `lhs`, `arg.str_utf8` is a valid UTF-8 encoded string of length `arg.len`.
+        let lhs = lhs.iter().map(|arg| unsafe {
+            core::str::from_utf8_unchecked(core::slice::from_raw_parts(arg.str_utf8, arg.len))
+        });
+        // SAFETY:
+        // It is the caller's responsibility to guarantee that for each element
+        // 'arg' of `rhs`, `arg.str_utf8` is a valid UTF-8 encoded string of length `arg.len`.
+        let rhs = rhs.iter().map(|arg| unsafe {
+            core::str::from_utf8_unchecked(core::slice::from_raw_parts(arg.str_utf8, arg.len))
+        });
+
+        core::iter::zip(lhs, rhs).all(|(l, r)| l == r)
+    }
+
+    unsafe extern "C" fn get_var(
+        _: *mut GblEfiFastbootProtocol,
+        args: *const GblEfiFastbootArg,
+        args_len: usize,
+        buffer: *mut u8,
+        bufsize: *mut usize,
+        _token: GblEfiFastbootToken,
+    ) -> EfiStatus {
+        if args.is_null() || buffer.is_null() || bufsize.is_null() {
+            return EFI_STATUS_INVALID_PARAMETER;
+        }
+        // SAFETY:
+        // The check at the beginning of the function guarantees that `args` is not Null.
+        // It is the caller's responsibility to guarantee that `args` points to a valid
+        // array of initialized GblEfiFastbootArg structs of length `args_len`.
+        let args = unsafe { core::slice::from_raw_parts(args, args_len) };
+
+        // SAFETY:
+        // All elements of `VARS` contain valid UTF-8 encoded strings.
+        // It is the caller's responsibility to guarantee that all elements of `args`
+        // contain valid UTF-8 encoded strings.
+        let entry = VARS.iter().find(|entry| unsafe { arg_slices_equal_p(args, &entry.var_args) });
+        if let Some(entry) = entry {
+            let val_len = count_bytes_cstr(entry.val);
+            // SAFETY:
+            // `bufsize` is not Null due to check at beginning of function.
+            // Caller is responsible for passing a well-aligned pointer to a valid usize.
+            let bs = unsafe { *bufsize };
+            // SAFETY:
+            // `bufsize` is not Null due to check at beginning of function.
+            // It is the caller's responsibility to pass a valid, well-aligned pointer as `bufsize`.
+            unsafe { *bufsize = val_len };
+            if val_len > bs {
+                EFI_STATUS_BUFFER_TOO_SMALL
+            } else {
+                // SAFETY:
+                // `buffer` is not Null due to check at beginning of function.
+                // It is the caller's responsibiltiy to pass a valid, well-aligned pointer
+                // to an array of `u8` at least as long as the initial value of `bufsize`.
+                unsafe { buffer.copy_from(entry.val.to_bytes().as_ptr(), *bufsize) };
+                EFI_STATUS_SUCCESS
+            }
+        } else {
+            EFI_STATUS_NOT_FOUND
+        }
+    }
+
+    unsafe extern "C" fn start_var_iterator(
+        _: *mut GblEfiFastbootProtocol,
+        token: *mut GblEfiFastbootToken,
+    ) -> EfiStatus {
+        if token.is_null() {
+            return EFI_STATUS_INVALID_PARAMETER;
+        }
+
+        // SAFETY:
+        // `token` is not Null.
+        // It is the caller's responsibility to pass a valid,
+        // well aligned pointer as `token`.
+        // `VARS_ADDR` contains a valid pointer to a static array.
+        unsafe { *token = VARS_ADDR.get() as *const c_void };
+        EFI_STATUS_SUCCESS
+    }
+
+    unsafe extern "C" fn get_next_var_args(
+        _: *mut GblEfiFastbootProtocol,
+        args: *mut GblEfiFastbootArg,
+        args_len: *mut usize,
+        token: *mut GblEfiFastbootToken,
+    ) -> EfiStatus {
+        if args.is_null() || args_len.is_null() || token.is_null() {
+            return EFI_STATUS_INVALID_PARAMETER;
+        }
+
+        // SAFETY:
+        // `token` is not Null due to check at beginning of function.
+        // caller is responsible for passing a valid, well-aligned pointer.
+        let pos = unsafe { *token.cast::<*const VarEntry>() };
+        if pos == VARS_END.get() {
+            // SAFETY:
+            // `args_len` is not null due to check at beginning of funcion.
+            // caller is responsible for passing a valid, well-aligned pointer as `args_len`.
+            unsafe { *args_len = 0 };
+            return EFI_STATUS_SUCCESS;
+        } else if pos < VARS_ADDR.get() || pos > VARS_END.get() {
+            return EFI_STATUS_INVALID_PARAMETER;
+        }
+
+        // SAFETY:
+        // `args_len` is not Null due to check at beginning of function.
+        // caller is responsible for passing a valid, well-aligned pointer for args_len.
+        let args_max_len = unsafe { *args_len };
+
+        // SAFETY:
+        // `pos` is between `&VARS` inclusive and `&VARS + VARS.len()` exclusive
+        // due to check earlier.
+        let elt = unsafe { *pos };
+        // SAFETY:
+        // `args_len` is not Null.
+        // caller is responsible for passing a valid, well-aligned pointer.
+        unsafe { *args_len = elt.var_args.len() };
+        if args_max_len < elt.var_args.len() {
+            return EFI_STATUS_BUFFER_TOO_SMALL;
+        }
+
+        for (i, varg) in elt.var_args.iter().enumerate() {
+            // SAFETY:
+            // `args` is not Null due to check at beginning of function.
+            // `args_len` is at least as large as as `elt.var_args.len()`
+            // due to check before returning BUFFER_TOO_SMALL.
+            // It is the caller's responsibility to guarantee that `args` is a valid
+            // array of at least `args_len` length.
+            unsafe { *args.add(i) = *varg };
+        }
+        // SAFETY:
+        // `token` is not Null due to check at beginning of function.
+        // `pos.add(1)` either points to a valid entry in `VARS` or
+        // one past the end of `VARS`, which is a valid pointer to construct
+        // for the purpose of checking for the end of iteration.
+        unsafe { *token = pos.add(1).cast::<c_void>() };
+
+        EFI_STATUS_SUCCESS
+    }
+
+    #[test]
+    fn test_var_iterator() {
+        run_test(|image_handle, systab_ptr| {
+            let mut fb = GblEfiFastbootProtocol {
+                start_var_iterator: Some(start_var_iterator),
+                get_next_var_args: Some(get_next_var_args),
+                ..Default::default()
+            };
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+            let protocol = generate_protocol::<GblFastbootProtocol>(&efi_entry, &mut fb);
+            let var_iter = protocol.var_iter().unwrap();
+
+            // SAFETY:
+            // All elements of `VARS`, and therefore all elements of `var_iter`,
+            // contain valid UTF-8 encoded strings.
+            let actual: Vec<String> =
+                var_iter.map(|v| unsafe { join_args(&v.args, ":") }).collect();
+
+            let expected = &[
+                "bivalve:",
+                "cephalopod:nautiloid:",
+                "cephalopod:coleoid:",
+                "gastropod:muricidae:nucella:",
+            ];
+
+            assert_eq!(expected, actual.as_slice());
+        });
+    }
+
+    #[test]
+    fn test_get_var() {
+        run_test(|image_handle, systab_ptr| {
+            let mut fb = GblEfiFastbootProtocol { get_var: Some(get_var), ..Default::default() };
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+            let protocol = generate_protocol::<GblFastbootProtocol>(&efi_entry, &mut fb);
+
+            let args = "coleoid".split(':');
+            let mut buffer = [0u8; 32];
+            let len = protocol.get_var("cephalopod", args, &mut buffer).unwrap();
+            let actual = std::str::from_utf8(&buffer[..len]).unwrap();
+            assert_eq!(actual, "squid");
+
+            let args = "nautiloid".split(':');
+            let len =
+                protocol.get_var_with_hint("cephalopod", args, &mut buffer, Token::new()).unwrap();
+            let actual = std::str::from_utf8(&buffer[..len]).unwrap();
+            assert_eq!(actual, "nautilus");
+        });
+    }
 
     #[test]
     fn test_serial_number() {
@@ -285,130 +642,6 @@ mod test {
             let protocol = generate_protocol::<GblFastbootProtocol>(&efi_entry, &mut fb);
 
             assert_eq!(protocol.serial_number(), Err(Error::InvalidInput));
-        });
-    }
-
-    #[test]
-    fn test_get_var() {
-        /// # Safety
-        ///
-        /// * Caller must guarantee that `args` points to an array of NULL-terminated strings with
-        ///   size `num_args`.
-        /// * Caller must guarantee that `out` points to a `[u8]`
-        /// * Caller must guarantee that `out_size` points to a `usize`
-        unsafe extern "C" fn get_var_test(
-            _: *mut GblEfiFastbootProtocol,
-            args: *const *const c_char,
-            num_args: usize,
-            out: *mut u8,
-            out_size: *mut usize,
-        ) -> EfiStatus {
-            // SAFETY: By safety requirement of this function, `args` points to an array of
-            // NULL-terminated strings with length `num_args`.
-            let args = unsafe { from_raw_parts(args, num_args) }
-                .iter()
-                .map(|v| unsafe { CStr::from_ptr(*v) })
-                .collect::<Vec<_>>();
-            assert_eq!(args, [c"var", c"arg1", c"arg2"]);
-            // SAFETY: By safety requirement of this function, `out_size` points to a `usize`;
-            let out_size = &mut unsafe { *out_size };
-            // SAFETY: By safety requirement of this function, `out` points to a `[u8]`;
-            let out = unsafe { from_raw_parts_mut(out, *out_size) };
-            out.clone_from_slice(c"val".to_bytes());
-            *out_size = c"val".to_bytes().len();
-            EFI_STATUS_SUCCESS
-        }
-
-        run_test(|image_handle, systab_ptr| {
-            let mut fb =
-                GblEfiFastbootProtocol { get_var: Some(get_var_test), ..Default::default() };
-            let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let protocol = generate_protocol::<GblFastbootProtocol>(&efi_entry, &mut fb);
-            let mut out = [0u8; 3];
-            let args = [c"arg1", c"arg2"];
-            assert_eq!(protocol.get_var(c"var", args.iter().copied(), &mut out[..]), Ok(3));
-            assert_eq!(&out, b"val");
-        });
-    }
-
-    #[test]
-    fn test_get_var_all() {
-        /// # Safety
-        ///
-        /// * Caller must guarantee that `ctx` points to data needed by function pointer `cb`.
-        unsafe extern "C" fn test_get_var_all(
-            _: *mut GblEfiFastbootProtocol,
-            ctx: *mut c_void,
-            cb: GetVarAllCallback,
-        ) -> EfiStatus {
-            for (args, val) in [
-                ([c"foo", c"foo_arg1", c"foo_arg2"], c"foo_val"),
-                ([c"bar", c"bar_arg1", c"bar_arg2"], c"bar_val"),
-            ] {
-                let args = args.map(|v| v.as_ptr());
-                // SAFETY:
-                // * `args` is an array of NULL-terminated strings. `val` is a NULL-terminated
-                //   string.
-                // * By safety requirement of this function, `ctx` points to a valid type of data
-                //   needed by `cb`.
-                unsafe { (cb.unwrap())(ctx, args.as_ptr(), args.len(), val.as_ptr()) };
-            }
-            EFI_STATUS_SUCCESS
-        }
-        run_test(|image_handle, systab_ptr| {
-            let mut fb = GblEfiFastbootProtocol {
-                get_var_all: Some(test_get_var_all),
-                ..Default::default()
-            };
-            let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let protocol = generate_protocol::<GblFastbootProtocol>(&efi_entry, &mut fb);
-            let mut out = vec![];
-            protocol
-                .get_var_all(|args, val| {
-                    let args_str =
-                        args.iter().map(|v| v.to_str().unwrap()).collect::<Vec<_>>().join(":");
-                    out.push(format!("{args_str}: {}", val.to_str().unwrap()))
-                })
-                .unwrap();
-            assert_eq!(out, ["foo:foo_arg1:foo_arg2: foo_val", "bar:bar_arg1:bar_arg2: bar_val",])
-        });
-    }
-
-    #[test]
-    fn test_get_var_all_exceeds_max_arguments() {
-        /// # Safety
-        ///
-        /// * Caller must guarantee that `ctx` points to data needed by function pointer `cb`.
-        unsafe extern "C" fn test_get_var_all(
-            _: *mut GblEfiFastbootProtocol,
-            ctx: *mut c_void,
-            cb: GetVarAllCallback,
-        ) -> EfiStatus {
-            let args = [c"".as_ptr(); MAX_ARGS + 1];
-            // SAFETY:
-            // * `args` is an array of NULL-terminated strings. `val` is a NULL-terminated
-            //   string.
-            // * By safety requirement of this function, `ctx` points to a valid type of data
-            //   needed by `cb`.
-            unsafe { (cb.unwrap())(ctx, args.as_ptr(), args.len(), c"".as_ptr()) };
-            EFI_STATUS_SUCCESS
-        }
-        run_test(|image_handle, systab_ptr| {
-            let mut fb = GblEfiFastbootProtocol {
-                get_var_all: Some(test_get_var_all),
-                ..Default::default()
-            };
-            let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let protocol = generate_protocol::<GblFastbootProtocol>(&efi_entry, &mut fb);
-            let mut out = vec![];
-            protocol
-                .get_var_all(|args, val| {
-                    let args_str =
-                        args.iter().map(|v| v.to_str().unwrap()).collect::<Vec<_>>().join(":");
-                    out.push(format!("{args_str}: {}", val.to_str().unwrap()))
-                })
-                .unwrap();
-            assert_eq!(out, ["<Number of arguments exceeds limit>: "])
         });
     }
 }

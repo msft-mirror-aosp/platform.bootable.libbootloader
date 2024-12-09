@@ -50,12 +50,10 @@ pub struct EfiImageBuffer {
 }
 
 impl EfiImageBuffer {
-    // # Safety
-    //
+    // SAFETY:
     // `gbl_buffer` must represent valid buffer.
     //
     // # Return
-    //
     // Err(EFI_STATUS_INVALID_PARAMETER) - If `gbl_buffer.Memory` == NULL
     // Err(EFI_STATUS_ALREADY_STARTED) - Requested buffer was already returned and is still in use.
     // Err(err) - on error
@@ -90,23 +88,6 @@ impl EfiImageBuffer {
     pub fn take(mut self) -> &'static mut [MaybeUninit<u8>] {
         self.buffer.take().unwrap()
     }
-
-    // Removes address from `RETURNED_BUFFERS`.
-    //
-    // # Safety
-    //
-    // Caller must guarantee that address is not referenced anymore.
-    unsafe fn release(address: usize) {
-        let mut returned_buffers = RETURNED_BUFFERS.lock();
-        let res = returned_buffers.iter().position(|&val| val == address);
-        debug_assert!(
-            res.is_some(),
-            "EfiImageBuffer::release trying to release address ({address}) that is not tracked"
-        );
-        if let Some(pos) = res {
-            returned_buffers.swap_remove(pos);
-        }
-    }
 }
 
 impl Drop for EfiImageBuffer {
@@ -115,10 +96,13 @@ impl Drop for EfiImageBuffer {
             return;
         }
 
-        // SAFETY:
-        // EfiIMageBuffer is the only owner of the buffer. The only way to get address for it is to
-        // call `take()` which consumes `self.buffer`, which we check above.
-        unsafe { EfiImageBuffer::release((*self.buffer.as_ref().unwrap()).as_ptr() as usize) };
+        let mut returned_buffers = RETURNED_BUFFERS.lock();
+        if let Some(pos) = returned_buffers
+            .iter()
+            .position(|&val| val == (*self.buffer.as_ref().unwrap()).as_ptr() as usize)
+        {
+            returned_buffers.swap_remove(pos);
+        }
     }
 }
 
@@ -212,9 +196,6 @@ mod test {
         EfiStatus, EFI_STATUS_BAD_BUFFER_SIZE, EFI_STATUS_BUFFER_TOO_SMALL,
         EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_SUCCESS,
     };
-    use spin::MutexGuard;
-    use std::cell::RefCell;
-    use std::collections::HashSet;
 
     const UCS2_STR: [u16; 8] = [0x2603, 0x0073, 0x006e, 0x006f, 0x0077, 0x006d, 0x0061, 0x006e];
     const UTF8_STR: &str = "☃snowman";
@@ -640,127 +621,8 @@ mod test {
     }
 
     // Mutex to make sure tests that use `static RETURNED_BUFFERS` do not run in parallel to avoid
-    // unexpected results since this is global static that would be shared between tests. And can
-    // overflow due to amount of tests.
-    //
-    // See MEMORY_TEST thread local variable that should be used for convenience.
+    // unexpected results since this is global static that would be shared between tests.
     static GET_BUFFER_MUTEX: Mutex<()> = Mutex::new(());
-
-    // Size of MEMORY_TEST buffers
-    const MEMORY_TEST_BUF_SIZE: usize = 100;
-
-    // Helper struct for safe acquisition of the memory and releasing it on exit
-    struct MemoryTest<'a> {
-        // Tracking if test guard was acquired with `start()`
-        init: bool,
-        // Keep track of all buffers returned
-        returned_buffers: HashSet<*mut [u8; MEMORY_TEST_BUF_SIZE]>,
-        // Store same buffer value for `get_memory_same()` calls.
-        same_buffer: Option<*mut c_void>,
-        // It is necessary to run 1 test at a time that uses UEFI `get_buffer()`.
-        // Because it is uses static size array to track returned values to prevent reusing same
-        // buffer. With current number of test if they run simultaneously there are situations when
-        // array limit is reached and unlucky test will fail. To prevent this flakiness this guard
-        // is used.
-        _get_buffer_guard: MutexGuard<'a, ()>,
-    }
-
-    thread_local! {
-        static MEMORY_TEST: RefCell<MemoryTest<'static>> = RefCell::new(MemoryTest::new());
-    }
-    struct MemoryTestInitGuard {}
-
-    impl Drop for MemoryTestInitGuard {
-        fn drop(&mut self) {
-            MEMORY_TEST.with_borrow_mut(|v| v.stop());
-        }
-    }
-
-    // Helper implementation for getting raw buffers for `get_buffer()` calls.
-    // And cleanly releasing buffers at the end of the test to prevent memory leaks.
-    //
-    // Use `thread_local` static MEMORY_TEST variable.
-    //
-    // ```
-    // let _memory_guard = MEMORY_TEST.with_borrow_mut(|v| v.start());
-    // ...
-    // buffer.Memory = MEMORY_TEST.with_borrow_mut(|v| v.get_memory());
-    // ...
-    // ```
-    // _memory_guard will make sure to cleanup all memory that was retrieved by `get_memory()` call
-    //
-    // Note:
-    // If using raw EfiImageBuffer, there is no need for this helper. Since the structure does
-    // cleaning on its own.
-    // Except when using `EfiImageBuffer::take()` then manual `EfiImageBuffer::release()` must be
-    // used.
-    impl MemoryTest<'_> {
-        fn new() -> Self {
-            MemoryTest {
-                init: false,
-                returned_buffers: HashSet::new(),
-                same_buffer: None,
-                _get_buffer_guard: GET_BUFFER_MUTEX.lock(),
-            }
-        }
-
-        fn start(&mut self) -> MemoryTestInitGuard {
-            assert!(!self.init);
-            self.init = true;
-            MemoryTestInitGuard {}
-        }
-
-        // Return heap allocated buffer, and keep track of its address
-        // To verify it was properly released
-        //
-        // # Safety
-        //
-        // Returned pointers must not be used after guard returned by `start()`
-        // is destroyed.
-        unsafe fn get_memory(&mut self) -> *mut c_void {
-            assert!(self.init);
-            let ptr = Box::into_raw(Box::new([0u8; MEMORY_TEST_BUF_SIZE]));
-            assert!(self.returned_buffers.insert(ptr));
-            ptr as *mut c_void
-        }
-
-        // Return same buffer for all calls, allocating and tracking it only for first call.
-        //
-        // # Safety
-        //
-        // Returned pointers must not be used after guard returned by `start()`
-        // is destroyed.
-        unsafe fn get_memory_same(&mut self) -> *mut c_void {
-            if self.same_buffer.is_none() {
-                // SAFETY:
-                // This function has same requirements as `get_memory()`
-                let address = unsafe { self.get_memory() };
-
-                self.same_buffer = Some(address);
-            }
-
-            *self.same_buffer.as_mut().unwrap()
-        }
-
-        // Clear address from buffers returned list
-        // Which allows to reuse it in other tests.
-        fn stop(&mut self) {
-            assert!(self.init);
-            self.init = false;
-            self.same_buffer = None;
-            for ptr in self.returned_buffers.drain() {
-                // SAFETY:
-                // `ptr` is valid since was created by `Box::into_raw()`.
-                // Double free is covered by safety requirements for this function. (`release_memory()`
-                // must be called only on buffer holding the only reference to buffer.)
-                // As well as tracking `returned_buffers` and asserting remove in the line above.
-                unsafe {
-                    let _restore_box = Box::from_raw(ptr);
-                }
-            }
-        }
-    }
-
     #[test]
     fn test_proto_get_buffer_error() {
         unsafe extern "C" fn get_buffer(
@@ -779,7 +641,6 @@ mod test {
             let protocol =
                 generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
 
-            let _memory_guard = MEMORY_TEST.with_borrow_mut(|v| v.start());
             assert!(protocol.get_buffer(&gbl_image_info).is_err());
         });
     }
@@ -811,10 +672,13 @@ mod test {
             let protocol =
                 generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
 
-            let _memory_guard = MEMORY_TEST.with_borrow_mut(|v| v.start());
             let res = protocol.get_buffer(&gbl_image_info);
             assert_eq!(res.unwrap_err(), Error::InvalidInput);
         });
+    }
+
+    fn get_memory() -> Box<[u8; 100]> {
+        Box::new([0; 100])
     }
 
     #[test]
@@ -830,13 +694,7 @@ mod test {
             // `buffer` must be valid pointer to `GblEfiImageBuffer`
             let buffer = unsafe { buffer.as_mut() }.unwrap();
 
-            // SAFETY:
-            // `get_memory()` results are returned in `buffer` in `get_buffer()` function.
-            // All usage of `get_buffer()` results are not leaving `run_test()` scope.
-            // Same function where `start()` guard is acquired, so it will not outlive guard.
-            unsafe {
-                buffer.Memory = MEMORY_TEST.with_borrow_mut(|v| v.get_memory());
-            }
+            buffer.Memory = Box::leak(get_memory()).as_mut_ptr() as *mut c_void;
             buffer.SizeBytes = 0;
 
             EFI_STATUS_SUCCESS
@@ -850,7 +708,7 @@ mod test {
             let protocol =
                 generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
 
-            let _memory_guard = MEMORY_TEST.with_borrow_mut(|v| v.start());
+            let _guard = GET_BUFFER_MUTEX.lock();
             let res = protocol.get_buffer(&gbl_image_info).unwrap();
             assert!(res.buffer.as_ref().unwrap().is_empty());
         });
@@ -872,13 +730,7 @@ mod test {
             // `buffer` must be valid pointer to `GblEfiImageBuffer`
             let buffer = unsafe { buffer.as_mut() }.unwrap();
 
-            // SAFETY:
-            // `get_memory()` results are returned in `buffer` in `get_buffer()` function.
-            // All usage of `get_buffer()` results are not leaving `run_test()` scope.
-            // Same function where `start()` guard is acquired, so it will not outlive guard.
-            unsafe {
-                buffer.Memory = MEMORY_TEST.with_borrow_mut(|v| v.get_memory());
-            }
+            buffer.Memory = Box::leak(get_memory()).as_mut_ptr() as *mut c_void;
             buffer.SizeBytes = image_info.SizeBytes - 1;
 
             EFI_STATUS_SUCCESS
@@ -893,7 +745,7 @@ mod test {
             let protocol =
                 generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
 
-            let _memory_guard = MEMORY_TEST.with_borrow_mut(|v| v.start());
+            let _guard = GET_BUFFER_MUTEX.lock();
             let res = protocol.get_buffer(&gbl_image_info);
             assert_eq!(res.unwrap_err(), Error::BufferTooSmall(Some(10)));
         });
@@ -912,14 +764,9 @@ mod test {
             // `buffer` must be valid pointer to `GblEfiImageBuffer`
             let buffer = unsafe { buffer.as_mut() }.unwrap();
 
-            // SAFETY:
-            // `get_memory()` results are returned in `buffer` in `get_buffer()` function.
-            // All usage of `get_buffer()` results are not leaving `run_test()` scope.
-            // Same function where `start()` guard is acquired, so it will not outlive guard.
-            unsafe {
-                buffer.Memory = MEMORY_TEST.with_borrow_mut(|v| v.get_memory());
-            }
-            buffer.SizeBytes = MEMORY_TEST_BUF_SIZE;
+            let mem = get_memory();
+            buffer.SizeBytes = mem.len();
+            buffer.Memory = Box::leak(mem).as_mut_ptr() as *mut c_void;
 
             EFI_STATUS_SUCCESS
         }
@@ -933,7 +780,7 @@ mod test {
             let protocol =
                 generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
 
-            let _memory_guard = MEMORY_TEST.with_borrow_mut(|v| v.start());
+            let _guard = GET_BUFFER_MUTEX.lock();
             let buf = protocol.get_buffer(&gbl_image_info).unwrap();
             assert_ne!(buf.buffer.as_ref().unwrap().as_ptr(), null_mut());
             assert_eq!(buf.buffer.as_ref().unwrap().len(), 100);
@@ -963,14 +810,9 @@ mod test {
                 IMAGE_TYPE_STR
             );
 
-            // SAFETY:
-            // `get_memory()` results are returned in `buffer` in `get_buffer()` function.
-            // All usage of `get_buffer()` results are not leaving `run_test()` scope.
-            // Same function where `start()` guard is acquired, so it will not outlive guard.
-            unsafe {
-                buffer.Memory = MEMORY_TEST.with_borrow_mut(|v| v.get_memory());
-            }
-            buffer.SizeBytes = MEMORY_TEST_BUF_SIZE;
+            let mem = get_memory();
+            buffer.SizeBytes = mem.len();
+            buffer.Memory = Box::leak(mem).as_mut_ptr() as *mut c_void;
 
             EFI_STATUS_SUCCESS
         }
@@ -986,8 +828,9 @@ mod test {
             let protocol =
                 generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
 
-            let _memory_guard = MEMORY_TEST.with_borrow_mut(|v| v.start());
-            assert!(protocol.get_buffer(&gbl_image_info).is_ok());
+            let _guard = GET_BUFFER_MUTEX.lock();
+            let res = protocol.get_buffer(&gbl_image_info);
+            assert!(res.is_ok());
         });
     }
 
@@ -1004,14 +847,9 @@ mod test {
             // `buffer` must be valid pointer to `GblEfiImageBuffer`
             let buffer = unsafe { buffer.as_mut() }.unwrap();
 
-            // SAFETY:
-            // `get_memory_same()` results are returned in `buffer` in `get_buffer()` function.
-            // All usage of `get_buffer()` results are not leaving `run_test()` scope.
-            // Same function where `start()` guard is acquired, so it will not outlive guard.
-            unsafe {
-                buffer.Memory = MEMORY_TEST.with_borrow_mut(|v| v.get_memory_same());
-            }
-            buffer.SizeBytes = MEMORY_TEST_BUF_SIZE;
+            let mem = get_memory();
+            buffer.SizeBytes = mem.len();
+            buffer.Memory = 0x1000 as *mut c_void;
 
             EFI_STATUS_SUCCESS
         }
@@ -1025,7 +863,7 @@ mod test {
             let protocol =
                 generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
 
-            let _memory_guard = MEMORY_TEST.with_borrow_mut(|v| v.start());
+            let _guard = GET_BUFFER_MUTEX.lock();
             let _buf = protocol.get_buffer(&gbl_image_info).unwrap();
             assert_eq!(protocol.get_buffer(&gbl_image_info).unwrap_err(), Error::AlreadyStarted);
         });
@@ -1044,14 +882,9 @@ mod test {
             // `buffer` must be valid pointer to `GblEfiImageBuffer`
             let buffer = unsafe { buffer.as_mut() }.unwrap();
 
-            // SAFETY:
-            // `get_memory()` results are returned in `buffer` in `get_buffer()` function.
-            // All usage of `get_buffer()` results are not leaving `run_test()` scope.
-            // Same function where `start()` guard is acquired, so it will not outlive guard.
-            unsafe {
-                buffer.Memory = MEMORY_TEST.with_borrow_mut(|v| v.get_memory_same());
-            }
-            buffer.SizeBytes = MEMORY_TEST_BUF_SIZE;
+            let mem = get_memory();
+            buffer.SizeBytes = mem.len();
+            buffer.Memory = 0x2000 as *mut c_void;
 
             EFI_STATUS_SUCCESS
         }
@@ -1065,7 +898,7 @@ mod test {
             let protocol =
                 generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
 
-            let _memory_guard = MEMORY_TEST.with_borrow_mut(|v| v.start());
+            let _guard = GET_BUFFER_MUTEX.lock();
             protocol.get_buffer(&gbl_image_info).unwrap();
             protocol.get_buffer(&gbl_image_info).unwrap();
         });
@@ -1085,14 +918,10 @@ mod test {
             // `buffer` must be valid pointer to `GblEfiImageBuffer`
             let buffer = unsafe { buffer.as_mut() }.unwrap();
 
-            // SAFETY:
-            // `get_memory()` results are returned in `buffer` in `get_buffer()` function.
-            // All usage of `get_buffer()` results are not leaving `run_test()` scope.
-            // Same function where `start()` guard is acquired, so it will not outlive guard.
-            unsafe {
-                buffer.Memory = MEMORY_TEST.with_borrow_mut(|v| v.get_memory());
-            }
-            buffer.SizeBytes = MEMORY_TEST_BUF_SIZE;
+            let mem = get_memory();
+            buffer.SizeBytes = mem.len();
+            // Make sure to return different memory
+            buffer.Memory = Box::leak(get_memory()).as_mut_ptr() as *mut c_void;
 
             EFI_STATUS_SUCCESS
         }
@@ -1106,7 +935,7 @@ mod test {
             let protocol =
                 generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
 
-            let _memory_guard = MEMORY_TEST.with_borrow_mut(|v| v.start());
+            let _guard = GET_BUFFER_MUTEX.lock();
             let mut keep_alive: Vec<EfiImageBuffer> = vec![];
             for _ in 1..=MAX_ARRAY_SIZE + 1 {
                 keep_alive.push(protocol.get_buffer(&gbl_image_info).unwrap());
@@ -1120,7 +949,7 @@ mod test {
         let gbl_buffer =
             GblEfiImageBuffer { Memory: v.as_mut_ptr() as *mut c_void, SizeBytes: v.len() };
 
-        let _memory_guard = MEMORY_TEST.with_borrow_mut(|v| v.start());
+        let _guard = GET_BUFFER_MUTEX.lock();
         // SAFETY:
         // 'gbl_buffer` represents valid buffer created by vector.
         let res = unsafe { EfiImageBuffer::new(gbl_buffer) };
@@ -1131,7 +960,7 @@ mod test {
     fn test_efi_image_buffer_null() {
         let gbl_buffer = GblEfiImageBuffer { Memory: null_mut(), SizeBytes: 1 };
 
-        let _memory_guard = MEMORY_TEST.with_borrow_mut(|v| v.start());
+        let _guard = GET_BUFFER_MUTEX.lock();
         // SAFETY:
         // 'gbl_buffer` contains Memory == NULL, which is valid input value. And we expect Error as
         // a result
@@ -1145,7 +974,7 @@ mod test {
         let gbl_buffer =
             GblEfiImageBuffer { Memory: v.as_mut_ptr() as *mut c_void, SizeBytes: v.len() };
 
-        let _memory_guard = MEMORY_TEST.with_borrow_mut(|v| v.start());
+        let _guard = GET_BUFFER_MUTEX.lock();
         // SAFETY:
         // 'gbl_buffer` represents valid buffer created by vector.
         let res1 = unsafe { EfiImageBuffer::new(gbl_buffer) };
@@ -1164,7 +993,7 @@ mod test {
         let gbl_buffer =
             GblEfiImageBuffer { Memory: v.as_mut_ptr() as *mut c_void, SizeBytes: v.len() };
 
-        let _memory_guard = MEMORY_TEST.with_borrow_mut(|v| v.start());
+        let _guard = GET_BUFFER_MUTEX.lock();
         // SAFETY:
         // 'gbl_buffer` represents valid buffer created by vector.
         let res1 = unsafe { EfiImageBuffer::new(gbl_buffer) };
@@ -1183,23 +1012,16 @@ mod test {
         let gbl_buffer =
             GblEfiImageBuffer { Memory: v.as_mut_ptr() as *mut c_void, SizeBytes: v.len() };
 
-        let _memory_guard = MEMORY_TEST.with_borrow_mut(|v| v.start());
+        let _guard = GET_BUFFER_MUTEX.lock();
         // SAFETY:
         // 'gbl_buffer` represents valid buffer created by vector.
         let res1 = unsafe { EfiImageBuffer::new(gbl_buffer) }.unwrap();
-        let buf_no_owner = res1.take();
+        let _tmp = res1.take();
 
         // Since `res1` was taken, we can't reuse same buffer.
         // SAFETY:
         // 'gbl_buffer` represents valid buffer created by vector.
         let res2 = unsafe { EfiImageBuffer::new(gbl_buffer) };
         assert_eq!(res2.unwrap_err(), Error::AlreadyStarted);
-
-        // Make sure to clean tracking
-        // SAFETY:
-        // `buf_no_owner` is the only reference to buffer
-        unsafe {
-            EfiImageBuffer::release(buf_no_owner.as_ptr() as usize);
-        }
     }
 }

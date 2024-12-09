@@ -4,9 +4,6 @@ This document describes the GBL AB Slot protocol.
 The protocol defines interfaces that can be used by EFI applications
 to query and manipulate boot slots.
 
-See this [document](./gbl_ab_boot_flow.md) For details on how GBL uses this
-protocol to implement A/B flows.
-
 | **Status**  | Work in progress |
 |:------------|-----------------:|
 | **Created** |        2024-9-17 |
@@ -18,6 +15,24 @@ protocol to implement A/B flows.
 This protocol provides interfaces for platform specific boot slot operations,
 such as determining the number of slots and the current target slot,
 changing the current target boot slot, marking boot attempts, and more.
+
+### Boot Slot Coherency Warning
+
+**Warning:** a boot slot may contain multiple artifacts, e.g. firmware images,
+kernel images, RAM disks, partitions, and so forth. It is **NOT** guaranteed
+that arbitrary artifacts from different slots interoperate correctly.
+For example, the bootloader in slot A may pass command line arguments that are
+invalid for the kernel in slot B. The **ONLY** safe way to boot a slot
+different from the active boot slot is to
+
+1. Change the slot by calling
+[`SetActiveSlot()`](#gbl_efi_ab_slot_protocolsetactiveslot).
+2. Reboot the device.
+   1. Optionally enter fastboot mode.
+3. Continue the boot process.
+
+It is the EFI application's responsibility to track whether `SetActiveSlot()`
+has been called and whether the current target slot and the active slot differ.
 
 ### GUID
 
@@ -45,7 +60,6 @@ typedef struct GBL_EFI_AB_SLOT_PROTOCOL {
   GBL_EFI_AB_SLOT_LOAD_BOOT_DATA      LoadBootData;
   GBL_EFI_AB_SLOT_GET_SLOT_INFO       GetSlotInfo;
   GBL_EFI_AB_SLOT_GET_CURRENT_SLOT    GetCurrentSlot;
-  GBL_EFI_AB_SLOT_GET_ACTIVE_SLOT     GetActiveSlot;
   GBL_EFI_AB_SLOT_SET_ACTIVE_SLOT     SetActiveSlot;
   GBL_EFI_AB_SLOT_SET_SLOT_UNBOOTABLE SetSlotUnbootable;
   GBL_EFI_AB_SLOT_MARK_BOOT_ATTEMPT   MarkBootAttempt;
@@ -77,13 +91,8 @@ See [`GBL_EFI_AB_SLOT_PROTOCOL.GetSlotInfo()`](#gbl_efi_ab_slot_protocolgetsloti
 
 **GetCurrentSlot**
 
-Returns the slot information of the currently booted bootloader.
+Returns information about the current slot.
 See [`GBL_EFI_AB_SLOT_PROTOCOL.GetCurrentSlot()`](#gbl_efi_ab_slot_protocolgetcurrentslot).
-
-**GetNextSlot**
-
-Returns the slot information of the next slot decision.
-See [`GBL_EFI_AB_SLOT_PROTOCOL.GetNextSlot()`](#gbl_efi_ab_slot_protocolgetcurrentslot).
 
 **SetActiveSlot**
 
@@ -94,6 +103,11 @@ See [`GBL_EFI_AB_SLOT_PROTOCOL.SetActiveSlot()`](#gbl_efi_ab_slot_protocolsetact
 
 Marks the specified slot as unbootable.
 See [`GBL_EFI_AB_SLOT_PROTOCOL.SetSlotUnbootable()`](#gbl_efi_ab_slot_protocolsetslotunbootable).
+
+**MarkBootAttempt**
+
+Marks the boot attempt and modifies tries remaining for the active slot.
+See [`GBL_EFI_AB_SLOT_PROTOCOL.MarkBootAttempt()`](#gbl_efi_ab_slot_protocolmarkbootattempt).
 
 **Reinitialize**
 
@@ -267,7 +281,17 @@ slots as part of debugging or logging.
 
 ### Summary
 
-Returns the slot information of the currently booted bootloader.
+Returns the slot information of the current slot.
+
+### Definitions
+
+The *current target* slot is defined as the highest priority bootable slot with
+ties broken by inverse lexicographical ordering of slot suffixes. E.g. if slot A
+and slot B are both bootable and have priority 15, slot A is the current slot.
+The *active* slot is the slot that owns the running bootloader firmware.
+Depending on whether `SetActiveSlot()` has been called, the current and active
+slots may be the same or they may differ. See the
+[Boot Slot Coherency Warning](#boot-slot-coherency-warning) for details.
 
 ### Prototype
 
@@ -295,75 +319,18 @@ for the structure definition.
 
 ### Description
 
-Returns the slot of the currently booted bootloader. If bootloader is not
-slotted, i.e. the device only has a single slot bootloader instead of A/B, the
-function returns `EFI_UNSUPPORTED`.
-
 This is identical to knowing the index of the current slot and calling
 `GetSlotInfo()` with that index.
 
-### Status Codes Returned
-
-| Return Code             | Semantics                          |
-|:------------------------|:---------------------------------- |
-| `EFI_SUCCESS`           | The call completed successfully.   |
-| `EFI_UNSUPPORTED`       | Bootloader is not slotted.         |
-| `EFI_INVALID_PARAMETER` | One of *This* or *Info* is `NULL`. |
-
-## `GBL_EFI_AB_SLOT_PROTOCOL.GetNextSlot()`
-
-### Summary
-
-Returns the slot information of the next slot decision.
-
-### Prototype
-
-```c
-typedef
-EFI_STATUS
-(EFIAPI * GBL_EFI_AB_SLOT_GET_NEXT_SLOT)(
-    IN GBL_EFI_AB_SLOT_PROTOCOL* This,
-    IN BOOL                      MarkBootAttempt,
-    OUT GBL_EFI_SLOT_INFO*       Info,
-);
-```
-
-### Parameters
-
-*This*
-
-A pointer to the [`GBL_EFI_AB_SLOT_PROTOCOL`](#protcol-interface-structure)
-instance.
-
-*MarkBootAttempt*
-
-The parameter is set to true if caller attempts to load, verify and boot the
-returned slot. If the caller only wants to query the next slot decision and
-does not intend to cause any state change, it is set to false.
-
-*Info*
-
-On exit contains the metadata for the next slot.
-See the definition for [`GBL_EFI_SLOT_INFO`](#related-definitions-1)
-for the structure definition.
-
-### Description
-
-The function returns the highest priority bootable slot according to current
-slot state.
-
-If parameter `MarkBootAttempt` is true, implementation should updates internal
-metadata for the slot such as decrementing retry counters if slot has not been
-successful.
-
-If there are no bootable slots, the function **MUST** returns `EFI_NOT_FOUND`.
+**Note:** the current slot is returned by value and not by index.
+This simplifies interactions for the caller, who is usually more interested in
+the suffix and associated metadata for a slot than its index.
 
 ### Status Codes Returned
 
 | Return Code             | Semantics                                                                                                     |
 |:------------------------|:--------------------------------------------------------------------------------------------------------------|
 | `EFI_SUCCESS`           | The call completed successfully.                                                                              |
-| `EFI_NOT_FOUND`         | There are no bootable slots for the next decision.                                                            |
 | `EFI_INVALID_PARAMETER` | One of *This* or *Info* is `NULL` or improperly aligned.                                                      |
 | `EFI_DEVICE_ERROR`      | There was an error reading metadata from persistent storage.                                                  |
 | `EFI_VOLUME_CORRUPTED`  | The metadata loaded is invalid or corrupt. The caller should call `Reinitialize` before taking other actions. |
@@ -372,7 +339,9 @@ If there are no bootable slots, the function **MUST** returns `EFI_NOT_FOUND`.
 
 ### Summary
 
-Sets the active slot by index. Makes it the highest priority bootable slot.
+Sets the active slot by index, reinitializes its tries remaining and priority,
+and clears any unbootable reasons.
+Sets the priority for all other slots to be lower than the new active slot's.
 
 ### Prototype
 
@@ -406,6 +375,12 @@ target, and clears the slot's *Successful* flag.
 All these changes **MUST** be visible in subsequent calls to `GetSlotInfo()`.
 Depending on device policy, e.g. lock state, changing the target boot slot
 explicitly may be prohibited.
+
+**Warning:** See the description for
+[`GetCurrentSlot()`](#gbl_efi_ab_slot_protocolgetcurrentslot) for the
+distinction between the *current target* boot slot and the *active* boot slot,
+and see the [Boot Slot Coherency Warning](#boot-slot-coherency-warning) for
+details about safely changing the *current target* slot.
 
 ### Status Codes Returned
 
@@ -557,7 +532,8 @@ and have the following fields set to `0`:
 * *UnbootableReason*
 * *Successful*
 
-This may change the next target boot slot.
+This may change the current target boot slot.
+See the [Boot Slot Coherency Warning](#boot-slot-coherency-warning) for details.
 
 ### Status Codes Returned
 
@@ -601,7 +577,6 @@ typedef enum _GBL_EFI_AB_SLOT_BOOT_REASON {
     WARM = 58,
     SHUTDOWN = 59,
     REBOOT = 18,
-    FASTBOOTD = 196,
 } GBL_EFI_AB_SLOT_BOOT_REASON;
 ```
 

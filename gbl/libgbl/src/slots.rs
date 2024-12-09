@@ -422,13 +422,6 @@ impl Drop for Cursor<'_> {
     }
 }
 
-/// Contains information of the platform's slot scheme.
-#[derive(Default, Debug, Copy, Clone)]
-pub struct SlotsMetadata {
-    /// Number of slots on this platform.
-    pub slot_count: usize,
-}
-
 #[cfg(test)]
 mod test {
     use super::*;

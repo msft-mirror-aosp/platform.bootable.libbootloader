@@ -37,25 +37,18 @@ typedef enum GBL_EFI_UNBOOTABLE_REASON {
   GBL_EFI_VERIFICATION_FAILURE,
 } GblEfiUnbootableReason;
 
-// We are currently following
-// https://cs.android.com/android/platform/superproject/main/+/main:system/core/bootstat/bootstat.cpp;l=229
-// for boot reason code.
-//
-// But we may want to revisit this since GBL mostly just cares normal,
-// bootloader, fastbootd, recovery mode.
 typedef enum GBL_EFI_BOOT_REASON {
-  EMPTY_BOOT_REASON = 0,
-  UNKNOWN_EFI_BOOT_REASON = 1,
-  WATCHDOG = 14,
-  KERNEL_PANIC = 15,
-  RECOVERY = 3,
-  BOOTLOADER = 55,
-  COLD = 56,
-  HARD = 57,
-  WARM = 58,
-  SHUTDOWN,
-  REBOOT = 18,
-  FASTBOOTD = 196,
+  GBL_EFI_EMPTY_BOOT_REASON = 0,
+  GBL_EFI_UNKNOWN_EFI_BOOT_REASON = 1,
+  GBL_EFI_WATCHDOG = 14,
+  GBL_EFI_KERNEL_PANIC = 15,
+  GBL_EFI_RECOVERY = 3,
+  GBL_EFI_BOOTLOADER = 55,
+  GBL_EFI_COLD = 56,
+  GBL_EFI_HARD = 57,
+  GBL_EFI_WARM = 58,
+  GBL_EFI_SHUTDOWN,
+  GBL_EFI_REBOOT = 18,
 } GblEfiBootReason;
 
 typedef struct {
@@ -89,12 +82,11 @@ typedef struct GblEfiABSlotProtocol {
                              GblEfiSlotInfo* /* out param */);
   EfiStatus (*get_current_slot)(struct GblEfiABSlotProtocol*,
                                 GblEfiSlotInfo* /* out param */);
-  EfiStatus (*get_next_slot)(struct GblEfiABSlotProtocol*, bool,
-                             GblEfiSlotInfo* /* out param */);
   // Slot metadata manipulation methods
   EfiStatus (*set_active_slot)(struct GblEfiABSlotProtocol*, uint8_t);
   EfiStatus (*set_slot_unbootable)(struct GblEfiABSlotProtocol*, uint8_t,
                                    uint32_t);
+  EfiStatus (*mark_boot_attempt)(struct GblEfiABSlotProtocol*);
   EfiStatus (*reinitialize)(struct GblEfiABSlotProtocol*);
   // Miscellaneous methods
   EfiStatus (*get_boot_reason)(struct GblEfiABSlotProtocol*,
