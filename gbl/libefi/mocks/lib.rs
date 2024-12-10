@@ -28,6 +28,7 @@ use mockall::mock;
 use protocol::{
     gbl_efi_ab_slot::GblSlotProtocol,
     gbl_efi_avb::GblAvbProtocol,
+    gbl_efi_fastboot::GblFastbootProtocol,
     simple_text_output::{passthrough_con_out, MockSimpleTextOutputProtocol},
 };
 use std::cell::RefCell;
@@ -244,6 +245,11 @@ fn passthrough_boot_services() -> MockBootServices {
     services.expect_find_first_and_open::<GblSlotProtocol>().returning(|| {
         MOCK_EFI.with_borrow_mut(|efi| {
             efi.as_mut().unwrap().boot_services.find_first_and_open::<GblSlotProtocol>()
+        })
+    });
+    services.expect_find_first_and_open::<GblFastbootProtocol>().returning(|| {
+        MOCK_EFI.with_borrow_mut(|efi| {
+            efi.as_mut().unwrap().boot_services.find_first_and_open::<GblFastbootProtocol>()
         })
     });
 
