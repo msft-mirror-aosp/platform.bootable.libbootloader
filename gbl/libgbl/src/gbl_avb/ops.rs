@@ -18,10 +18,13 @@ use crate::{
     gbl_avb::state::{BootStateColor, KeyValidationStatus},
     gbl_print, gbl_println, GblOps,
 };
+use arrayvec::ArrayString;
 use avb::{
     cert_validate_vbmeta_public_key, CertOps, CertPermanentAttributes, IoError, IoResult,
     Ops as AvbOps, PublicKeyForPartitionInfo, SlotVerifyData, SHA256_DIGEST_SIZE,
+    SHA512_DIGEST_SIZE,
 };
+use core::fmt::Write;
 use core::{
     cmp::{max, min},
     ffi::CStr,
@@ -29,6 +32,9 @@ use core::{
 use liberror::Error;
 use safemath::SafeNum;
 use uuid::Uuid;
+
+/// The digest key in commandline provided by libavb.
+pub const AVB_DIGEST_KEY: &str = "androidboot.vbmeta.digest";
 
 // AVB cert tracks versions for the PIK and PSK; PRK cannot be changed so has no version info.
 const AVB_CERT_NUM_KEY_VERSIONS: usize = 2;
@@ -82,6 +88,7 @@ impl<'a, 'p, 'q, T: GblOps<'p, 'q>> GblAvbOps<'a, T> {
         &mut self,
         slot_verify: &SlotVerifyData,
         color: BootStateColor,
+        digest: Option<&str>,
     ) -> IoResult<()> {
         let mut vbmeta = None;
         let mut vbmeta_boot = None;
@@ -129,10 +136,22 @@ impl<'a, 'p, 'q, T: GblOps<'p, 'q>> GblAvbOps<'a, T> {
         let vendor_security_patch =
             vendor_data.get_property_value("com.android.build.vendor.security_patch");
 
+        // Convert digest rust string to null-terminated string by copying it into separate buffer.
+        let mut digest_buffer = ArrayString::<{ SHA512_DIGEST_SIZE + 1 }>::new();
+        let digest_cstr = match digest {
+            Some(digest) => {
+                write!(digest_buffer, "{}\0", digest).or(Err(IoError::InvalidValueSize))?;
+                Some(
+                    CStr::from_bytes_until_nul(digest_buffer.as_bytes())
+                        .or(Err(IoError::InvalidValueSize))?,
+                )
+            }
+            None => None,
+        };
+
         self.gbl_ops.avb_handle_verification_result(
             color,
-            // TODO(b/337846185): extract VBH from the command line provided by libavb.
-            None,
+            digest_cstr,
             boot_os_version,
             boot_security_patch,
             system_os_version,
