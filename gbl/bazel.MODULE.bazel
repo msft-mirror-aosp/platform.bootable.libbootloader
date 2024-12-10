@@ -39,6 +39,9 @@ bazel_dep(
 bazel_dep(
     name = "rules_pkg",
 )
+bazel_dep(
+    name = "rules_python",
+)
 
 local_path_override(
     module_name = "apple_support",
