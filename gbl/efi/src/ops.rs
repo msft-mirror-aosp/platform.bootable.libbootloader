@@ -580,11 +580,16 @@ impl<'a, 'b, 'd> GblOps<'b, 'd> for Ops<'a, 'b> {
     }
 
     fn fastboot_visit_all_variables(&mut self, cb: impl FnMut(&[&CStr], &CStr)) -> Result<()> {
-        self.efi_entry
+        match self
+            .efi_entry
             .system_table()
             .boot_services()
-            .find_first_and_open::<GblFastbootProtocol>()?
-            .get_var_all(cb)
+            .find_first_and_open::<GblFastbootProtocol>()
+        {
+            Ok(v) => v.get_var_all(cb),
+            Err(Error::NotFound) => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     fn slots_metadata(&mut self) -> Result<SlotsMetadata> {
@@ -1303,5 +1308,31 @@ mod test {
     #[test]
     fn test_get_reboot_reason_fastbootd() {
         test_get_reboot_reason(GBL_EFI_BOOT_REASON_FASTBOOTD, RebootReason::FastbootD);
+    }
+
+    #[test]
+    fn test_get_var_all_not_found() {
+        let mut mock_efi = MockEfi::new();
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblFastbootProtocol>()
+            .times(1)
+            .return_once(|| Err(Error::NotFound));
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+        ops.fastboot_visit_all_variables(|_, _| {}).unwrap();
+    }
+
+    #[test]
+    fn test_get_var_all_other_errors() {
+        let mut mock_efi = MockEfi::new();
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblFastbootProtocol>()
+            .times(1)
+            .return_once(|| Err(Error::InvalidInput));
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+        assert!(ops.fastboot_visit_all_variables(|_, _| {}).is_err());
     }
 }
