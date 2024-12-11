@@ -63,6 +63,8 @@ const FLASH_GPT_PART: &str = "gpt";
 enum TaskWorkload<'a, 'b, B: BlockIo, P: BufferPool> {
     /// Image flashing task. (partition io, downloaded data, data size)
     Flash(PartitionIo<'a, B>, ScopedBuffer<'b, P>, usize),
+    /// Sparse image flashing task. (partition io, downloaded data)
+    FlashSparse(PartitionIo<'a, B>, ScopedBuffer<'b, P>),
     // Image erase task.
     Erase(PartitionIo<'a, B>, ScopedBuffer<'b, P>),
     None,
@@ -72,11 +74,9 @@ impl<'a, 'b, B: BlockIo, P: BufferPool> TaskWorkload<'a, 'b, B, P> {
     /// Runs the task and returns the result
     async fn run(self) -> Result<(), Error> {
         match self {
-            Self::Flash(mut part_io, mut download, data_size) => match is_sparse_image(&download) {
-                Ok(_) => part_io.write_sparse(0, &mut download).await,
-                _ => part_io.write(0, &mut download[..data_size]).await,
-            },
-            Self::Erase(mut part_io, mut buffer) => part_io.zeroize(&mut buffer).await,
+            Self::Flash(mut io, mut data, sz) => io.write(0, &mut data[..sz]).await,
+            Self::FlashSparse(mut io, mut data) => io.write_sparse(0, &mut data).await,
+            Self::Erase(mut io, mut buffer) => io.zeroize(&mut buffer).await,
             _ => Ok(()),
         }
     }
@@ -574,8 +574,11 @@ where
         }
 
         let (_, part_io) = self.parse_and_get_partition_io(part).await?;
-        let (download_buffer, data_size) = self.take_download().ok_or("No download")?;
-        let mut task = Task::new(TaskWorkload::Flash(part_io, download_buffer, data_size));
+        let (data, sz) = self.take_download().ok_or("No download")?;
+        let mut task = Task::new(match is_sparse_image(&data) {
+            Ok(v) => TaskWorkload::FlashSparse(part_io.sub(0, v.data_size())?, data),
+            _ => TaskWorkload::Flash(part_io.sub(0, sz.try_into().unwrap())?, data, sz),
+        });
         task.set_context(|f| write!(f, "flash:{part}"));
         Ok(self.schedule_task(task, &mut responder).await?)
     }
@@ -2474,7 +2477,7 @@ mod test {
     }
 
     #[test]
-    fn test_legacy_fvm_partition_aliase() {
+    fn test_legacy_fvm_partition_alias() {
         let mut storage = FakeGblOpsStorage::default();
         storage.add_raw_device(c"fuchsia-fvm", [0x00u8; 4 * 1024]);
         let buffers = vec![vec![0u8; 128 * 1024]; 2];
@@ -2495,6 +2498,47 @@ mod test {
                 b"DATA00001000",
                 b"OKAY",
                 b"OKAY",
+                b"INFOSyncing storage...",
+                b"OKAY",
+            ]),
+            "\nActual USB output:\n{}",
+            listener.dump_usb_out_queue()
+        );
+    }
+
+    #[test]
+    fn test_async_flash_early_errors() {
+        let sparse_raw = include_bytes!("../../testdata/sparse_test_raw.bin");
+        let sparse = include_bytes!("../../testdata/sparse_test.bin");
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"raw", vec![0u8; sparse_raw.len() - 1]);
+        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        let listener: SharedTestListener = Default::default();
+        let (usb, tcp) = (&listener, &listener);
+        listener.add_usb_input(b"oem gbl-enable-async-task");
+        // Flashes an oversized image.
+        listener.add_usb_input(format!("download:{:#x}", sparse_raw.len()).as_bytes());
+        listener.add_usb_input(&vec![0xaau8; sparse_raw.len()]);
+        listener.add_usb_input(b"flash:raw");
+        // Flashes an oversized sparse image.
+        listener.add_usb_input(format!("download:{:#x}", sparse.len()).as_bytes());
+        listener.add_usb_input(sparse);
+        listener.add_usb_input(b"flash:raw");
+        listener.add_usb_input(b"continue");
+        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp), &mut []));
+
+        // The out-of-range errors should be caught before async task is launched.
+        assert_eq!(
+            listener.usb_out_queue(),
+            make_expected_usb_out(&[
+                b"OKAY",
+                b"DATA0000e000",
+                b"OKAY",
+                b"FAILOutOfRange",
+                b"DATA00006080",
+                b"OKAY",
+                b"FAILOutOfRange",
                 b"INFOSyncing storage...",
                 b"OKAY",
             ]),
