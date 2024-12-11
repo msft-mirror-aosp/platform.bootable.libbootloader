@@ -16,6 +16,7 @@
 //!
 //! https://www.kernel.org/doc/html/v4.14/admin-guide/kernel-parameters.html
 
+use crate::entry::{CommandlineParser, Entry};
 use core::ffi::CStr;
 use liberror::{Error, Error::BufferTooSmall, Error::InvalidInput, Result};
 
@@ -136,6 +137,11 @@ impl<'a> CommandlineBuilder<'a> {
             out[..commandline.len()].clone_from_slice(commandline.as_bytes());
             Ok(commandline.len())
         })
+    }
+
+    /// Get the parsed kernel command line entries.
+    pub fn entries(&'a self) -> impl Iterator<Item = Result<Entry<'a>>> {
+        CommandlineParser::new(self.as_str())
     }
 
     /// Update the command line null terminator at the end of the current buffer.
@@ -281,6 +287,23 @@ mod test {
             })
             .is_ok());
         assert_eq!(builder.remaining_capacity(), 0);
+    }
+
+    #[test]
+    fn test_get_entries() {
+        let mut test_commandline = TEST_COMMANDLINE.to_vec();
+        let builder = CommandlineBuilder::new_from_prefix(&mut test_commandline[..]).unwrap();
+
+        let data_from_builder = builder
+            .entries()
+            .map(|entry| entry.unwrap().to_string())
+            .collect::<Vec<String>>()
+            .join(" ");
+
+        assert_eq!(
+            data_from_builder,
+            CStr::from_bytes_until_nul(TEST_COMMANDLINE).unwrap().to_str().unwrap()
+        );
     }
 
     #[test]
