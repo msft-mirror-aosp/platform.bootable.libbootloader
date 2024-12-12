@@ -28,6 +28,7 @@ rust_library(
     deps = [
         "@gbl//libasync",
         "@gbl//liberror",
+        "@gbl//libutils",
     ],
 )
 

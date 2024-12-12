@@ -68,13 +68,13 @@
 #![allow(async_fn_in_trait)]
 
 use core::{
-    cmp::min,
     ffi::CStr,
     fmt::{Debug, Display, Formatter, Write},
     str::{from_utf8, Split},
 };
 use gbl_async::{block_on, yield_now};
 use liberror::{Error, Result};
+use libutils::{snprintf, FormattedBytes};
 
 /// Maximum packet size that can be accepted from the host.
 ///
@@ -176,7 +176,7 @@ pub struct CommandError(FormattedBytes<[u8; COMMAND_ERROR_LENGTH]>);
 impl CommandError {
     /// Converts to string.
     pub fn to_str(&self) -> &str {
-        from_utf8(&self.0 .0[..self.0 .1]).unwrap_or("")
+        self.0.to_str()
     }
 
     /// Clones the error.
@@ -193,7 +193,7 @@ impl Debug for CommandError {
 
 impl<T: Display> From<T> for CommandError {
     fn from(val: T) -> Self {
-        let mut res = CommandError(FormattedBytes([0u8; COMMAND_ERROR_LENGTH], 0));
+        let mut res = CommandError(FormattedBytes::new([0u8; COMMAND_ERROR_LENGTH]));
         write!(res.0, "{}", val).unwrap();
         res
     }
@@ -1015,57 +1015,6 @@ pub async fn run_tcp_session(
     run(&mut TcpTransport::new_and_handshake(tcp_stream)?, fb_impl).await
 }
 
-/// A helper data structure for writing formatted string to fixed size bytes array.
-#[derive(Debug)]
-pub struct FormattedBytes<T: AsMut<[u8]>>(T, usize);
-
-impl<T: AsMut<[u8]>> FormattedBytes<T> {
-    /// Create an instance.
-    pub fn new(buf: T) -> Self {
-        Self(buf, 0)
-    }
-
-    /// Get the size of content.
-    pub fn size(&self) -> usize {
-        self.1
-    }
-
-    /// Appends the given `bytes` to the contents.
-    ///
-    /// If `bytes` exceeds the remaining buffer space, any excess bytes are discarded.
-    ///
-    /// Returns the resulting contents.
-    pub fn append(&mut self, bytes: &[u8]) -> &mut [u8] {
-        let buf = &mut self.0.as_mut()[self.1..];
-        // Only write as much as the size of the bytes buffer. Additional write is silently
-        // ignored.
-        let to_write = min(buf.len(), bytes.len());
-        buf[..to_write].clone_from_slice(&bytes[..to_write]);
-        self.1 += to_write;
-        &mut self.0.as_mut()[..self.1]
-    }
-}
-
-impl<T: AsMut<[u8]>> core::fmt::Write for FormattedBytes<T> {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        self.append(s.as_bytes());
-        Ok(())
-    }
-}
-
-/// A convenient macro that behaves similar to snprintf in C.
-#[macro_export]
-macro_rules! snprintf {
-    ( $arr:expr, $( $x:expr ),* ) => {
-        {
-            let mut formatted_bytes = FormattedBytes::new(&mut $arr[..]);
-            write!(formatted_bytes, $($x,)*).unwrap();
-            let size = formatted_bytes.size();
-            from_utf8(&$arr[..size]).unwrap()
-        }
-    };
-}
-
 /// A helper to convert a hex string into u64.
 pub(crate) fn hex_to_u64(s: &str) -> CommandResult<u64> {
     Ok(u64::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16)?)
@@ -1102,6 +1051,7 @@ pub fn next_arg_u64<'a, T: Iterator<Item = &'a str>>(args: &mut T) -> CommandRes
 #[cfg(test)]
 mod test {
     use super::*;
+    use core::cmp::min;
     use std::collections::{BTreeMap, VecDeque};
 
     #[derive(Default)]
