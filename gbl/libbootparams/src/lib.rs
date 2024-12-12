@@ -19,3 +19,6 @@
 
 pub mod bootconfig;
 pub mod commandline;
+pub mod entry;
+
+pub use self::entry::Entry;
