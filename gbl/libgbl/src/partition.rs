@@ -303,8 +303,10 @@ impl<'a, B: BlockIo> PartitionIo<'a, B> {
         let ab_range_end = SafeNum::from(self.part_start) + off + size.into();
         // Checks overflow by computing the difference between range end and partition end and
         // making sure it succeeds.
-        let _end_diff: u64 = (SafeNum::from(self.part_end) - ab_range_end).try_into()?;
-        Ok((SafeNum::from(self.part_start) + off).try_into()?)
+        (SafeNum::from(self.part_end) - ab_range_end)
+            .try_into()
+            .and_then(|_: u64| (SafeNum::from(self.part_start) + off).try_into())
+            .map_err(|_| Error::OutOfRange)
     }
 
     /// Writes to the partition.
