@@ -17,10 +17,11 @@ use crate::{
     fastboot::{BufferPool, GblFastboot},
     GblOps,
 };
-use core::{ffi::CStr, fmt::Write, future::Future, ops::DerefMut, str::from_utf8};
-use fastboot::{next_arg, next_arg_u64, snprintf, CommandResult, FormattedBytes, VarInfoSender};
+use core::{ffi::CStr, future::Future, ops::DerefMut, str::from_utf8};
+use fastboot::{next_arg, next_arg_u64, CommandResult, VarInfoSender};
 use gbl_async::{block_on, select, yield_now};
 use gbl_storage::BlockIo;
+use libutils::snprintf;
 
 // See definition of [GblFastboot] for docs on lifetimes and generics parameters.
 impl<'a: 'c, 'b: 'c, 'c, 'd, 'e, G, B, S, T, P, C, F>
