@@ -458,11 +458,10 @@ pub(crate) mod test {
     use core::{
         fmt::Write,
         ops::{Deref, DerefMut},
-        str::from_utf8,
     };
-    use fastboot::{snprintf, FormattedBytes};
     use gbl_async::block_on;
     use gbl_storage::{new_gpt_max, Disk, GptMax, RamBlockIo};
+    use libutils::snprintf;
     use std::{
         collections::{HashMap, LinkedList},
         ffi::CString,
