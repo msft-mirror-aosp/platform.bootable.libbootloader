@@ -16,6 +16,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+use core::{cmp::min, str::from_utf8};
 use liberror::{Error, Result};
 use safemath::SafeNum;
 
@@ -61,6 +62,64 @@ where
 {
     let addr = SafeNum::from(buffer.as_ptr() as usize);
     (addr.round_up(alignment) - addr).try_into().map_err(From::from)
+}
+
+/// A helper data structure for writing formatted string to fixed size bytes array.
+#[derive(Debug)]
+pub struct FormattedBytes<T>(T, usize);
+
+impl<T: AsMut<[u8]> + AsRef<[u8]>> FormattedBytes<T> {
+    /// Create an instance.
+    pub fn new(buf: T) -> Self {
+        Self(buf, 0)
+    }
+
+    /// Get the size of content.
+    pub fn size(&self) -> usize {
+        self.1
+    }
+
+    /// Appends the given `bytes` to the contents.
+    ///
+    /// If `bytes` exceeds the remaining buffer space, any excess bytes are discarded.
+    ///
+    /// Returns the resulting contents.
+    pub fn append(&mut self, bytes: &[u8]) -> &mut [u8] {
+        let buf = &mut self.0.as_mut()[self.1..];
+        // Only write as much as the size of the bytes buffer. Additional write is silently
+        // ignored.
+        let to_write = min(buf.len(), bytes.len());
+        buf[..to_write].clone_from_slice(&bytes[..to_write]);
+        self.1 += to_write;
+        &mut self.0.as_mut()[..self.1]
+    }
+
+    /// Converts to string.
+    pub fn to_str(&self) -> &str {
+        from_utf8(&self.0.as_ref()[..self.1]).unwrap_or("")
+    }
+}
+
+impl<T: AsMut<[u8]> + AsRef<[u8]>> core::fmt::Write for FormattedBytes<T> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.append(s.as_bytes());
+        Ok(())
+    }
+}
+
+/// A convenient macro that behaves similar to snprintf in C.
+///
+/// Panics if the written string is not UTF-8.
+#[macro_export]
+macro_rules! snprintf {
+    ( $arr:expr, $( $x:expr ),* ) => {
+        {
+            let mut bytes = $crate::FormattedBytes::new(&mut $arr[..]);
+            core::fmt::Write::write_fmt(&mut bytes, core::format_args!($($x,)*)).unwrap();
+            let size = bytes.size();
+            core::str::from_utf8(&$arr[..size]).unwrap()
+        }
+    };
 }
 
 #[cfg(test)]
@@ -130,5 +189,12 @@ mod test {
         let bytes = &mut bytes.0;
 
         assert!(matches!(aligned_subslice(bytes, SafeNum::MAX), Err(Error::ArithmeticOverflow(_))));
+    }
+
+    #[test]
+    fn test_formatted_bytes() {
+        let mut bytes = [0u8; 4];
+        assert_eq!(snprintf!(bytes, "abcde"), "abcd");
+        assert_eq!(&bytes, b"abcd");
     }
 }

@@ -22,7 +22,7 @@ use crate::{
     partition::{check_part_unique, read_unique_partition, write_unique_partition, GblDisk},
 };
 pub use abr::{set_one_shot_bootloader, set_one_shot_recovery, SlotIndex};
-use core::{ffi::CStr, fmt::Write, num::NonZeroUsize, ops::DerefMut, result::Result, str::Split};
+use core::{ffi::CStr, fmt::Write, num::NonZeroUsize, ops::DerefMut, result::Result};
 use gbl_async::block_on;
 use gbl_storage::SliceMaybeUninit;
 use libutils::aligned_subslice;
@@ -31,7 +31,6 @@ use libutils::aligned_subslice;
 pub use avb::{
     CertPermanentAttributes, IoError as AvbIoError, IoResult as AvbIoResult, SHA256_DIGEST_SIZE,
 };
-pub use fastboot::VarInfoSender;
 pub use gbl_storage::{BlockIo, Disk, Gpt};
 use liberror::Error;
 pub use slots::{Slot, SlotsMetadata};
@@ -360,7 +359,7 @@ pub trait GblOps<'a, 'd> {
     /// https://github.com/U-Boot-EFI/EFI_DT_FIXUP_PROTOCOL
     fn fixup_device_tree(&mut self, device_tree: &mut [u8]) -> Result<(), Error>;
 
-    /// Gets platform-specific fastboot variable
+    /// Gets platform-specific fastboot variable.
     ///
     /// # Args
     ///
@@ -371,25 +370,22 @@ pub trait GblOps<'a, 'd> {
     /// # Returns
     ///
     /// * Returns the number of bytes written in `out` on success.
-    fn fastboot_variable(
+    fn fastboot_variable<'arg>(
         &mut self,
-        name: &str,
-        args: Split<'_, char>,
+        name: &CStr,
+        args: impl Iterator<Item = &'arg CStr> + Clone,
         out: &mut [u8],
     ) -> Result<usize, Error>;
 
-    /// Sends all fastboot variables, arguments and values.
-    ///
-    /// The interface is for returnning platform specific fastboot variables for
-    /// `fastboot getvar all`.
+    /// Iterates all fastboot variables, arguments and values.
     ///
     /// # Args
     ///
-    /// * `sender`: An implementation of [VarInfoSender]. Implementation is responsible for calling
-    ///   `VarInfoSender::send_var_info` for all fastboot variables and values.
-    async fn fastboot_send_all_variables(
+    /// * `cb`: A closure that takes 1) an array of CStr that contains the variable name followed by
+    ///   any additional arguments and 2) a CStr representing the value.
+    fn fastboot_visit_all_variables(
         &mut self,
-        sender: &mut impl VarInfoSender,
+        cb: impl FnMut(&[&CStr], &CStr),
     ) -> Result<(), Error>;
 
     /// Returns a [SlotsMetadata] for the platform.
@@ -462,12 +458,14 @@ pub(crate) mod test {
     use core::{
         fmt::Write,
         ops::{Deref, DerefMut},
-        str::from_utf8,
     };
-    use fastboot::{snprintf, FormattedBytes};
     use gbl_async::block_on;
     use gbl_storage::{new_gpt_max, Disk, GptMax, RamBlockIo};
-    use std::collections::{HashMap, LinkedList};
+    use libutils::snprintf;
+    use std::{
+        collections::{HashMap, LinkedList},
+        ffi::CString,
+    };
     use zbi::{ZbiFlags, ZbiType};
 
     /// Type of [GblDisk] in tests.
@@ -766,13 +764,13 @@ pub(crate) mod test {
             unimplemented!();
         }
 
-        fn fastboot_variable(
+        fn fastboot_variable<'arg>(
             &mut self,
-            name: &str,
-            mut args: Split<'_, char>,
+            name: &CStr,
+            mut args: impl Iterator<Item = &'arg CStr> + Clone,
             out: &mut [u8],
         ) -> Result<usize, Error> {
-            match name {
+            match name.to_str()? {
                 Self::GBL_TEST_VAR => {
                     Ok(snprintf!(out, "{}:{:?}", Self::GBL_TEST_VAR_VAL, args.next()).len())
                 }
@@ -780,24 +778,19 @@ pub(crate) mod test {
             }
         }
 
-        async fn fastboot_send_all_variables(
+        fn fastboot_visit_all_variables(
             &mut self,
-            sender: &mut impl VarInfoSender,
+            mut cb: impl FnMut(&[&CStr], &CStr),
         ) -> Result<(), Error> {
-            sender
-                .send_var_info(
-                    Self::GBL_TEST_VAR,
-                    ["1"],
-                    format!("{}:1", Self::GBL_TEST_VAR_VAL).as_str(),
-                )
-                .await?;
-            sender
-                .send_var_info(
-                    Self::GBL_TEST_VAR,
-                    ["2"],
-                    format!("{}:2", Self::GBL_TEST_VAR_VAL).as_str(),
-                )
-                .await
+            cb(
+                &[CString::new(Self::GBL_TEST_VAR).unwrap().as_c_str(), c"1"],
+                CString::new(format!("{}:1", Self::GBL_TEST_VAR_VAL)).unwrap().as_c_str(),
+            );
+            cb(
+                &[CString::new(Self::GBL_TEST_VAR).unwrap().as_c_str(), c"2"],
+                CString::new(format!("{}:2", Self::GBL_TEST_VAR_VAL)).unwrap().as_c_str(),
+            );
+            Ok(())
         }
 
         fn slots_metadata(&mut self) -> Result<SlotsMetadata, Error> {

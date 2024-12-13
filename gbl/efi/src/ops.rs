@@ -26,7 +26,7 @@ use alloc::{
 use arrayvec::ArrayVec;
 use core::{
     cmp::min, ffi::CStr, fmt::Write, mem::MaybeUninit, num::NonZeroUsize, ops::DerefMut, ptr::null,
-    slice::from_raw_parts_mut, str::Split,
+    slice::from_raw_parts_mut,
 };
 use efi::{
     efi_print, efi_println,
@@ -55,7 +55,7 @@ use libgbl::{
     gbl_avb::state::{BootStateColor, KeyValidationStatus},
     ops::{
         AvbIoError, AvbIoResult, CertPermanentAttributes, ImageBuffer, RebootReason, Slot,
-        SlotsMetadata, VarInfoSender, SHA256_DIGEST_SIZE,
+        SlotsMetadata, SHA256_DIGEST_SIZE,
     },
     partition::GblDisk,
     slots::{BootToken, Cursor},
@@ -566,10 +566,10 @@ impl<'a, 'b, 'd> GblOps<'b, 'd> for Ops<'a, 'b> {
         }
     }
 
-    fn fastboot_variable(
+    fn fastboot_variable<'arg>(
         &mut self,
-        name: &str,
-        args: Split<'_, char>,
+        name: &CStr,
+        args: impl Iterator<Item = &'arg CStr> + Clone,
         out: &mut [u8],
     ) -> Result<usize> {
         self.efi_entry
@@ -579,18 +579,17 @@ impl<'a, 'b, 'd> GblOps<'b, 'd> for Ops<'a, 'b> {
             .get_var(name, args, out)
     }
 
-    async fn fastboot_send_all_variables(&mut self, sender: &mut impl VarInfoSender) -> Result<()> {
-        let mut out = [0u8; fastboot::MAX_RESPONSE_SIZE];
-        let protocol = self
+    fn fastboot_visit_all_variables(&mut self, cb: impl FnMut(&[&CStr], &CStr)) -> Result<()> {
+        match self
             .efi_entry
             .system_table()
             .boot_services()
-            .find_first_and_open::<GblFastbootProtocol>()?;
-        for ele in protocol.var_iter()? {
-            let (name, args, val) = ele.get(&mut out[..])?;
-            sender.send_var_info(name, args, val).await?;
+            .find_first_and_open::<GblFastbootProtocol>()
+        {
+            Ok(v) => v.get_var_all(cb),
+            Err(Error::NotFound) => Ok(()),
+            Err(e) => Err(e),
         }
-        Ok(())
     }
 
     fn slots_metadata(&mut self) -> Result<SlotsMetadata> {
@@ -841,19 +840,6 @@ impl<'a, 'd, T: GblOps<'a, 'd>> GblOps<'a, 'd> for RambootOps<'_, T> {
         )
     }
 
-    fn fastboot_variable(
-        &mut self,
-        name: &str,
-        args: Split<'_, char>,
-        out: &mut [u8],
-    ) -> Result<usize> {
-        self.ops.fastboot_variable(name, args, out)
-    }
-
-    async fn fastboot_send_all_variables(&mut self, sender: &mut impl VarInfoSender) -> Result<()> {
-        self.ops.fastboot_send_all_variables(sender).await
-    }
-
     fn avb_validate_vbmeta_public_key(
         &self,
         public_key: &[u8],
@@ -891,6 +877,21 @@ impl<'a, 'd, T: GblOps<'a, 'd>> GblOps<'a, 'd> for RambootOps<'_, T> {
         // Assumes that ramboot use normal boot mode. But we might consider supporting recovery
         // if there is a usecase.
         Ok(RebootReason::Normal)
+    }
+
+    fn fastboot_variable<'arg>(
+        &mut self,
+        _: &CStr,
+        _: impl Iterator<Item = &'arg CStr> + Clone,
+        _: &mut [u8],
+    ) -> Result<usize> {
+        // Ramboot should not need this.
+        unreachable!();
+    }
+
+    fn fastboot_visit_all_variables(&mut self, _: impl FnMut(&[&CStr], &CStr)) -> Result<()> {
+        // Ramboot should not need this.
+        unreachable!();
     }
 }
 
@@ -1307,5 +1308,31 @@ mod test {
     #[test]
     fn test_get_reboot_reason_fastbootd() {
         test_get_reboot_reason(GBL_EFI_BOOT_REASON_FASTBOOTD, RebootReason::FastbootD);
+    }
+
+    #[test]
+    fn test_get_var_all_not_found() {
+        let mut mock_efi = MockEfi::new();
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblFastbootProtocol>()
+            .times(1)
+            .return_once(|| Err(Error::NotFound));
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+        ops.fastboot_visit_all_variables(|_, _| {}).unwrap();
+    }
+
+    #[test]
+    fn test_get_var_all_other_errors() {
+        let mut mock_efi = MockEfi::new();
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblFastbootProtocol>()
+            .times(1)
+            .return_once(|| Err(Error::InvalidInput));
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+        assert!(ops.fastboot_visit_all_variables(|_, _| {}).is_err());
     }
 }

@@ -24,6 +24,7 @@ module(
 )
 
 register_toolchains(
+    "//prebuilts/build-tools:py_exec_tools_toolchain",
     "//prebuilts/build-tools:py_toolchain",
 )
 
@@ -38,6 +39,9 @@ bazel_dep(
 )
 bazel_dep(
     name = "rules_pkg",
+)
+bazel_dep(
+    name = "rules_python",
 )
 
 local_path_override(
