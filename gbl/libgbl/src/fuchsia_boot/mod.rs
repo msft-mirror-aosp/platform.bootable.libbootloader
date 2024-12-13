@@ -24,7 +24,7 @@ use zbi::{ZbiContainer, ZbiFlags, ZbiHeader, ZbiType};
 use zerocopy::AsBytes;
 
 mod vboot;
-use vboot::{copy_items_after_kernel, zircon_verify_kernel};
+use vboot::zircon_verify_kernel;
 
 /// Kernel load address alignment. Value taken from
 /// https://fuchsia.googlesource.com/fuchsia/+/4f204d8a0243e84a86af4c527a8edcc1ace1615f/zircon/kernel/target/arm64/boot-shim/BUILD.gn#38
@@ -202,10 +202,6 @@ pub fn zircon_load_verify<'a, 'd>(
     // Performs AVB verification.
     // TODO(b/379789161) verify that kernel buffer is big enough for the image and scratch buffer.
     zircon_verify_kernel(ops, slot, slot_booted_successfully, load, &mut zbi_items)?;
-    // TODO(b/380409163) make sure moved items are before appended one to facilitate overriding.
-    // It is not as efficient as moving kernel since ZBI items would contain file system and be
-    // bigger than kernel.
-    copy_items_after_kernel(load, &mut zbi_items)?;
 
     // Append additional ZBI items.
     match slot {
