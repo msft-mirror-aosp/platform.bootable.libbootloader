@@ -47,6 +47,12 @@ pub(crate) fn zircon_verify_kernel<'a, 'b, 'c, B: ByteSliceMut + PartialEq>(
     zbi_kernel: &'a mut [u8],
     zbi_items: &mut ZbiContainer<B>,
 ) -> GblResult<()> {
+    // Copy ZBI items after kernel first. Because ordering matters, and new items should override
+    // older ones.
+    // TODO(b/379778252) It is not as efficient as moving kernel since ZBI items would contain file
+    // system and be bigger than kernel.
+    copy_items_after_kernel(zbi_kernel, zbi_items)?;
+
     let (kernel, _) = zbi_split_unused_buffer(&mut zbi_kernel[..])?;
 
     // Verifies the kernel.
