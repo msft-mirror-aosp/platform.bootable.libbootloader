@@ -17,14 +17,11 @@ use crate::{
     fastboot::{BufferPool, GblFastboot},
     GblOps,
 };
-use core::{
-    fmt::Write,
-    future::Future,
-    ops::DerefMut,
-    str::{from_utf8, Split},
-};
-use fastboot::{next_arg, next_arg_u64, snprintf, CommandResult, FormattedBytes, VarInfoSender};
+use core::{ffi::CStr, future::Future, ops::DerefMut, str::from_utf8};
+use fastboot::{next_arg, next_arg_u64, CommandResult, VarInfoSender};
+use gbl_async::{block_on, select, yield_now};
 use gbl_storage::BlockIo;
+use libutils::snprintf;
 
 // See definition of [GblFastboot] for docs on lifetimes and generics parameters.
 impl<'a: 'c, 'b: 'c, 'c, 'd, 'e, G, B, S, T, P, C, F>
@@ -45,18 +42,22 @@ where
     const MAX_FETCH_SIZE_VAL: &'static str = "0xffffffffffffffff";
 
     /// Entry point for "fastboot getvar <variable>..."
-    pub(crate) fn get_var_internal<'s>(
+    pub(crate) fn get_var_internal<'s, 't>(
         &mut self,
-        name: &str,
-        args: Split<'_, char>,
+        name: &CStr,
+        args: impl Iterator<Item = &'t CStr> + Clone,
         out: &'s mut [u8],
     ) -> CommandResult<&'s str> {
-        Ok(match name {
+        let args_str = args.clone().map(|v| v.to_str());
+        // Checks that all arguments are valid str first.
+        args_str.clone().find(|v| v.is_err()).unwrap_or(Ok(""))?;
+        let args_str = args_str.map(|v| v.unwrap());
+        Ok(match name.to_str()? {
             Self::VERSION_BOOTLOADER => snprintf!(out, "{}", Self::VERSION_BOOTLOADER_VAL),
             Self::MAX_FETCH_SIZE => snprintf!(out, "{}", Self::MAX_FETCH_SIZE_VAL),
-            Self::PARTITION_SIZE => self.get_var_partition_size(args, out)?,
-            Self::PARTITION_TYPE => self.get_var_partition_type(args, out)?,
-            Self::BLOCK_DEVICE => self.get_var_block_device(args, out)?,
+            Self::PARTITION_SIZE => self.get_var_partition_size(args_str, out)?,
+            Self::PARTITION_TYPE => self.get_var_partition_type(args_str, out)?,
+            Self::BLOCK_DEVICE => self.get_var_block_device(args_str, out)?,
             Self::DEFAULT_BLOCK => self.get_var_default_block(out)?,
             _ => {
                 let sz = self.gbl_ops.fastboot_variable(name, args, out)?;
@@ -78,29 +79,44 @@ where
         self.get_all_partition_size_type(send).await?;
 
         // Gets platform specific variables
-        Ok(self.gbl_ops.fastboot_send_all_variables(send).await?)
+        let tasks = self.tasks();
+        Ok(self.gbl_ops.fastboot_visit_all_variables(|args, val| {
+            if let Some((name, args)) = args.split_first_chunk::<1>() {
+                let name = name[0].to_str().unwrap_or("?");
+                let args = args.iter().map(|v| v.to_str().unwrap_or("?"));
+                let val = val.to_str().unwrap_or("?");
+                // Manually polls async tasks so that we can still get parallelism while running in
+                // the context of backend.
+                let _ = block_on(select(send.send_var_info(name, args, val), async {
+                    loop {
+                        tasks.borrow_mut().poll_all();
+                        yield_now().await;
+                    }
+                }));
+            }
+        })?)
     }
 
     const PARTITION_SIZE: &'static str = "partition-size";
     const PARTITION_TYPE: &'static str = "partition-type";
 
     /// "fastboot getvar partition-size"
-    fn get_var_partition_size<'s>(
+    fn get_var_partition_size<'s, 't>(
         &mut self,
-        mut args: Split<'_, char>,
+        mut args: impl Iterator<Item = &'t str> + Clone,
         out: &'s mut [u8],
     ) -> CommandResult<&'s str> {
-        let (_, _, _, sz) = self.parse_partition(args.next().ok_or("Missing var")?)?;
+        let (_, _, _, sz) = self.parse_partition(args.next().ok_or("Missing partition")?)?;
         Ok(snprintf!(out, "{:#x}", sz))
     }
 
     /// "fastboot getvar partition-type"
-    fn get_var_partition_type<'s>(
+    fn get_var_partition_type<'s, 't>(
         &mut self,
-        mut args: Split<'_, char>,
+        mut args: impl Iterator<Item = &'t str> + Clone,
         out: &'s mut [u8],
     ) -> CommandResult<&'s str> {
-        self.parse_partition(args.next().ok_or("Missing var")?)?;
+        self.parse_partition(args.next().ok_or("Missing partition")?)?;
         Ok(snprintf!(out, "raw"))
     }
 
@@ -143,9 +159,9 @@ where
     /// `fastboot getvar block-device:<id>:total-blocks`
     /// `fastboot getvar block-device:<id>:block-size`
     /// `fastboot getvar block-device:<id>:status`
-    fn get_var_block_device<'s>(
+    fn get_var_block_device<'s, 't>(
         &mut self,
-        mut args: Split<'_, char>,
+        mut args: impl Iterator<Item = &'t str> + Clone,
         out: &'s mut [u8],
     ) -> CommandResult<&'s str> {
         let id = next_arg_u64(&mut args)?.ok_or("Missing block device ID")?;

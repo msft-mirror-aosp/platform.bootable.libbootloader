@@ -68,12 +68,13 @@
 #![allow(async_fn_in_trait)]
 
 use core::{
-    cmp::min,
+    ffi::CStr,
     fmt::{Debug, Display, Formatter, Write},
     str::{from_utf8, Split},
 };
 use gbl_async::{block_on, yield_now};
 use liberror::{Error, Result};
+use libutils::{snprintf, FormattedBytes};
 
 /// Maximum packet size that can be accepted from the host.
 ///
@@ -175,7 +176,7 @@ pub struct CommandError(FormattedBytes<[u8; COMMAND_ERROR_LENGTH]>);
 impl CommandError {
     /// Converts to string.
     pub fn to_str(&self) -> &str {
-        from_utf8(&self.0 .0[..self.0 .1]).unwrap_or("")
+        self.0.to_str()
     }
 
     /// Clones the error.
@@ -192,7 +193,7 @@ impl Debug for CommandError {
 
 impl<T: Display> From<T> for CommandError {
     fn from(val: T) -> Self {
-        let mut res = CommandError(FormattedBytes([0u8; COMMAND_ERROR_LENGTH], 0));
+        let mut res = CommandError(FormattedBytes::new([0u8; COMMAND_ERROR_LENGTH]));
         write!(res.0, "{}", val).unwrap();
         res
     }
@@ -233,8 +234,8 @@ pub trait FastbootImplementation {
     /// TODO(b/322540167): Figure out other reserved variables.
     async fn get_var(
         &mut self,
-        var: &str,
-        args: Split<char>,
+        var: &CStr,
+        args: impl Iterator<Item = &'_ CStr> + Clone,
         out: &mut [u8],
         responder: impl InfoSender,
     ) -> CommandResult<usize>;
@@ -242,8 +243,8 @@ pub trait FastbootImplementation {
     /// A helper API for getting the value of a fastboot variable and decoding it into string.
     async fn get_var_as_str<'s>(
         &mut self,
-        var: &str,
-        args: Split<'_, char>,
+        var: &CStr,
+        args: impl Iterator<Item = &'_ CStr> + Clone,
         responder: impl InfoSender,
         out: &'s mut [u8],
     ) -> CommandResult<&'s str> {
@@ -677,25 +678,35 @@ pub mod test_utils {
 
 const MAX_DOWNLOAD_SIZE_NAME: &'static str = "max-download-size";
 
+/// Converts a null-terminated command line string where arguments are separated by ':' into an
+/// iterator of individual argument as CStr.
+fn cmd_to_c_string_args(cmd: &mut [u8]) -> impl Iterator<Item = &CStr> + Clone {
+    let end = cmd.iter().position(|v| *v == 0).unwrap();
+    // Replace ':' with NULL.
+    cmd.iter_mut().filter(|v| **v == b':').for_each(|v| *v = 0);
+    cmd[..end + 1].split_inclusive(|v| *v == 0).map(|v| CStr::from_bytes_until_nul(v).unwrap())
+}
+
 /// Helper for handling "fastboot getvar ..."
 async fn get_var(
-    mut args: Split<'_, char>,
+    cmd: &mut [u8],
     transport: &mut impl Transport,
     fb_impl: &mut impl FastbootImplementation,
 ) -> Result<()> {
     let mut resp = Responder::new(transport);
+    let mut args = cmd_to_c_string_args(cmd).skip(1);
     let Some(var) = args.next() else {
         return reply_fail!(resp, "Missing variable");
     };
 
-    match var {
+    match var.to_str()? {
         "all" => return get_var_all(transport, fb_impl).await,
         MAX_DOWNLOAD_SIZE_NAME => {
             return reply_okay!(resp, "{:#x}", fb_impl.get_download_buffer().await.len());
         }
-        v => {
+        _ => {
             let mut val = [0u8; MAX_RESPONSE_SIZE];
-            match fb_impl.get_var_as_str(v, args, &mut resp, &mut val[..]).await {
+            match fb_impl.get_var_as_str(var, args, &mut resp, &mut val[..]).await {
                 Ok(s) => reply_okay!(resp, "{}", s),
                 Err(e) => reply_fail!(resp, "{}", e.to_str()),
             }
@@ -939,8 +950,8 @@ pub async fn process_next_command(
     transport: &mut impl Transport,
     fb_impl: &mut impl FastbootImplementation,
 ) -> Result<bool> {
-    let mut packet = [0u8; MAX_COMMAND_SIZE];
-    let cmd_size = match transport.receive_packet(&mut packet[..]).await? {
+    let mut packet = [0u8; MAX_COMMAND_SIZE + 1];
+    let cmd_size = match transport.receive_packet(&mut packet[..MAX_COMMAND_SIZE]).await? {
         0 => return Ok(false),
         v => v,
     };
@@ -965,7 +976,7 @@ pub async fn process_next_command(
         "erase" => erase(cmd_str, transport, fb_impl).await,
         "fetch" => fetch(cmd_str, args, transport, fb_impl).await,
         "flash" => flash(cmd_str, transport, fb_impl).await,
-        "getvar" => get_var(args, transport, fb_impl).await,
+        "getvar" => get_var(&mut packet[..], transport, fb_impl).await,
         "reboot" => reboot(RebootMode::Normal, transport, fb_impl).await,
         "reboot-bootloader" => reboot(RebootMode::Bootloader, transport, fb_impl).await,
         "reboot-fastboot" => reboot(RebootMode::Fastboot, transport, fb_impl).await,
@@ -1004,57 +1015,6 @@ pub async fn run_tcp_session(
     run(&mut TcpTransport::new_and_handshake(tcp_stream)?, fb_impl).await
 }
 
-/// A helper data structure for writing formatted string to fixed size bytes array.
-#[derive(Debug)]
-pub struct FormattedBytes<T: AsMut<[u8]>>(T, usize);
-
-impl<T: AsMut<[u8]>> FormattedBytes<T> {
-    /// Create an instance.
-    pub fn new(buf: T) -> Self {
-        Self(buf, 0)
-    }
-
-    /// Get the size of content.
-    pub fn size(&self) -> usize {
-        self.1
-    }
-
-    /// Appends the given `bytes` to the contents.
-    ///
-    /// If `bytes` exceeds the remaining buffer space, any excess bytes are discarded.
-    ///
-    /// Returns the resulting contents.
-    pub fn append(&mut self, bytes: &[u8]) -> &mut [u8] {
-        let buf = &mut self.0.as_mut()[self.1..];
-        // Only write as much as the size of the bytes buffer. Additional write is silently
-        // ignored.
-        let to_write = min(buf.len(), bytes.len());
-        buf[..to_write].clone_from_slice(&bytes[..to_write]);
-        self.1 += to_write;
-        &mut self.0.as_mut()[..self.1]
-    }
-}
-
-impl<T: AsMut<[u8]>> core::fmt::Write for FormattedBytes<T> {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        self.append(s.as_bytes());
-        Ok(())
-    }
-}
-
-/// A convenient macro that behaves similar to snprintf in C.
-#[macro_export]
-macro_rules! snprintf {
-    ( $arr:expr, $( $x:expr ),* ) => {
-        {
-            let mut formatted_bytes = FormattedBytes::new(&mut $arr[..]);
-            write!(formatted_bytes, $($x,)*).unwrap();
-            let size = formatted_bytes.size();
-            from_utf8(&$arr[..size]).unwrap()
-        }
-    };
-}
-
 /// A helper to convert a hex string into u64.
 pub(crate) fn hex_to_u64(s: &str) -> CommandResult<u64> {
     Ok(u64::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16)?)
@@ -1091,6 +1051,7 @@ pub fn next_arg_u64<'a, T: Iterator<Item = &'a str>>(args: &mut T) -> CommandRes
 #[cfg(test)]
 mod test {
     use super::*;
+    use core::cmp::min;
     use std::collections::{BTreeMap, VecDeque};
 
     #[derive(Default)]
@@ -1117,13 +1078,13 @@ mod test {
     impl FastbootImplementation for FastbootTest {
         async fn get_var(
             &mut self,
-            var: &str,
-            args: Split<'_, char>,
+            var: &CStr,
+            args: impl Iterator<Item = &'_ CStr> + Clone,
             out: &mut [u8],
             _: impl InfoSender,
         ) -> CommandResult<usize> {
-            let args = args.collect::<Vec<_>>();
-            match self.vars.get(&(var, &args[..])) {
+            let args = args.map(|v| v.to_str().unwrap()).collect::<Vec<_>>();
+            match self.vars.get(&(var.to_str()?, &args[..])) {
                 Some(v) => {
                     out[..v.len()].clone_from_slice(v.as_bytes());
                     Ok(v.len())

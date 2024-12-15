@@ -222,6 +222,8 @@ pub enum Error {
     OperationProhibited,
     /// Catch-all error with optional debugging string.
     Other(Option<&'static str>),
+    /// Out of range.
+    OutOfRange,
     /// A resource has run out.
     OutOfResources,
     /// A protocol error occurred during the network operation.
