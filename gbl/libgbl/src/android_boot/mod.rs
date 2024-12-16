@@ -17,7 +17,7 @@
 use crate::{
     device_tree::{DeviceTreeComponentSource, DeviceTreeComponentsRegistry, FDT_ALIGNMENT},
     gbl_avb::{
-        ops::GblAvbOps,
+        ops::{GblAvbOps, AVB_DIGEST_KEY},
         state::{BootStateColor, KeyValidationStatus},
     },
     gbl_print, gbl_println, GblOps, IntegrationError, Result,
@@ -25,7 +25,9 @@ use crate::{
 use arrayvec::ArrayVec;
 use avb::{slot_verify, HashtreeErrorMode, Ops as _, SlotVerifyFlags};
 use bootimg::{BootImage, VendorImageHeader};
-use bootparams::{bootconfig::BootConfigBuilder, commandline::CommandlineBuilder};
+use bootparams::{
+    bootconfig::BootConfigBuilder, commandline::CommandlineBuilder, entry::CommandlineParser,
+};
 use core::{ffi::CStr, fmt::Write};
 use dttable::DtTableImage;
 use fdt::Fdt;
@@ -64,8 +66,8 @@ fn cstr_bytes_to_str(data: &[u8]) -> core::result::Result<&str, Error> {
 ///
 /// # Returns
 /// `()` on success, error if the images fail to verify or we fail to update the bootconfig.
-fn avb_verify_slot<'a>(
-    ops: &mut impl GblOps<'a>,
+fn avb_verify_slot<'a, 'b>(
+    ops: &mut impl GblOps<'a, 'b>,
     kernel: &[u8],
     vendor_boot: &[u8],
     init_boot: &[u8],
@@ -110,12 +112,17 @@ fn avb_verify_slot<'a>(
         false => BootStateColor::Green,
         true => BootStateColor::Orange,
     };
-    avb_ops.handle_verification_result(&res, color)?;
 
-    // Append avb generated bootconfig.
-    for cmdline_arg in res.cmdline().to_str().unwrap().split(' ') {
-        write!(bootconfig_builder, "{}\n", cmdline_arg).or(Err(Error::BufferTooSmall(None)))?;
+    let mut digest = None;
+    for entry in CommandlineParser::new(res.cmdline().to_str().unwrap()) {
+        let entry = entry?;
+        if entry.key == AVB_DIGEST_KEY {
+            digest = entry.value;
+        }
+        write!(bootconfig_builder, "{}\n", entry).or(Err(Error::BufferTooSmall(None)))?;
     }
+
+    avb_ops.handle_verification_result(&res, color, digest)?;
 
     // Append "androidboot.verifiedbootstate="
     write!(bootconfig_builder, "androidboot.verifiedbootstate={}\n", color)
@@ -217,8 +224,8 @@ fn vendor_header_elements<B: ByteSlice + PartialEq>(
 /// # Returns
 /// Returns a tuple of 4 slices corresponding to:
 ///   (ramdisk load buffer, FDT load buffer, kernel load buffer, unused buffer).
-pub fn load_android_simple<'a, 'b>(
-    ops: &mut impl GblOps<'b>,
+pub fn load_android_simple<'a, 'b, 'c>(
+    ops: &mut impl GblOps<'b, 'c>,
     load: &'a mut [u8],
 ) -> Result<(&'a mut [u8], &'a mut [u8], &'a mut [u8], &'a mut [u8])> {
     const PAGE_SIZE: usize = 4096; // V3/V4 image has fixed page size 4096;

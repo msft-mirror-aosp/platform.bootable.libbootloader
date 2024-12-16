@@ -22,17 +22,18 @@ use crate::{
     partition::{check_part_unique, read_unique_partition, write_unique_partition, GblDisk},
 };
 pub use abr::{set_one_shot_bootloader, set_one_shot_recovery, SlotIndex};
-use core::{ffi::CStr, fmt::Write, num::NonZeroUsize, ops::DerefMut, result::Result, str::Split};
+use core::{ffi::CStr, fmt::Write, num::NonZeroUsize, ops::DerefMut, result::Result};
 use gbl_async::block_on;
+use gbl_storage::SliceMaybeUninit;
 use libutils::aligned_subslice;
 
 // Re-exports of types from other dependencies that appear in the APIs of this library.
 pub use avb::{
     CertPermanentAttributes, IoError as AvbIoError, IoResult as AvbIoResult, SHA256_DIGEST_SIZE,
 };
-pub use fastboot::VarInfoSender;
 pub use gbl_storage::{BlockIo, Disk, Gpt};
 use liberror::Error;
+pub use slots::{Slot, SlotsMetadata};
 pub use zbi::{ZbiContainer, ZBI_ALIGNMENT_USIZE};
 
 use super::device_tree;
@@ -47,6 +48,19 @@ pub enum Os {
     Fuchsia,
 }
 
+/// Contains reboot reasons for instructing GBL to boot to different modes.
+#[derive(PartialEq, Debug, Copy, Clone)]
+pub enum RebootReason {
+    /// Normal boot.
+    Normal,
+    /// Bootloader Fastboot mode.
+    Bootloader,
+    /// Userspace Fastboot mode.
+    FastbootD,
+    /// Recovery mode.
+    Recovery,
+}
+
 // https://stackoverflow.com/questions/41081240/idiomatic-callbacks-in-rust
 // should we use traits for this? or optional/box FnMut?
 //
@@ -55,7 +69,7 @@ missing:
 - key management => atx extension in callback =>  atx_ops: ptr::null_mut(), // support optional ATX.
 */
 /// Trait that defines callbacks that can be provided to Gbl.
-pub trait GblOps<'a> {
+pub trait GblOps<'a, 'd> {
     /// Gets a console for logging messages.
     fn console_out(&mut self) -> Option<&mut dyn Write>;
 
@@ -84,8 +98,7 @@ pub trait GblOps<'a> {
     /// On success, returns a closure that performs the reboot.
     fn reboot_recovery(&mut self) -> Result<impl FnOnce() + '_, Error> {
         if self.expected_os_is_fuchsia()? {
-            // TODO(b/363075013): Checks and prioritizes platform specific
-            // `set_boot_reason()`.
+            // TODO(b/363075013): Checks and prioritizes platform specific `set_boot_reason()`.
             set_one_shot_recovery(&mut GblAbrOps(self), true)?;
             return Ok(|| self.reboot());
         }
@@ -97,8 +110,7 @@ pub trait GblOps<'a> {
     /// On success, returns a closure that performs the reboot.
     fn reboot_bootloader(&mut self) -> Result<impl FnOnce() + '_, Error> {
         if self.expected_os_is_fuchsia()? {
-            // TODO(b/363075013): Checks and prioritizes platform specific
-            // `set_boot_reason()`.
+            // TODO(b/363075013): Checks and prioritizes platform specific `set_boot_reason()`.
             set_one_shot_bootloader(&mut GblAbrOps(self), true)?;
             return Ok(|| self.reboot());
         }
@@ -125,7 +137,7 @@ pub trait GblOps<'a> {
         &mut self,
         part: &str,
         off: u64,
-        out: &mut [u8],
+        out: &mut (impl SliceMaybeUninit + ?Sized),
     ) -> Result<(), Error> {
         read_unique_partition(self.disks(), part, off, out).await
     }
@@ -135,7 +147,7 @@ pub trait GblOps<'a> {
         &mut self,
         part: &str,
         off: u64,
-        out: &mut [u8],
+        out: &mut (impl SliceMaybeUninit + ?Sized),
     ) -> Result<(), Error> {
         block_on(self.read_from_partition(part, off, out))
     }
@@ -229,16 +241,31 @@ pub trait GblOps<'a> {
     /// Reads the AVB rollback index at the given location
     ///
     /// The interface has the same requirement as `avb::Ops::read_rollback_index`.
-    fn avb_read_rollback_index(&mut self, _rollback_index_location: usize) -> AvbIoResult<u64>;
+    fn avb_read_rollback_index(&mut self, rollback_index_location: usize) -> AvbIoResult<u64>;
 
     /// Writes the AVB rollback index at the given location.
     ///
     /// The interface has the same requirement as `avb::Ops::write_rollback_index`.
     fn avb_write_rollback_index(
         &mut self,
-        _rollback_index_location: usize,
-        _index: u64,
+        rollback_index_location: usize,
+        index: u64,
     ) -> AvbIoResult<()>;
+
+    /// Reads the AVB persistent value for the given name.
+    ///
+    /// The interface has the same requirement as `avb::Ops::read_persistent_value`.
+    fn avb_read_persistent_value(&mut self, name: &CStr, value: &mut [u8]) -> AvbIoResult<usize>;
+
+    /// Writes the AVB persistent value for the given name.
+    ///
+    /// The interface has the same requirement as `avb::Ops::write_persistent_value`.
+    fn avb_write_persistent_value(&mut self, name: &CStr, value: &[u8]) -> AvbIoResult<()>;
+
+    /// Erases the AVB persistent value for the given name.
+    ///
+    /// The interface has the same requirement as `avb::Ops::erase_persistent_value`.
+    fn avb_erase_persistent_value(&mut self, name: &CStr) -> AvbIoResult<()>;
 
     /// Validate public key used to execute AVB.
     ///
@@ -268,6 +295,7 @@ pub trait GblOps<'a> {
     fn avb_handle_verification_result(
         &mut self,
         color: BootStateColor,
+        digest: Option<&CStr>,
         boot_os_version: Option<&[u8]>,
         boot_security_patch: Option<&[u8]>,
         system_os_version: Option<&[u8]>,
@@ -277,11 +305,11 @@ pub trait GblOps<'a> {
     ) -> AvbIoResult<()>;
 
     /// Get buffer for specific image of requested size.
-    fn get_image_buffer<'c>(
+    fn get_image_buffer(
         &mut self,
         image_name: &str,
         size: NonZeroUsize,
-    ) -> GblResult<ImageBuffer<'c>>;
+    ) -> GblResult<ImageBuffer<'d>>;
 
     /// Returns the custom device tree to use, if any.
     ///
@@ -331,7 +359,7 @@ pub trait GblOps<'a> {
     /// https://github.com/U-Boot-EFI/EFI_DT_FIXUP_PROTOCOL
     fn fixup_device_tree(&mut self, device_tree: &mut [u8]) -> Result<(), Error>;
 
-    /// Gets platform-specific fastboot variable
+    /// Gets platform-specific fastboot variable.
     ///
     /// # Args
     ///
@@ -342,27 +370,60 @@ pub trait GblOps<'a> {
     /// # Returns
     ///
     /// * Returns the number of bytes written in `out` on success.
-    fn fastboot_variable(
+    fn fastboot_variable<'arg>(
         &mut self,
-        name: &str,
-        args: Split<'_, char>,
+        name: &CStr,
+        args: impl Iterator<Item = &'arg CStr> + Clone,
         out: &mut [u8],
     ) -> Result<usize, Error>;
 
-    /// Sends all fastboot variables, arguments and values.
-    ///
-    /// The interface is for returnning platform specific fastboot variables for
-    /// `fastboot getvar all`.
+    /// Iterates all fastboot variables, arguments and values.
     ///
     /// # Args
     ///
-    /// * `sender`: An implementation of [VarInfoSender]. Implementation is responsible for calling
-    ///   `VarInfoSender::send_var_info` for all fastboot variables and values.
-    async fn fastboot_send_all_variables(
+    /// * `cb`: A closure that takes 1) an array of CStr that contains the variable name followed by
+    ///   any additional arguments and 2) a CStr representing the value.
+    fn fastboot_visit_all_variables(
         &mut self,
-        sender: &mut impl VarInfoSender,
+        cb: impl FnMut(&[&CStr], &CStr),
     ) -> Result<(), Error>;
+
+    /// Returns a [SlotsMetadata] for the platform.
+    fn slots_metadata(&mut self) -> Result<SlotsMetadata, Error>;
+
+    /// Gets the currently booted bootloader slot.
+    ///
+    /// # Returns
+    ///
+    /// * Returns Ok(Some(slot index)) if bootloader is slotted.
+    /// * Returns Ok(Errorr::Unsupported) if bootloader is not slotted.
+    /// * Returns Err() on error.
+    fn get_current_slot(&mut self) -> Result<Slot, Error>;
+
+    /// Gets the slot for the next A/B decision.
+    ///
+    /// # Args
+    ///
+    /// * `mark_boot_attempt`: Passes true if the caller attempts to boot the returned slot and
+    ///   would like implementation to perform necessary update to the state of slot such as retry
+    ///   counter. Passes false if the caller only wants to query the slot decision and not cause
+    ///   any state change.
+    fn get_next_slot(&mut self, _mark_boot_attempt: bool) -> Result<Slot, Error>;
+
+    /// Sets the active slot for the next A/B decision.
+    ///
+    /// # Args
+    ///
+    /// * `slot`: The numeric index of the slot.
+    fn set_active_slot(&mut self, _slot: u8) -> Result<(), Error>;
+
+    /// Sets the reboot reason for the next reboot.
+    fn set_reboot_reason(&mut self, _reason: RebootReason) -> Result<(), Error>;
+
+    /// Gets the reboot reason for this boot.
+    fn get_reboot_reason(&mut self) -> Result<RebootReason, Error>;
 }
+
 /// Prints with `GblOps::console_out()`.
 #[macro_export]
 macro_rules! gbl_print {
@@ -389,6 +450,7 @@ macro_rules! gbl_println {
 #[cfg(test)]
 pub(crate) mod test {
     use super::*;
+    use crate::error::IntegrationError;
     use crate::partition::GblDisk;
     use abr::{get_and_clear_one_shot_bootloader, get_boot_slot};
     use avb::{CertOps, Ops};
@@ -396,11 +458,14 @@ pub(crate) mod test {
     use core::{
         fmt::Write,
         ops::{Deref, DerefMut},
-        str::from_utf8,
     };
-    use fastboot::{snprintf, FormattedBytes};
     use gbl_async::block_on;
     use gbl_storage::{new_gpt_max, Disk, GptMax, RamBlockIo};
+    use libutils::snprintf;
+    use std::{
+        collections::{HashMap, LinkedList},
+        ffi::CString,
+    };
     use zbi::{ZbiFlags, ZbiType};
 
     /// Type of [GblDisk] in tests.
@@ -427,9 +492,8 @@ pub(crate) mod test {
         /// Adds a GPT disk.
         pub(crate) fn add_gpt_device(&mut self, data: impl AsRef<[u8]>) {
             // For test GPT images, all block sizes are 512.
-            let ram_blk = RamBlockIo::new(512, 512, data.as_ref().to_vec());
             self.0.push(TestGblDisk::new_gpt(
-                Disk::new_alloc_scratch(ram_blk).unwrap(),
+                Disk::new_ram_alloc(512, 512, data.as_ref().to_vec()).unwrap(),
                 new_gpt_max(),
             ));
             let _ = block_on(self.0.last().unwrap().sync_gpt());
@@ -438,10 +502,9 @@ pub(crate) mod test {
         /// Adds a raw partition disk.
         pub(crate) fn add_raw_device(&mut self, name: &CStr, data: impl AsRef<[u8]>) {
             // For raw partition, use block_size=alignment=1 for simplicity.
-            let ram_blk = RamBlockIo::new(1, 1, data.as_ref().to_vec());
-            self.0.push(
-                TestGblDisk::new_raw(Disk::new_alloc_scratch(ram_blk).unwrap(), name).unwrap(),
-            )
+            TestGblDisk::new_raw(Disk::new_ram_alloc(1, 1, data.as_ref().to_vec()).unwrap(), name)
+                .and_then(|v| Ok(self.0.push(v)))
+                .unwrap()
         }
     }
 
@@ -455,7 +518,7 @@ pub(crate) mod test {
 
     /// Fake [GblOps] implementation for testing.
     #[derive(Default)]
-    pub(crate) struct FakeGblOps<'a> {
+    pub(crate) struct FakeGblOps<'a, 'd> {
         /// Partition data to expose.
         pub partitions: &'a [TestGblDisk],
 
@@ -480,16 +543,19 @@ pub(crate) mod test {
 
         /// For return by `Self::avb_validate_vbmeta_public_key`
         pub avb_key_validation_status: Option<AvbIoResult<KeyValidationStatus>>,
+
+        /// For return by `Self::get_image_buffer()`
+        pub image_buffers: HashMap<String, LinkedList<ImageBuffer<'d>>>,
     }
 
     /// Print `console_out` output, which can be useful for debugging.
-    impl Write for FakeGblOps<'_> {
+    impl<'a, 'd> Write for FakeGblOps<'a, 'd> {
         fn write_str(&mut self, s: &str) -> Result<(), std::fmt::Error> {
             Ok(print!("{s}"))
         }
     }
 
-    impl<'a> FakeGblOps<'a> {
+    impl<'a, 'd> FakeGblOps<'a, 'd> {
         /// For now we've just hardcoded the `zircon_add_device_zbi_items()` callback to add a
         /// single commandline ZBI item with these contents; if necessary we can generalize this
         /// later and allow tests to configure the ZBI modifications.
@@ -530,7 +596,7 @@ pub(crate) mod test {
         }
     }
 
-    impl<'a> GblOps<'a> for FakeGblOps<'a> {
+    impl<'a, 'd> GblOps<'a, 'd> for FakeGblOps<'a, 'd> {
         fn console_out(&mut self) -> Option<&mut dyn Write> {
             Some(self)
         }
@@ -620,9 +686,26 @@ pub(crate) mod test {
             self.avb_ops.read_permanent_attributes_hash()
         }
 
+        fn avb_read_persistent_value(
+            &mut self,
+            name: &CStr,
+            value: &mut [u8],
+        ) -> AvbIoResult<usize> {
+            self.avb_ops.read_persistent_value(name, value)
+        }
+
+        fn avb_write_persistent_value(&mut self, name: &CStr, value: &[u8]) -> AvbIoResult<()> {
+            self.avb_ops.write_persistent_value(name, value)
+        }
+
+        fn avb_erase_persistent_value(&mut self, name: &CStr) -> AvbIoResult<()> {
+            self.avb_ops.erase_persistent_value(name)
+        }
+
         fn avb_handle_verification_result(
             &mut self,
             _color: BootStateColor,
+            _digest: Option<&CStr>,
             _boot_os_version: Option<&[u8]>,
             _boot_security_patch: Option<&[u8]>,
             _system_os_version: Option<&[u8]>,
@@ -633,8 +716,21 @@ pub(crate) mod test {
             unimplemented!();
         }
 
-        fn get_image_buffer<'c>(&mut self, _: &str, _: NonZeroUsize) -> GblResult<ImageBuffer<'c>> {
-            unimplemented!();
+        fn get_image_buffer(
+            &mut self,
+            image_name: &str,
+            _size: NonZeroUsize,
+        ) -> GblResult<ImageBuffer<'d>> {
+            if let Some(buf_list) = self.image_buffers.get_mut(image_name) {
+                if let Some(buf) = buf_list.pop_front() {
+                    return Ok(buf);
+                };
+            };
+
+            gbl_println!(self, "FakeGblOps.get_image_buffer({image_name}) no buffer for the image");
+            Err(IntegrationError::UnificationError(Error::Other(Some(
+                "No buffer provided. Add sufficient buffers to FakeGblOps.image_buffers",
+            ))))
         }
 
         fn get_custom_device_tree(&mut self) -> Option<&'static [u8]> {
@@ -668,13 +764,13 @@ pub(crate) mod test {
             unimplemented!();
         }
 
-        fn fastboot_variable(
+        fn fastboot_variable<'arg>(
             &mut self,
-            name: &str,
-            mut args: Split<'_, char>,
+            name: &CStr,
+            mut args: impl Iterator<Item = &'arg CStr> + Clone,
             out: &mut [u8],
         ) -> Result<usize, Error> {
-            match name {
+            match name.to_str()? {
                 Self::GBL_TEST_VAR => {
                     Ok(snprintf!(out, "{}:{:?}", Self::GBL_TEST_VAR_VAL, args.next()).len())
                 }
@@ -682,24 +778,43 @@ pub(crate) mod test {
             }
         }
 
-        async fn fastboot_send_all_variables(
+        fn fastboot_visit_all_variables(
             &mut self,
-            sender: &mut impl VarInfoSender,
+            mut cb: impl FnMut(&[&CStr], &CStr),
         ) -> Result<(), Error> {
-            sender
-                .send_var_info(
-                    Self::GBL_TEST_VAR,
-                    ["1"],
-                    format!("{}:1", Self::GBL_TEST_VAR_VAL).as_str(),
-                )
-                .await?;
-            sender
-                .send_var_info(
-                    Self::GBL_TEST_VAR,
-                    ["2"],
-                    format!("{}:2", Self::GBL_TEST_VAR_VAL).as_str(),
-                )
-                .await
+            cb(
+                &[CString::new(Self::GBL_TEST_VAR).unwrap().as_c_str(), c"1"],
+                CString::new(format!("{}:1", Self::GBL_TEST_VAR_VAL)).unwrap().as_c_str(),
+            );
+            cb(
+                &[CString::new(Self::GBL_TEST_VAR).unwrap().as_c_str(), c"2"],
+                CString::new(format!("{}:2", Self::GBL_TEST_VAR_VAL)).unwrap().as_c_str(),
+            );
+            Ok(())
+        }
+
+        fn slots_metadata(&mut self) -> Result<SlotsMetadata, Error> {
+            unimplemented!();
+        }
+
+        fn get_current_slot(&mut self) -> Result<Slot, Error> {
+            unimplemented!()
+        }
+
+        fn get_next_slot(&mut self, _: bool) -> Result<Slot, Error> {
+            unimplemented!()
+        }
+
+        fn set_active_slot(&mut self, _: u8) -> Result<(), Error> {
+            unimplemented!()
+        }
+
+        fn set_reboot_reason(&mut self, _: RebootReason) -> Result<(), Error> {
+            unimplemented!()
+        }
+
+        fn get_reboot_reason(&mut self) -> Result<RebootReason, Error> {
+            unimplemented!()
         }
     }
 

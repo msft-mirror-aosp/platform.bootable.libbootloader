@@ -18,10 +18,13 @@ use crate::{
     gbl_avb::state::{BootStateColor, KeyValidationStatus},
     gbl_print, gbl_println, GblOps,
 };
+use arrayvec::ArrayString;
 use avb::{
     cert_validate_vbmeta_public_key, CertOps, CertPermanentAttributes, IoError, IoResult,
     Ops as AvbOps, PublicKeyForPartitionInfo, SlotVerifyData, SHA256_DIGEST_SIZE,
+    SHA512_DIGEST_SIZE,
 };
+use core::fmt::Write;
 use core::{
     cmp::{max, min},
     ffi::CStr,
@@ -29,6 +32,9 @@ use core::{
 use liberror::Error;
 use safemath::SafeNum;
 use uuid::Uuid;
+
+/// The digest key in commandline provided by libavb.
+pub const AVB_DIGEST_KEY: &str = "androidboot.vbmeta.digest";
 
 // AVB cert tracks versions for the PIK and PSK; PRK cannot be changed so has no version info.
 const AVB_CERT_NUM_KEY_VERSIONS: usize = 2;
@@ -53,7 +59,7 @@ pub struct GblAvbOps<'a, T> {
     key_validation_status: Option<KeyValidationStatus>,
 }
 
-impl<'a, 'p, T: GblOps<'p>> GblAvbOps<'a, T> {
+impl<'a, 'p, 'q, T: GblOps<'p, 'q>> GblAvbOps<'a, T> {
     /// Creates a new [GblAvbOps].
     pub fn new(
         gbl_ops: &'a mut T,
@@ -82,6 +88,7 @@ impl<'a, 'p, T: GblOps<'p>> GblAvbOps<'a, T> {
         &mut self,
         slot_verify: &SlotVerifyData,
         color: BootStateColor,
+        digest: Option<&str>,
     ) -> IoResult<()> {
         let mut vbmeta = None;
         let mut vbmeta_boot = None;
@@ -129,8 +136,22 @@ impl<'a, 'p, T: GblOps<'p>> GblAvbOps<'a, T> {
         let vendor_security_patch =
             vendor_data.get_property_value("com.android.build.vendor.security_patch");
 
+        // Convert digest rust string to null-terminated string by copying it into separate buffer.
+        let mut digest_buffer = ArrayString::<{ SHA512_DIGEST_SIZE + 1 }>::new();
+        let digest_cstr = match digest {
+            Some(digest) => {
+                write!(digest_buffer, "{}\0", digest).or(Err(IoError::InvalidValueSize))?;
+                Some(
+                    CStr::from_bytes_until_nul(digest_buffer.as_bytes())
+                        .or(Err(IoError::InvalidValueSize))?,
+                )
+            }
+            None => None,
+        };
+
         self.gbl_ops.avb_handle_verification_result(
             color,
+            digest_cstr,
             boot_os_version,
             boot_security_patch,
             system_os_version,
@@ -154,7 +175,7 @@ fn cstr_to_str<E>(s: &CStr, err: E) -> Result<&str, E> {
 /// # Lifetimes
 /// * `'a`: preloaded data lifetime
 /// * `'b`: [GblOps] partition lifetime
-impl<'a, 'b, T: GblOps<'b>> AvbOps<'a> for GblAvbOps<'a, T> {
+impl<'a, 'b, 'c, T: GblOps<'b, 'c>> AvbOps<'a> for GblAvbOps<'a, T> {
     fn read_from_partition(
         &mut self,
         partition: &CStr,
@@ -203,19 +224,15 @@ impl<'a, 'b, T: GblOps<'b>> AvbOps<'a> for GblAvbOps<'a, T> {
             }
         } else {
             self.gbl_ops.avb_validate_vbmeta_public_key(public_key, public_key_metadata).or_else(
-                |err| match err {
-                    IoError::NotImplemented => {
-                        // TODO(b/337846185): Remove fallback once AVB protocol implementation
-                        // is forced.
-                        gbl_println!(
-                            self.gbl_ops,
-                            "WARNING: UEFI GblEfiAvbProtocol.validate_vbmeta_public_key \
-                                implementation is missing. This will not be permitted in the \
-                                future."
-                        );
-                        Ok(KeyValidationStatus::ValidCustomKey)
-                    }
-                    err => Err(err),
+                |err| {
+                    // TODO(b/337846185): Remove fallback once AVB protocol implementation is
+                    // forced.
+                    fallback_not_implemented(
+                        self.gbl_ops,
+                        err,
+                        "validate_vbmeta_public_key",
+                        KeyValidationStatus::ValidCustomKey,
+                    )
                 },
             )?
         };
@@ -226,15 +243,27 @@ impl<'a, 'b, T: GblOps<'b>> AvbOps<'a> for GblAvbOps<'a, T> {
     }
 
     fn read_rollback_index(&mut self, rollback_index_location: usize) -> IoResult<u64> {
-        self.gbl_ops.avb_read_rollback_index(rollback_index_location)
+        self.gbl_ops.avb_read_rollback_index(rollback_index_location).or_else(|err| {
+            // TODO(b/337846185): Remove fallback once AVB protocol implementation is
+            // forced.
+            fallback_not_implemented(self.gbl_ops, err, "read_rollback_index", 0)
+        })
     }
 
     fn write_rollback_index(&mut self, rollback_index_location: usize, index: u64) -> IoResult<()> {
-        self.gbl_ops.avb_write_rollback_index(rollback_index_location, index)
+        self.gbl_ops.avb_write_rollback_index(rollback_index_location, index).or_else(|err| {
+            // TODO(b/337846185): Remove fallback once AVB protocol implementation is
+            // forced.
+            fallback_not_implemented(self.gbl_ops, err, "write_rollback_index", ())
+        })
     }
 
     fn read_is_device_unlocked(&mut self) -> IoResult<bool> {
-        self.gbl_ops.avb_read_is_device_unlocked()
+        self.gbl_ops.avb_read_is_device_unlocked().or_else(|err| {
+            // TODO(b/337846185): Remove fallback once AVB protocol implementation is
+            // forced.
+            fallback_not_implemented(self.gbl_ops, err, "read_is_device_unlocked", true)
+        })
     }
 
     fn get_unique_guid_for_partition(&mut self, partition: &CStr) -> IoResult<Uuid> {
@@ -253,19 +282,28 @@ impl<'a, 'b, T: GblOps<'b>> AvbOps<'a> for GblAvbOps<'a, T> {
         }
     }
 
-    fn read_persistent_value(&mut self, _name: &CStr, _value: &mut [u8]) -> IoResult<usize> {
-        // Not needed yet; eventually we will plumb this through [GblOps].
-        unimplemented!();
+    fn read_persistent_value(&mut self, name: &CStr, value: &mut [u8]) -> IoResult<usize> {
+        self.gbl_ops.avb_read_persistent_value(name, value).or_else(|err| {
+            // TODO(b/337846185): Remove fallback once AVB protocol implementation is
+            // forced.
+            fallback_not_implemented(self.gbl_ops, err, "read_persistent_value", 0)
+        })
     }
 
-    fn write_persistent_value(&mut self, _name: &CStr, _value: &[u8]) -> IoResult<()> {
-        // Not needed yet; eventually we will plumb this through [GblOps].
-        unreachable!();
+    fn write_persistent_value(&mut self, name: &CStr, value: &[u8]) -> IoResult<()> {
+        self.gbl_ops.avb_write_persistent_value(name, value).or_else(|err| {
+            // TODO(b/337846185): Remove fallback once AVB protocol implementation is
+            // forced.
+            fallback_not_implemented(self.gbl_ops, err, "write_persistent_value", ())
+        })
     }
 
-    fn erase_persistent_value(&mut self, _name: &CStr) -> IoResult<()> {
-        // Not needed yet; eventually we will plumb this through [GblOps].
-        unreachable!();
+    fn erase_persistent_value(&mut self, name: &CStr) -> IoResult<()> {
+        self.gbl_ops.avb_erase_persistent_value(name).or_else(|err| {
+            // TODO(b/337846185): Remove fallback once AVB protocol implementation is
+            // forced.
+            fallback_not_implemented(self.gbl_ops, err, "erase_persistent_value", ())
+        })
     }
 
     fn validate_public_key_for_partition(
@@ -287,7 +325,7 @@ impl<'a, 'b, T: GblOps<'b>> AvbOps<'a> for GblAvbOps<'a, T> {
 }
 
 /// [GblAvbOps] always implements [CertOps], but it's only used if `use_cert` is set.
-impl<'a, T: GblOps<'a>> CertOps for GblAvbOps<'_, T> {
+impl<'a, 'b, T: GblOps<'a, 'b>> CertOps for GblAvbOps<'_, T> {
     fn read_permanent_attributes(
         &mut self,
         attributes: &mut CertPermanentAttributes,
@@ -322,6 +360,26 @@ impl<'a, T: GblOps<'a>> CertOps for GblAvbOps<'_, T> {
     fn get_random(&mut self, _: &mut [u8]) -> IoResult<()> {
         // Not needed yet; eventually we will plumb this through [GblOps].
         unimplemented!()
+    }
+}
+
+fn fallback_not_implemented<'a, 'b, T>(
+    ops: &mut impl GblOps<'a, 'b>,
+    error: IoError,
+    method_name: &str,
+    value: T,
+) -> IoResult<T> {
+    match error {
+        IoError::NotImplemented => {
+            gbl_println!(
+                ops,
+                "WARNING: UEFI GblEfiAvbProtocol.{} implementation is missing. This will not be \
+                permitted in the future.",
+                method_name,
+            );
+            Ok(value)
+        }
+        err => Err(err),
     }
 }
 
@@ -517,5 +575,223 @@ mod test {
 
         assert_eq!(avb_ops.validate_vbmeta_public_key(&[], None), Ok(true));
         assert_eq!(avb_ops.key_validation_status(), Ok(KeyValidationStatus::ValidCustomKey));
+    }
+
+    #[test]
+    fn read_rollback_index_read_value() {
+        const EXPECTED_INDEX: usize = 1;
+        const EXPECTED_VALUE: u64 = 100;
+
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.rollbacks.insert(EXPECTED_INDEX, Ok(EXPECTED_VALUE));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.read_rollback_index(EXPECTED_INDEX), Ok(EXPECTED_VALUE));
+    }
+
+    #[test]
+    fn read_rollback_index_error_handled() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.read_rollback_index(0), Err(IoError::Io));
+    }
+
+    // TODO(b/337846185): Remove test once AVB protocol implementation is forced.
+    #[test]
+    fn read_rollback_index_not_implemented() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.rollbacks.insert(0, Err(IoError::NotImplemented));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.read_rollback_index(0), Ok(0));
+    }
+
+    #[test]
+    fn write_rollback_index_write_value() {
+        const EXPECTED_INDEX: usize = 1;
+        const EXPECTED_VALUE: u64 = 100;
+
+        let mut gbl_ops = FakeGblOps::new(&[]);
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.write_rollback_index(EXPECTED_INDEX, EXPECTED_VALUE), Ok(()));
+        assert_eq!(
+            gbl_ops.avb_ops.rollbacks.get(&EXPECTED_INDEX),
+            Some(Ok(EXPECTED_VALUE)).as_ref()
+        );
+    }
+
+    #[test]
+    fn write_rollback_index_error_handled() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.rollbacks.insert(0, Err(IoError::Io));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.write_rollback_index(0, 0), Err(IoError::Io));
+    }
+
+    // TODO(b/337846185): Remove test once AVB protocol implementation is forced.
+    #[test]
+    fn write_rollback_index_not_implemented() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.rollbacks.insert(0, Err(IoError::NotImplemented));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.write_rollback_index(0, 0), Ok(()));
+    }
+
+    #[test]
+    fn read_is_device_unlocked_value_obtained() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.unlock_state = Ok(true);
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+
+        assert_eq!(avb_ops.read_is_device_unlocked(), Ok(true));
+    }
+
+    #[test]
+    fn read_is_device_unlocked_error_handled() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.unlock_state = Err(IoError::Io);
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.read_is_device_unlocked(), Err(IoError::Io));
+    }
+
+    // TODO(b/337846185): Remove test once AVB protocol implementation is forced.
+    #[test]
+    fn read_is_device_unlocked_not_implemented() {
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.unlock_state = Err(IoError::NotImplemented);
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.read_is_device_unlocked(), Ok(true));
+    }
+
+    #[test]
+    fn read_persistent_value_success() {
+        const EXPECTED_NAME: &CStr = c"test";
+        const EXPECTED_VALUE: &[u8] = b"test";
+
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.add_persistent_value(EXPECTED_NAME.to_str().unwrap(), Ok(EXPECTED_VALUE));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        let mut buffer = [0u8; EXPECTED_VALUE.len()];
+        assert_eq!(
+            avb_ops.read_persistent_value(EXPECTED_NAME, &mut buffer),
+            Ok(EXPECTED_VALUE.len())
+        );
+        assert_eq!(buffer, EXPECTED_VALUE);
+    }
+
+    #[test]
+    fn read_persistent_value_error() {
+        const EXPECTED_NAME: &CStr = c"test";
+
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.add_persistent_value(EXPECTED_NAME.to_str().unwrap(), Err(IoError::Io));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        let mut buffer = [0u8; 4];
+        assert_eq!(avb_ops.read_persistent_value(EXPECTED_NAME, &mut buffer), Err(IoError::Io));
+    }
+
+    // TODO(b/337846185): Remove test once AVB protocol implementation is forced.
+    #[test]
+    fn read_persistent_value_not_implemented() {
+        const EXPECTED_NAME: &CStr = c"test";
+
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops
+            .avb_ops
+            .add_persistent_value(EXPECTED_NAME.to_str().unwrap(), Err(IoError::NotImplemented));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        let mut buffer = [0u8; 0];
+        assert_eq!(avb_ops.read_persistent_value(EXPECTED_NAME, &mut buffer), Ok(0));
+    }
+
+    #[test]
+    fn write_persistent_value_success() {
+        const EXPECTED_NAME: &CStr = c"test";
+        const EXPECTED_VALUE: &[u8] = b"test";
+
+        let mut gbl_ops = FakeGblOps::new(&[]);
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.write_persistent_value(EXPECTED_NAME, EXPECTED_VALUE), Ok(()));
+
+        assert_eq!(
+            gbl_ops.avb_ops.persistent_values.get(EXPECTED_NAME.to_str().unwrap()),
+            Some(Ok(EXPECTED_VALUE.to_vec())).as_ref()
+        );
+    }
+
+    #[test]
+    fn write_persistent_value_error() {
+        const EXPECTED_NAME: &CStr = c"test";
+        const EXPECTED_VALUE: &[u8] = b"test";
+
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.add_persistent_value(EXPECTED_NAME.to_str().unwrap(), Err(IoError::Io));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.write_persistent_value(EXPECTED_NAME, EXPECTED_VALUE), Err(IoError::Io));
+    }
+
+    // TODO(b/337846185): Remove test once AVB protocol implementation is forced.
+    #[test]
+    fn write_persistent_value_not_implemented() {
+        const EXPECTED_NAME: &CStr = c"test";
+        const EXPECTED_VALUE: &[u8] = b"test";
+
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops
+            .avb_ops
+            .add_persistent_value(EXPECTED_NAME.to_str().unwrap(), Err(IoError::NotImplemented));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.write_persistent_value(EXPECTED_NAME, EXPECTED_VALUE), Ok(()));
+    }
+
+    #[test]
+    fn erase_persistent_value_success() {
+        const EXPECTED_NAME: &CStr = c"test";
+
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.add_persistent_value(EXPECTED_NAME.to_str().unwrap(), Ok(b"test"));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.erase_persistent_value(EXPECTED_NAME), Ok(()));
+
+        assert!(!gbl_ops.avb_ops.persistent_values.contains_key(EXPECTED_NAME.to_str().unwrap()));
+    }
+
+    #[test]
+    fn erase_persistent_value_error() {
+        const EXPECTED_NAME: &CStr = c"test";
+
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops.avb_ops.add_persistent_value(EXPECTED_NAME.to_str().unwrap(), Err(IoError::Io));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.erase_persistent_value(EXPECTED_NAME), Err(IoError::Io));
+    }
+
+    // TODO(b/337846185): Remove test once AVB protocol implementation is forced.
+    #[test]
+    fn erase_persistent_value_not_implemented() {
+        const EXPECTED_NAME: &CStr = c"test";
+
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        gbl_ops
+            .avb_ops
+            .add_persistent_value(EXPECTED_NAME.to_str().unwrap(), Err(IoError::NotImplemented));
+
+        let mut avb_ops = GblAvbOps::new(&mut gbl_ops, &[], false);
+        assert_eq!(avb_ops.erase_persistent_value(EXPECTED_NAME), Ok(()));
     }
 }

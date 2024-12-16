@@ -21,7 +21,7 @@ use efi::{
 };
 use efi_types::EfiBlockIoMedia;
 use gbl_async::block_on;
-use gbl_storage::{gpt_buffer_size, BlockInfo, BlockIo, Disk, Gpt};
+use gbl_storage::{gpt_buffer_size, BlockInfo, BlockIo, Disk, Gpt, SliceMaybeUninit};
 use liberror::Error;
 use libgbl::partition::GblDisk;
 
@@ -51,12 +51,20 @@ impl<'a> EfiBlockDeviceIo<'a> {
     }
 }
 
-impl BlockIo for EfiBlockDeviceIo<'_> {
+// SAFETY:
+// `read_blocks()` usess EFI protocol that guarantees to read exact number of blocks that were
+// requested, or return error.
+// For async `read_blocks_ex()` blocking wait guarantees that read finishes.
+unsafe impl BlockIo for EfiBlockDeviceIo<'_> {
     fn info(&mut self) -> BlockInfo {
         (*self).info()
     }
 
-    async fn read_blocks(&mut self, blk_offset: u64, out: &mut [u8]) -> Result<(), Error> {
+    async fn read_blocks(
+        &mut self,
+        blk_offset: u64,
+        out: &mut (impl SliceMaybeUninit + ?Sized),
+    ) -> Result<(), Error> {
         match self {
             EfiBlockDeviceIo::Sync(v) => v.read_blocks(blk_offset, out),
             EfiBlockDeviceIo::Async(v) => v.read_blocks_ex(blk_offset, out).await,
