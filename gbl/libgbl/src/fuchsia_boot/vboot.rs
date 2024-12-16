@@ -20,7 +20,7 @@ use crate::{
 use avb::{slot_verify, Descriptor, HashtreeErrorMode, Ops as _, SlotVerifyError, SlotVerifyFlags};
 use core::ffi::CStr;
 use zbi::ZbiContainer;
-use zerocopy::ByteSliceMut;
+use zerocopy::SplitByteSliceMut;
 
 /// Helper for getting the A/B/R suffix.
 fn slot_suffix(slot: Option<SlotIndex>) -> Option<&'static CStr> {
@@ -40,7 +40,7 @@ fn slot_suffix(slot: Option<SlotIndex>) -> Option<&'static CStr> {
 /// * slot_booted_successfully - if true, roll back indexes will be increased
 /// * zbi_kernel - preloaded kernel to verify
 /// * zbi_items - vbmeta items will be appended to this ZbiContainer
-pub(crate) fn zircon_verify_kernel<'a, 'b, 'c, B: ByteSliceMut + PartialEq>(
+pub(crate) fn zircon_verify_kernel<'a, 'b, 'c, B: SplitByteSliceMut + PartialEq>(
     gbl_ops: &mut impl GblOps<'b, 'c>,
     slot: Option<SlotIndex>,
     slot_booted_successfully: bool,
@@ -127,7 +127,7 @@ pub(crate) fn zircon_verify_kernel<'a, 'b, 'c, B: ByteSliceMut + PartialEq>(
 }
 
 /// Copy ZBI items following kernel to separate container.
-pub fn copy_items_after_kernel<'a, B: ByteSliceMut + PartialEq>(
+pub fn copy_items_after_kernel<'a, B: SplitByteSliceMut + PartialEq>(
     zbi_kernel: &'a mut [u8],
     zbi_items: &mut ZbiContainer<B>,
 ) -> GblResult<()> {
