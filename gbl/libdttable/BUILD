@@ -31,7 +31,7 @@ rust_bindgen(
     name = "libdttable_c_bindgen",
     bindgen_flags = [
         "--use-core",
-        "--with-derive-custom-struct=dt_table.*=AsBytes,FromBytes,FromZeroes,PartialEq",
+        "--with-derive-custom-struct=dt_table.*=IntoBytes,FromBytes,Immutable,KnownLayout,PartialEq",
         "--allowlist-type",
         "(dt_table.*)",
         "--allowlist-var",
@@ -40,7 +40,7 @@ rust_bindgen(
         """
 # ![cfg_attr(not(test), no_std)]
 
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 """,
     ],
     cc_lib = "@libdttable_c",
@@ -79,8 +79,7 @@ rust_library(
 rust_test(
     name = "libdttable_test",
     compile_data = [
-        "@gbl//libdttable/test:dttable.img",
-        "@gbl//libdttable/test:corrupted_dttable.img",
+        "@gbl//libdttable/test/data:all",
     ],
     crate = ":libdttable",
     rustc_flags = ANDROID_RUST_LINTS,

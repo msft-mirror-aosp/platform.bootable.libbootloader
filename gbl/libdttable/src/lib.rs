@@ -21,11 +21,11 @@ use core::mem::size_of;
 use libdttable_bindgen::{dt_table_entry, dt_table_header, DT_TABLE_MAGIC};
 use liberror::{Error, Result};
 use safemath::SafeNum;
-use zerocopy::{AsBytes, FromBytes, FromZeroes, LayoutVerified};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref};
 
 /// Rust wrapper for the dt table header
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes, PartialEq)]
+#[derive(Debug, Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout, PartialEq)]
 struct DtTableHeader(dt_table_header);
 
 impl DtTableHeader {
@@ -52,7 +52,7 @@ impl DtTableHeader {
 
 /// Rust wrapper for the dt table entry
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes, PartialEq)]
+#[derive(Debug, Copy, Clone, Immutable, IntoBytes, KnownLayout, FromBytes, PartialEq)]
 struct DtTableHeaderEntry(dt_table_entry);
 
 impl DtTableHeaderEntry {
@@ -77,27 +77,57 @@ impl DtTableHeaderEntry {
     }
 }
 
-/// Device tree blob obtained from multidt table image
-pub struct DtTableEntry<'a> {
+/// Metadata provided by entry header
+#[derive(Copy, Default, Clone, Eq, PartialEq, Debug)]
+pub struct DtTableMetadata {
     /// id field from corresponding entry header
     pub id: u32,
     /// rev field from corresponding entry header
     pub rev: u32,
+    /// custom field from corresponding entry header
+    pub custom: [u32; 4],
+}
+
+/// Device tree blob obtained from multidt table image
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct DtTableEntry<'a> {
     /// dtb payload extracted from image
     pub dtb: &'a [u8],
+    /// Metadata provided by corresponding entry header
+    pub metadata: DtTableMetadata,
 }
 
 /// Represents entier multidt table image
 pub struct DtTableImage<'a> {
     buffer: &'a [u8],
-    header: LayoutVerified<&'a [u8], DtTableHeader>,
-    entries: LayoutVerified<&'a [u8], [DtTableHeaderEntry]>,
+    header: Ref<&'a [u8], DtTableHeader>,
+    entries: Ref<&'a [u8], [DtTableHeaderEntry]>,
+}
+
+/// To iterate over entries.
+pub struct DtTableImageIterator<'a> {
+    table_image: &'a DtTableImage<'a>,
+    current_index: usize,
+}
+
+impl<'a> Iterator for DtTableImageIterator<'a> {
+    type Item = DtTableEntry<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current_index < self.table_image.entries_count() {
+            let result = self.table_image.nth_entry(self.current_index).unwrap();
+            self.current_index += 1;
+            Some(result)
+        } else {
+            None
+        }
+    }
 }
 
 impl<'a> DtTableImage<'a> {
     /// Verify and parse passed buffer following multidt table structure
     pub fn from_bytes(buffer: &'a [u8]) -> Result<DtTableImage<'a>> {
-        let (header_layout, _) = LayoutVerified::new_from_prefix(buffer)
+        let (header_layout, _) = Ref::new_from_prefix(buffer)
             .ok_or(Error::BufferTooSmall(Some(size_of::<DtTableHeader>())))?;
 
         let header: &DtTableHeader = &header_layout;
@@ -115,15 +145,19 @@ impl<'a> DtTableImage<'a> {
         let entries_buffer = buffer
             .get(entries_start..entries_end)
             .ok_or(Error::BufferTooSmall(Some(entries_end)))?;
-        let entries_layout =
-            LayoutVerified::new_slice(entries_buffer).ok_or(Error::InvalidInput)?;
+        let entries_layout = Ref::new_slice(entries_buffer).ok_or(Error::InvalidInput)?;
 
         Ok(DtTableImage { buffer: buffer, header: header_layout, entries: entries_layout })
     }
 
     /// Get amount of presented dt entries in the multidt table image
-    pub fn entries_count(&self) -> u32 {
-        self.header.dt_entry_count()
+    pub fn entries_count(&self) -> usize {
+        self.header.dt_entry_count().try_into().unwrap()
+    }
+
+    /// Returns an iterator over the entries in the DT table image
+    pub fn entries(&'a self) -> DtTableImageIterator<'a> {
+        DtTableImageIterator { table_image: self, current_index: 0 }
     }
 
     /// Get nth dtb buffer with multidt table structure metadata
@@ -139,7 +173,10 @@ impl<'a> DtTableImage<'a> {
         let dtb_buffer =
             self.buffer.get(dtb_start..dtb_end).ok_or(Error::BufferTooSmall(Some(dtb_end)))?;
 
-        Ok(DtTableEntry { id: entry.id(), rev: entry.rev(), dtb: dtb_buffer })
+        Ok(DtTableEntry {
+            dtb: dtb_buffer,
+            metadata: DtTableMetadata { id: entry.id(), rev: entry.rev(), custom: entry.0.custom },
+        })
     }
 }
 
@@ -150,7 +187,7 @@ mod test {
 
     #[test]
     fn test_dt_table_is_parsed() {
-        let dttable = include_bytes!("../test/dttable.img").to_vec();
+        let dttable = include_bytes!("../test/data/dttable.img").to_vec();
         let table = DtTableImage::from_bytes(&dttable[..]).unwrap();
 
         assert_eq!(table.entries_count(), 2, "Test data dttable image must have 2 dtb entries");
@@ -158,10 +195,16 @@ mod test {
         let first_entry = table.nth_entry(0).unwrap();
         let second_entry = table.nth_entry(1).unwrap();
 
-        assert_eq!(first_entry.id, 1, "First dttable entry id is incorrect");
-        assert_eq!(first_entry.rev, 0, "First dttable entry rev is incorrect");
-        assert_eq!(second_entry.id, 2, "Second dttable entry id is incorrect");
-        assert_eq!(second_entry.rev, 0, "Second dttable entry rev is incorrect");
+        assert_eq!(
+            first_entry.metadata,
+            DtTableMetadata { id: 1, rev: 0, custom: Default::default() },
+            "First dttable entry is incorrect"
+        );
+        assert_eq!(
+            second_entry.metadata,
+            DtTableMetadata { id: 2, rev: 0, custom: Default::default() },
+            "Second dttable entry is incorrect"
+        );
 
         // verify fdt headers are properly parsed
         let _ = Fdt::new(first_entry.dtb).unwrap();
@@ -169,8 +212,39 @@ mod test {
     }
 
     #[test]
+    fn test_dt_table_is_parsed_iterator() {
+        let dttable = include_bytes!("../test/data/dttable.img").to_vec();
+        let table = DtTableImage::from_bytes(&dttable[..]).unwrap();
+
+        // Collect entries from the iterator
+        let entries: Vec<_> = table.entries().collect();
+
+        // Verify that the iterator yields the correct number of entries
+        assert_eq!(entries.len(), 2, "Iterator should yield 2 entries");
+
+        // Unwrap the entries from Result
+        let first_entry = &entries[0];
+        let second_entry = &entries[1];
+
+        assert_eq!(
+            first_entry.metadata,
+            DtTableMetadata { id: 1, rev: 0, custom: Default::default() },
+            "First dttable entry metadata is incorrect"
+        );
+        assert_eq!(
+            second_entry.metadata,
+            DtTableMetadata { id: 2, rev: 0, custom: Default::default() },
+            "Second dttable entry metadata is incorrect"
+        );
+
+        // Verify FDT headers are properly parsed
+        let _ = Fdt::new(first_entry.dtb).unwrap();
+        let _ = Fdt::new(second_entry.dtb).unwrap();
+    }
+
+    #[test]
     fn test_failed_to_parse_corrupted_dt_table() {
-        let dttable = include_bytes!("../test/corrupted_dttable.img").to_vec();
+        let dttable = include_bytes!("../test/data/corrupted_dttable.img").to_vec();
 
         assert!(
             DtTableImage::from_bytes(&dttable[..]).is_err(),

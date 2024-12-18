@@ -21,7 +21,7 @@ package(
 
 rust_library(
     name = "libefi",
-    srcs = glob(["**/*.rs"]),
+    srcs = glob(["src/**/*.rs"]),
     crate_name = "efi",
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
@@ -32,6 +32,7 @@ rust_library(
         "@gbl//libgbl",
         "@gbl//libsafemath",
         "@gbl//libstorage",
+        "@gbl//libutils",
         "@spin",
         "@zerocopy",
     ],
@@ -43,7 +44,25 @@ rust_test(
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@gbl//libavb:sysdeps",
-        "@gbl//libstorage:libstorage_testlib",
-        "@gbl//third_party/libzbi",
+        "@zbi",
     ],
+)
+
+rust_library(
+    name = "mocks",
+    srcs = glob(["mocks/**/*.rs"]),
+    crate_name = "efi_mocks",
+    rustc_flags = ANDROID_RUST_LINTS,
+    deps = [
+        "@gbl//libefi",
+        "@gbl//libefi_types",
+        "@gbl//liberror",
+        "@mockall",
+    ],
+)
+
+rust_test(
+    name = "mocks_test",
+    crate = ":mocks",
+    rustc_flags = ANDROID_RUST_LINTS,
 )

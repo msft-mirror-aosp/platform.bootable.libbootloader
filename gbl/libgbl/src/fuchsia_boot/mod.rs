@@ -14,13 +14,14 @@
 
 //! This file provides APIs for loading, verifying and booting Fuchsia/Zircon.
 
-use crate::{gbl_print, GblOps, Result as GblResult};
-pub use abr::{get_boot_slot, Ops as AbrOps, SlotIndex};
-use core::fmt::Write;
+use crate::{gbl_print, gbl_println, image_buffer::ImageBuffer, GblOps, Result as GblResult};
+pub use abr::{get_and_clear_one_shot_bootloader, get_boot_slot, Ops as AbrOps, SlotIndex};
+use core::{fmt::Write, mem::MaybeUninit, num::NonZeroUsize};
 use liberror::{Error, Result};
+use libutils::aligned_subslice;
 use safemath::SafeNum;
 use zbi::{ZbiContainer, ZbiFlags, ZbiHeader, ZbiType};
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 mod vboot;
 use vboot::zircon_verify_kernel;
@@ -30,17 +31,32 @@ use vboot::zircon_verify_kernel;
 pub const ZIRCON_KERNEL_ALIGN: usize = 64 * 1024;
 
 const DURABLE_BOOT_PARTITION: &str = "durable_boot";
+const MISC_PARTITION: &str = "misc";
+const ABR_PARTITION_ALIASES: &[&str] = &[DURABLE_BOOT_PARTITION, MISC_PARTITION];
+
+/// Helper function to find partition given a list of possible aliases.
+fn find_part_aliases<'a, 'b, 'c>(
+    ops: &mut (impl GblOps<'a, 'c> + ?Sized),
+    aliases: &'b [&str],
+) -> Result<&'b str> {
+    Ok(*aliases
+        .iter()
+        .find(|v| matches!(ops.partition_size(v), Ok(Some(_))))
+        .ok_or(Error::NotFound)?)
+}
 
 /// `GblAbrOps` wraps an object implementing `GblOps` and implements the `abr::Ops` trait.
-struct GblAbrOps<'a, T: GblOps>(&'a mut T);
+pub(crate) struct GblAbrOps<'a, T: ?Sized>(pub &'a mut T);
 
-impl<'a, T: GblOps> AbrOps for GblAbrOps<'a, T> {
+impl<'b, 'c, T: GblOps<'b, 'c> + ?Sized> AbrOps for GblAbrOps<'_, T> {
     fn read_abr_metadata(&mut self, out: &mut [u8]) -> Result<()> {
-        self.0.read_from_partition_sync(DURABLE_BOOT_PARTITION, 0, out)
+        let part = find_part_aliases(self.0, &ABR_PARTITION_ALIASES)?;
+        self.0.read_from_partition_sync(part, 0, out)
     }
 
     fn write_abr_metadata(&mut self, data: &mut [u8]) -> Result<()> {
-        self.0.write_to_partition_sync(DURABLE_BOOT_PARTITION, 0, data)
+        let part = find_part_aliases(self.0, &ABR_PARTITION_ALIASES)?;
+        self.0.write_to_partition_sync(part, 0, data)
     }
 
     fn console(&mut self) -> Option<&mut dyn Write> {
@@ -48,24 +64,11 @@ impl<'a, T: GblOps> AbrOps for GblAbrOps<'a, T> {
     }
 }
 
-/// A helper for getting the smallest offset in a slice with aligned address.
-fn aligned_offset(buffer: &[u8], alignment: usize) -> Result<usize> {
-    let addr = SafeNum::from(buffer.as_ptr() as usize);
-    (addr.round_up(alignment) - addr).try_into().map_err(From::from)
-}
-
-/// A helper for getting a subslice with an aligned address.
-fn aligned_subslice(buffer: &mut [u8], alignment: usize) -> Result<&mut [u8]> {
-    let aligned_offset = aligned_offset(buffer, alignment)?;
-    let len = buffer.len();
-    Ok(buffer.get_mut(aligned_offset..).ok_or(Error::BufferTooSmall(Some(aligned_offset)))?)
-}
-
 /// A helper for splitting the trailing unused portion of a ZBI container buffer.
 ///
 /// Returns a tuple of used subslice and unused subslice
 fn zbi_split_unused_buffer(zbi: &mut [u8]) -> GblResult<(&mut [u8], &mut [u8])> {
-    Ok(zbi.split_at_mut(ZbiContainer::parse(&zbi[..])?.container_size()))
+    Ok(zbi.split_at_mut(ZbiContainer::parse(&zbi[..])?.container_size()?))
 }
 
 /// Relocates a ZBI kernel to a different buffer.
@@ -78,7 +81,7 @@ pub fn relocate_kernel(kernel: &[u8], dest: &mut [u8]) -> GblResult<()> {
     }
 
     let kernel = ZbiContainer::parse(&kernel[..])?;
-    let kernel_item = kernel.is_bootable()?;
+    let kernel_item = kernel.get_bootable_kernel_item()?;
     let hdr = kernel_item.header;
     // Creates a new ZBI kernel item at the destination.
     let mut relocated = ZbiContainer::new(&mut dest[..])?;
@@ -114,16 +117,19 @@ pub fn relocate_to_tail(kernel: &mut [u8]) -> GblResult<(&mut [u8], &mut [u8])> 
     Ok(kernel.split_at_mut(reloc_addr.checked_sub(kernel.as_ptr() as usize).unwrap()))
 }
 
+/// Gets the list of aliases for slotted/slotless zircon partition name.
+fn zircon_part_name_aliases(slot: Option<SlotIndex>) -> &'static [&'static str] {
+    match slot {
+        Some(SlotIndex::A) => &["zircon_a", "zircon-a"][..],
+        Some(SlotIndex::B) => &["zircon_b", "zircon-b"][..],
+        Some(SlotIndex::R) => &["zircon_r", "zircon-r"][..],
+        _ => &["zircon"][..],
+    }
+}
+
 /// Gets the slotted/slotless standard zircon partition name.
 pub fn zircon_part_name(slot: Option<SlotIndex>) -> &'static str {
-    match slot {
-        Some(slot) => match slot {
-            SlotIndex::A => "zircon_a",
-            SlotIndex::B => "zircon_b",
-            SlotIndex::R => "zircon_r",
-        },
-        _ => "zircon",
-    }
+    zircon_part_name_aliases(slot)[0]
 }
 
 /// Gets the ZBI command line string for the current slot.
@@ -141,18 +147,33 @@ fn slot_cmd_line(slot: SlotIndex) -> &'static str {
 ///
 /// * `ops`: A reference to an object that implements `GblOps`.
 /// * `slot`: None if slotless. Otherwise the target slot to boot.
-/// * `load`: Buffer for loading the kernel.
+/// * `slot_booted_successfully`: whether the slot is known-successful boot, and if so then this
+/// function will update the anti-rollbacks.
 ///
 /// On success returns a pair containing: 1. the slice of the ZBI container with device ZBI items
-/// and 2. the slice of the relocated kernel at the tail.
-pub fn zircon_load_verify<'a>(
-    ops: &mut impl GblOps,
+/// and 2. the slice of container containing the kernel.
+pub fn zircon_load_verify<'a, 'd>(
+    ops: &mut impl GblOps<'a, 'd>,
     slot: Option<SlotIndex>,
     slot_booted_successfully: bool,
-    load: &'a mut [u8],
-) -> GblResult<(&'a mut [u8], &'a mut [u8])> {
-    let load = aligned_subslice(load, ZIRCON_KERNEL_ALIGN)?;
-    let zircon_part = zircon_part_name(slot);
+) -> GblResult<(ImageBuffer<'d>, ImageBuffer<'d>)> {
+    // TODO(b/379778252): use single `zbi_zircon` buffer for container to store both kernel and
+    // arguments/items
+    let mut zbi_items_img =
+        ops.get_image_buffer("zbi_items", NonZeroUsize::new(64 * 1024 * 1024).unwrap()).unwrap();
+
+    let init_len = zbi_items_img.tail().len();
+    // TODO(b/379787423): it is possible to optimize this initialisation by treating
+    // `zbi_items_img` same as kernel image (&[MaybeUninit]).
+    MaybeUninit::fill(zbi_items_img.tail(), 0);
+
+    // SAFETY: buffer was fully filled with 0 which is valid init value for u8
+    unsafe {
+        zbi_items_img.advance_used(init_len).unwrap();
+    }
+    let mut zbi_items = ZbiContainer::new(zbi_items_img.used_mut())?;
+
+    let zircon_part = find_part_aliases(ops, zircon_part_name_aliases(slot))?;
 
     // Reads ZBI header to computes the total size of kernel.
     let mut zbi_header: ZbiHeader = Default::default();
@@ -162,19 +183,31 @@ pub fn zircon_load_verify<'a>(
         .map_err(Error::from)?;
 
     // Reads the entire kernel
-    let kernel = load.get_mut(..image_length).ok_or(Error::BufferTooSmall(Some(image_length)))?;
-    ops.read_from_partition_sync(zircon_part, 0, kernel)?;
+    // TODO(b/379778252): as part of an attempt to use single container for kernel and arguments,
+    // it would be necessary to read kernel header first to figure out how much space needed
+    // (kernel size + scratch space)
+    let mut kernel_img =
+        ops.get_image_buffer("zbi_zircon", NonZeroUsize::new(128 * 1024 * 1024).unwrap()).unwrap();
+    let kernel_uninit = kernel_img
+        .as_mut()
+        .get_mut(..image_length)
+        .ok_or(Error::BufferTooSmall(Some(image_length)))?;
+    ops.read_from_partition_sync(zircon_part, 0, kernel_uninit)?;
+    // SAFETY: buffer was successfully filled from partition
+    unsafe {
+        kernel_img.advance_used(image_length).unwrap();
+    }
+    let load = kernel_img.used_mut();
 
     // Performs AVB verification.
-    zircon_verify_kernel(ops, slot, slot_booted_successfully, &mut load[..])?;
+    // TODO(b/379789161) verify that kernel buffer is big enough for the image and scratch buffer.
+    zircon_verify_kernel(ops, slot, slot_booted_successfully, load, &mut zbi_items)?;
 
     // Append additional ZBI items.
-    let mut zbi_kernel = ZbiContainer::parse(&mut load[..])?;
-
     match slot {
         Some(slot) => {
             // Appends current slot item.
-            zbi_kernel.create_entry_with_payload(
+            zbi_items.create_entry_with_payload(
                 ZbiType::CmdLine,
                 0,
                 ZbiFlags::default(),
@@ -184,13 +217,16 @@ pub fn zircon_load_verify<'a>(
         _ => {}
     }
 
-    // Relocates the kernel to the tail to reserved extra memory that the kernel may require.
-    let (zbi_items, relocated) = relocate_to_tail(&mut load[..])?;
-
     // Appends device specific ZBI items.
-    ops.zircon_add_device_zbi_items(&mut ZbiContainer::parse(&mut zbi_items[..])?)?;
+    ops.zircon_add_device_zbi_items(&mut zbi_items)?;
 
-    Ok((zbi_items, relocated))
+    // Appends staged bootloader file if present.
+    match ops.get_zbi_bootloader_files_buffer_aligned().map(|v| ZbiContainer::parse(v)) {
+        Some(Ok(v)) => zbi_items.extend(&v)?,
+        _ => {}
+    }
+
+    Ok((zbi_items_img, kernel_img))
 }
 
 /// Loads and verifies the active slot kernel according to A/B/R.
@@ -200,38 +236,72 @@ pub fn zircon_load_verify<'a>(
 /// # Args
 ///
 /// * `ops`: A reference to an object that implements `GblOps`.
-/// * `buffer`: Buffer for loading the kernel.
 ///
 /// Returns a tuple containing: 1. the slice of the ZBI container with device ZBI items, 2. the
 /// slice of the relocated kernel, and 3. the selected slot index.
-pub fn zircon_load_verify_abr<'a>(
-    ops: &mut impl GblOps,
-    buffer: &'a mut [u8],
-) -> GblResult<(&'a mut [u8], &'a mut [u8], SlotIndex)> {
+pub fn zircon_load_verify_abr<'a, 'd>(
+    ops: &mut impl GblOps<'a, 'd>,
+) -> GblResult<(ImageBuffer<'d>, ImageBuffer<'d>, SlotIndex)> {
     let (slot, successful) = get_boot_slot(&mut GblAbrOps(ops), true);
-    gbl_print!(ops, "Loading kernel from {}...\r\n", zircon_part_name(Some(slot)));
-    let (zbi_items, kernel) = zircon_load_verify(ops, Some(slot), successful, buffer)?;
-    gbl_print!(ops, "Successfully loaded slot: {}\r\n", zircon_part_name(Some(slot)));
-    Ok((zbi_items, kernel, slot))
+    gbl_println!(ops, "Loading kernel from {}...", zircon_part_name(Some(slot)));
+    let (zbi_items_img, kernel_img) = zircon_load_verify(ops, Some(slot), successful)?;
+    gbl_println!(ops, "Successfully loaded slot: {}", zircon_part_name(Some(slot)));
+    Ok((zbi_items_img, kernel_img, slot))
+}
+
+/// Checks whether platform or A/B/R metadata instructs GBL to boot into fastboot mode.
+///
+/// # Returns
+///
+/// Returns true if fastboot mode is enabled, false if not.
+pub fn zircon_check_enter_fastboot<'a, 'b>(ops: &mut impl GblOps<'a, 'b>) -> bool {
+    match get_and_clear_one_shot_bootloader(&mut GblAbrOps(ops)) {
+        Ok(true) => {
+            gbl_println!(ops, "A/B/R one-shot-bootloader is set");
+            return true;
+        }
+        Err(e) => {
+            gbl_println!(ops, "Warning: error while checking A/B/R one-shot-bootloader ({:?})", e);
+            gbl_println!(ops, "Ignoring error and considered not set");
+        }
+        _ => {}
+    };
+
+    match ops.should_stop_in_fastboot() {
+        Ok(true) => {
+            gbl_println!(ops, "Platform instructs GBL to enter fastboot mode");
+            return true;
+        }
+        Err(e) => {
+            gbl_println!(ops, "Warning: error while checking platform fastboot trigger ({:?})", e);
+            gbl_println!(ops, "Ignoring error and considered not triggered");
+        }
+        _ => {}
+    };
+    false
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{
-        ops::{AvbIoResult, CertPermanentAttributes, GblAvbOps, SHA256_DIGEST_SIZE},
-        slots, BootImages,
+    use crate::ops::{
+        test::{FakeGblOps, FakeGblOpsStorage, TestGblDisk},
+        CertPermanentAttributes,
     };
-    use abr::{mark_slot_active, mark_slot_unbootable, ABR_MAX_TRIES_REMAINING};
+    use abr::{
+        mark_slot_active, mark_slot_unbootable, set_one_shot_bootloader, ABR_MAX_TRIES_REMAINING,
+    };
     use avb_bindgen::{AVB_CERT_PIK_VERSION_LOCATION, AVB_CERT_PSK_VERSION_LOCATION};
+    use gbl_storage::as_uninit_mut;
+    use libutils::aligned_offset;
     use std::{
-        collections::{BTreeSet, HashMap},
-        fmt::Write,
+        collections::{BTreeSet, HashMap, LinkedList},
         fs,
         ops::{Deref, DerefMut},
         path::Path,
     };
     use zbi::ZBI_ALIGNMENT_USIZE;
+    use zerocopy::FromBytes;
 
     // The cert test keys were both generated with rollback version 42.
     const TEST_CERT_PIK_VERSION: u64 = 42;
@@ -260,139 +330,60 @@ mod test {
         fs::read(Path::new(format!("external/gbl/libgbl/testdata/{}", file).as_str())).unwrap()
     }
 
-    /// `TestZirconBootGblOps` implements `GblOps` for test.
-    pub(crate) struct TestZirconBootGblOps {
-        pub(crate) partitions: HashMap<&'static str, Vec<u8>>,
-        pub(crate) avb_unlocked: bool,
-        pub(crate) rollback_index: HashMap<usize, u64>,
+    /// Returns a default [FakeGblOpsStorage] with valid test images.
+    ///
+    /// Rather than the typical use case of partitions on a single GPT device, this structures data
+    /// as separate raw single-partition devices. This is easier for tests since we don't need to
+    /// generate a GPT, and should be functionally equivalent since our code looks for partitions
+    /// on all devices.
+    pub(crate) fn create_storage() -> FakeGblOpsStorage {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"zircon_a", read_test_data(ZIRCON_A_ZBI_FILE));
+        storage.add_raw_device(c"zircon_b", read_test_data(ZIRCON_B_ZBI_FILE));
+        storage.add_raw_device(c"zircon_r", read_test_data(ZIRCON_R_ZBI_FILE));
+        storage.add_raw_device(c"zircon", read_test_data(ZIRCON_SLOTLESS_ZBI_FILE));
+        storage.add_raw_device(c"vbmeta_a", read_test_data(VBMETA_A_FILE));
+        storage.add_raw_device(c"vbmeta_b", read_test_data(VBMETA_B_FILE));
+        storage.add_raw_device(c"vbmeta_r", read_test_data(VBMETA_R_FILE));
+        storage.add_raw_device(c"vbmeta", read_test_data(VBMETA_SLOTLESS_FILE));
+        storage.add_raw_device(c"durable_boot", vec![0u8; 64 * 1024]);
+        storage
     }
 
-    impl Default for TestZirconBootGblOps {
-        fn default() -> Self {
-            let partitions = HashMap::from([
-                ("zircon_a", read_test_data(ZIRCON_A_ZBI_FILE)),
-                ("zircon_b", read_test_data(ZIRCON_B_ZBI_FILE)),
-                ("zircon_r", read_test_data(ZIRCON_R_ZBI_FILE)),
-                ("zircon", read_test_data(ZIRCON_SLOTLESS_ZBI_FILE)),
-                ("vbmeta_a", read_test_data(VBMETA_A_FILE)),
-                ("vbmeta_b", read_test_data(VBMETA_B_FILE)),
-                ("vbmeta_r", read_test_data(VBMETA_R_FILE)),
-                ("vbmeta", read_test_data(VBMETA_SLOTLESS_FILE)),
-                ("durable_boot", vec![0u8; 64 * 1024]),
-            ]);
-            Self { partitions, avb_unlocked: false, rollback_index: Default::default() }
-        }
+    /// Returns a default [FakeGblOpsStorage] with valid test images and using legacy partition
+    /// names.
+    pub(crate) fn create_storage_legacy_names() -> FakeGblOpsStorage {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"zircon-a", read_test_data(ZIRCON_A_ZBI_FILE));
+        storage.add_raw_device(c"zircon-b", read_test_data(ZIRCON_B_ZBI_FILE));
+        storage.add_raw_device(c"zircon-r", read_test_data(ZIRCON_R_ZBI_FILE));
+        storage.add_raw_device(c"zircon", read_test_data(ZIRCON_SLOTLESS_ZBI_FILE));
+        storage.add_raw_device(c"vbmeta_a", read_test_data(VBMETA_A_FILE));
+        storage.add_raw_device(c"vbmeta_b", read_test_data(VBMETA_B_FILE));
+        storage.add_raw_device(c"vbmeta_r", read_test_data(VBMETA_R_FILE));
+        storage.add_raw_device(c"vbmeta", read_test_data(VBMETA_SLOTLESS_FILE));
+        storage.add_raw_device(c"misc", vec![0u8; 64 * 1024]);
+        storage
     }
 
-    impl GblOps for TestZirconBootGblOps {
-        fn console_out(&mut self) -> Option<&mut dyn Write> {
-            None
-        }
-
-        fn should_stop_in_fastboot(&mut self) -> Result<bool> {
-            unimplemented!();
-        }
-
-        fn preboot(&mut self, boot_images: BootImages) -> Result<()> {
-            unimplemented!();
-        }
-
-        async fn read_from_partition(
-            &mut self,
-            part: &str,
-            off: u64,
-            out: &mut [u8],
-        ) -> Result<()> {
-            match self.partitions.get_mut(part) {
-                Some(v) => Ok(out.clone_from_slice(&v[off.try_into().unwrap()..][..out.len()])),
-                _ => Err(Error::Other(Some("Test: No such partition"))),
-            }
-        }
-
-        async fn write_to_partition(
-            &mut self,
-            part: &str,
-            off: u64,
-            data: &mut [u8],
-        ) -> Result<()> {
-            match self.partitions.get_mut(part) {
-                Some(v) => Ok(v[off.try_into().unwrap()..][..data.len()].clone_from_slice(data)),
-                _ => Err(Error::Other(Some("Test: No such partition"))),
-            }
-        }
-
-        fn partition_size(&mut self, part: &str) -> Result<Option<u64>> {
-            Ok(self.partitions.get_mut(part).map(|v| v.len().try_into().unwrap()))
-        }
-
-        fn zircon_add_device_zbi_items(
-            &mut self,
-            container: &mut ZbiContainer<&mut [u8]>,
-        ) -> Result<()> {
-            container
-                .create_entry_with_payload(
-                    ZbiType::CmdLine,
-                    0,
-                    ZbiFlags::default(),
-                    b"test_zbi_item",
-                )
-                .unwrap();
-            Ok(())
-        }
-
-        fn do_fastboot<B: gbl_storage::AsBlockDevice>(
-            &self,
-            cursor: &mut slots::Cursor<B>,
-        ) -> GblResult<()> {
-            unimplemented!();
-        }
-
-        fn load_slot_interface<'a, B: gbl_storage::AsBlockDevice>(
-            &'a mut self,
-            block_device: &'a mut B,
-            boot_token: slots::BootToken,
-        ) -> GblResult<slots::Cursor<'a, B>> {
-            unimplemented!();
-        }
-
-        fn avb_ops(&mut self) -> Option<impl GblAvbOps> {
-            Some(self)
-        }
-    }
-
-    // `avb::test_op:TestOps` provides a more comprehensive a set of mocks. Consider using it when
-    // we add more mocks.
-    impl GblAvbOps for &mut TestZirconBootGblOps {
-        fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
-            Ok(self.avb_unlocked)
-        }
-
-        fn avb_read_rollback_index(&mut self, rollback_index_location: usize) -> AvbIoResult<u64> {
-            Ok(*self.rollback_index.get(&rollback_index_location).unwrap_or(&0))
-        }
-
-        fn avb_write_rollback_index(
-            &mut self,
-            rollback_index_location: usize,
-            index: u64,
-        ) -> AvbIoResult<()> {
-            self.rollback_index.insert(rollback_index_location, index);
-            Ok(())
-        }
-
-        fn avb_cert_read_permanent_attributes(
-            &mut self,
-            attributes: &mut CertPermanentAttributes,
-        ) -> AvbIoResult<()> {
-            let perm_attr = read_test_data("cert_permanent_attributes.bin");
-            Ok(attributes.as_bytes_mut().clone_from_slice(&perm_attr))
-        }
-
-        fn avb_cert_read_permanent_attributes_hash(
-            &mut self,
-        ) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
-            Ok(read_test_data("cert_permanent_attributes.hash").try_into().unwrap())
-        }
+    pub(crate) fn create_gbl_ops<'a>(partitions: &'a [TestGblDisk]) -> FakeGblOps<'a, '_> {
+        let mut ops = FakeGblOps::new(&partitions);
+        ops.avb_ops.unlock_state = Ok(false);
+        ops.avb_ops.rollbacks = HashMap::from([
+            (TEST_ROLLBACK_INDEX_LOCATION, Ok(0)),
+            (AVB_CERT_PSK_VERSION_LOCATION.try_into().unwrap(), Ok(0)),
+            (AVB_CERT_PIK_VERSION_LOCATION.try_into().unwrap(), Ok(0)),
+        ]);
+        ops.avb_ops.use_cert = true;
+        ops.avb_ops.cert_permanent_attributes = Some(
+            CertPermanentAttributes::read_from(
+                &read_test_data("cert_permanent_attributes.bin")[..],
+            )
+            .unwrap(),
+        );
+        ops.avb_ops.cert_permanent_attributes_hash =
+            Some(read_test_data("cert_permanent_attributes.hash").try_into().unwrap());
+        ops
     }
 
     // Helper object for allocating aligned buffer.
@@ -451,218 +442,435 @@ mod test {
         container.create_entry_with_payload(ZbiType::CmdLine, 0, ZbiFlags::default(), cmd).unwrap();
     }
 
+    /// Helper to append a command line ZBI item to a ZBI container
+    pub(crate) fn append_zbi_file(zbi: &mut [u8], payload: &[u8]) {
+        let mut container = ZbiContainer::parse(zbi).unwrap();
+        container
+            .create_entry_with_payload(ZbiType::BootloaderFile, 0, ZbiFlags::default(), payload)
+            .unwrap();
+    }
+
     /// Helper for testing `zircon_load_verify`.
     fn test_load_verify(
-        ops: &mut TestZirconBootGblOps,
+        ops: &mut FakeGblOps,
         slot: Option<SlotIndex>,
         expected_zbi_items: &[u8],
         expected_kernel: &[u8],
     ) {
-        // Test load buffer layout:
-        // |  zircon_x.zbi + items| ~~ |~64k~| relocated kernel + reserved |
-        // | ---------- 64K -----------|~~~~~| ----------------------------|
-        let sz = 2 * ZIRCON_KERNEL_ALIGN + expected_kernel.len() + TEST_KERNEL_RESERVED_MEMORY_SIZE;
-        let mut load = AlignedBuffer::new(sz, ZIRCON_KERNEL_ALIGN);
-        let original_rb = ops.rollback_index.clone();
+        let original_rb = ops.avb_ops.rollbacks.clone();
         // Loads and verifies with unsuccessful slot flag first.
-        let (zbi_items, relocated) = zircon_load_verify(ops, slot, false, &mut load).unwrap();
+        let (mut zbi_items, mut kernel) = zircon_load_verify(ops, slot, false).unwrap();
         // Verifies loaded ZBI kernel/items
-        assert_eq!(normalize_zbi(expected_zbi_items), normalize_zbi(zbi_items));
-        // Verifies relocated kernel
-        assert_eq!(normalize_zbi(expected_kernel), normalize_zbi(relocated));
-        // Relocated kernel is at the latest aligned address
-        let off = (relocated.as_ptr() as usize) - (load.as_ptr() as usize);
-        assert_eq!(off, 2 * ZIRCON_KERNEL_ALIGN);
+        assert_eq!(normalize_zbi(expected_zbi_items), normalize_zbi(zbi_items.used_mut()));
+        // Verifies kernel
+        assert_eq!(normalize_zbi(expected_kernel), normalize_zbi(kernel.used_mut()));
+        // Kernel is at aligned address
+        assert_eq!(kernel.used_mut().as_ptr() as usize % ZIRCON_KERNEL_ALIGN, 0);
 
         // Verifies that the slot successful flag is passed correctly.
         // Unsuccessful slot, rollback not updated.
-        assert_eq!(ops.rollback_index, original_rb);
+        assert_eq!(ops.avb_ops.rollbacks, original_rb);
         // Loads and verifies with successful slot flag.
-        zircon_load_verify(ops, slot, true, &mut load).unwrap();
+        zircon_load_verify(ops, slot, true).unwrap();
         // Successful slot, rollback updated.
         assert_eq!(
-            ops.rollback_index,
+            ops.avb_ops.rollbacks,
             [
-                (TEST_ROLLBACK_INDEX_LOCATION, TEST_ROLLBACK_INDEX_VALUE),
-                (usize::try_from(AVB_CERT_PSK_VERSION_LOCATION).unwrap(), TEST_CERT_PIK_VERSION),
-                (usize::try_from(AVB_CERT_PIK_VERSION_LOCATION).unwrap(), TEST_CERT_PIK_VERSION)
+                (TEST_ROLLBACK_INDEX_LOCATION, Ok(TEST_ROLLBACK_INDEX_VALUE)),
+                (
+                    usize::try_from(AVB_CERT_PSK_VERSION_LOCATION).unwrap(),
+                    Ok(TEST_CERT_PSK_VERSION)
+                ),
+                (
+                    usize::try_from(AVB_CERT_PIK_VERSION_LOCATION).unwrap(),
+                    Ok(TEST_CERT_PIK_VERSION)
+                )
             ]
             .into()
         );
     }
 
+    // Helper to create local buffers and convert them to be used as ImageBuffers
+    // This struct owns the buffers, and returns ImageBuffers maps that reference them.
+    //
+    // Tests should make sure to provide enough buffers for all `get_image_buffer()` calls.
+    //
+    struct ImageBuffersPool(LinkedList<(String, Vec<AlignedBuffer>)>);
+
+    impl ImageBuffersPool {
+        pub fn builder() -> ImageBuffersBuilder {
+            ImageBuffersBuilder::new()
+        }
+
+        // number - number of expected get_image_buffer calls. Each call consumes buffers from the
+        // list. If there are not enough it will start returning errors.
+        //
+        // size - size for the buffers
+        fn new(number: usize, size: usize) -> Self {
+            let mut zbi_items_buffer_vec = Vec::<AlignedBuffer>::new();
+            let mut zbi_zircon_buffer_vec = Vec::<AlignedBuffer>::new();
+            for _ in 0..number {
+                zbi_zircon_buffer_vec.push(AlignedBuffer::new(size, ZIRCON_KERNEL_ALIGN));
+                zbi_items_buffer_vec.push(AlignedBuffer::new(size, ZBI_ALIGNMENT_USIZE));
+            }
+
+            Self(
+                [
+                    (String::from("zbi_zircon"), zbi_zircon_buffer_vec),
+                    (String::from("zbi_items"), zbi_items_buffer_vec),
+                ]
+                .into(),
+            )
+        }
+
+        pub fn get(&mut self) -> HashMap<String, LinkedList<ImageBuffer>> {
+            self.0
+                .iter_mut()
+                .map(|(key, val_vec)| {
+                    (
+                        key.clone(),
+                        val_vec
+                            .iter_mut()
+                            .map(|e| ImageBuffer::new(as_uninit_mut(e.as_mut())))
+                            .collect(),
+                    )
+                })
+                .collect()
+        }
+    }
+
+    struct ImageBuffersBuilder {
+        // Number of buffers for each image name
+        number: usize,
+        // Size of the buffers
+        size: usize,
+    }
+
+    /// Tests should make sure to provide enough buffers for all `get_image_buffer()` calls.
+    /// Default number of calls is 1, if more expected use `builder().number(N).build()`
+    /// Default buffer sizes are 2KiB, if different size required use `builder().size(1MiB).build()`
+    impl ImageBuffersBuilder {
+        pub fn new() -> ImageBuffersBuilder {
+            Self { number: 1, size: 2 * 1024 }
+        }
+
+        /// If more than 1 `get_image_buffer()` call expected `number(N)` should be used to create
+        /// big enough pool of buffers.
+        pub fn number(mut self, number: usize) -> ImageBuffersBuilder {
+            self.number = number;
+            self
+        }
+
+        /// To change size of buffers use `builder(). size(S).build()`.
+        pub fn size(mut self, size: usize) -> ImageBuffersBuilder {
+            self.size = size;
+            self
+        }
+
+        pub fn build(self) -> ImageBuffersPool {
+            ImageBuffersPool::new(self.number, self.size)
+        }
+    }
+
     #[test]
     fn test_zircon_load_verify_slotless() {
-        let mut ops = TestZirconBootGblOps::default();
+        let storage = create_storage();
+        let mut ops = create_gbl_ops(&storage);
+        let mut image_buffers_pool = ImageBuffersPool::builder().number(2).build();
+        ops.image_buffers = image_buffers_pool.get();
+
         let zbi = &read_test_data(ZIRCON_SLOTLESS_ZBI_FILE);
         let expected_kernel = AlignedBuffer::new_with_data(zbi, ZBI_ALIGNMENT_USIZE);
         // Adds extra bytes for device ZBI items.
-        let mut expected_zbi_items = AlignedBuffer::new(zbi.len() + 1024, ZBI_ALIGNMENT_USIZE);
-        expected_zbi_items[..zbi.len()].clone_from_slice(zbi);
-        append_cmd_line(&mut expected_zbi_items, b"test_zbi_item");
+        let mut expected_zbi_items = AlignedBuffer::new(1024, ZBI_ALIGNMENT_USIZE);
+        let _ = ZbiContainer::new(&mut expected_zbi_items[..]).unwrap();
+        append_cmd_line(&mut expected_zbi_items, FakeGblOps::ADDED_ZBI_COMMANDLINE_CONTENTS);
         append_cmd_line(&mut expected_zbi_items, b"vb_prop_0=val\0");
         append_cmd_line(&mut expected_zbi_items, b"vb_prop_1=val\0");
+        append_zbi_file(&mut expected_zbi_items, FakeGblOps::TEST_BOOTLOADER_FILE_1);
+        append_zbi_file(&mut expected_zbi_items, FakeGblOps::TEST_BOOTLOADER_FILE_2);
         test_load_verify(&mut ops, None, &expected_zbi_items, &expected_kernel);
     }
 
     /// Helper for testing `zircon_load_verify` using A/B/R.
     fn test_load_verify_slotted_helper(
-        ops: &mut TestZirconBootGblOps,
+        ops: &mut FakeGblOps,
         slot: SlotIndex,
         zbi: &[u8],
         slot_item: &str,
     ) {
         let expected_kernel = AlignedBuffer::new_with_data(zbi, ZBI_ALIGNMENT_USIZE);
         // Adds extra bytes for device ZBI items.
-        let mut expected_zbi_items = AlignedBuffer::new(zbi.len() + 1024, ZBI_ALIGNMENT_USIZE);
-        expected_zbi_items[..zbi.len()].clone_from_slice(zbi);
-        append_cmd_line(&mut expected_zbi_items, b"test_zbi_item");
+        let mut expected_zbi_items = AlignedBuffer::new(1024, ZBI_ALIGNMENT_USIZE);
+        let _ = ZbiContainer::new(&mut expected_zbi_items[..]).unwrap();
+        append_cmd_line(&mut expected_zbi_items, FakeGblOps::ADDED_ZBI_COMMANDLINE_CONTENTS);
         append_cmd_line(&mut expected_zbi_items, b"vb_prop_0=val\0");
         append_cmd_line(&mut expected_zbi_items, b"vb_prop_1=val\0");
         append_cmd_line(&mut expected_zbi_items, slot_item.as_bytes());
+        append_zbi_file(&mut expected_zbi_items, FakeGblOps::TEST_BOOTLOADER_FILE_1);
+        append_zbi_file(&mut expected_zbi_items, FakeGblOps::TEST_BOOTLOADER_FILE_2);
         test_load_verify(ops, Some(slot), &expected_zbi_items, &expected_kernel);
     }
 
     #[test]
     fn test_load_verify_slot_a() {
-        let mut ops = TestZirconBootGblOps::default();
+        let storage = create_storage();
+        let mut ops = create_gbl_ops(&storage);
+        let mut image_buffers_pool = ImageBuffersPool::builder().number(2).build();
+        ops.image_buffers = image_buffers_pool.get();
+
         let zircon_a_zbi = &read_test_data(ZIRCON_A_ZBI_FILE);
         test_load_verify_slotted_helper(&mut ops, SlotIndex::A, zircon_a_zbi, "zvb.current_slot=a");
     }
 
     #[test]
     fn test_load_verify_slot_b() {
-        let mut ops = TestZirconBootGblOps::default();
+        let storage = create_storage();
+        let mut ops = create_gbl_ops(&storage);
+        let mut image_buffers_pool = ImageBuffersPool::builder().number(2).build();
+        ops.image_buffers = image_buffers_pool.get();
+
         let zircon_b_zbi = &read_test_data(ZIRCON_B_ZBI_FILE);
         test_load_verify_slotted_helper(&mut ops, SlotIndex::B, zircon_b_zbi, "zvb.current_slot=b");
     }
 
     #[test]
     fn test_load_verify_slot_r() {
-        let mut ops = TestZirconBootGblOps::default();
+        let storage = create_storage();
+        let mut ops = create_gbl_ops(&storage);
+        let mut image_buffers_pool = ImageBuffersPool::builder().number(2).build();
+        ops.image_buffers = image_buffers_pool.get();
+
         let zircon_r_zbi = &read_test_data(ZIRCON_R_ZBI_FILE);
         test_load_verify_slotted_helper(&mut ops, SlotIndex::R, zircon_r_zbi, "zvb.current_slot=r");
     }
 
     #[test]
     fn test_not_enough_buffer_for_reserved_memory() {
-        let mut ops = TestZirconBootGblOps::default();
-        let zbi = &read_test_data(ZIRCON_A_ZBI_FILE);
-        let sz = ZIRCON_KERNEL_ALIGN + zbi.len() + TEST_KERNEL_RESERVED_MEMORY_SIZE - 1;
-        let mut load = AlignedBuffer::new(sz, ZIRCON_KERNEL_ALIGN);
-        assert!(zircon_load_verify(&mut ops, Some(SlotIndex::A), true, &mut load).is_err());
+        let storage = create_storage();
+        let mut ops = create_gbl_ops(&storage);
+        let mut image_buffers_pool = ImageBuffersPool::builder().size(1024).build();
+        ops.image_buffers = image_buffers_pool.get();
+
+        assert!(zircon_load_verify(&mut ops, Some(SlotIndex::A), true).is_err());
     }
 
     /// A helper for assembling a set of test needed data. These include:
     ///
-    /// * The original partition ZBI kernel image set in the given `TestZirconBootGblOps`.
+    /// * The original ZBI kernel image on partition `part` in the given `FakeGblOps`.
     /// * A buffer for loading and verifying the kernel.
-    /// * The expected ZBI item buffer, if successfully loaded.
+    /// * The expected ZBI item buffer, if successfully loaded as slot index `slot`.
     /// * The expected ZBI kernel buffer, if successfully loaded.
     fn load_verify_test_data(
-        ops: &mut TestZirconBootGblOps,
+        ops: &mut FakeGblOps,
         slot: SlotIndex,
+        part: &str,
     ) -> (Vec<u8>, AlignedBuffer, AlignedBuffer, AlignedBuffer) {
-        let slot_info_map: HashMap<core::ffi::c_uint, (&str, &[u8])> = [
-            (SlotIndex::A.into(), ("zircon_a", &b"zvb.current_slot=a"[..])),
-            (SlotIndex::B.into(), ("zircon_b", &b"zvb.current_slot=b"[..])),
-            (SlotIndex::R.into(), ("zircon_r", &b"zvb.current_slot=r"[..])),
-        ]
-        .into();
-        let (name, slot_item) = slot_info_map.get(&slot.into()).unwrap();
-        let zbi = ops.partitions.get(name).unwrap().to_vec();
-        // Test load buffer layout:
-        // |  zircon_x.zbi + items| ~~ | relocated kernel + reserved |
-        // | ---------- 64K -----------| ----------------------------|
+        // Read the (possibly modified) ZBI from disk.
+        let zbi = ops.copy_partition(part);
         let sz = ZIRCON_KERNEL_ALIGN + zbi.len() + TEST_KERNEL_RESERVED_MEMORY_SIZE;
         let load_buffer = AlignedBuffer::new(sz, ZIRCON_KERNEL_ALIGN);
         let expected_kernel = AlignedBuffer::new_with_data(&zbi, ZBI_ALIGNMENT_USIZE);
         // Adds extra bytes for device ZBI items.
-        let mut expected_zbi_items = AlignedBuffer::new(zbi.len() + 1024, ZBI_ALIGNMENT_USIZE);
-        expected_zbi_items[..zbi.len()].clone_from_slice(&zbi);
-        append_cmd_line(&mut expected_zbi_items, b"test_zbi_item");
+        let mut expected_zbi_items = AlignedBuffer::new(1024, ZBI_ALIGNMENT_USIZE);
+        let _ = ZbiContainer::new(&mut expected_zbi_items[..]).unwrap();
+        append_cmd_line(&mut expected_zbi_items, FakeGblOps::ADDED_ZBI_COMMANDLINE_CONTENTS);
         append_cmd_line(&mut expected_zbi_items, b"vb_prop_0=val\0");
         append_cmd_line(&mut expected_zbi_items, b"vb_prop_1=val\0");
-        append_cmd_line(&mut expected_zbi_items, slot_item);
+        append_cmd_line(
+            &mut expected_zbi_items,
+            format!("zvb.current_slot={}", char::from(slot)).as_bytes(),
+        );
+        append_zbi_file(&mut expected_zbi_items, FakeGblOps::TEST_BOOTLOADER_FILE_1);
+        append_zbi_file(&mut expected_zbi_items, FakeGblOps::TEST_BOOTLOADER_FILE_2);
         (zbi, load_buffer, expected_zbi_items, expected_kernel)
     }
 
     // Calls `zircon_load_verify_abr` and checks that the specified slot is loaded.
-    fn expect_load_verify_abr_ok(ops: &mut TestZirconBootGblOps, slot: SlotIndex) {
-        let (zbi, mut load, expected_items, expected_kernel) = load_verify_test_data(ops, slot);
-        let (zbi_items, kernel, active) = zircon_load_verify_abr(ops, &mut load).unwrap();
-        assert_eq!(normalize_zbi(&expected_items), normalize_zbi(&zbi_items));
-        assert_eq!(normalize_zbi(&expected_kernel), normalize_zbi(&kernel));
+    fn expect_load_verify_abr_ok(ops: &mut FakeGblOps, slot: SlotIndex, part: &str) {
+        let (_, _load, expected_items, expected_kernel) = load_verify_test_data(ops, slot, part);
+        let (mut zbi_items, mut kernel, active) = zircon_load_verify_abr(ops).unwrap();
+        assert_eq!(normalize_zbi(&expected_items), normalize_zbi(zbi_items.used_mut()));
+        assert_eq!(normalize_zbi(&expected_kernel), normalize_zbi(kernel.used_mut()));
         assert_eq!(active, slot);
     }
 
     #[test]
     fn test_load_verify_abr_slot_a() {
-        let mut ops = TestZirconBootGblOps::default();
-        expect_load_verify_abr_ok(&mut ops, SlotIndex::A);
+        let storage = create_storage();
+        let mut ops = create_gbl_ops(&storage);
+        let mut image_buffers_pool = ImageBuffersPool::builder().build();
+        ops.image_buffers = image_buffers_pool.get();
+
+        expect_load_verify_abr_ok(&mut ops, SlotIndex::A, "zircon_a");
     }
 
     #[test]
     fn test_load_verify_abr_slot_b() {
-        let mut ops = TestZirconBootGblOps::default();
+        let storage = create_storage();
+        let mut ops = create_gbl_ops(&storage);
+        let mut image_buffers_pool = ImageBuffersPool::builder().build();
+        ops.image_buffers = image_buffers_pool.get();
+
         mark_slot_active(&mut GblAbrOps(&mut ops), SlotIndex::B).unwrap();
-        expect_load_verify_abr_ok(&mut ops, SlotIndex::B);
+        expect_load_verify_abr_ok(&mut ops, SlotIndex::B, "zircon_b");
     }
 
     #[test]
     fn test_load_verify_abr_slot_r() {
-        let mut ops = TestZirconBootGblOps::default();
+        let storage = create_storage();
+        let mut ops = create_gbl_ops(&storage);
+        let mut image_buffers_pool = ImageBuffersPool::builder().build();
+        ops.image_buffers = image_buffers_pool.get();
+
         mark_slot_unbootable(&mut GblAbrOps(&mut ops), SlotIndex::A).unwrap();
         mark_slot_unbootable(&mut GblAbrOps(&mut ops), SlotIndex::B).unwrap();
-        expect_load_verify_abr_ok(&mut ops, SlotIndex::R);
+        expect_load_verify_abr_ok(&mut ops, SlotIndex::R, "zircon_r");
     }
 
     #[test]
     fn test_load_verify_abr_exhaust_retries() {
-        let mut ops = TestZirconBootGblOps::default();
+        let storage = create_storage();
+        let mut ops = create_gbl_ops(&storage);
+        let mut image_buffers_pool =
+            ImageBuffersPool::builder().number((1 + 2 * ABR_MAX_TRIES_REMAINING).into()).build();
+        ops.image_buffers = image_buffers_pool.get();
+
         for _ in 0..ABR_MAX_TRIES_REMAINING {
-            expect_load_verify_abr_ok(&mut ops, SlotIndex::A);
+            expect_load_verify_abr_ok(&mut ops, SlotIndex::A, "zircon_a");
         }
         for _ in 0..ABR_MAX_TRIES_REMAINING {
-            expect_load_verify_abr_ok(&mut ops, SlotIndex::B);
+            expect_load_verify_abr_ok(&mut ops, SlotIndex::B, "zircon_b");
         }
         // Tests that load falls back to R eventually.
-        expect_load_verify_abr_ok(&mut ops, SlotIndex::R);
+        expect_load_verify_abr_ok(&mut ops, SlotIndex::R, "zircon_r");
+    }
+
+    /// Modifies data in the given partition.
+    pub(crate) fn corrupt_data(ops: &mut FakeGblOps, part_name: &str) {
+        let mut data = [0u8];
+        assert!(ops.read_from_partition_sync(part_name, 64, &mut data[..]).is_ok());
+        data[0] ^= 0x01;
+        assert!(ops.write_to_partition_sync(part_name, 64, &mut data[..]).is_ok());
     }
 
     #[test]
     fn test_load_verify_abr_verify_failure_a_b() {
-        let mut ops = TestZirconBootGblOps::default();
-        let val = &mut ops.partitions.get_mut(&"zircon_a").unwrap()[64];
-        *val = !*val;
-        let val = &mut ops.partitions.get_mut(&"zircon_b").unwrap()[64];
-        *val = !*val;
-        let (_, mut load, _, _) = load_verify_test_data(&mut ops, SlotIndex::A);
+        let storage = create_storage();
+        let mut ops = create_gbl_ops(&storage);
+        let mut image_buffers_pool =
+            ImageBuffersPool::builder().number((1 + 2 * ABR_MAX_TRIES_REMAINING).into()).build();
+        ops.image_buffers = image_buffers_pool.get();
+
+        corrupt_data(&mut ops, "zircon_a");
+        corrupt_data(&mut ops, "zircon_b");
+
+        let (_, _load, _, _) = load_verify_test_data(&mut ops, SlotIndex::A, "zircon_a");
         for _ in 0..ABR_MAX_TRIES_REMAINING {
-            assert!(zircon_load_verify_abr(&mut ops, &mut load).is_err());
+            assert!(zircon_load_verify_abr(&mut ops).is_err());
         }
-        let (_, mut load, _, _) = load_verify_test_data(&mut ops, SlotIndex::B);
+        let (_, _load, _, _) = load_verify_test_data(&mut ops, SlotIndex::B, "zircon_b");
         for _ in 0..ABR_MAX_TRIES_REMAINING {
-            assert!(zircon_load_verify_abr(&mut ops, &mut load).is_err());
+            assert!(zircon_load_verify_abr(&mut ops).is_err());
         }
         // Tests that load falls back to R eventually.
-        expect_load_verify_abr_ok(&mut ops, SlotIndex::R);
+        expect_load_verify_abr_ok(&mut ops, SlotIndex::R, "zircon_r");
     }
 
     #[test]
     fn test_load_verify_abr_verify_failure_unlocked() {
-        let mut ops = TestZirconBootGblOps::default();
-        ops.avb_unlocked = true;
-        let val = &mut ops.partitions.get_mut(&"zircon_a").unwrap()[64];
-        *val = !*val;
-        let val = &mut ops.partitions.get_mut(&"zircon_b").unwrap()[64];
-        *val = !*val;
+        let storage = create_storage();
+        let mut ops = create_gbl_ops(&storage);
+        let mut image_buffers_pool =
+            ImageBuffersPool::builder().number((1 + 2 * ABR_MAX_TRIES_REMAINING).into()).build();
+        ops.image_buffers = image_buffers_pool.get();
+
+        ops.avb_ops.unlock_state = Ok(true);
+        corrupt_data(&mut ops, "zircon_a");
+        corrupt_data(&mut ops, "zircon_b");
+
         for _ in 0..ABR_MAX_TRIES_REMAINING {
-            expect_load_verify_abr_ok(&mut ops, SlotIndex::A);
+            expect_load_verify_abr_ok(&mut ops, SlotIndex::A, "zircon_a");
         }
         for _ in 0..ABR_MAX_TRIES_REMAINING {
-            expect_load_verify_abr_ok(&mut ops, SlotIndex::B);
+            expect_load_verify_abr_ok(&mut ops, SlotIndex::B, "zircon_b");
         }
-        expect_load_verify_abr_ok(&mut ops, SlotIndex::R);
+        expect_load_verify_abr_ok(&mut ops, SlotIndex::R, "zircon_r");
+    }
+
+    #[test]
+    fn test_check_enter_fastboot_stop_in_fastboot() {
+        let storage = create_storage();
+        let mut ops = create_gbl_ops(&storage);
+
+        ops.stop_in_fastboot = Ok(false).into();
+        assert!(!zircon_check_enter_fastboot(&mut ops));
+
+        ops.stop_in_fastboot = Ok(true).into();
+        assert!(zircon_check_enter_fastboot(&mut ops));
+
+        ops.stop_in_fastboot = Err(Error::NotImplemented).into();
+        assert!(!zircon_check_enter_fastboot(&mut ops));
+    }
+
+    #[test]
+    fn test_check_enter_fastboot_abr() {
+        let storage = create_storage();
+        let mut ops = create_gbl_ops(&storage);
+        set_one_shot_bootloader(&mut GblAbrOps(&mut ops), true).unwrap();
+        assert!(zircon_check_enter_fastboot(&mut ops));
+        // One-shot only.
+        assert!(!zircon_check_enter_fastboot(&mut ops));
+    }
+
+    #[test]
+    fn test_check_enter_fastboot_prioritize_abr() {
+        let storage = create_storage();
+        let mut ops = create_gbl_ops(&storage);
+        set_one_shot_bootloader(&mut GblAbrOps(&mut ops), true).unwrap();
+        ops.stop_in_fastboot = Ok(true).into();
+        assert!(zircon_check_enter_fastboot(&mut ops));
+        ops.stop_in_fastboot = Ok(false).into();
+        // A/B/R metadata should be prioritized in the previous check and thus one-shot-booloader
+        // flag should be cleared.
+        assert!(!zircon_check_enter_fastboot(&mut ops));
+    }
+    #[test]
+    fn test_load_verify_abr_legacy_naming() {
+        let storage = create_storage_legacy_names();
+        let mut ops = create_gbl_ops(&storage);
+        let mut image_buffers_pool =
+            ImageBuffersPool::builder().number((1 + 2 * ABR_MAX_TRIES_REMAINING).into()).build();
+        ops.image_buffers = image_buffers_pool.get();
+
+        // Tests by exhausting all slots retries so it exercises all legacy name matching code
+        // paths.
+        for _ in 0..ABR_MAX_TRIES_REMAINING {
+            expect_load_verify_abr_ok(&mut ops, SlotIndex::A, "zircon-a");
+        }
+        for _ in 0..ABR_MAX_TRIES_REMAINING {
+            expect_load_verify_abr_ok(&mut ops, SlotIndex::B, "zircon-b");
+        }
+        // Tests that load falls back to R eventually.
+        expect_load_verify_abr_ok(&mut ops, SlotIndex::R, "zircon-r");
+    }
+
+    #[test]
+    fn test_zircon_load_verify_no_bootloader_file() {
+        let storage = create_storage();
+        let mut ops = create_gbl_ops(&storage);
+        let mut image_buffers_pool = ImageBuffersPool::builder().number(2).build();
+        ops.image_buffers = image_buffers_pool.get();
+        ops.get_zbi_bootloader_files_buffer().unwrap().fill(0);
+
+        let zbi = &read_test_data(ZIRCON_SLOTLESS_ZBI_FILE);
+        let expected_kernel = AlignedBuffer::new_with_data(zbi, ZBI_ALIGNMENT_USIZE);
+        // Adds extra bytes for device ZBI items.
+        let mut expected_zbi_items = AlignedBuffer::new(1024, ZBI_ALIGNMENT_USIZE);
+        let _ = ZbiContainer::new(&mut expected_zbi_items[..]).unwrap();
+        append_cmd_line(&mut expected_zbi_items, FakeGblOps::ADDED_ZBI_COMMANDLINE_CONTENTS);
+        append_cmd_line(&mut expected_zbi_items, b"vb_prop_0=val\0");
+        append_cmd_line(&mut expected_zbi_items, b"vb_prop_1=val\0");
+        test_load_verify(&mut ops, None, &expected_zbi_items, &expected_kernel);
     }
 }

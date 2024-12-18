@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::BootToken;
-use zerocopy::{AsBytes, ByteSlice, FromBytes, FromZeroes, Ref};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, SplitByteSlice};
 
 use liberror::Error;
 
@@ -28,14 +28,14 @@ pub enum CacheStatus {
 
 /// Trait that describes the operations all slot metadata implementations must support
 /// to be used as the backing store in a SlotBlock.
-pub trait MetadataBytes: Copy + AsBytes + FromBytes + FromZeroes + Default {
+pub trait MetadataBytes: Copy + Immutable + IntoBytes + FromBytes + KnownLayout + Default {
     /// Returns a zerocopy reference to Self if buffer
     /// represents a valid serialization of Self.
     /// Implementors should check for invariants,
     /// e.g. checksums, magic numbers, and version numbers.
     ///
     /// Returns Err if the buffer does not represent a valid structure.
-    fn validate<B: ByteSlice>(buffer: B) -> Result<Ref<B, Self>, Error>;
+    fn validate<B: SplitByteSlice>(buffer: B) -> Result<Ref<B, Self>, Error>;
 
     /// Called right before writing metadata back to disk.
     /// Implementors should restore invariants,
@@ -44,12 +44,7 @@ pub trait MetadataBytes: Copy + AsBytes + FromBytes + FromZeroes + Default {
 }
 
 /// Generalized description of a partition-backed ABR metadata structure.
-pub struct SlotBlock<'a, MB: MetadataBytes> {
-    /// The partition the metadata was read from and will be written back to.
-    pub partition: &'a str,
-    /// The offset from the beginning of the partition in bytes.
-    pub partition_offset: u64,
-
+pub struct SlotBlock<MB: MetadataBytes> {
     // Internally tracked cache clean/dirty info
     cache_status: CacheStatus,
     // SlotBlock holds the boot token until mark_boot_attempt gets called.
@@ -58,8 +53,8 @@ pub struct SlotBlock<'a, MB: MetadataBytes> {
     data: MB,
 }
 
-impl<'a, MB: MetadataBytes> SlotBlock<'a, MB> {
-    /// Note to those implementing Manager for SlotBlock<'_, CustomType>:
+impl<'a, MB: MetadataBytes> SlotBlock<MB> {
+    /// Note to those implementing Manager for SlotBlock<CustomType>:
     /// Be very, very careful with custody of the boot token.
     /// If you release it outside of the implementation of Manager::mark_boot_attempt,
     /// mark_boot_attempt will fail and the kernel may boot without tracking the attempt.
@@ -94,12 +89,7 @@ impl<'a, MB: MetadataBytes> SlotBlock<'a, MB> {
     ///                 if there was an internal error.
     ///
     ///                 TODO(b/329116902): errors are logged
-    pub fn deserialize<B: ByteSlice>(
-        buffer: B,
-        partition: &'a str,
-        partition_offset: u64,
-        boot_token: BootToken,
-    ) -> Self {
+    pub fn deserialize<B: SplitByteSlice>(buffer: B, boot_token: BootToken) -> Self {
         // TODO(b/329116902): log failures
         // validate(buffer)
         // .inspect_err(|e| {
@@ -110,27 +100,28 @@ impl<'a, MB: MetadataBytes> SlotBlock<'a, MB> {
             Err(_) => (Default::default(), CacheStatus::Dirty),
         };
 
-        SlotBlock { cache_status, boot_token: Some(boot_token), data, partition, partition_offset }
+        SlotBlock { cache_status, boot_token: Some(boot_token), data }
     }
 
     /// Write back slot metadata to disk.
-    /// The MetadataBytes type should reestablish any invariants when
-    /// `prepare_for_sync` is called, e.g. recalculating checksums.
+    ///
+    /// The MetadataBytes type should reestablish any invariants when `prepare_for_sync` is called,
+    /// e.g. recalculating checksums.
     ///
     /// Does NOT write back to disk if no changes have been made and the cache is clean.
     /// Panics if the write attempt fails.
-    pub fn sync_to_disk(&mut self, block_dev: &mut dyn gbl_storage::AsBlockDevice) {
+    ///
+    /// # Args
+    ///
+    /// * `persist`: A user provided closure for persisting a given slot metadata bytes to storage.
+    pub fn sync_to_disk(&mut self, persist: &mut dyn FnMut(&mut [u8]) -> Result<(), Error>) {
         if self.cache_status == CacheStatus::Clean {
             return;
         }
 
         self.data.prepare_for_sync();
 
-        match block_dev.write_gpt_partition(
-            self.partition,
-            self.partition_offset,
-            self.get_mut_data().as_bytes_mut(),
-        ) {
+        match persist(self.get_mut_data().as_bytes_mut()) {
             Ok(_) => self.cache_status = CacheStatus::Clean,
             Err(e) => panic!("{}", e),
         };
@@ -138,13 +129,11 @@ impl<'a, MB: MetadataBytes> SlotBlock<'a, MB> {
 }
 
 #[cfg(test)]
-impl<MB: MetadataBytes> Default for SlotBlock<'_, MB> {
+impl<MB: MetadataBytes> Default for SlotBlock<MB> {
     /// Returns a default valued SlotBlock.
     /// Only used in tests because BootToken cannot be constructed out of crate.
     fn default() -> Self {
         Self {
-            partition: "",
-            partition_offset: 0,
             cache_status: CacheStatus::Clean,
             boot_token: Some(BootToken(())),
             data: Default::default(),

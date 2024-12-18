@@ -112,6 +112,17 @@ impl From<SlotIndex> for c_uint {
     }
 }
 
+// Implement conversion to char
+impl From<SlotIndex> for char {
+    fn from(_val: SlotIndex) -> Self {
+        match _val {
+            SlotIndex::A => 'a',
+            SlotIndex::B => 'b',
+            SlotIndex::R => 'r',
+        }
+    }
+}
+
 // Implement conversion from c_uint for C interfaces.
 impl TryFrom<c_uint> for SlotIndex {
     type Error = Error;
@@ -650,6 +661,15 @@ pub fn get_and_clear_one_shot_flag(abr_ops: &mut dyn Ops) -> Result<u8> {
     Ok(res)
 }
 
+/// Gets and clears one shot bootloader flag only.
+pub fn get_and_clear_one_shot_bootloader(abr_ops: &mut dyn Ops) -> Result<bool> {
+    let (mut abr_data, abr_data_orig) = load_metadata(abr_ops)?;
+    let res = abr_data.one_shot_flags;
+    abr_data.one_shot_flags &= !ONE_SHOT_BOOTLOADER;
+    save_metadata_if_changed(abr_ops, &mut abr_data, &abr_data_orig)?;
+    Ok((res & ONE_SHOT_BOOTLOADER) != 0)
+}
+
 /// Reverses the bit of a byte.
 fn reverse_byte(b: u8) -> u8 {
     const LOOKUP_TABLE_4BIT_REVERSE: &[u8] =
@@ -683,7 +703,17 @@ fn crc32(data: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod test {
+    use super::*;
     // Testing is currently done against the C interface tests in upstream Fuchsia:
     // https://fuchsia.googlesource.com/fuchsia/+/96f7268b497f998ffcbeef73425b031bd7f4db65/src/firmware/lib/abr/test/libabr_test.cc
     // These tests will be ported to here as rust tests in the future.
+
+    #[test]
+    fn test_get_and_clear_one_shot_bootloader() {
+        let mut meta = [0u8; ABR_DATA_SIZE];
+        set_one_shot_bootloader(&mut meta, true).unwrap();
+        set_one_shot_recovery(&mut meta, true).unwrap();
+        assert!(get_and_clear_one_shot_bootloader(&mut meta).unwrap());
+        assert_eq!(get_and_clear_one_shot_flag(&mut meta).unwrap(), ONE_SHOT_RECOVERY);
+    }
 }
