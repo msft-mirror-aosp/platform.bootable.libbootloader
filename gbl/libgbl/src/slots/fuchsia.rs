@@ -27,13 +27,13 @@ use core::mem::size_of;
 use crc32fast::Hasher;
 use liberror::Error;
 use zerocopy::byteorder::big_endian::U32 as BigEndianU32;
-use zerocopy::{AsBytes, ByteSlice, FromBytes, FromZeroes, Ref};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, SplitByteSlice};
 
 const DEFAULT_PRIORITY: u8 = 15;
 const DEFAULT_RETRIES: u8 = 7;
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Immutable, IntoBytes, FromBytes, KnownLayout)]
 struct AbrSlotData {
     priority: u8,
     tries: u8,
@@ -53,7 +53,7 @@ impl Default for AbrSlotData {
 }
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Immutable, IntoBytes, FromBytes, KnownLayout)]
 struct OneShotFlags(u8);
 
 bitflags! {
@@ -96,7 +96,7 @@ const ABR_VERSION_MAJOR: u8 = 2;
 const ABR_VERSION_MINOR: u8 = 3;
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Immutable, IntoBytes, FromBytes, KnownLayout)]
 struct AbrData {
     magic: [u8; 4],
     version_major: u8,
@@ -119,7 +119,7 @@ impl AbrData {
 }
 
 impl MetadataBytes for AbrData {
-    fn validate<B: ByteSlice>(buffer: B) -> Result<Ref<B, AbrData>, Error> {
+    fn validate<B: SplitByteSlice>(buffer: B) -> Result<Ref<B, AbrData>, Error> {
         let abr_data = Ref::<B, AbrData>::new_from_prefix(buffer)
             .ok_or(Error::BufferTooSmall(Some(size_of::<AbrData>())))?
             .0;

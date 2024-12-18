@@ -63,7 +63,7 @@ use libgbl::{
 };
 use safemath::SafeNum;
 use zbi::ZbiContainer;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 fn to_avb_validation_status_or_panic(status: GblEfiAvbKeyValidationStatus) -> KeyValidationStatus {
     match status {

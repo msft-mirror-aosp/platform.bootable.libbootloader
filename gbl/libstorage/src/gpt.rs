@@ -28,7 +28,9 @@ use crc32fast::Hasher;
 use gbl_async::block_on;
 use liberror::{Error, GptError};
 use safemath::SafeNum;
-use zerocopy::{AsBytes, ByteSlice, FromBytes, FromZeroes, Ref};
+use zerocopy::{
+    ByteSlice, FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout, Ref, SplitByteSlice,
+};
 
 /// Number of bytes in GUID.
 pub const GPT_GUID_LEN: usize = 16;
@@ -38,7 +40,9 @@ const GPT_NAME_LEN_U8: usize = 2 * GPT_GUID_LEN;
 
 /// The top-level GPT header.
 #[repr(C, packed)]
-#[derive(Debug, Default, Copy, Clone, AsBytes, FromBytes, FromZeroes, PartialEq, Eq)]
+#[derive(
+    Debug, Default, Copy, Clone, Immutable, IntoBytes, FromBytes, KnownLayout, PartialEq, Eq,
+)]
 pub struct GptHeader {
     /// Magic bytes; must be [GPT_MAGIC].
     pub magic: u64,
@@ -73,7 +77,7 @@ pub struct GptHeader {
 impl GptHeader {
     /// Casts a bytes slice into a mutable GptHeader structure.
     pub fn from_bytes_mut(bytes: &mut [u8]) -> &mut GptHeader {
-        Ref::<_, GptHeader>::new_from_prefix(bytes).unwrap().0.into_mut()
+        Ref::into_mut(Ref::<_, GptHeader>::new_from_prefix(bytes).unwrap().0)
     }
 
     /// Computes the actual crc32 value.
@@ -262,7 +266,7 @@ fn check_entries(header: &GptHeader, entries: &[u8]) -> Result<()> {
 
 /// GptEntry is the partition entry data structure in the GPT.
 #[repr(C, packed)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes, PartialEq)]
+#[derive(Debug, Copy, Clone, Immutable, IntoBytes, FromBytes, KnownLayout, PartialEq)]
 pub struct GptEntry {
     /// Partition type GUID.
     pub part_type: [u8; GPT_GUID_LEN],
@@ -465,12 +469,12 @@ impl core::fmt::Display for GptSyncResult {
 
 /// A packed wrapper of `Option<NonZeroU64>`
 #[repr(C, packed)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, Immutable, IntoBytes, FromBytes, KnownLayout)]
 struct BlockSize(Option<NonZeroU64>);
 
 /// Represents the structure of a load buffer for loading/verifying/syncing up to N GPT entries.
 #[repr(C, packed)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, Immutable, IntoBytes, FromBytes)]
 pub struct GptLoadBufferN<const N: usize> {
     // GPT doesn't care about block size. But it's easier to have it available for computing offset
     // and size in bytes for partitions. It's also used as a flag for indicating whether a valid
@@ -510,7 +514,7 @@ struct LoadBufferRef<B: ByteSlice> {
     secondary_entries: Ref<B, [GptEntry]>,
 }
 
-impl<B: ByteSlice> LoadBufferRef<B> {
+impl<B: SplitByteSlice> LoadBufferRef<B> {
     fn from(buffer: B) -> Self {
         let n = min(GPT_MAX_NUM_ENTRIES, max_supported_entries(&buffer[..]).unwrap());
         let (block_size, rest) = Ref::new_from_prefix(buffer).unwrap();
@@ -670,7 +674,7 @@ impl<B: DerefMut<Target = [u8]>> Gpt<B> {
         };
 
         // Loads the header
-        disk.read(header_start, header.as_bytes_mut()).await?;
+        disk.read(header_start, Ref::bytes_mut(&mut header)).await?;
         // Checks header.
         check_header(disk.io(), &header, matches!(hdr_type, HeaderType::Primary))?;
         // Loads the entries.
@@ -819,7 +823,7 @@ pub(crate) async fn update_gpt(
         .map(|v| v.split_at_mut_checked(blk_sz))
         .flatten()
         .ok_or(Error::BufferTooSmall(Some(blk_sz * 2)))?;
-    let header = Ref::<_, GptHeader>::new_from_prefix(&mut header[..]).unwrap().0.into_mut();
+    let header = Ref::into_mut(Ref::<_, GptHeader>::new_from_prefix(&mut header[..]).unwrap().0);
 
     // Adjusts last usable block according to this device in case the GPT was generated for a
     // different disk size. If this results in some partition being out of range, it will be

@@ -879,7 +879,7 @@ mod test {
     use spin::{Mutex, MutexGuard};
     use std::ffi::CString;
     use std::{collections::VecDeque, io::Read};
-    use zerocopy::AsBytes;
+    use zerocopy::IntoBytes;
 
     /// A test implementation of [InfoSender] and [OkaySender].
     #[derive(Default)]

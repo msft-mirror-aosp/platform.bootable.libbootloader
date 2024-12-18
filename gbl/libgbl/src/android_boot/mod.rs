@@ -35,7 +35,7 @@ use liberror::Error;
 use libutils::aligned_subslice;
 use misc::{AndroidBootMode, BootloaderMessage};
 use safemath::SafeNum;
-use zerocopy::{AsBytes, ByteSlice};
+use zerocopy::{ByteSlice, IntoBytes, Ref};
 
 #[cfg(target_arch = "aarch64")]
 use crate::decompress::decompress_kernel;
@@ -183,7 +183,7 @@ fn vendor_header_elements<B: ByteSlice + PartialEq>(
     Ok(match hdr {
         VendorImageHeader::V3(ref hdr) => (
             hdr.vendor_ramdisk_size as usize,
-            SafeNum::from(hdr.bytes().len())
+            SafeNum::from(Ref::bytes(hdr).len())
                 .round_up(hdr.page_size)
                 .try_into()
                 .map_err(Error::from)?,
@@ -195,7 +195,7 @@ fn vendor_header_elements<B: ByteSlice + PartialEq>(
         ),
         VendorImageHeader::V4(ref hdr) => (
             hdr._base.vendor_ramdisk_size as usize,
-            SafeNum::from(hdr.bytes().len())
+            SafeNum::from(Ref::bytes(hdr).len())
                 .round_up(hdr._base.page_size)
                 .try_into()
                 .map_err(Error::from)?,
