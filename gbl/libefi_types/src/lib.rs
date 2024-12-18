@@ -29,8 +29,8 @@ impl EfiGuid {
     }
 }
 
-impl GblPartitionName {
-    /// Decodes the UCS2 GblPartitionName using buffer, and returns &str of UTF8 representation.
+impl GblEfiPartitionName {
+    /// Decodes the UCS2 GblEfiPartitionName using buffer, and returns &str of UTF8 representation.
     ///
     /// Buffer must be big enough to contain UTF8 representation of the UCS2 partition name.
     ///
@@ -60,15 +60,15 @@ impl GblPartitionName {
     }
 }
 
-impl From<&[u16]> for GblPartitionName {
+impl From<&[u16]> for GblEfiPartitionName {
     fn from(value: &[u16]) -> Self {
-        let mut res: GblPartitionName = Default::default();
+        let mut res: GblEfiPartitionName = Default::default();
         res.StrUtf16[..value.len()].copy_from_slice(value);
         res
     }
 }
 
-impl<const N: usize> From<[u16; N]> for GblPartitionName {
+impl<const N: usize> From<[u16; N]> for GblEfiPartitionName {
     fn from(value: [u16; N]) -> Self {
         value[..].into()
     }

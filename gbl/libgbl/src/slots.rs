@@ -405,22 +405,28 @@ pub trait Manager: private::SlotGet {
     /// This is useful for partition based slot setups,
     /// where we do not write back every interaction in order to coalesce writes
     /// and preserve disk lifetime.
-    fn write_back(&mut self, block_dev: &mut dyn gbl_storage::AsBlockDevice) {}
+    fn write_back(&mut self, _: &mut dyn FnMut(&mut [u8]) -> Result<(), Error>) {}
 }
 
 /// RAII helper object for coalescing changes.
-pub struct Cursor<'a, B: gbl_storage::AsBlockDevice> {
+pub struct Cursor<'a> {
     /// The backing manager for slot metadata.
     pub ctx: &'a mut dyn Manager,
-    /// The backing disk. Used for partition-backed metadata implementations
-    /// and for fastboot.
-    pub block_dev: &'a mut B,
+    /// User provided closure for persisting slot metadata bytes.
+    pub persist: &'a mut dyn FnMut(&mut [u8]) -> Result<(), Error>,
 }
 
-impl<'a, B: gbl_storage::AsBlockDevice> Drop for Cursor<'a, B> {
+impl Drop for Cursor<'_> {
     fn drop(&mut self) {
-        self.ctx.write_back(&mut self.block_dev);
+        self.ctx.write_back(&mut self.persist);
     }
+}
+
+/// Contains information of the platform's slot scheme.
+#[derive(Default, Debug, Copy, Clone)]
+pub struct SlotsMetadata {
+    /// Number of slots on this platform.
+    pub slot_count: usize,
 }
 
 #[cfg(test)]

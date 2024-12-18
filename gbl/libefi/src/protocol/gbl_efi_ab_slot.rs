@@ -18,7 +18,7 @@ extern crate libgbl;
 use crate::efi_call;
 use crate::protocol::{Protocol, ProtocolInfo};
 use efi_types::{
-    EfiGuid, GblEfiBootReason, GblEfiSlotInfo, GblEfiSlotMetadataBlock, GblEfiSlotProtocol,
+    EfiGuid, GblEfiABSlotProtocol, GblEfiBootReason, GblEfiSlotInfo, GblEfiSlotMetadataBlock,
     GblEfiUnbootableReason, GBL_EFI_UNBOOTABLE_REASON_GBL_EFI_NO_MORE_TRIES as NO_MORE_TRIES,
     GBL_EFI_UNBOOTABLE_REASON_GBL_EFI_SYSTEM_UPDATE as SYSTEM_UPDATE,
     GBL_EFI_UNBOOTABLE_REASON_GBL_EFI_USER_REQUESTED as USER_REQUESTED,
@@ -32,7 +32,7 @@ use libgbl::slots::{Bootability, Slot, UnbootableReason};
 pub struct GblSlotProtocol;
 
 impl ProtocolInfo for GblSlotProtocol {
-    type InterfaceType = GblEfiSlotProtocol;
+    type InterfaceType = GblEfiABSlotProtocol;
 
     const GUID: EfiGuid =
         EfiGuid::new(0x9a7a7db4, 0x614b, 0x4a08, [0x3d, 0xf9, 0x00, 0x6f, 0x49, 0xb0, 0xd8, 0x0c]);
@@ -106,8 +106,27 @@ impl<'a> Protocol<'a, GblSlotProtocol> {
         // established by `Protocol::new()`.
         // `self.interface` is an input parameter and will not be retained. It outlives the call.
         // `info` is an output parameter and will not be retained. It outlives the call.
-        unsafe { efi_call!(self.interface()?.get_current_slot, self.interface, &mut info)? }
+        unsafe { efi_call!(self.interface()?.get_current_slot, self.interface, &mut info)? };
         Ok(info.into())
+    }
+
+    /// Wrapper of `GBL_EFI_SLOT_PROTOCOL.GetNextSlot()`
+    pub fn get_next_slot(&self, mark_boot_attempt: bool) -> Result<GblSlot> {
+        let mut info = GblEfiSlotInfo::default();
+        // SAFETY:
+        // `self.interface()?` guarantees self.interface is non-null and points to a valid object
+        // established by `Protocol::new()`.
+        // `self.interface`, `info` are input/output parameter and will not be retained. It
+        // outlives the call.
+        unsafe {
+            efi_call!(
+                self.interface()?.get_next_slot,
+                self.interface,
+                mark_boot_attempt,
+                &mut info as _
+            )?;
+        }
+        Ok(GblSlot::from(info))
     }
 
     /// Wrapper of `GBL_EFI_SLOT_PROTOCOL.set_active_slot()`
@@ -127,15 +146,6 @@ impl<'a> Protocol<'a, GblSlotProtocol> {
         // established by `Protocol::new()`.
         // `self.interface` is an input parameter and will not be retained. It outlives the call.
         unsafe { efi_call!(self.interface()?.set_slot_unbootable, self.interface, idx, reason) }
-    }
-
-    /// Wrapper of `GBL_EFI_SLOT_PROTOCOL.mark_boot_attempt()`
-    pub fn mark_boot_attempt(&self) -> Result<()> {
-        // SAFETY:
-        // `self.interface()?` guarantees self.interface is non-null and points to a valid object
-        // established by `Protocol::new()`.
-        // `self.interface` is an input parameter and will not be retained. It outlives the call.
-        unsafe { efi_call!(self.interface()?.mark_boot_attempt, self.interface) }
     }
 
     /// Wrapper of `GBL_EFI_SLOT_PROTOCOL.reinitialize()`

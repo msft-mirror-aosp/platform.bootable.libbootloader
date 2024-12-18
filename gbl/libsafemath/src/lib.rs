@@ -233,7 +233,7 @@ macro_rules! try_conversion_func {
 
             #[track_caller]
             fn try_from(val: SafeNum) -> Result<Self, Self::Error> {
-                Self::try_from(val.0?).map_err(|_| Location::caller().into())
+                Self::try_from(val.0?).ok().ok_or(Location::caller().into())
             }
         }
     };
@@ -256,7 +256,7 @@ macro_rules! conversion_func_maybe_error {
         impl From<$from_type> for SafeNum {
             #[track_caller]
             fn from(val: $from_type) -> Self {
-                Self(Primitive::try_from(val).map_err(|_| Location::caller().into()))
+                Self(Primitive::try_from(val).ok().ok_or(Location::caller().into()))
             }
         }
 
@@ -275,9 +275,7 @@ macro_rules! arithmetic_impl {
                 match (self.0, rhs.0) {
                     (Err(_), _) => self,
                     (_, Err(_)) => rhs,
-                    (Ok(lhs), Ok(rhs)) => {
-                        Self(lhs.$func(rhs).ok_or_else(|| Location::caller().into()))
-                    }
+                    (Ok(lhs), Ok(rhs)) => Self(lhs.$func(rhs).ok_or(Location::caller().into())),
                 }
             }
         }

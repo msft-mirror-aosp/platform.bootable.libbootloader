@@ -36,8 +36,6 @@ mod utils;
 #[cfg(not(test))]
 mod android_boot;
 #[cfg(not(test))]
-mod avb;
-#[cfg(not(test))]
 mod fastboot;
 #[cfg(not(test))]
 mod fuchsia_boot;
@@ -55,7 +53,7 @@ pub(crate) use efi_mocks as efi;
 use {
     core::fmt::Write,
     efi::{efi_print, efi_println, EfiEntry},
-    libgbl::{GblOps, Result},
+    libgbl::Result,
     utils::loaded_image_path,
 };
 
@@ -68,15 +66,23 @@ enum TargetOs {
 #[cfg(not(test))]
 fn get_target_os(entry: &EfiEntry) -> TargetOs {
     let mut buf = [0u8; 1];
-    if fuchsia_boot::is_fuchsia_gpt(&entry).is_ok()
-        || entry
-            .system_table()
-            .runtime_services()
-            .get_variable(&efi::GBL_EFI_VENDOR_GUID, efi::GBL_EFI_OS_BOOT_TARGET_VARNAME, &mut buf)
-            .is_ok()
+    if entry
+        .system_table()
+        .runtime_services()
+        .get_variable(&efi::GBL_EFI_VENDOR_GUID, efi::GBL_EFI_OS_BOOT_TARGET_VARNAME, &mut buf)
+        .is_ok()
     {
+        efi_println!(
+            entry,
+            "`{}` is set. Proceeding as Fuchsia.",
+            efi::GBL_EFI_OS_BOOT_TARGET_VARNAME
+        );
+        TargetOs::Fuchsia
+    } else if fuchsia_boot::is_fuchsia_gpt(&entry).is_ok() {
+        efi_println!(entry, "Partition layout looks like Fuchsia. Proceeding as Fuchsia");
         TargetOs::Fuchsia
     } else {
+        efi_println!(entry, "Proceeding as Android");
         TargetOs::Android
     }
 }
@@ -84,22 +90,9 @@ fn get_target_os(entry: &EfiEntry) -> TargetOs {
 /// GBL EFI application logic entry point.
 #[cfg(not(test))]
 pub fn app_main(entry: EfiEntry) -> Result<()> {
-    let mut ops = ops::Ops { efi_entry: &entry, partitions: &[] };
-
-    efi_println!(entry, "****Rust EFI Application****");
+    efi_println!(entry, "****Generic Bootloader Application****");
     if let Ok(v) = loaded_image_path(&entry) {
         efi_println!(entry, "Image path: {}", v);
-    }
-
-    match ops.should_stop_in_fastboot() {
-        Ok(true) => {
-            fastboot::fastboot(&entry)?;
-        }
-        Ok(false) => {}
-        Err(e) => {
-            efi_println!(entry, "Warning: error while checking fastboot trigger ({:?})", e);
-            efi_println!(entry, "Ignoring error and continuing with normal boot");
-        }
     }
 
     match get_target_os(&entry) {

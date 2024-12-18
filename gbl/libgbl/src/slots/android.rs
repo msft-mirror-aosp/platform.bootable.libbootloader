@@ -25,7 +25,7 @@ use core::ops::{BitAnd, BitOr, Not, Shl, Shr};
 use crc32fast::Hasher;
 use liberror::Error;
 use zerocopy::byteorder::little_endian::U32 as LittleEndianU32;
-use zerocopy::{AsBytes, ByteSlice, FromBytes, FromZeroes, Ref};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, SplitByteSlice};
 
 extern crate static_assertions;
 
@@ -68,9 +68,11 @@ const DEFAULT_RETRIES: u8 = 7;
 ///
 /// Does NOT contain unbootable reason information.
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Immutable, IntoBytes, FromBytes, KnownLayout)]
 struct SlotMetaData(u16);
 
+#[allow(dead_code)]
+#[allow(missing_docs)]
 impl SlotMetaData {
     const PRIORITY_MASK: u16 = 0b1111;
     const PRIORITY_OFFSET: u16 = 0;
@@ -132,10 +134,14 @@ impl Default for SlotMetaData {
     }
 }
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(
+    Copy, Clone, Debug, Default, PartialEq, Eq, Immutable, IntoBytes, FromBytes, KnownLayout,
+)]
 #[repr(C, packed)]
 struct ControlBits(u16);
 
+#[allow(dead_code)]
+#[allow(missing_docs)]
 impl ControlBits {
     const NB_SLOT_MASK: u16 = 0b111;
     const NB_SLOT_OFFSET: u16 = 0;
@@ -192,7 +198,7 @@ const BOOT_CTRL_VERSION: u8 = 1;
 ///
 /// Does NOT support oneshots
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Immutable, IntoBytes, FromBytes, KnownLayout)]
 struct BootloaderControl {
     slot_suffix: [u8; 4],
     magic: u32,
@@ -238,7 +244,7 @@ impl Default for BootloaderControl {
 }
 
 impl MetadataBytes for BootloaderControl {
-    fn validate<B: ByteSlice>(buffer: B) -> Result<Ref<B, Self>, Error> {
+    fn validate<B: SplitByteSlice>(buffer: B) -> Result<Ref<B, Self>, Error> {
         let boot_control_data = Ref::<B, Self>::new_from_prefix(buffer)
             .ok_or(Error::BufferTooSmall(Some(size_of::<BootloaderControl>())))?
             .0;
@@ -261,7 +267,7 @@ impl MetadataBytes for BootloaderControl {
     }
 }
 
-impl super::private::SlotGet for SlotBlock<'_, BootloaderControl> {
+impl super::private::SlotGet for SlotBlock<BootloaderControl> {
     fn get_slot_by_number(&self, number: usize) -> Result<Slot, Error> {
         let lower_ascii_suffixes = ('a'..='z').map(Suffix);
         let control = self.get_data();
@@ -281,7 +287,7 @@ impl super::private::SlotGet for SlotBlock<'_, BootloaderControl> {
     }
 }
 
-impl Manager for SlotBlock<'_, BootloaderControl> {
+impl Manager for SlotBlock<BootloaderControl> {
     fn slots_iter(&self) -> SlotIterator {
         SlotIterator::new(self)
     }
@@ -376,8 +382,8 @@ impl Manager for SlotBlock<'_, BootloaderControl> {
 
     fn clear_oneshot_status(&mut self) {}
 
-    fn write_back(&mut self, block_dev: &mut dyn gbl_storage::AsBlockDevice) {
-        self.sync_to_disk(block_dev)
+    fn write_back(&mut self, persist: &mut dyn FnMut(&mut [u8]) -> Result<(), Error>) {
+        self.sync_to_disk(persist)
     }
 }
 

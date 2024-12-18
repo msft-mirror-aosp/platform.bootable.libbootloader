@@ -30,7 +30,7 @@ rust_bindgen(
         "--ctypes-prefix",
         "core::ffi",
         "--use-core",
-        "--with-derive-custom-struct=fdt_header=AsBytes,FromBytes,FromZeroes,PartialEq",
+        "--with-derive-custom-struct=fdt_header=Immutable,IntoBytes,KnownLayout,FromBytes,PartialEq",
         "--allowlist-function",
         "(fdt_.*)",
         "--allowlist-type",
@@ -43,7 +43,7 @@ rust_bindgen(
 #![allow(unsafe_op_in_unsafe_fn)]
 #![cfg_attr(not(test), no_std)]
 
-use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use zerocopy::{Immutable, IntoBytes, KnownLayout, FromBytes};
 """,
     ],
     cc_lib = "@libfdt_c",
@@ -122,6 +122,7 @@ rust_library(
         ":libfdt_sysdeps_static",
         ":libufdt_bindgen",
         ":libufdt_c_static",
+        "@arrayvec",
         "@gbl//libc",
         "@gbl//liberror",
         "@gbl//libsafemath",

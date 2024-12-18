@@ -25,11 +25,6 @@
 
 #define GBL_EFI_FASTBOOT_SERIAL_NUMBER_MAX_LEN_UTF8 32
 
-typedef struct GblEfiFastbootArg {
-  const char8_t* str_utf8;
-  size_t len;
-} GblEfiFastbootArg;
-
 typedef struct GblEfiFastbootPolicy {
   // Indicates whether device can be unlocked
   bool can_unlock;
@@ -39,6 +34,15 @@ typedef struct GblEfiFastbootPolicy {
   // RAM.
   bool can_ram_boot;
 } GblEfiFastbootPolicy;
+
+// Callback function pointer passed to GblEfiFastbootProtocol.get_var_all.
+//
+// context: Caller specific context.
+// args: An array of NULL-terminated strings that contains the variable name
+//       followed by additional arguments if any.
+// val: A NULL-terminated string representing the value.
+typedef void (*GetVarAllCallback)(void* context, const char* const* args,
+                                  size_t num_args, const char* val);
 
 typedef enum GBL_EFI_FASTBOOT_PARTITION_PERMISSION_FLAGS {
   // Firmware can read the given partition and send its data to fastboot client.
@@ -63,14 +67,11 @@ typedef struct GblEfiFastbootProtocol {
   char8_t serial_number[GBL_EFI_FASTBOOT_SERIAL_NUMBER_MAX_LEN_UTF8];
 
   // Fastboot variable methods
-  EfiStatus (*get_var)(struct GblEfiFastbootProtocol* this,
-                       const GblEfiFastbootArg* args, size_t num_args,
-                       char8_t* buf, size_t* bufsize, void const* hint);
-  EfiStatus (*start_var_iterator)(struct GblEfiFastbootProtocol* this,
-                                  void const** token);
-  EfiStatus (*get_next_var_args)(struct GblEfiFastbootProtocol* this,
-                                 GblEfiFastbootArg* args, size_t* num_args,
-                                 void const** token);
+  EfiStatus (*get_var)(struct GblEfiFastbootProtocol* self,
+                       const char* const* args, size_t num_args, uint8_t* out,
+                       size_t* out_size);
+  EfiStatus (*get_var_all)(struct GblEfiFastbootProtocol* self, void* ctx,
+                           GetVarAllCallback cb);
 
   // Fastboot oem function methods
   EfiStatus (*run_oem_function)(struct GblEfiFastbootProtocol* this,
