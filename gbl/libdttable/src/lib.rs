@@ -21,11 +21,11 @@ use core::mem::size_of;
 use libdttable_bindgen::{dt_table_entry, dt_table_header, DT_TABLE_MAGIC};
 use liberror::{Error, Result};
 use safemath::SafeNum;
-use zerocopy::{AsBytes, FromBytes, FromZeroes, LayoutVerified};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref};
 
 /// Rust wrapper for the dt table header
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes, PartialEq)]
+#[derive(Debug, Copy, Clone, IntoBytes, FromBytes, Immutable, KnownLayout, PartialEq)]
 struct DtTableHeader(dt_table_header);
 
 impl DtTableHeader {
@@ -52,7 +52,7 @@ impl DtTableHeader {
 
 /// Rust wrapper for the dt table entry
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes, PartialEq)]
+#[derive(Debug, Copy, Clone, Immutable, IntoBytes, KnownLayout, FromBytes, PartialEq)]
 struct DtTableHeaderEntry(dt_table_entry);
 
 impl DtTableHeaderEntry {
@@ -100,8 +100,8 @@ pub struct DtTableEntry<'a> {
 /// Represents entier multidt table image
 pub struct DtTableImage<'a> {
     buffer: &'a [u8],
-    header: LayoutVerified<&'a [u8], DtTableHeader>,
-    entries: LayoutVerified<&'a [u8], [DtTableHeaderEntry]>,
+    header: Ref<&'a [u8], DtTableHeader>,
+    entries: Ref<&'a [u8], [DtTableHeaderEntry]>,
 }
 
 /// To iterate over entries.
@@ -127,7 +127,7 @@ impl<'a> Iterator for DtTableImageIterator<'a> {
 impl<'a> DtTableImage<'a> {
     /// Verify and parse passed buffer following multidt table structure
     pub fn from_bytes(buffer: &'a [u8]) -> Result<DtTableImage<'a>> {
-        let (header_layout, _) = LayoutVerified::new_from_prefix(buffer)
+        let (header_layout, _) = Ref::new_from_prefix(buffer)
             .ok_or(Error::BufferTooSmall(Some(size_of::<DtTableHeader>())))?;
 
         let header: &DtTableHeader = &header_layout;
@@ -145,8 +145,7 @@ impl<'a> DtTableImage<'a> {
         let entries_buffer = buffer
             .get(entries_start..entries_end)
             .ok_or(Error::BufferTooSmall(Some(entries_end)))?;
-        let entries_layout =
-            LayoutVerified::new_slice(entries_buffer).ok_or(Error::InvalidInput)?;
+        let entries_layout = Ref::new_slice(entries_buffer).ok_or(Error::InvalidInput)?;
 
         Ok(DtTableImage { buffer: buffer, header: header_layout, entries: entries_layout })
     }

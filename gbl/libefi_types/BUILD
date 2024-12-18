@@ -52,8 +52,8 @@ rust_bindgen(
         "--use-core",
         "--with-derive-partialeq",
         "--with-derive-default",
-        "--with-derive-custom-struct=EfiMemoryDescriptor=AsBytes,FromBytes,FromZeroes",
-        "--with-derive-custom-struct=EfiMemoryAttributesTableHeader=AsBytes,FromBytes,FromZeroes",
+        "--with-derive-custom-struct=EfiMemoryDescriptor=Immutable,IntoBytes,FromBytes,KnownLayout",
+        "--with-derive-custom-struct=EfiMemoryAttributesTableHeader=Immutable,IntoBytes,FromBytes,KnownLayout",
         "--allowlist-type",
         "(Efi.*)|(GblEfi.*)|(GBL_EFI_.*)",
         "--allowlist-var",
@@ -63,7 +63,7 @@ rust_bindgen(
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 #![allow(missing_docs)]
-use zerocopy::{AsBytes, FromBytes, FromZeroes};""",
+use zerocopy::{Immutable, IntoBytes, FromBytes, KnownLayout};""",
     ],
     cc_lib = ":efi_c_headers",
     # For x86_32, we need to explicitly specify 32bit architecture.

@@ -21,7 +21,7 @@ use liberror::{Error, Result};
 use libutils::aligned_subslice;
 use safemath::SafeNum;
 use zbi::{ZbiContainer, ZbiFlags, ZbiHeader, ZbiType};
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 mod vboot;
 use vboot::zircon_verify_kernel;
