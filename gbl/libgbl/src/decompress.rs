@@ -19,9 +19,24 @@
 extern crate alloc;
 
 use crate::{gbl_print, gbl_println, GblOps};
-use liberror::{Error, Result};
+use liberror::Error;
 use lz4_flex::decompress_into;
 use zune_inflate::DeflateDecoder;
+
+/// Returns if the data is a gzip compressed data.
+pub fn is_gzip_compressed(data: &[u8]) -> bool {
+    data.starts_with(b"\x1f\xb8")
+}
+
+/// Returns if the data is a lz4 compressed data.
+pub fn is_lz4_compressed(data: &[u8]) -> bool {
+    data.starts_with(b"\x02\x21\x4c\x18")
+}
+
+/// Returns if the data is either lz4 or gzip compressed.
+pub fn is_compressed(data: &[u8]) -> bool {
+    is_lz4_compressed(data) || is_gzip_compressed(data)
+}
 
 /// Decompresses the given kernel if necessary
 ///
@@ -35,8 +50,8 @@ pub fn decompress_kernel<'a, 'b>(
     ops: &mut impl GblOps<'a, 'b>,
     buffer: &mut [u8],
     kernel_start: usize,
-) -> Result<usize> {
-    if buffer[kernel_start..kernel_start + 2] == [0x1f, 0x8b] {
+) -> Result<usize, Error> {
+    if is_gzip_compressed(&buffer[kernel_start..]) {
         gbl_println!(ops, "kernel is gzip compressed");
         let mut decoder = DeflateDecoder::new(&buffer[kernel_start..]);
         let decompressed_data = match decoder.decode_gzip() {
@@ -50,7 +65,7 @@ pub fn decompress_kernel<'a, 'b>(
         // Move decompressed data to slice.
         buffer[kernel_start..].clone_from_slice(&decompressed_data);
         Ok(kernel_start)
-    } else if buffer[kernel_start..kernel_start + 4] == [0x02, 0x21, 0x4c, 0x18] {
+    } else if is_lz4_compressed(&buffer[kernel_start..]) {
         gbl_println!(ops, "kernel is lz4 compressed");
         let kernel_tail_buffer = &buffer[kernel_start..];
         let mut contents = &kernel_tail_buffer[4..];
@@ -83,6 +98,7 @@ pub fn decompress_kernel<'a, 'b>(
         buffer[kernel_start..].clone_from_slice(&decompressed_kernel);
         Ok(kernel_start)
     } else {
+        gbl_println!(ops, "kernel is not compressed");
         Ok(kernel_start)
     }
 }
