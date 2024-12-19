@@ -15,7 +15,10 @@
 //! Error types used in libgbl.
 
 use avb::{DescriptorError, IoError, SlotVerifyError};
-use core::fmt::{Debug, Display, Formatter};
+use core::{
+    fmt::{Debug, Display, Formatter},
+    num::TryFromIntError,
+};
 
 /// A helper macro for declaring a composite enum type that simply wraps other types as entries.
 /// It auto-generate `From<...>` implementation for each entry type. The type for each entry must
@@ -102,6 +105,7 @@ composite_enum! {
         AvbSlotVerifyError(SlotVerifyError<'static>),
         UnificationError(liberror::Error),
         ZbiError(zbi::ZbiError),
+        TryFromIntError(TryFromIntError),
     }
 }
 
