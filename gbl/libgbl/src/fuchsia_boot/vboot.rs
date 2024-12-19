@@ -17,7 +17,7 @@ use crate::{
     gbl_avb::ops::GblAvbOps,
     gbl_print, GblOps, Result as GblResult,
 };
-use avb::{slot_verify, Descriptor, HashtreeErrorMode, Ops as _, SlotVerifyError, SlotVerifyFlags};
+use avb::{slot_verify, Descriptor, HashtreeErrorMode, Ops as _, SlotVerifyFlags};
 use core::ffi::CStr;
 use zbi::ZbiContainer;
 use zerocopy::SplitByteSliceMut;
@@ -72,13 +72,13 @@ pub(crate) fn zircon_verify_kernel<'a, 'b, 'c, B: SplitByteSliceMut + PartialEq>
     let verify_res = slot_verify(&mut avb_ops, &[c"zircon"], slot_suffix(slot), flag, mode);
     let verified_success = verify_res.is_ok();
     let verify_data = match verify_res {
-        Ok(v) => {
+        Ok(ref v) => {
             gbl_print!(avb_ops.gbl_ops, "{} successfully verified.\r\n", part);
             v
         }
-        Err(SlotVerifyError::Verification(Some(v))) if unlocked => {
+        Err(ref e) if e.verification_data().is_some() && unlocked => {
             gbl_print!(avb_ops.gbl_ops, "Verification failed. Device is unlocked. Ignore.\r\n");
-            v
+            e.verification_data().unwrap()
         }
         Err(_) if unlocked => {
             gbl_print!(
