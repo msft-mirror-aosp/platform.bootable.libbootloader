@@ -29,6 +29,7 @@ def rust_crate_build_file(
         deps = [],
         proc_macro_deps = [],
         features = [],
+        edition = "2021",
         rustc_flags = []):
     """Generate BUILD file content for a rust crate
 
@@ -43,6 +44,7 @@ def rust_crate_build_file(
         deps (List of strings): The `deps` field.
         proc_macro_deps (List of strings): The `proc_macro_deps` field.
         features (List of strings): The `features` field.
+        edition (String): Rust edition.
         rustc_flags (List of strings): The `rustc_flags` field.
 
     Returns:
@@ -61,13 +63,13 @@ load("@rules_rust//rust:defs.bzl", \"{rule}\")
     crate_name = \"{}\",
     srcs = glob(["**/*.rs"]),
     crate_features = {},
-    edition = "2021",
-    rustc_flags ={},
+    edition = \"{edition}\",
+    rustc_flags = {},
     visibility = ["//visibility:public"],
     deps = {},
     proc_macro_deps = {}
 )
-""".format(name, crate_name, features, rustc_flags, deps, proc_macro_deps, rule = rule)
+""".format(name, crate_name, features, rustc_flags, deps, proc_macro_deps, edition = edition, rule = rule)
 
 def define_gbl_workspace(name = None):
     """Set up worksapce dependencies for GBL
@@ -310,7 +312,7 @@ cc_library(
         build_file_content = rust_crate_build_file(
             "mockall",
             deps = [
-                "@cfg-if",
+                "@cfg_if",
                 "@downcast",
                 "@fragile",
                 "@lazy_static",
@@ -327,7 +329,7 @@ cc_library(
         build_file_content = rust_crate_build_file(
             "mockall_derive",
             rule = "rust_proc_macro",
-            deps = ["@cfg-if", "@proc-macro2", "@quote", "@syn"],
+            deps = ["@cfg_if", "@proc_macro2", "@quote", "@syn"],
         ),
     )
 
@@ -409,31 +411,95 @@ cc_library(
         build_file_content = rust_crate_build_file(
             "zerocopy_derive",
             rule = "rust_proc_macro",
-            deps = ["@proc-macro2", "@quote", "@syn"],
+            deps = ["@proc_macro2", "@quote", "@syn"],
         ),
     )
 
-    # Following are third party rust crates dependencies which already contain a
-    # BUILD file that we can use as-is without any modification.
-    # TODO(b/383783832): migrate to android-crates-io
-    THIRD_PARTY_CRATES = [
-        "bitflags",
-        "byteorder",
-        "cfg-if",
-        "crc32fast",
-        "hex",
-        "proc-macro2",
-        "quote",
-        "syn",
-        "unicode-ident",
-    ]
+    native.new_local_repository(
+        name = "bitflags",
+        path = "external/rust/android-crates-io/crates/bitflags",
+        build_file_content = rust_crate_build_file("bitflags"),
+    )
 
-    for crate in THIRD_PARTY_CRATES:
-        native.new_local_repository(
-            name = crate,
-            path = "external/rust/crates/{}".format(crate),
-            build_file = "//external/rust/crates/{}:BUILD".format(crate),
-        )
+    native.new_local_repository(
+        name = "byteorder",
+        path = "external/rust/android-crates-io/crates/byteorder",
+        build_file_content = rust_crate_build_file("byteorder"),
+    )
+
+    native.new_local_repository(
+        name = "cfg_if",
+        path = "external/rust/android-crates-io/crates/cfg-if",
+        build_file_content = rust_crate_build_file("cfg_if"),
+    )
+
+    native.new_local_repository(
+        name = "crc32fast",
+        path = "external/rust/android-crates-io/crates/crc32fast",
+        build_file_content = rust_crate_build_file(
+            "crc32fast",
+            deps = ["@cfg_if"],
+            # Current version of the crate doesn't compile with newer editions.
+            edition = "2015",
+        ),
+    )
+
+    native.new_local_repository(
+        name = "hex",
+        path = "external/rust/android-crates-io/crates/hex",
+        build_file_content = rust_crate_build_file(
+            "hex",
+            features = ["alloc", "default", "std"],
+        ),
+    )
+
+    native.new_local_repository(
+        name = "quote",
+        path = "external/rust/android-crates-io/crates/quote",
+        build_file_content = rust_crate_build_file(
+            "quote",
+            features = ["default", "proc-macro"],
+            deps = ["@proc_macro2"],
+        ),
+    )
+
+    native.new_local_repository(
+        name = "unicode_ident",
+        path = "external/rust/android-crates-io/crates/unicode-ident",
+        build_file_content = rust_crate_build_file("unicode_ident"),
+    )
+
+    native.new_local_repository(
+        name = "syn",
+        path = "external/rust/android-crates-io/crates/syn",
+        build_file_content = rust_crate_build_file(
+            "syn",
+            features = [
+                "clone-impls",
+                "default",
+                "derive",
+                "extra-traits",
+                "full",
+                "parsing",
+                "printing",
+                "proc-macro",
+                "quote",
+                "visit",
+                "visit-mut",
+            ],
+            deps = ["@proc_macro2", "@quote", "@unicode_ident"],
+        ),
+    )
+
+    native.new_local_repository(
+        name = "proc_macro2",
+        path = "external/rust/android-crates-io/crates/proc-macro2",
+        build_file_content = rust_crate_build_file(
+            "proc_macro2",
+            deps = ["@unicode_ident"],
+            features = ["default", "proc-macro", "span-locations"],
+        ),
+    )
 
     # Set up a repo to export LLVM tool/library/header/sysroot paths
     gbl_llvm_prebuilts(name = "gbl_llvm_prebuilts")
