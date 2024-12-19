@@ -17,7 +17,7 @@
 use core::fmt::{Display, Formatter};
 
 /// https://source.android.com/docs/security/features/verifiedboot/boot-flow#communicating-verified-boot-state-to-users
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum BootStateColor {
     /// Success .
     Green,

@@ -393,6 +393,26 @@ cc_library(
         build_file = "//prebuilts/fuchsia_sdk:BUILD.zbi.bazel",
     )
 
+    native.new_local_repository(
+        name = "zerocopy",
+        path = "external/rust/android-crates-io/crates/zerocopy",
+        build_file_content = rust_crate_build_file(
+            "zerocopy",
+            features = ["derive", "simd", "zerocopy-derive"],
+            proc_macro_deps = ["@zerocopy_derive"],
+        ),
+    )
+
+    native.new_local_repository(
+        name = "zerocopy_derive",
+        path = "external/rust/android-crates-io/crates/zerocopy-derive",
+        build_file_content = rust_crate_build_file(
+            "zerocopy_derive",
+            rule = "rust_proc_macro",
+            deps = ["@proc-macro2", "@quote", "@syn"],
+        ),
+    )
+
     # Following are third party rust crates dependencies which already contain a
     # BUILD file that we can use as-is without any modification.
     # TODO(b/383783832): migrate to android-crates-io
@@ -406,8 +426,6 @@ cc_library(
         "quote",
         "syn",
         "unicode-ident",
-        "zerocopy",
-        "zerocopy-derive",
     ]
 
     for crate in THIRD_PARTY_CRATES:

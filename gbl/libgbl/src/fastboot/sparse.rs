@@ -18,7 +18,7 @@ use core::{
 };
 use liberror::Error;
 use static_assertions::const_assert;
-use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
+use zerocopy::{FromBytes, Immutable, IntoBytes, Ref};
 
 // TODO(b/331854173): Switch to use bindgen for the following type definitions once
 // system/core/libsparse is added to repo checkout.
@@ -33,7 +33,7 @@ const SPARSE_HEADER_MAJOR_VER: u16 = 1;
 const SPARSE_HEADER_MINOR_VER: u16 = 0;
 
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Default, Copy, Clone, Immutable, IntoBytes, FromBytes)]
 pub struct SparseHeader {
     pub magic: u32,
     pub major_version: u16,
@@ -54,7 +54,7 @@ impl SparseHeader {
 }
 
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Default, Copy, Clone, IntoBytes, FromBytes)]
 pub struct ChunkHeader {
     pub chunk_type: u16,
     pub reserved1: u16,
@@ -100,7 +100,7 @@ pub fn is_sparse_image(sparse_img: &[u8]) -> Result<SparseHeader, Error> {
 /// first pass, we are guaranteed to have at least 1/3 of the input buffer free to use as fill
 /// buffer.
 #[repr(C, packed)]
-#[derive(Debug, Default, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Default, Copy, Clone, Immutable, IntoBytes, FromBytes)]
 struct FillInfo {
     // Number of blocks to fill.
     pub fill_blocks: u32,
@@ -212,7 +212,7 @@ pub async fn write_sparse_image(
 /// `FillUnit` is a packed C struct wrapping a u32. It is mainly used for filling a buffer of
 /// arbitrary alignment with a u32 value.
 #[repr(C, packed)]
-#[derive(Debug, Default, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Default, Copy, Clone, Immutable, IntoBytes, FromBytes)]
 struct FillUnit(u32);
 
 /// `FillBuffer` manages a buffer and provides API for making a fill buffer with the given value.
@@ -258,7 +258,7 @@ fn get<L: TryInto<usize>, R: TryInto<usize>>(
 }
 
 /// A helper to return a copy of a zerocopy object from bytes.
-fn copy_from<T: AsBytes + FromBytes + Default>(bytes: &[u8]) -> Result<T, Error> {
+fn copy_from<T: IntoBytes + FromBytes + Default>(bytes: &[u8]) -> Result<T, Error> {
     let mut res: T = Default::default();
     res.as_bytes_mut().clone_from_slice(get(bytes, 0, size_of::<T>())?);
     Ok(res)
@@ -331,7 +331,7 @@ mod test {
     }
 
     /// A helper to copy a zerocopy object into a buffer
-    fn copy_to<T: AsBytes + FromBytes>(val: &T, bytes: &mut [u8]) {
+    fn copy_to<T: Immutable + IntoBytes + FromBytes>(val: &T, bytes: &mut [u8]) {
         bytes[..size_of::<T>()].clone_from_slice(val.as_bytes());
     }
 

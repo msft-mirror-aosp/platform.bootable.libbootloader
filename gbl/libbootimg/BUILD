@@ -45,7 +45,7 @@ BLOCKED_ITEMS_RE = "_.+|.?INT.+|PTR.+|ATOMIC.+|.+SOURCE|.+_H|SIG_.+|SIZE_.+|.?CH
 
 CUSTOM_STRUCT_RE = "(vendor_)?(boot_img_hdr|ramdisk_table_entry)_v\\d+"
 
-CUSTOM_STRUCT_DERIVES = "AsBytes,FromBytes,FromZeroes,PartialEq,Copy,Clone,Debug"
+CUSTOM_STRUCT_DERIVES = "Immutable,IntoBytes,FromBytes,KnownLayout,PartialEq,Copy,Clone,Debug"
 
 rust_bindgen(
     name = "bootimg_defs_bindgen",
@@ -65,7 +65,7 @@ rust_bindgen(
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 #![cfg_attr(not(test), no_std)]
-use zerocopy::{AsBytes, FromBytes, FromZeroes};""",
+use zerocopy::{Immutable, IntoBytes, FromBytes, KnownLayout};""",
     ],
     cc_lib = ":bootimg_cc_header",
     clang_flags = select(

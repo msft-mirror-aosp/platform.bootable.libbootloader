@@ -24,7 +24,7 @@
 
 use core::ffi::CStr;
 
-use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref};
 
 use liberror::{Error, Result};
 
@@ -55,7 +55,7 @@ impl core::fmt::Display for AndroidBootMode {
 /// Reference code:
 /// https://cs.android.com/android/platform/superproject/main/+/95ec3cc1d879b92dd9db3bb4c4345c5fc812cdaa:bootable/recovery/bootloader_message/include/bootloader_message/bootloader_message.h;l=67
 #[repr(C, packed)]
-#[derive(AsBytes, FromBytes, FromZeroes, PartialEq, Copy, Clone, Debug)]
+#[derive(IntoBytes, FromBytes, Immutable, KnownLayout, PartialEq, Copy, Clone, Debug)]
 pub struct BootloaderMessage {
     command: [u8; 32],
     status: [u8; 32],
@@ -70,10 +70,12 @@ impl BootloaderMessage {
 
     /// Extract BootloaderMessage reference from bytes
     pub fn from_bytes_ref(buffer: &[u8]) -> Result<&BootloaderMessage> {
-        Ok(Ref::<_, BootloaderMessage>::new_from_prefix(buffer)
-            .ok_or(Error::BufferTooSmall(Some(core::mem::size_of::<BootloaderMessage>())))?
-            .0
-            .into_ref())
+        Ok(Ref::into_ref(
+            Ref::<_, BootloaderMessage>::new_from_prefix(buffer)
+                .ok_or(Error::BufferTooSmall(Some(core::mem::size_of::<BootloaderMessage>())))?
+                .0
+                .into(),
+        ))
     }
 
     /// Extract AndroidBootMode from BCB command field
@@ -96,7 +98,7 @@ impl BootloaderMessage {
 mod test {
     use crate::AndroidBootMode;
     use crate::BootloaderMessage;
-    use zerocopy::AsBytes;
+    use zerocopy::IntoBytes;
 
     impl Default for BootloaderMessage {
         fn default() -> Self {

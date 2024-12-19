@@ -35,7 +35,7 @@ use liberror::Error;
 use libutils::aligned_subslice;
 use misc::{AndroidBootMode, BootloaderMessage};
 use safemath::SafeNum;
-use zerocopy::{AsBytes, ByteSlice};
+use zerocopy::{ByteSlice, IntoBytes, Ref};
 
 #[cfg(target_arch = "aarch64")]
 use crate::decompress::decompress_kernel;
@@ -183,7 +183,7 @@ fn vendor_header_elements<B: ByteSlice + PartialEq>(
     Ok(match hdr {
         VendorImageHeader::V3(ref hdr) => (
             hdr.vendor_ramdisk_size as usize,
-            SafeNum::from(hdr.bytes().len())
+            SafeNum::from(Ref::bytes(hdr).len())
                 .round_up(hdr.page_size)
                 .try_into()
                 .map_err(Error::from)?,
@@ -195,7 +195,7 @@ fn vendor_header_elements<B: ByteSlice + PartialEq>(
         ),
         VendorImageHeader::V4(ref hdr) => (
             hdr._base.vendor_ramdisk_size as usize,
-            SafeNum::from(hdr.bytes().len())
+            SafeNum::from(Ref::bytes(hdr).len())
                 .round_up(hdr._base.page_size)
                 .try_into()
                 .map_err(Error::from)?,
@@ -557,4 +557,59 @@ pub fn load_android_simple<'a, 'b, 'c>(
     let (kernel, remains) = kernel.split_at_mut(kernel_size);
 
     Ok((ramdisk, fdt, kernel, remains))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        ops::test::{FakeGblOps, FakeGblOpsStorage},
+        tests::AlignedBuffer,
+    };
+    use std::{collections::HashMap, fs, path::Path};
+
+    /// Reads a data file under libgbl/testdata/
+    fn read_test_data(file: &str) -> Vec<u8> {
+        println!("reading file: {file}");
+        fs::read(Path::new(format!("external/gbl/libgbl/testdata/android/{}", file).as_str()))
+            .unwrap()
+    }
+
+    // TODO(b/384964561): This is a temporaray test for making sure the generated images work. It
+    // will be replaced with more thorough tests as we productionizes `load_android_simple`.
+    #[test]
+    fn test_load_android_simple() {
+        const TEST_ROLLBACK_INDEX_LOCATION: usize = 1;
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"boot_a", read_test_data("boot_no_ramdisk_v4_a.img"));
+        storage.add_raw_device(c"init_boot_a", read_test_data("init_boot_a.img"));
+        storage.add_raw_device(c"vendor_boot_a", read_test_data("vendor_boot_v4_a.img"));
+        storage.add_raw_device(c"vbmeta_a", read_test_data("vbmeta_v4_v4_init_boot_a.img"));
+        storage.add_raw_device(c"misc", vec![0u8; 4 * 1024 * 1024]);
+        let mut ops = FakeGblOps::new(&storage);
+        ops.avb_ops.unlock_state = Ok(false);
+        ops.avb_ops.rollbacks = HashMap::from([(TEST_ROLLBACK_INDEX_LOCATION, Ok(0))]);
+        let fdt = AlignedBuffer::new_with_data(
+            include_bytes!("../../../libfdt/test/data/base.dtb"),
+            FDT_ALIGNMENT,
+        );
+        ops.custom_device_tree = Some(&fdt);
+        let mut load_buffer = AlignedBuffer::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
+        let mut out_color = None;
+        let mut handler = |color,
+                           _: Option<&CStr>,
+                           _: Option<&[u8]>,
+                           _: Option<&[u8]>,
+                           _: Option<&[u8]>,
+                           _: Option<&[u8]>,
+                           _: Option<&[u8]>,
+                           _: Option<&[u8]>| {
+            out_color = Some(color);
+            Ok(())
+        };
+        ops.avb_handle_verification_result = Some(&mut handler);
+        ops.avb_key_validation_status = Some(Ok(KeyValidationStatus::Valid));
+        load_android_simple(&mut ops, &mut load_buffer).unwrap();
+        assert_eq!(out_color, Some(BootStateColor::Green));
+    }
 }
