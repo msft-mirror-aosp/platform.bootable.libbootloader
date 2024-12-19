@@ -284,20 +284,21 @@ pub fn zircon_check_enter_fastboot<'a, 'b>(ops: &mut impl GblOps<'a, 'b>) -> boo
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::ops::{
-        test::{FakeGblOps, FakeGblOpsStorage, TestGblDisk},
-        CertPermanentAttributes,
+    use crate::{
+        ops::{
+            test::{FakeGblOps, FakeGblOpsStorage, TestGblDisk},
+            CertPermanentAttributes,
+        },
+        tests::AlignedBuffer,
     };
     use abr::{
         mark_slot_active, mark_slot_unbootable, set_one_shot_bootloader, ABR_MAX_TRIES_REMAINING,
     };
     use avb_bindgen::{AVB_CERT_PIK_VERSION_LOCATION, AVB_CERT_PSK_VERSION_LOCATION};
     use gbl_storage::as_uninit_mut;
-    use libutils::aligned_offset;
     use std::{
         collections::{BTreeSet, HashMap, LinkedList},
         fs,
-        ops::{Deref, DerefMut},
         path::Path,
     };
     use zbi::ZBI_ALIGNMENT_USIZE;
@@ -384,43 +385,6 @@ mod test {
         ops.avb_ops.cert_permanent_attributes_hash =
             Some(read_test_data("cert_permanent_attributes.hash").try_into().unwrap());
         ops
-    }
-
-    // Helper object for allocating aligned buffer.
-    pub(crate) struct AlignedBuffer {
-        buffer: Vec<u8>,
-        size: usize,
-        alignment: usize,
-    }
-
-    impl AlignedBuffer {
-        /// Allocates a buffer.
-        pub(crate) fn new(size: usize, alignment: usize) -> Self {
-            Self { buffer: vec![0u8; alignment + size - 1], size, alignment }
-        }
-
-        /// Allocates a buffer and initializes with data.
-        pub(crate) fn new_with_data(data: &[u8], alignment: usize) -> Self {
-            let mut res = Self::new(data.len(), alignment);
-            res.clone_from_slice(data);
-            res
-        }
-    }
-
-    impl Deref for AlignedBuffer {
-        type Target = [u8];
-
-        fn deref(&self) -> &Self::Target {
-            let off = aligned_offset(&self.buffer, self.alignment).unwrap();
-            &self.buffer[off..][..self.size]
-        }
-    }
-
-    impl DerefMut for AlignedBuffer {
-        fn deref_mut(&mut self) -> &mut Self::Target {
-            let off = aligned_offset(&self.buffer, self.alignment).unwrap();
-            &mut self.buffer[off..][..self.size]
-        }
     }
 
     /// Normalizes a ZBI container by converting each ZBI item into raw bytes and storing them in
