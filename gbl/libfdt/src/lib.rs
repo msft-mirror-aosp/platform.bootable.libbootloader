@@ -29,7 +29,7 @@ use libfdt_bindgen::{
     fdt_setprop_placeholder, fdt_strerror, fdt_subnode_offset_namelen,
 };
 use libufdt_bindgen::ufdt_apply_multioverlay;
-use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref};
 
 /// Fdt header structure size.
 pub const FDT_HEADER_SIZE: usize = size_of::<FdtHeader>();
@@ -100,7 +100,7 @@ fn fdt_subnode_offset(fdt: &[u8], parent: c_int, name: &str) -> Result<c_int> {
 
 /// Rust wrapper for the FDT header data.
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes, PartialEq)]
+#[derive(Debug, Copy, Clone, Immutable, IntoBytes, KnownLayout, FromBytes, PartialEq)]
 pub struct FdtHeader(fdt_header);
 
 impl FdtHeader {
@@ -125,20 +125,22 @@ impl FdtHeader {
     pub fn from_bytes_ref(buffer: &[u8]) -> Result<&FdtHeader> {
         fdt_check_header(buffer)?;
 
-        Ok(Ref::<_, FdtHeader>::new_from_prefix(buffer)
-            .ok_or(Error::BufferTooSmall(Some(FDT_HEADER_SIZE)))?
-            .0
-            .into_ref())
+        Ok(Ref::into_ref(
+            Ref::<_, FdtHeader>::new_from_prefix(buffer)
+                .ok_or(Error::BufferTooSmall(Some(FDT_HEADER_SIZE)))?
+                .0,
+        ))
     }
 
     /// Cast a bytes into a mutable reference of FDT header.
     pub fn from_bytes_mut(buffer: &mut [u8]) -> Result<&mut FdtHeader> {
         fdt_check_header(buffer)?;
 
-        Ok(Ref::<_, FdtHeader>::new_from_prefix(buffer)
-            .ok_or(Error::BufferTooSmall(Some(FDT_HEADER_SIZE)))?
-            .0
-            .into_mut())
+        Ok(Ref::into_mut(
+            Ref::<_, FdtHeader>::new_from_prefix(buffer)
+                .ok_or(Error::BufferTooSmall(Some(FDT_HEADER_SIZE)))?
+                .0,
+        ))
     }
 
     /// Get FDT header and raw bytes from a raw pointer.

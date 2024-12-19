@@ -25,7 +25,7 @@ use core::ops::{BitAnd, BitOr, Not, Shl, Shr};
 use crc32fast::Hasher;
 use liberror::Error;
 use zerocopy::byteorder::little_endian::U32 as LittleEndianU32;
-use zerocopy::{AsBytes, ByteSlice, FromBytes, FromZeroes, Ref};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, SplitByteSlice};
 
 extern crate static_assertions;
 
@@ -68,7 +68,7 @@ const DEFAULT_RETRIES: u8 = 7;
 ///
 /// Does NOT contain unbootable reason information.
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Immutable, IntoBytes, FromBytes, KnownLayout)]
 struct SlotMetaData(u16);
 
 #[allow(dead_code)]
@@ -134,7 +134,9 @@ impl Default for SlotMetaData {
     }
 }
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(
+    Copy, Clone, Debug, Default, PartialEq, Eq, Immutable, IntoBytes, FromBytes, KnownLayout,
+)]
 #[repr(C, packed)]
 struct ControlBits(u16);
 
@@ -196,7 +198,7 @@ const BOOT_CTRL_VERSION: u8 = 1;
 ///
 /// Does NOT support oneshots
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Immutable, IntoBytes, FromBytes, KnownLayout)]
 struct BootloaderControl {
     slot_suffix: [u8; 4],
     magic: u32,
@@ -242,7 +244,7 @@ impl Default for BootloaderControl {
 }
 
 impl MetadataBytes for BootloaderControl {
-    fn validate<B: ByteSlice>(buffer: B) -> Result<Ref<B, Self>, Error> {
+    fn validate<B: SplitByteSlice>(buffer: B) -> Result<Ref<B, Self>, Error> {
         let boot_control_data = Ref::<B, Self>::new_from_prefix(buffer)
             .ok_or(Error::BufferTooSmall(Some(size_of::<BootloaderControl>())))?
             .0;

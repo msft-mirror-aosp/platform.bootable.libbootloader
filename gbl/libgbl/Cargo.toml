@@ -29,7 +29,7 @@ gbl_storage = {version = "0.1", path = "../libstorage"}
 spin = "0.9"
 static_assertions = "0"
 lazy_static = "1"
-zerocopy = {version = "=0.7.32"}
+zerocopy = {version = "=0.8"}
 crc32fast = "1.3"
 
 [dev-dependencies]

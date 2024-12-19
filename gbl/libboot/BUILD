@@ -35,7 +35,7 @@ cc_library(
     deps = ["@linux_x86_64_sysroot//:linux_x86_64_sysroot_include"],
 )
 
-CUSTOM_DERIVES = "AsBytes,FromBytes,FromZeroes"
+CUSTOM_DERIVES = "Immutable,IntoBytes,FromBytes"
 
 rust_bindgen(
     name = "x86_bootparam_bindgen",
@@ -53,7 +53,7 @@ rust_bindgen(
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 #![cfg_attr(not(test), no_std)]
-use zerocopy::{AsBytes, FromBytes, FromZeroes};""",
+use zerocopy::{Immutable, IntoBytes, FromBytes};""",
     ],
     cc_lib = ":bindgen_cc_lib",
     header = "@linux_x86_64_sysroot//:sysroot/usr/include/x86_64-linux-gnu/asm/bootparam.h",
@@ -64,6 +64,7 @@ rust_library(
     srcs = [":x86_bootparam_bindgen"],
     crate_root = ":x86_bootparam_bindgen",
     data = [":x86_bootparam_bindgen"],
+    rustc_flags = ["--cfg=zerocopy_derive_union_into_bytes"],
     deps = ["@zerocopy"],
 )
 
