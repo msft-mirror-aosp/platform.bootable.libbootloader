@@ -425,8 +425,8 @@ where
             if matches!(
                 avb_error,
                 SlotVerifyError::Verification(_)
-                    | SlotVerifyError::PublicKeyRejected
-                    | SlotVerifyError::RollbackIndex
+                    | SlotVerifyError::PublicKeyRejected(_)
+                    | SlotVerifyError::RollbackIndex(_)
             ) {
                 return true;
             }
@@ -735,7 +735,7 @@ mod tests {
         );
         assert_eq!(
             res.unwrap_err(),
-            IntegrationError::AvbSlotVerifyError(SlotVerifyError::PublicKeyRejected)
+            IntegrationError::AvbSlotVerifyError(SlotVerifyError::PublicKeyRejected(None))
         );
     }
 }
