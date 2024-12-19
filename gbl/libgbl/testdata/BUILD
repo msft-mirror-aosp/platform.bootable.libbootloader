@@ -13,3 +13,12 @@
 # limitations under the License.
 
 exports_files(glob(["**/*"]))
+
+filegroup(
+    name = "testdata",
+    srcs = glob(
+        ["**/*"],
+        exclude = [":gen_test_data.py"],
+    ),
+    visibility = ["//visibility:public"],
+)

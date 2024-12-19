@@ -137,7 +137,7 @@ impl<'a, 'p, 'q, T: GblOps<'p, 'q>> GblAvbOps<'a, T> {
             vendor_data.get_property_value("com.android.build.vendor.security_patch");
 
         // Convert digest rust string to null-terminated string by copying it into separate buffer.
-        let mut digest_buffer = ArrayString::<{ SHA512_DIGEST_SIZE + 1 }>::new();
+        let mut digest_buffer = ArrayString::<{ 2 * SHA512_DIGEST_SIZE + 1 }>::new();
         let digest_cstr = match digest {
             Some(digest) => {
                 write!(digest_buffer, "{}\0", digest).or(Err(IoError::InvalidValueSize))?;

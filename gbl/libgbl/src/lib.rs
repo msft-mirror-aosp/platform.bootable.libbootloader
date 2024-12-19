@@ -521,8 +521,50 @@ mod tests {
     use crate::ops::test::FakeGblOps;
     use avb::{CertPermanentAttributes, SlotVerifyError};
     use avb_test::{FakeVbmetaKey, TestOps};
-    use std::{fs, path::Path};
+    use libutils::aligned_offset;
+    use std::{
+        fs,
+        ops::{Deref, DerefMut},
+        path::Path,
+    };
     use zerocopy::FromBytes;
+
+    // Helper object for allocating aligned buffer.
+    pub(crate) struct AlignedBuffer {
+        buffer: Vec<u8>,
+        size: usize,
+        alignment: usize,
+    }
+
+    impl AlignedBuffer {
+        /// Allocates a buffer.
+        pub(crate) fn new(size: usize, alignment: usize) -> Self {
+            Self { buffer: vec![0u8; alignment + size - 1], size, alignment }
+        }
+
+        /// Allocates a buffer and initializes with data.
+        pub(crate) fn new_with_data(data: &[u8], alignment: usize) -> Self {
+            let mut res = Self::new(data.len(), alignment);
+            res.clone_from_slice(data);
+            res
+        }
+    }
+
+    impl Deref for AlignedBuffer {
+        type Target = [u8];
+
+        fn deref(&self) -> &Self::Target {
+            let off = aligned_offset(&self.buffer, self.alignment).unwrap();
+            &self.buffer[off..][..self.size]
+        }
+    }
+
+    impl DerefMut for AlignedBuffer {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            let off = aligned_offset(&self.buffer, self.alignment).unwrap();
+            &mut self.buffer[off..][..self.size]
+        }
+    }
 
     const TEST_ZIRCON_PARTITION_NAME: &str = "zircon_a";
     const TEST_ZIRCON_PARTITION_NAME_CSTR: &CStr = c"zircon_a";
