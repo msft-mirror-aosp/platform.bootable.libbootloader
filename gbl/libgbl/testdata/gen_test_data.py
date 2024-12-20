@@ -136,18 +136,18 @@ def gen_android_test_images():
         temp_dir = pathlib.Path(temp_dir)
         out_dir = SCRIPT_DIR / "android"
         out_dir.mkdir(parents=True, exist_ok=True)
-        for suffix in ["a", "b"]:
-            random.seed(RNG_SEED_ANDROID[suffix])
-            kernel = out_dir / f"kernel_{suffix}.img"
+        for slot in ["a", "b"]:
+            random.seed(RNG_SEED_ANDROID[slot])
+            kernel = out_dir / f"kernel_{slot}.img"
             kernel.write_bytes(random.randbytes(4 * SZ_KB))
 
-            generic_ramdisk = out_dir / f"generic_ramdisk_{suffix}.img"
+            generic_ramdisk = out_dir / f"generic_ramdisk_{slot}.img"
             generic_ramdisk.write_bytes(random.randbytes(8 * SZ_KB))
 
-            vendor_ramdisk = out_dir / f"vendor_ramdisk_{suffix}.img"
+            vendor_ramdisk = out_dir / f"vendor_ramdisk_{slot}.img"
             vendor_ramdisk.write_bytes(random.randbytes(12 * SZ_KB))
 
-            vendor_bootconfig = temp_dir / f"vendor_bootconfig_{suffix}.img"
+            vendor_bootconfig = temp_dir / f"vendor_bootconfig_{slot}.img"
             vendor_bootconfig.write_bytes(b"""\
 androidboot.config_1=val_1
 androidboot.config_2=val_2
@@ -167,7 +167,7 @@ androidboot.config_2=val_2
                 GBL_ROOT / "libfdt" / "test" / "data" / "base.dtb",
             ]
             for i in [3, 4]:
-                out = out_dir / f"boot_no_ramdisk_v{i}_{suffix}.img"
+                out = out_dir / f"boot_no_ramdisk_v{i}_{slot}.img"
                 subprocess.run(
                     common + ["--header_version", f"{i}", "-o", out],
                     check=True,
@@ -180,7 +180,7 @@ androidboot.config_2=val_2
                 generic_ramdisk,
             ]
             for i in range(0, 5):
-                out = out_dir / f"boot_v{i}_{suffix}.img"
+                out = out_dir / f"boot_v{i}_{slot}.img"
                 subprocess.run(
                     common + ["--header_version", f"{i}", "-o", out],
                     check=True,
@@ -192,7 +192,7 @@ androidboot.config_2=val_2
                 [
                     MKBOOTIMG_TOOL,
                     "-o",
-                    out_dir / f"init_boot_{suffix}.img",
+                    out_dir / f"init_boot_{slot}.img",
                     "--ramdisk",
                     generic_ramdisk,
                     # init_boot uses fixed version 4.
@@ -216,7 +216,7 @@ androidboot.config_2=val_2
                 common
                 + [
                     "--vendor_boot",
-                    out_dir / f"vendor_boot_v3_{suffix}.img",
+                    out_dir / f"vendor_boot_v3_{slot}.img",
                     "--header_version",
                     "3",
                 ],
@@ -228,7 +228,7 @@ androidboot.config_2=val_2
                 common
                 + [
                     "--vendor_boot",
-                    out_dir / f"vendor_boot_v4_{suffix}.img",
+                    out_dir / f"vendor_boot_v4_{slot}.img",
                     "--vendor_bootconfig",
                     vendor_bootconfig,
                     "--header_version",
@@ -238,24 +238,25 @@ androidboot.config_2=val_2
                 check=True,
             )
 
+            # Generates a vbmeta data for v0 - v2 setup
+            for i in [0, 1, 2]:
+                parts = [(f"boot_{slot}", out_dir / f"boot_v{i}_{slot}.img")]
+                gen_android_test_vbmeta(
+                    parts, out_dir / f"vbmeta_v{i}_{slot}.img"
+                )
+
             # Generates a vbmeta data for the v4 boot/vendor_boot + init_boot test setup.
-            part_and_file_paris = [
+            part_and_file_pairs = [
+                (f"boot_{slot}", out_dir / f"boot_no_ramdisk_v4_{slot}.img"),
                 (
-                    f"boot_{suffix}",
-                    out_dir / f"boot_no_ramdisk_v4_{suffix}.img",
+                    f"init_boot_{slot}",
+                    out_dir / f"boot_no_ramdisk_v4_{slot}.img",
                 ),
-                (
-                    f"init_boot_{suffix}",
-                    out_dir / f"boot_no_ramdisk_v4_{suffix}.img",
-                ),
-                (
-                    f"vendor_boot_{suffix}",
-                    out_dir / f"vendor_boot_v4_{suffix}.img",
-                ),
+                (f"vendor_boot_{slot}", out_dir / f"vendor_boot_v4_{slot}.img"),
             ]
             gen_android_test_vbmeta(
-                part_and_file_paris,
-                out_dir / f"vbmeta_v4_v4_init_boot_{suffix}.img",
+                part_and_file_pairs,
+                out_dir / f"vbmeta_v4_v4_init_boot_{slot}.img",
             )
 
 
@@ -270,10 +271,10 @@ def gen_zircon_test_images(zbi_tool):
     ATX_METADATA = AVB_TEST_DATA_DIR / "cert_metadata.bin"
 
     with tempfile.TemporaryDirectory() as temp_dir:
-        for suffix in ["a", "b", "r", "slotless"]:
+        for slot in ["a", "b", "r", "slotless"]:
             temp_dir = pathlib.Path(temp_dir)
-            random.seed(RNG_SEED_ZIRCON[suffix])
-            out_kernel_bin_file = temp_dir / f"zircon_{suffix}.bin"
+            random.seed(RNG_SEED_ZIRCON[slot])
+            out_kernel_bin_file = temp_dir / f"zircon_{slot}.bin"
             # The first 16 bytes are two u64 integers representing `entry` and
             # `reserve_memory_size`.
             # Set `entry` value to 2048 and `reserve_memory_size` to 1024.
@@ -282,7 +283,7 @@ def gen_zircon_test_images(zbi_tool):
             )
             kernel_bytes += random.randbytes(1 * SZ_KB - 16)
             out_kernel_bin_file.write_bytes(kernel_bytes)
-            out_zbi_file = SCRIPT_DIR / f"zircon_{suffix}.zbi"
+            out_zbi_file = SCRIPT_DIR / f"zircon_{slot}.zbi"
             # Puts image in a zbi container.
             subprocess.run([
                 zbi_tool,
@@ -293,7 +294,7 @@ def gen_zircon_test_images(zbi_tool):
             ])
 
             # Generates vbmeta descriptor.
-            vbmeta_desc = f"{temp_dir}/zircon_{suffix}.vbmeta.desc"
+            vbmeta_desc = f"{temp_dir}/zircon_{slot}.vbmeta.desc"
             subprocess.run([
                 AVB_TOOL,
                 "add_hash_footer",
@@ -330,7 +331,7 @@ def gen_zircon_test_images(zbi_tool):
                     f"vb_prop_{i}:{prop_zbi_payload}",
                 ]
             # Generates vbmeta image
-            vbmeta_img = SCRIPT_DIR / f"vbmeta_{suffix}.bin"
+            vbmeta_img = SCRIPT_DIR / f"vbmeta_{slot}.bin"
             subprocess.run(
                 [
                     AVB_TOOL,

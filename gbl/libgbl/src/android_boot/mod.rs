@@ -32,6 +32,9 @@ use zerocopy::{ByteSlice, IntoBytes, Ref};
 mod vboot;
 use vboot::avb_verify_slot;
 
+mod load;
+pub use load::{android_load_verify, LoadedImages};
+
 #[cfg(target_arch = "aarch64")]
 use crate::decompress::decompress_kernel;
 
