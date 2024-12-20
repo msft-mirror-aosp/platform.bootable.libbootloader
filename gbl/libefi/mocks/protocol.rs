@@ -164,7 +164,7 @@ pub mod gbl_efi_os_configuration {
             pub fn fixup_kernel_commandline(
                 &self,
                 commandline: &CStr,
-                fixup: &[u8],
+                fixup: &mut [u8],
             ) -> Result<()>;
 
             /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.fixup_bootconfig()`
