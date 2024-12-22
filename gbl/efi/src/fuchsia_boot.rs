@@ -32,7 +32,7 @@ use libgbl::{
 };
 use safemath::SafeNum;
 use zbi::{zbi_format::zbi_mem_range_t, ZbiContainer, ZbiFlags, ZbiType};
-use zerocopy::{ByteSliceMut, Ref};
+use zerocopy::{Ref, SplitByteSliceMut};
 
 const PAGE_SIZE: u64 = 4096;
 
@@ -121,7 +121,7 @@ fn add_memory_items<B>(
     zbi_items: &mut ZbiContainer<B>,
 ) -> Result<()>
 where
-    B: ByteSliceMut + PartialEq,
+    B: SplitByteSliceMut + PartialEq,
 {
     generate_efi_memory_attributes_table_item(
         efi_memory_map,
@@ -140,7 +140,7 @@ fn generate_efi_memory_attributes_table_item<'b, B>(
     zbi_items: &mut ZbiContainer<B>,
 ) -> Result<()>
 where
-    B: ByteSliceMut + PartialEq,
+    B: SplitByteSliceMut + PartialEq,
 {
     let payload = zbi_items.get_next_payload()?;
     let provided_payload_size = payload.len();
@@ -242,7 +242,7 @@ fn generate_mem_config_item<'b, B>(
     zbi_items: &mut ZbiContainer<B>,
 ) -> Result<()>
 where
-    B: ByteSliceMut + PartialEq,
+    B: SplitByteSliceMut + PartialEq,
 {
     let mut tail = zbi_items.get_next_payload()?;
     let provided_payload_size = tail.len();

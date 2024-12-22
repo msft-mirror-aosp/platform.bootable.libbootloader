@@ -722,7 +722,7 @@ impl<'a, 'b> Iterator for EfiMemoryMapIter<'a, 'b> {
         }
         let bytes = &self.memory_map.buffer[self.offset..][..self.memory_map.descriptor_size];
         self.offset += self.memory_map.descriptor_size;
-        Some(Ref::<_, EfiMemoryDescriptor>::new_from_prefix(bytes).unwrap().0.into_ref())
+        Some(Ref::into_ref(Ref::<_, EfiMemoryDescriptor>::new_from_prefix(bytes).unwrap().0))
     }
 }
 
@@ -788,8 +788,9 @@ impl<'a> Iterator for EfiMemoryAttributesTableIter<'a> {
         // pieces greater than struct size. Thus can't just convert buffer to slice of
         // corresponding type.
         if let Some((desc_bytes, tail_new)) = self.tail.split_at_checked(self.descriptor_size) {
-            let desc =
-                Ref::<_, EfiMemoryDescriptor>::new_from_prefix(desc_bytes).unwrap().0.into_ref();
+            let desc = Ref::into_ref(
+                Ref::<_, EfiMemoryDescriptor>::new_from_prefix(desc_bytes).unwrap().0,
+            );
             self.tail = tail_new;
             Some(desc)
         } else {
@@ -946,7 +947,7 @@ mod test {
         EFI_STATUS_NOT_READY, EFI_STATUS_SUCCESS, EFI_STATUS_UNSUPPORTED,
     };
     use std::{cell::RefCell, collections::VecDeque, mem::size_of, slice::from_raw_parts_mut};
-    use zerocopy::AsBytes;
+    use zerocopy::IntoBytes;
 
     /// Helper function to generate a Protocol from an interface type.
     pub fn generate_protocol<'a, P: ProtocolInfo>(

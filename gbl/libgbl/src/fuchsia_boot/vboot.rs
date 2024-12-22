@@ -20,7 +20,7 @@ use crate::{
 use avb::{slot_verify, Descriptor, HashtreeErrorMode, Ops as _, SlotVerifyError, SlotVerifyFlags};
 use core::ffi::CStr;
 use zbi::ZbiContainer;
-use zerocopy::ByteSliceMut;
+use zerocopy::SplitByteSliceMut;
 
 /// Helper for getting the A/B/R suffix.
 fn slot_suffix(slot: Option<SlotIndex>) -> Option<&'static CStr> {
@@ -40,13 +40,19 @@ fn slot_suffix(slot: Option<SlotIndex>) -> Option<&'static CStr> {
 /// * slot_booted_successfully - if true, roll back indexes will be increased
 /// * zbi_kernel - preloaded kernel to verify
 /// * zbi_items - vbmeta items will be appended to this ZbiContainer
-pub(crate) fn zircon_verify_kernel<'a, 'b, 'c, B: ByteSliceMut + PartialEq>(
+pub(crate) fn zircon_verify_kernel<'a, 'b, 'c, B: SplitByteSliceMut + PartialEq>(
     gbl_ops: &mut impl GblOps<'b, 'c>,
     slot: Option<SlotIndex>,
     slot_booted_successfully: bool,
     zbi_kernel: &'a mut [u8],
     zbi_items: &mut ZbiContainer<B>,
 ) -> GblResult<()> {
+    // Copy ZBI items after kernel first. Because ordering matters, and new items should override
+    // older ones.
+    // TODO(b/379778252) It is not as efficient as moving kernel since ZBI items would contain file
+    // system and be bigger than kernel.
+    copy_items_after_kernel(zbi_kernel, zbi_items)?;
+
     let (kernel, _) = zbi_split_unused_buffer(&mut zbi_kernel[..])?;
 
     // Verifies the kernel.
@@ -121,7 +127,7 @@ pub(crate) fn zircon_verify_kernel<'a, 'b, 'c, B: ByteSliceMut + PartialEq>(
 }
 
 /// Copy ZBI items following kernel to separate container.
-pub fn copy_items_after_kernel<'a, B: ByteSliceMut + PartialEq>(
+pub fn copy_items_after_kernel<'a, B: SplitByteSliceMut + PartialEq>(
     zbi_kernel: &'a mut [u8],
     zbi_items: &mut ZbiContainer<B>,
 ) -> GblResult<()> {
@@ -135,12 +141,15 @@ pub fn copy_items_after_kernel<'a, B: ByteSliceMut + PartialEq>(
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::fuchsia_boot::{
-        test::{
-            append_cmd_line, corrupt_data, create_gbl_ops, create_storage, normalize_zbi,
-            read_test_data, AlignedBuffer, ZIRCON_A_ZBI_FILE,
+    use crate::{
+        fuchsia_boot::{
+            test::{
+                append_cmd_line, corrupt_data, create_gbl_ops, create_storage, normalize_zbi,
+                read_test_data, ZIRCON_A_ZBI_FILE,
+            },
+            ZIRCON_KERNEL_ALIGN,
         },
-        ZIRCON_KERNEL_ALIGN,
+        tests::AlignedBuffer,
     };
     use avb_bindgen::{AVB_CERT_PIK_VERSION_LOCATION, AVB_CERT_PSK_VERSION_LOCATION};
     use zbi::ZBI_ALIGNMENT_USIZE;

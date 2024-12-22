@@ -51,7 +51,7 @@ use liberror::{Error, Result};
 use zbi::ZbiContainer;
 
 pub use x86_bootparam_defs::{boot_params, e820entry, setup_header};
-use zerocopy::{AsBytes, FromBytes, FromZeroes, Ref};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref};
 
 // Sector size is fixed to 512
 const SECTOR_SIZE: usize = 512;
@@ -77,24 +77,26 @@ pub const E820_ADDRESS_TYPE_PMEM: u32 = 7;
 
 /// Wrapper for `struct boot_params {}` C structure
 #[repr(transparent)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Immutable, IntoBytes, FromBytes, KnownLayout)]
 pub struct BootParams(boot_params);
 
 impl BootParams {
     /// Cast a bytes into a reference of BootParams header
     pub fn from_bytes_ref(buffer: &[u8]) -> Result<&BootParams> {
-        Ok(Ref::<_, BootParams>::new_from_prefix(buffer)
-            .ok_or(Error::BufferTooSmall(Some(size_of::<BootParams>())))?
-            .0
-            .into_ref())
+        Ok(Ref::into_ref(
+            Ref::<_, BootParams>::new_from_prefix(buffer)
+                .ok_or(Error::BufferTooSmall(Some(size_of::<BootParams>())))?
+                .0,
+        ))
     }
 
     /// Cast a bytes into a mutable reference of BootParams header.
     pub fn from_bytes_mut(buffer: &mut [u8]) -> Result<&mut BootParams> {
-        Ok(Ref::<_, BootParams>::new_from_prefix(buffer)
-            .ok_or(Error::BufferTooSmall(Some(size_of::<BootParams>())))?
-            .0
-            .into_mut())
+        Ok(Ref::into_mut(
+            Ref::<_, BootParams>::new_from_prefix(buffer)
+                .ok_or(Error::BufferTooSmall(Some(size_of::<BootParams>())))?
+                .0,
+        ))
     }
 
     /// Return a mutable reference of the `setup_header` struct field in `boot_params`
