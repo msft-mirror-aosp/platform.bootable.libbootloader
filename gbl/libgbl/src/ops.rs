@@ -581,7 +581,7 @@ pub(crate) mod test {
         pub const TEST_BOOTLOADER_FILE_2: &'static [u8] = b"\x06test_2bar";
         pub const GBL_TEST_VAR: &'static str = "gbl-test-var";
         pub const GBL_TEST_VAR_VAL: &'static str = "gbl-test-var-val";
-        pub const GBL_TEST_BOOTCONFIG: &'static [u8] = b"arg1=val1\x0aarg2=val2\x0a";
+        pub const GBL_TEST_BOOTCONFIG: &'static str = "arg1=val1\x0aarg2=val2\x0a";
 
         pub fn new(partitions: &'a [TestGblDisk]) -> Self {
             let mut res = Self {
@@ -781,7 +781,7 @@ pub(crate) mod test {
             fixup_buffer: &'c mut [u8],
         ) -> Result<Option<&'c [u8]>, Error> {
             let (out, _) = fixup_buffer.split_at_mut(Self::GBL_TEST_BOOTCONFIG.len());
-            out.clone_from_slice(Self::GBL_TEST_BOOTCONFIG);
+            out.clone_from_slice(Self::GBL_TEST_BOOTCONFIG.as_bytes());
             Ok(Some(out))
         }
 
