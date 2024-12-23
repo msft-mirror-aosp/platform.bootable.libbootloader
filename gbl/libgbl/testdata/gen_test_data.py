@@ -106,6 +106,8 @@ def gen_android_test_vbmeta(partition_file_pairs, out_vbmeta):
                 "--do_not_append_vbmeta_image",
                 "--output_vbmeta_image",
                 out,
+                "--salt",
+                "9f06406a750581266f21865d115e63b54db441bc0d614195c78c14451b5ecb8abb14d8cd88d816c4750545ef89cb348a3834815aac4fa359e8b02a740483d975",
                 "--partition_size",
                 "209715200",  # Randomly chosen large enough value.
             ])
@@ -210,6 +212,8 @@ androidboot.config_2=val_2
                 vendor_cmdline,
                 "--vendor_ramdisk",
                 vendor_ramdisk,
+                "--dtb",
+                GBL_ROOT / "libfdt" / "test" / "data" / "base.dtb",
             ]
             # Generates vendor_boot v3 (no bootconfig)
             subprocess.run(
@@ -232,7 +236,7 @@ androidboot.config_2=val_2
                     "--vendor_bootconfig",
                     vendor_bootconfig,
                     "--header_version",
-                    "3",
+                    "4",
                 ],
                 stderr=subprocess.STDOUT,
                 check=True,
@@ -240,24 +244,41 @@ androidboot.config_2=val_2
 
             # Generates a vbmeta data for v0 - v2 setup
             for i in [0, 1, 2]:
-                parts = [(f"boot_{slot}", out_dir / f"boot_v{i}_{slot}.img")]
+                parts = [(f"boot", out_dir / f"boot_v{i}_{slot}.img")]
                 gen_android_test_vbmeta(
                     parts, out_dir / f"vbmeta_v{i}_{slot}.img"
                 )
 
-            # Generates a vbmeta data for the v4 boot/vendor_boot + init_boot test setup.
-            part_and_file_pairs = [
-                (f"boot_{slot}", out_dir / f"boot_no_ramdisk_v4_{slot}.img"),
-                (
-                    f"init_boot_{slot}",
-                    out_dir / f"boot_no_ramdisk_v4_{slot}.img",
-                ),
-                (f"vendor_boot_{slot}", out_dir / f"vendor_boot_v4_{slot}.img"),
-            ]
-            gen_android_test_vbmeta(
-                part_and_file_pairs,
-                out_dir / f"vbmeta_v4_v4_init_boot_{slot}.img",
-            )
+            # Generates different combinations of v3/v4 boot/vendor_boot/init_boot setup.
+            for use_init_boot in [True, False]:
+                for boot_ver in [3, 4]:
+                    if use_init_boot:
+                        boot = (
+                            out_dir / f"boot_no_ramdisk_v{boot_ver}_{slot}.img"
+                        )
+                    else:
+                        boot = out_dir / f"boot_v{boot_ver}_{slot}.img"
+
+                    for vendor_ver in [3, 4]:
+                        vendor_boot = (
+                            out_dir / f"vendor_boot_v{vendor_ver}_{slot}.img"
+                        )
+
+                        parts = [
+                            (f"boot", boot),
+                            (f"vendor_boot", vendor_boot),
+                        ]
+                        prefix = f"vbmeta_v{boot_ver}_v{vendor_ver}"
+                        if use_init_boot:
+                            vbmeta_out = prefix + f"_init_boot_{slot}.img"
+                            parts += [(
+                                "init_boot",
+                                out_dir / f"init_boot_{slot}.img",
+                            )]
+                        else:
+                            vbmeta_out = prefix + f"_{slot}.img"
+
+                        gen_android_test_vbmeta(parts, out_dir / vbmeta_out)
 
 
 def gen_zircon_test_images(zbi_tool):
