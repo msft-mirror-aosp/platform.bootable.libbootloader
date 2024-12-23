@@ -31,7 +31,8 @@ const BOOTCONFIG_MAGIC: &str = "#BOOTCONFIG\n";
 //     checksum: u32,
 //     bootconfig_magic: [u8]
 // }
-const BOOTCONFIG_TRAILER_SIZE: usize = 4 + 4 + BOOTCONFIG_MAGIC.len();
+/// Size of the bootconfig trailer.
+pub const BOOTCONFIG_TRAILER_SIZE: usize = 4 + 4 + BOOTCONFIG_MAGIC.len();
 
 impl<'a> BootConfigBuilder<'a> {
     /// Initialize with a given buffer.
