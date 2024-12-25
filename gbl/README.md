@@ -147,6 +147,8 @@ configurations:
 
    Set path to GBL binary here: [fuchsia/src/firmware/gigaboot/cpp/backends.gni : gigaboot_gbl_efi_app](https://cs.opensource.google/fuchsia/fuchsia/+/main:src/firmware/gigaboot/cpp/backends.gni;l=25?q=gigaboot_gbl_efi_app)
 
+   Temporarily  need to enable GBL usage in gigaboot: [fuchsia/src/firmware/gigaboot/cpp/backends.gni : gigaboot_use_gbl](https://cs.opensource.google/fuchsia/fuchsia/+/main:src/firmware/gigaboot/cpp/backends.gni;l=25?q=gigaboot_gbl_efi_app#:~:text=to%20use%20GBL.-,gigaboot_use_gbl)
+
    E.g. in `fuchsia/src/firmware/gigaboot/cpp/backends.gni`:
    ```
    $ cat ./fuchsia/src/firmware/gigaboot/cpp/backends.gni
@@ -154,12 +156,13 @@ configurations:
    declare_args() {
       ...
       gigaboot_gbl_efi_app = "<path to EFI image>/gbl_x86_64.efi"
+      gigaboot_use_gbl = true
    }
    ```
 
    Or in `fx set`:
    ```
-   fx set core.x64 --args=gigaboot_gbl_efi_app='"<path to EFI image>/gbl_x86_64.efi"'
+   fx set core.x64 --args=gigaboot_gbl_efi_app='"<path to EFI image>/gbl_x86_64.efi"' --args=gigaboot_use_gbl=true
    ```
 
 2. Build: (this has to be done every time if EFI app changes)

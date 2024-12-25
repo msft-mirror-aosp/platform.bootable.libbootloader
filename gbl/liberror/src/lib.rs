@@ -234,6 +234,9 @@ pub enum Error {
     TftpError,
     /// Operation has timed out.
     Timeout,
+    /// Exceeds maximum number of partition for verification. The contained value represents the
+    /// maximum allowed number of partitions.
+    TooManyPartitions(usize),
     /// The remote network endpoint is not addressable.
     Unaddressable,
     /// An unknown, unexpected EFI_STATUS error code was returned,

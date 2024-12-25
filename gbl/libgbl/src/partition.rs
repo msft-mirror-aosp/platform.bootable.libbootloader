@@ -28,7 +28,7 @@ use liberror::Error;
 use safemath::SafeNum;
 
 /// Maximum name length for raw partition.
-const RAW_PARTITION_NAME_LEN: usize = 72;
+pub const RAW_PARTITION_NAME_LEN: usize = 72;
 
 /// Wraps a bytes buffer containing a null-terminated C string
 #[derive(Copy, Clone, PartialEq, Debug)]
