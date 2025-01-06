@@ -16,8 +16,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
-use core::{cmp::min, ffi::c_uint, fmt::Write, mem::size_of};
-
+use core::{cmp::min, ffi::c_uint, ffi::CStr, fmt::Write, mem::size_of};
 use liberror::{Error, Result};
 
 const ABR_MAGIC: &[u8; 4] = b"\0AB0";
@@ -103,8 +102,8 @@ impl SlotIndex {
 
 // Implement conversion to c_uint for C interfaces
 impl From<SlotIndex> for c_uint {
-    fn from(_val: SlotIndex) -> Self {
-        match _val {
+    fn from(val: SlotIndex) -> Self {
+        match val {
             SlotIndex::A => 0,
             SlotIndex::B => 1,
             SlotIndex::R => 2,
@@ -114,11 +113,36 @@ impl From<SlotIndex> for c_uint {
 
 // Implement conversion to char
 impl From<SlotIndex> for char {
-    fn from(_val: SlotIndex) -> Self {
-        match _val {
+    fn from(val: SlotIndex) -> Self {
+        match val {
             SlotIndex::A => 'a',
             SlotIndex::B => 'b',
             SlotIndex::R => 'r',
+        }
+    }
+}
+
+// Implement conversion to c string suffix.
+impl From<SlotIndex> for &CStr {
+    fn from(s: SlotIndex) -> Self {
+        match s {
+            SlotIndex::A => c"_a",
+            SlotIndex::B => c"_b",
+            SlotIndex::R => c"_r",
+        }
+    }
+}
+
+// Implement conversion from char.
+impl TryFrom<char> for SlotIndex {
+    type Error = Error;
+
+    fn try_from(val: char) -> Result<Self> {
+        match val {
+            'a' => Ok(SlotIndex::A),
+            'b' => Ok(SlotIndex::B),
+            'r' => Ok(SlotIndex::R),
+            _ => Err(Error::InvalidInput),
         }
     }
 }
