@@ -23,9 +23,9 @@ use gbl::slots::{
 use liberror::{Error, Result};
 
 use efi_types::{
-    GBL_EFI_BOOT_REASON_GBL_EFI_BOOTLOADER as REASON_BOOTLOADER,
-    GBL_EFI_BOOT_REASON_GBL_EFI_EMPTY_BOOT_REASON as REASON_EMPTY,
-    GBL_EFI_BOOT_REASON_GBL_EFI_RECOVERY as REASON_RECOVERY,
+    GBL_EFI_BOOT_REASON_BOOTLOADER as REASON_BOOTLOADER,
+    GBL_EFI_BOOT_REASON_EMPTY_BOOT_REASON as REASON_EMPTY,
+    GBL_EFI_BOOT_REASON_RECOVERY as REASON_RECOVERY,
 };
 
 use crate::protocol::{gbl_efi_ab_slot as ab_slot, Protocol};
@@ -83,7 +83,6 @@ impl Manager for ABManager<'_> {
     }
 
     fn mark_boot_attempt(&mut self) -> Result<BootToken> {
-        self.protocol.mark_boot_attempt().or(Err(Error::OperationProhibited))?;
         self.boot_token.take().ok_or(Error::OperationProhibited)
     }
 
@@ -168,19 +167,26 @@ mod test {
     use efi_types::{
         EfiStatus, GblEfiABSlotProtocol, GblEfiSlotInfo, GblEfiSlotMetadataBlock,
         EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_SUCCESS,
-        GBL_EFI_BOOT_REASON_GBL_EFI_EMPTY_BOOT_REASON as REASON_EMPTY,
-        GBL_EFI_BOOT_REASON_GBL_EFI_RECOVERY as REASON_RECOVERY,
-        GBL_EFI_BOOT_REASON_GBL_EFI_WATCHDOG as REASON_WATCHDOG,
+        GBL_EFI_BOOT_REASON_EMPTY_BOOT_REASON as REASON_EMPTY,
+        GBL_EFI_BOOT_REASON_RECOVERY as REASON_RECOVERY,
+        GBL_EFI_BOOT_REASON_WATCHDOG as REASON_WATCHDOG,
     };
     use gbl::{
-        ops::{AvbIoResult, CertPermanentAttributes, SHA256_DIGEST_SIZE},
-        partition::PartitionBlockDevice,
+        ops::{
+            AvbIoResult, CertPermanentAttributes, RebootReason, SlotsMetadata, SHA256_DIGEST_SIZE,
+        },
+        partition::GblDisk,
         slots::{Bootability, Cursor, RecoveryTarget, UnbootableReason},
-        Gbl, GblOps, Result as GblResult,
+        Gbl, GblOps, Os, Result as GblResult,
     };
-    use gbl_storage::BlockIoNull;
-    use libgbl::{device_tree::DeviceTreeComponentsRegistry, ops::ImageBuffer};
+    use gbl_storage::{BlockIo, BlockIoNull, Disk, Gpt};
+    use libgbl::{
+        device_tree::DeviceTreeComponentsRegistry,
+        gbl_avb::state::{BootStateColor, KeyValidationStatus},
+        ops::ImageBuffer,
+    };
     // TODO(b/350526796): use ptr.is_aligned() when Rust 1.79 is in Android
+    use core::ops::DerefMut;
     use std::{
         ffi::CStr,
         fmt::Write,
@@ -244,12 +250,7 @@ mod test {
         }
     }
 
-    impl<'a> GblOps<'a> for TestGblOps<'_>
-    where
-        Self: 'a,
-    {
-        type PartitionBlockIo = BlockIoNull;
-
+    impl<'a, 'd> GblOps<'a, 'd> for TestGblOps<'_> {
         fn console_out(&mut self) -> Option<&mut dyn Write> {
             unimplemented!();
         }
@@ -262,8 +263,17 @@ mod test {
             unimplemented!();
         }
 
-        fn partitions(&self) -> Result<&'a [PartitionBlockDevice<'a, Self::PartitionBlockIo>]> {
-            unimplemented!();
+        fn disks(
+            &self,
+        ) -> &'a [GblDisk<
+            Disk<impl BlockIo + 'a, impl DerefMut<Target = [u8]> + 'a>,
+            Gpt<impl DerefMut<Target = [u8]> + 'a>,
+        >] {
+            &[] as &[GblDisk<Disk<BlockIoNull, &mut [u8]>, Gpt<&mut [u8]>>]
+        }
+
+        fn expected_os(&mut self) -> Result<Option<Os>> {
+            Ok(None)
         }
 
         fn zircon_add_device_zbi_items(&mut self, _: &mut ZbiContainer<&mut [u8]>) -> Result<()> {
@@ -299,6 +309,14 @@ mod test {
             unimplemented!();
         }
 
+        fn avb_validate_vbmeta_public_key(
+            &self,
+            _public_key: &[u8],
+            _public_key_metadata: Option<&[u8]>,
+        ) -> AvbIoResult<KeyValidationStatus> {
+            unimplemented!();
+        }
+
         fn avb_cert_read_permanent_attributes(
             &mut self,
             _attributes: &mut CertPermanentAttributes,
@@ -312,11 +330,41 @@ mod test {
             unimplemented!();
         }
 
-        fn get_image_buffer<'c>(
+        fn avb_read_persistent_value(
+            &mut self,
+            _name: &CStr,
+            _value: &mut [u8],
+        ) -> AvbIoResult<usize> {
+            unimplemented!();
+        }
+
+        fn avb_write_persistent_value(&mut self, _name: &CStr, _value: &[u8]) -> AvbIoResult<()> {
+            unimplemented!();
+        }
+
+        fn avb_erase_persistent_value(&mut self, _name: &CStr) -> AvbIoResult<()> {
+            unimplemented!();
+        }
+
+        fn avb_handle_verification_result(
+            &mut self,
+            _color: BootStateColor,
+            _digest: Option<&CStr>,
+            _boot_os_version: Option<&[u8]>,
+            _boot_security_patch: Option<&[u8]>,
+            _system_os_version: Option<&[u8]>,
+            _system_security_patch: Option<&[u8]>,
+            _vendor_os_version: Option<&[u8]>,
+            _vendor_security_patch: Option<&[u8]>,
+        ) -> AvbIoResult<()> {
+            unimplemented!();
+        }
+
+        fn get_image_buffer(
             &mut self,
             _image_name: &str,
             _size: NonZeroUsize,
-        ) -> GblResult<ImageBuffer<'c>> {
+        ) -> GblResult<ImageBuffer<'d>> {
             unimplemented!();
         }
 
@@ -349,6 +397,43 @@ mod test {
             _components: &mut DeviceTreeComponentsRegistry,
         ) -> Result<()> {
             unimplemented!();
+        }
+
+        fn fastboot_variable<'arg>(
+            &mut self,
+            _: &CStr,
+            _: impl Iterator<Item = &'arg CStr> + Clone,
+            _: &mut [u8],
+        ) -> Result<usize> {
+            unimplemented!()
+        }
+
+        fn fastboot_visit_all_variables(&mut self, _: impl FnMut(&[&CStr], &CStr)) -> Result<()> {
+            unimplemented!()
+        }
+
+        fn slots_metadata(&mut self) -> Result<SlotsMetadata> {
+            unimplemented!();
+        }
+
+        fn get_current_slot(&mut self) -> Result<Slot> {
+            unimplemented!()
+        }
+
+        fn get_next_slot(&mut self, _: bool) -> Result<Slot> {
+            unimplemented!()
+        }
+
+        fn set_active_slot(&mut self, _: u8) -> Result<()> {
+            unimplemented!()
+        }
+
+        fn set_reboot_reason(&mut self, _: RebootReason) -> Result<()> {
+            unimplemented!()
+        }
+
+        fn get_reboot_reason(&mut self) -> Result<RebootReason> {
+            unimplemented!()
         }
     }
 
@@ -493,18 +578,8 @@ mod test {
 
     #[test]
     fn test_mark_boot_attempt() {
-        extern "C" fn mark_boot_attempt(_: *mut GblEfiABSlotProtocol) -> EfiStatus {
-            ATOMIC.with(|a| a.store(true, Ordering::Relaxed));
-            EFI_STATUS_SUCCESS
-        }
-
-        ATOMIC.with(|a| a.store(false, Ordering::Relaxed));
         run_test(|image_handle, systab_ptr| {
-            let mut ab = GblEfiABSlotProtocol {
-                mark_boot_attempt: Some(mark_boot_attempt),
-                flush: Some(flush),
-                ..Default::default()
-            };
+            let mut ab = GblEfiABSlotProtocol { flush: Some(flush), ..Default::default() };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
             let protocol = generate_protocol::<ab_slot::GblSlotProtocol>(&efi_entry, &mut ab);
             let mut persist = |_: &mut [u8]| Ok(());
@@ -512,7 +587,6 @@ mod test {
             let mut gbl = Gbl::<TestGblOps>::new(&mut test_ops);
             let cursor = gbl.load_slot_interface(&mut persist).unwrap();
             assert!(cursor.ctx.mark_boot_attempt().is_ok());
-            assert!(ATOMIC.with(|a| a.load(Ordering::Relaxed)));
 
             assert_eq!(cursor.ctx.mark_boot_attempt(), Err(Error::OperationProhibited));
         });

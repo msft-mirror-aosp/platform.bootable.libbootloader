@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::BootToken;
-use zerocopy::{AsBytes, ByteSlice, FromBytes, FromZeroes, Ref};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, SplitByteSlice};
 
 use liberror::Error;
 
@@ -28,14 +28,14 @@ pub enum CacheStatus {
 
 /// Trait that describes the operations all slot metadata implementations must support
 /// to be used as the backing store in a SlotBlock.
-pub trait MetadataBytes: Copy + AsBytes + FromBytes + FromZeroes + Default {
+pub trait MetadataBytes: Copy + Immutable + IntoBytes + FromBytes + KnownLayout + Default {
     /// Returns a zerocopy reference to Self if buffer
     /// represents a valid serialization of Self.
     /// Implementors should check for invariants,
     /// e.g. checksums, magic numbers, and version numbers.
     ///
     /// Returns Err if the buffer does not represent a valid structure.
-    fn validate<B: ByteSlice>(buffer: B) -> Result<Ref<B, Self>, Error>;
+    fn validate<B: SplitByteSlice>(buffer: B) -> Result<Ref<B, Self>, Error>;
 
     /// Called right before writing metadata back to disk.
     /// Implementors should restore invariants,
@@ -89,7 +89,7 @@ impl<'a, MB: MetadataBytes> SlotBlock<MB> {
     ///                 if there was an internal error.
     ///
     ///                 TODO(b/329116902): errors are logged
-    pub fn deserialize<B: ByteSlice>(buffer: B, boot_token: BootToken) -> Self {
+    pub fn deserialize<B: SplitByteSlice>(buffer: B, boot_token: BootToken) -> Self {
         // TODO(b/329116902): log failures
         // validate(buffer)
         // .inspect_err(|e| {

@@ -44,6 +44,8 @@ use efi_types as efi;
 /// Gpt related errors.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum GptError {
+    /// Secondary header is valid, but different from primary.
+    DifferentFromPrimary,
     /// Disk size is not enough to accommodate maximum allowed entries.
     DiskTooSmall,
     /// GPT entries buffer is too small for the expected number of entries.
@@ -92,6 +94,13 @@ pub enum GptError {
         entries: u32,
         /// Maximum allowed.
         max_allowed: usize,
+    },
+    /// Two partitions overlap.
+    PartitionRangeOverlap {
+        /// Previous partition in overlap. (partition index, first, last)
+        prev: (usize, u64, u64),
+        /// Next partition in overlap. (partition index, first, last)
+        next: (usize, u64, u64),
     },
     /// Unexpected GPT header size.
     UnexpectedEntrySize {
@@ -213,6 +222,8 @@ pub enum Error {
     OperationProhibited,
     /// Catch-all error with optional debugging string.
     Other(Option<&'static str>),
+    /// Out of range.
+    OutOfRange,
     /// A resource has run out.
     OutOfResources,
     /// A protocol error occurred during the network operation.
@@ -223,6 +234,9 @@ pub enum Error {
     TftpError,
     /// Operation has timed out.
     Timeout,
+    /// Exceeds maximum number of partition for verification. The contained value represents the
+    /// maximum allowed number of partitions.
+    TooManyPartitions(usize),
     /// The remote network endpoint is not addressable.
     Unaddressable,
     /// An unknown, unexpected EFI_STATUS error code was returned,

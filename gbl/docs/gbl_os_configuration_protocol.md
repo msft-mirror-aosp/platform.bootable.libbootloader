@@ -211,7 +211,7 @@ If the buffer is not large enough to fit the fixups, the function should update
 GBL will then allocate a larger buffer, discard all modifications and repeat
 the `FixupBootConfig` call.
 
-`FixupBufferSize` must be updated on success to let GBL determine the fixup command line data size.
+`FixupBufferSize` must be updated on success to let GBL determine the bootconfig fixup size.
 
 ### Description
 

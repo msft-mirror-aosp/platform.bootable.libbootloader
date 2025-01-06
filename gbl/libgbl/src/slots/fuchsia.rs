@@ -27,13 +27,13 @@ use core::mem::size_of;
 use crc32fast::Hasher;
 use liberror::Error;
 use zerocopy::byteorder::big_endian::U32 as BigEndianU32;
-use zerocopy::{AsBytes, ByteSlice, FromBytes, FromZeroes, Ref};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, SplitByteSlice};
 
 const DEFAULT_PRIORITY: u8 = 15;
 const DEFAULT_RETRIES: u8 = 7;
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Immutable, IntoBytes, FromBytes, KnownLayout)]
 struct AbrSlotData {
     priority: u8,
     tries: u8,
@@ -53,7 +53,7 @@ impl Default for AbrSlotData {
 }
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Immutable, IntoBytes, FromBytes, KnownLayout)]
 struct OneShotFlags(u8);
 
 bitflags! {
@@ -96,7 +96,7 @@ const ABR_VERSION_MAJOR: u8 = 2;
 const ABR_VERSION_MINOR: u8 = 3;
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Immutable, IntoBytes, FromBytes, KnownLayout)]
 struct AbrData {
     magic: [u8; 4],
     version_major: u8,
@@ -119,7 +119,7 @@ impl AbrData {
 }
 
 impl MetadataBytes for AbrData {
-    fn validate<B: ByteSlice>(buffer: B) -> Result<Ref<B, AbrData>, Error> {
+    fn validate<B: SplitByteSlice>(buffer: B) -> Result<Ref<B, AbrData>, Error> {
         let abr_data = Ref::<B, AbrData>::new_from_prefix(buffer)
             .ok_or(Error::BufferTooSmall(Some(size_of::<AbrData>())))?
             .0;
@@ -302,7 +302,7 @@ mod test {
     use super::*;
     use crate::slots::{partition::CacheStatus, Cursor};
     use gbl_async::block_on;
-    use gbl_storage_testlib::TestBlockDevice;
+    use gbl_storage::{new_gpt_max, Disk, RamBlockIo};
 
     #[test]
     fn test_slot_block_defaults() {
@@ -598,13 +598,15 @@ mod test {
         assert_eq!(sb.slots_iter().next().unwrap().bootability, Bootability::Successful);
     }
 
+    type TestDisk = Disk<RamBlockIo<Vec<u8>>, Vec<u8>>;
+
     #[test]
     fn test_writeback() {
         const PARTITION: &str = "test_partition";
         const OFFSET: u64 = 2112; // Deliberately wrong to test propagation of parameter.
-        let mut block_dev: TestBlockDevice =
-            include_bytes!("../../testdata/writeback_test_disk.bin").as_slice().into();
-        let (blk, mut gpt) = block_dev.new_blk_and_gpt();
+        let disk = include_bytes!("../../testdata/writeback_test_disk.bin").to_vec();
+        let mut blk = TestDisk::new_ram_alloc(512, 512, disk).unwrap();
+        let mut gpt = new_gpt_max();
         block_on(blk.sync_gpt(&mut gpt)).unwrap();
         let mut sb: SlotBlock<AbrData> = Default::default();
         let mut read_buffer: [u8; size_of::<AbrData>()] = Default::default();
@@ -613,7 +615,8 @@ mod test {
         sb.write_back(&mut |data: &mut [u8]| {
             Ok(block_on(blk.write_gpt_partition(&mut gpt, PARTITION, OFFSET, data))?)
         });
-        let res = block_on(blk.read_gpt_partition(&mut gpt, PARTITION, OFFSET, &mut read_buffer));
+        let res =
+            block_on(blk.read_gpt_partition(&mut gpt, PARTITION, OFFSET, &mut read_buffer[..]));
         assert!(res.is_ok());
         assert_eq!(read_buffer, [0; std::mem::size_of::<AbrData>()]);
 
@@ -625,7 +628,8 @@ mod test {
         sb.write_back(&mut |data: &mut [u8]| {
             Ok(block_on(blk.write_gpt_partition(&mut gpt, PARTITION, OFFSET, data))?)
         });
-        let res = block_on(blk.read_gpt_partition(&mut gpt, PARTITION, OFFSET, &mut read_buffer));
+        let res =
+            block_on(blk.read_gpt_partition(&mut gpt, PARTITION, OFFSET, &mut read_buffer[..]));
         assert!(res.is_ok());
         assert_eq!(read_buffer, sb.get_data().as_bytes());
         assert_eq!(sb.cache_status(), CacheStatus::Clean);
@@ -635,9 +639,9 @@ mod test {
     fn test_writeback_with_cursor() {
         const PARTITION: &str = "test_partition";
         const OFFSET: u64 = 2112; // Deliberately wrong to test propagation of parameter.
-        let mut block_dev: TestBlockDevice =
-            include_bytes!("../../testdata/writeback_test_disk.bin").as_slice().into();
-        let (blk, mut gpt) = block_dev.new_blk_and_gpt();
+        let disk = include_bytes!("../../testdata/writeback_test_disk.bin").to_vec();
+        let mut blk = TestDisk::new_ram_alloc(512, 512, disk).unwrap();
+        let mut gpt = new_gpt_max();
         block_on(blk.sync_gpt(&mut gpt)).unwrap();
         let mut read_buffer: [u8; size_of::<AbrData>()] = Default::default();
 
@@ -652,7 +656,8 @@ mod test {
             assert!(cursor.ctx.set_active_slot('b'.into()).is_ok());
         }
 
-        let res = block_on(blk.read_gpt_partition(&mut gpt, PARTITION, OFFSET, &mut read_buffer));
+        let res =
+            block_on(blk.read_gpt_partition(&mut gpt, PARTITION, OFFSET, &mut read_buffer[..]));
         assert!(res.is_ok());
         assert_eq!(read_buffer, sb.get_data().as_bytes());
     }

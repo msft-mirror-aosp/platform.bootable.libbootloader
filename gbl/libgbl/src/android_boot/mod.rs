@@ -15,22 +15,25 @@
 //! Android boot support.
 
 use crate::{
-    avb_ops::GblAvbOps,
     device_tree::{DeviceTreeComponentSource, DeviceTreeComponentsRegistry, FDT_ALIGNMENT},
-    gbl_print, gbl_println, GblOps, IntegrationError, Result,
+    gbl_print, gbl_println, GblOps, Result,
 };
-use arrayvec::ArrayVec;
-use avb::{slot_verify, HashtreeErrorMode, Ops as _, SlotVerifyFlags};
 use bootimg::{BootImage, VendorImageHeader};
 use bootparams::{bootconfig::BootConfigBuilder, commandline::CommandlineBuilder};
-use core::{ffi::CStr, fmt::Write};
+use core::ffi::CStr;
 use dttable::DtTableImage;
 use fdt::Fdt;
 use liberror::Error;
 use libutils::aligned_subslice;
 use misc::{AndroidBootMode, BootloaderMessage};
 use safemath::SafeNum;
-use zerocopy::{AsBytes, ByteSlice};
+use zerocopy::{ByteSlice, IntoBytes, Ref};
+
+mod vboot;
+use vboot::avb_verify_slot;
+
+mod load;
+pub use load::{android_load_verify, LoadedImages};
 
 #[cfg(target_arch = "aarch64")]
 use crate::decompress::decompress_kernel;
@@ -43,73 +46,6 @@ const KERNEL_ALIGNMENT: usize = 2 * 1024 * 1024;
 /// A helper to convert a bytes slice containing a null-terminated string to `str`
 fn cstr_bytes_to_str(data: &[u8]) -> core::result::Result<&str, Error> {
     Ok(CStr::from_bytes_until_nul(data)?.to_str()?)
-}
-
-/// Helper function for performing libavb verification.
-///
-/// Currently this requires the caller to preload all relevant images from disk; in its final
-/// state `ops` will provide the necessary callbacks for where the images should go in RAM and
-/// which ones are preloaded.
-///
-/// # Arguments
-/// * `ops`: [GblOps] providing device-specific backend.
-/// * `kernel`: buffer containing the `boot` image loaded from disk.
-/// * `vendor_boot`: buffer containing the `vendor_boot` image loaded from disk.
-/// * `init_boot`: buffer containing the `init_boot` image loaded from disk.
-/// * `dtbo`: buffer containing the `dtbo` image loaded from disk, if it exists.
-/// * `bootconfig_builder`: object to write the bootconfig data into.
-///
-/// # Returns
-/// `()` on success, error if the images fail to verify or we fail to update the bootconfig.
-fn avb_verify_slot<'a>(
-    ops: &mut impl GblOps<'a>,
-    kernel: &[u8],
-    vendor_boot: &[u8],
-    init_boot: &[u8],
-    dtbo: Option<&[u8]>,
-    bootconfig_builder: &mut BootConfigBuilder,
-) -> Result<()> {
-    // We need the list of partition names to verify with libavb, and a corresponding list of
-    // (name, image) tuples to register as [GblAvbOps] preloaded data.
-    let mut partitions = ArrayVec::<_, 4>::new();
-    let mut preloaded = ArrayVec::<_, 4>::new();
-    for (c_name, image) in [
-        (c"boot", Some(kernel)),
-        (c"vendor_boot", Some(vendor_boot)),
-        (c"init_boot", Some(init_boot)),
-        (c"dtbo", dtbo),
-    ] {
-        if let Some(image) = image {
-            partitions.push(c_name);
-            preloaded.push((c_name.to_str().unwrap(), image));
-        }
-    }
-
-    let mut avb_ops = GblAvbOps::new(ops, &preloaded[..], false);
-    let avb_state = match avb_ops.read_is_device_unlocked()? {
-        true => "orange",
-        _ => "green",
-    };
-
-    let res = slot_verify(
-        &mut avb_ops,
-        &partitions,
-        Some(c"_a"),
-        SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_NONE,
-        // For demo, we use the same setting as Cuttlefish u-boot.
-        HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_RESTART_AND_INVALIDATE,
-    )
-    .map_err(|e| IntegrationError::from(e.without_verify_data()))?;
-
-    // Append avb generated bootconfig.
-    for cmdline_arg in res.cmdline().to_str().unwrap().split(' ') {
-        write!(bootconfig_builder, "{}\n", cmdline_arg).or(Err(Error::BufferTooSmall(None)))?;
-    }
-
-    // Append "androidboot.verifiedbootstate="
-    write!(bootconfig_builder, "androidboot.verifiedbootstate={}\n", avb_state)
-        .or(Err(Error::BufferTooSmall(None)))?;
-    Ok(())
 }
 
 /// Helper function to parse common fields from boot image headers.
@@ -165,7 +101,7 @@ fn vendor_header_elements<B: ByteSlice + PartialEq>(
     Ok(match hdr {
         VendorImageHeader::V3(ref hdr) => (
             hdr.vendor_ramdisk_size as usize,
-            SafeNum::from(hdr.bytes().len())
+            SafeNum::from(Ref::bytes(hdr).len())
                 .round_up(hdr.page_size)
                 .try_into()
                 .map_err(Error::from)?,
@@ -177,7 +113,7 @@ fn vendor_header_elements<B: ByteSlice + PartialEq>(
         ),
         VendorImageHeader::V4(ref hdr) => (
             hdr._base.vendor_ramdisk_size as usize,
-            SafeNum::from(hdr.bytes().len())
+            SafeNum::from(Ref::bytes(hdr).len())
                 .round_up(hdr._base.page_size)
                 .try_into()
                 .map_err(Error::from)?,
@@ -206,8 +142,8 @@ fn vendor_header_elements<B: ByteSlice + PartialEq>(
 /// # Returns
 /// Returns a tuple of 4 slices corresponding to:
 ///   (ramdisk load buffer, FDT load buffer, kernel load buffer, unused buffer).
-pub fn load_android_simple<'a, 'b>(
-    ops: &mut impl GblOps<'b>,
+pub fn load_android_simple<'a, 'b, 'c>(
+    ops: &mut impl GblOps<'b, 'c>,
     load: &'a mut [u8],
 ) -> Result<(&'a mut [u8], &'a mut [u8], &'a mut [u8], &'a mut [u8])> {
     const PAGE_SIZE: usize = 4096; // V3/V4 image has fixed page size 4096;
@@ -491,11 +427,10 @@ pub fn load_android_simple<'a, 'b>(
     gbl_println!(ops, "linux,initrd-end: {:#x}", ramdisk_end);
 
     // Update the FDT commandline.
-    let device_tree_commandline_length =
-        CStr::from_bytes_until_nul(fdt.get_property("chosen", BOOTARGS_PROP)?)
-            .map_err(Error::from)?
-            .to_bytes()
-            .len();
+    let device_tree_commandline_length = match fdt.get_property("chosen", BOOTARGS_PROP) {
+        Ok(val) => CStr::from_bytes_until_nul(val).map_err(Error::from)?.to_bytes().len(),
+        Err(_) => 0,
+    };
 
     // Reserve 1024 bytes for separators and fixup.
     let final_commandline_len =
@@ -540,4 +475,60 @@ pub fn load_android_simple<'a, 'b>(
     let (kernel, remains) = kernel.split_at_mut(kernel_size);
 
     Ok((ramdisk, fdt, kernel, remains))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        gbl_avb::state::{BootStateColor, KeyValidationStatus},
+        ops::test::{FakeGblOps, FakeGblOpsStorage},
+        tests::AlignedBuffer,
+    };
+    use std::{collections::HashMap, fs, path::Path};
+
+    /// Reads a data file under libgbl/testdata/
+    fn read_test_data(file: &str) -> Vec<u8> {
+        println!("reading file: {file}");
+        fs::read(Path::new(format!("external/gbl/libgbl/testdata/android/{}", file).as_str()))
+            .unwrap()
+    }
+
+    // TODO(b/384964561): This is a temporaray test for making sure the generated images work. It
+    // will be replaced with more thorough tests as we productionizes `load_android_simple`.
+    #[test]
+    fn test_load_android_simple() {
+        const TEST_ROLLBACK_INDEX_LOCATION: usize = 1;
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"boot_a", read_test_data("boot_no_ramdisk_v4_a.img"));
+        storage.add_raw_device(c"init_boot_a", read_test_data("init_boot_a.img"));
+        storage.add_raw_device(c"vendor_boot_a", read_test_data("vendor_boot_v4_a.img"));
+        storage.add_raw_device(c"vbmeta_a", read_test_data("vbmeta_v4_v4_init_boot_a.img"));
+        storage.add_raw_device(c"misc", vec![0u8; 4 * 1024 * 1024]);
+        let mut ops = FakeGblOps::new(&storage);
+        ops.avb_ops.unlock_state = Ok(false);
+        ops.avb_ops.rollbacks = HashMap::from([(TEST_ROLLBACK_INDEX_LOCATION, Ok(0))]);
+        let fdt = AlignedBuffer::new_with_data(
+            include_bytes!("../../../libfdt/test/data/base.dtb"),
+            FDT_ALIGNMENT,
+        );
+        ops.custom_device_tree = Some(&fdt);
+        let mut load_buffer = AlignedBuffer::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
+        let mut out_color = None;
+        let mut handler = |color,
+                           _: Option<&CStr>,
+                           _: Option<&[u8]>,
+                           _: Option<&[u8]>,
+                           _: Option<&[u8]>,
+                           _: Option<&[u8]>,
+                           _: Option<&[u8]>,
+                           _: Option<&[u8]>| {
+            out_color = Some(color);
+            Ok(())
+        };
+        ops.avb_handle_verification_result = Some(&mut handler);
+        ops.avb_key_validation_status = Some(Ok(KeyValidationStatus::Valid));
+        load_android_simple(&mut ops, &mut load_buffer).unwrap();
+        assert_eq!(out_color, Some(BootStateColor::Green));
+    }
 }

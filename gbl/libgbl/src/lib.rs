@@ -28,6 +28,8 @@
 #![cfg_attr(not(any(test, android_dylib)), no_std)]
 // TODO: b/312610985 - return warning for unused partitions
 #![allow(async_fn_in_trait)]
+// Needed for MaybeUninit::fill() experimental API
+#![feature(maybe_uninit_fill)]
 extern crate avb;
 extern crate core;
 extern crate gbl_storage;
@@ -36,16 +38,18 @@ extern crate zbi;
 
 use avb::{HashtreeErrorMode, SlotVerifyData, SlotVerifyError, SlotVerifyFlags};
 use core::ffi::CStr;
+use core::marker::PhantomData;
 
 pub mod android_boot;
-pub mod avb_ops; // TODO(b/363074091): make this private once we move Android boot into libgbl.
 pub mod boot_mode;
 pub mod boot_reason;
+pub mod constants;
 pub mod decompress;
 pub mod device_tree;
 pub mod error;
 pub mod fastboot;
 pub mod fuchsia_boot;
+pub mod gbl_avb;
 pub mod ops;
 pub mod partition;
 
@@ -63,7 +67,7 @@ pub use boot_mode::BootMode;
 pub use boot_reason::KnownBootReason;
 pub use error::{IntegrationError, Result};
 use liberror::Error;
-pub use ops::GblOps;
+pub use ops::{GblOps, Os};
 
 use overlap::is_overlap;
 
@@ -164,26 +168,27 @@ pub fn get_images<'a: 'b, 'b: 'c, 'c, 'd>(
 }
 
 /// GBL object that provides implementation of helpers for boot process.
-pub struct Gbl<'a, G>
+pub struct Gbl<'a, 'd, G>
 where
-    G: GblOps<'a>,
+    G: GblOps<'a, 'd>,
 {
     ops: &'a mut G,
     boot_token: Option<BootToken>,
+    _get_image_buffer_lifetime: PhantomData<&'d ()>,
 }
 
 // TODO(b/312610985): Investigate whether to deprecate this and remove this allow.
 #[allow(unused_variables)]
-impl<'a, G> Gbl<'a, G>
+impl<'a, 'f, G> Gbl<'a, 'f, G>
 where
-    G: GblOps<'a>,
+    G: GblOps<'a, 'f>,
 {
     /// Returns a new [Gbl] object.
     ///
     /// # Arguments
     /// * `ops` - the [GblOps] callbacks to use
     pub fn new(ops: &'a mut G) -> Self {
-        Self { ops, boot_token: Some(BootToken(())) }
+        Self { ops, boot_token: Some(BootToken(())), _get_image_buffer_lifetime: PhantomData }
     }
 
     /// Verify + Load Image Into memory
@@ -420,8 +425,8 @@ where
             if matches!(
                 avb_error,
                 SlotVerifyError::Verification(_)
-                    | SlotVerifyError::PublicKeyRejected
-                    | SlotVerifyError::RollbackIndex
+                    | SlotVerifyError::PublicKeyRejected(_)
+                    | SlotVerifyError::RollbackIndex(_)
             ) {
                 return true;
             }
@@ -516,8 +521,50 @@ mod tests {
     use crate::ops::test::FakeGblOps;
     use avb::{CertPermanentAttributes, SlotVerifyError};
     use avb_test::{FakeVbmetaKey, TestOps};
-    use std::{fs, path::Path};
+    use libutils::aligned_offset;
+    use std::{
+        fs,
+        ops::{Deref, DerefMut},
+        path::Path,
+    };
     use zerocopy::FromBytes;
+
+    // Helper object for allocating aligned buffer.
+    pub(crate) struct AlignedBuffer {
+        buffer: Vec<u8>,
+        size: usize,
+        alignment: usize,
+    }
+
+    impl AlignedBuffer {
+        /// Allocates a buffer.
+        pub(crate) fn new(size: usize, alignment: usize) -> Self {
+            Self { buffer: vec![0u8; alignment + size - 1], size, alignment }
+        }
+
+        /// Allocates a buffer and initializes with data.
+        pub(crate) fn new_with_data(data: &[u8], alignment: usize) -> Self {
+            let mut res = Self::new(data.len(), alignment);
+            res.clone_from_slice(data);
+            res
+        }
+    }
+
+    impl Deref for AlignedBuffer {
+        type Target = [u8];
+
+        fn deref(&self) -> &Self::Target {
+            let off = aligned_offset(&self.buffer, self.alignment).unwrap();
+            &self.buffer[off..][..self.size]
+        }
+    }
+
+    impl DerefMut for AlignedBuffer {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            let off = aligned_offset(&self.buffer, self.alignment).unwrap();
+            &mut self.buffer[off..][..self.size]
+        }
+    }
 
     const TEST_ZIRCON_PARTITION_NAME: &str = "zircon_a";
     const TEST_ZIRCON_PARTITION_NAME_CSTR: &CStr = c"zircon_a";
@@ -565,7 +612,7 @@ mod tests {
             public_key: testdata(TEST_PUBLIC_KEY_PATH),
             public_key_metadata: None,
         });
-        avb_ops.rollbacks.insert(TEST_VBMETA_ROLLBACK_LOCATION, 0);
+        avb_ops.rollbacks.insert(TEST_VBMETA_ROLLBACK_LOCATION, Ok(0));
         avb_ops.unlock_state = Ok(false);
 
         avb_ops
@@ -590,8 +637,8 @@ mod tests {
         avb_ops.cert_permanent_attributes_hash = Some(perm_attr_hash.try_into().unwrap());
 
         // Add the rollbacks for the cert keys.
-        avb_ops.rollbacks.insert(avb::CERT_PIK_VERSION_LOCATION, TEST_CERT_PIK_VERSION);
-        avb_ops.rollbacks.insert(avb::CERT_PSK_VERSION_LOCATION, TEST_CERT_PSK_VERSION);
+        avb_ops.rollbacks.insert(avb::CERT_PIK_VERSION_LOCATION, Ok(TEST_CERT_PIK_VERSION));
+        avb_ops.rollbacks.insert(avb::CERT_PSK_VERSION_LOCATION, Ok(TEST_CERT_PSK_VERSION));
 
         avb_ops
     }
@@ -688,7 +735,7 @@ mod tests {
         );
         assert_eq!(
             res.unwrap_err(),
-            IntegrationError::AvbSlotVerifyError(SlotVerifyError::PublicKeyRejected)
+            IntegrationError::AvbSlotVerifyError(SlotVerifyError::PublicKeyRejected(None))
         );
     }
 }

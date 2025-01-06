@@ -44,7 +44,6 @@ rust_test(
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@gbl//libavb:sysdeps",
-        "@gbl//libstorage:libstorage_testlib",
         "@zbi",
     ],
 )

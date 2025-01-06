@@ -29,6 +29,7 @@ def rust_crate_build_file(
         deps = [],
         proc_macro_deps = [],
         features = [],
+        edition = "2021",
         rustc_flags = []):
     """Generate BUILD file content for a rust crate
 
@@ -43,6 +44,7 @@ def rust_crate_build_file(
         deps (List of strings): The `deps` field.
         proc_macro_deps (List of strings): The `proc_macro_deps` field.
         features (List of strings): The `features` field.
+        edition (String): Rust edition.
         rustc_flags (List of strings): The `rustc_flags` field.
 
     Returns:
@@ -61,13 +63,13 @@ load("@rules_rust//rust:defs.bzl", \"{rule}\")
     crate_name = \"{}\",
     srcs = glob(["**/*.rs"]),
     crate_features = {},
-    edition = "2021",
-    rustc_flags ={},
+    edition = \"{edition}\",
+    rustc_flags = {},
     visibility = ["//visibility:public"],
     deps = {},
     proc_macro_deps = {}
 )
-""".format(name, crate_name, features, rustc_flags, deps, proc_macro_deps, rule = rule)
+""".format(name, crate_name, features, rustc_flags, deps, proc_macro_deps, edition = edition, rule = rule)
 
 def define_gbl_workspace(name = None):
     """Set up worksapce dependencies for GBL
@@ -90,6 +92,7 @@ def define_gbl_workspace(name = None):
         path = "external/bazelbuild-rules_license",
     )
 
+    # TODO(b/383783832): migrate to android-crates-io
     native.new_local_repository(
         name = "rules_rust_tinyjson",
         path = "external/rust/crates/tinyjson",
@@ -177,7 +180,7 @@ cc_library(
 
     native.new_local_repository(
         name = "uuid",
-        path = "external/rust/crates/uuid",
+        path = "external/rust/android-crates-io/crates/uuid",
         build_file_content = rust_crate_build_file("uuid"),
     )
 
@@ -189,7 +192,7 @@ cc_library(
 
     native.new_local_repository(
         name = "spin",
-        path = "external/rust/crates/spin",
+        path = "external/rust/android-crates-io/crates/spin",
         build_file_content = rust_crate_build_file(
             "spin",
             features = [
@@ -205,13 +208,13 @@ cc_library(
 
     native.new_local_repository(
         name = "static_assertions",
-        path = "external/rust/crates/static_assertions",
+        path = "external/rust/android-crates-io/crates/static_assertions",
         build_file_content = rust_crate_build_file("static_assertions"),
     )
 
     native.new_local_repository(
         name = "managed",
-        path = "external/rust/crates/managed",
+        path = "external/rust/android-crates-io/crates/managed",
         build_file_content = rust_crate_build_file(
             "managed",
             features = ["map"],
@@ -226,7 +229,7 @@ cc_library(
 
     native.new_local_repository(
         name = "itertools",
-        path = "external/rust/crates/itertools",
+        path = "external/rust/android-crates-io/crates/itertools",
         build_file_content = rust_crate_build_file(
             "itertools",
             deps = ["@either"],
@@ -237,7 +240,7 @@ cc_library(
 
     native.new_local_repository(
         name = "itertools_noalloc",
-        path = "external/rust/crates/itertools",
+        path = "external/rust/android-crates-io/crates/itertools",
         build_file_content = rust_crate_build_file(
             "itertools_noalloc",
             crate_name = "itertools",
@@ -249,7 +252,7 @@ cc_library(
 
     native.new_local_repository(
         name = "either",
-        path = "external/rust/crates/either",
+        path = "external/rust/android-crates-io/crates/either",
         build_file_content = rust_crate_build_file(
             "either",
             features = ["default", "use_std"],
@@ -258,7 +261,7 @@ cc_library(
 
     native.new_local_repository(
         name = "either_noalloc",
-        path = "external/rust/crates/either",
+        path = "external/rust/android-crates-io/crates/either",
         build_file_content = rust_crate_build_file(
             "either_noalloc",
             crate_name = "either",
@@ -266,6 +269,7 @@ cc_library(
         ),
     )
 
+    # TODO(b/383783832): migrate to android-crates-io
     native.new_local_repository(
         name = "smoltcp",
         path = "external/rust/crates/smoltcp",
@@ -274,7 +278,7 @@ cc_library(
 
     native.new_local_repository(
         name = "arrayvec",
-        path = "external/rust/crates/arrayvec",
+        path = "external/rust/android-crates-io/crates/arrayvec",
         build_file_content = rust_crate_build_file(
             "arrayvec",
             rustc_flags = ["-A", "dead_code"],
@@ -283,7 +287,7 @@ cc_library(
 
     native.new_local_repository(
         name = "downcast",
-        path = "external/rust/crates/downcast",
+        path = "external/rust/android-crates-io/crates/downcast",
         build_file_content = rust_crate_build_file(
             "downcast",
             features = ["default", "std"],
@@ -292,23 +296,23 @@ cc_library(
 
     native.new_local_repository(
         name = "fragile",
-        path = "external/rust/crates/fragile",
+        path = "external/rust/android-crates-io/crates/fragile",
         build_file_content = rust_crate_build_file("fragile"),
     )
 
     native.new_local_repository(
         name = "lazy_static",
-        path = "external/rust/crates/lazy_static",
+        path = "external/rust/android-crates-io/crates/lazy_static",
         build_file_content = rust_crate_build_file("lazy_static"),
     )
 
     native.new_local_repository(
         name = "mockall",
-        path = "external/rust/crates/mockall",
+        path = "external/rust/android-crates-io/crates/mockall",
         build_file_content = rust_crate_build_file(
             "mockall",
             deps = [
-                "@cfg-if",
+                "@cfg_if",
                 "@downcast",
                 "@fragile",
                 "@lazy_static",
@@ -321,17 +325,17 @@ cc_library(
 
     native.new_local_repository(
         name = "mockall_derive",
-        path = "external/rust/crates/mockall_derive",
+        path = "external/rust/android-crates-io/crates/mockall_derive",
         build_file_content = rust_crate_build_file(
             "mockall_derive",
             rule = "rust_proc_macro",
-            deps = ["@cfg-if", "@proc-macro2", "@quote", "@syn"],
+            deps = ["@cfg_if", "@proc_macro2", "@quote", "@syn"],
         ),
     )
 
     native.new_local_repository(
         name = "predicates",
-        path = "external/rust/crates/predicates",
+        path = "external/rust/android-crates-io/crates/predicates",
         build_file_content = rust_crate_build_file(
             "predicates",
             deps = ["@itertools", "@predicates_core", "@termcolor"],
@@ -340,13 +344,13 @@ cc_library(
 
     native.new_local_repository(
         name = "predicates_core",
-        path = "external/rust/crates/predicates-core",
+        path = "external/rust/android-crates-io/crates/predicates-core",
         build_file_content = rust_crate_build_file("predicates_core"),
     )
 
     native.new_local_repository(
         name = "predicates_tree",
-        path = "external/rust/crates/predicates-tree",
+        path = "external/rust/android-crates-io/crates/predicates-tree",
         build_file_content = rust_crate_build_file(
             "predicates_tree",
             deps = ["@predicates_core", "@termtree"],
@@ -355,16 +359,17 @@ cc_library(
 
     native.new_local_repository(
         name = "termcolor",
-        path = "external/rust/crates/termcolor",
+        path = "external/rust/android-crates-io/crates/termcolor",
         build_file_content = rust_crate_build_file("termcolor"),
     )
 
     native.new_local_repository(
         name = "termtree",
-        path = "external/rust/crates/termtree",
+        path = "external/rust/android-crates-io/crates/termtree",
         build_file_content = rust_crate_build_file("termtree"),
     )
 
+    # TODO(b/383783832): migrate to android-crates-io
     native.new_local_repository(
         name = "zune_inflate",
         path = "external/rust/crates/zune-inflate",
@@ -376,7 +381,7 @@ cc_library(
 
     native.new_local_repository(
         name = "lz4_flex",
-        path = "external/rust/crates/lz4_flex",
+        path = "external/rust/android-crates-io/crates/lz4_flex",
         build_file_content = rust_crate_build_file(
             "lz4_flex",
             features = ["safe-decode"],
@@ -390,29 +395,111 @@ cc_library(
         build_file = "//prebuilts/fuchsia_sdk:BUILD.zbi.bazel",
     )
 
-    # Following are third party rust crates dependencies which already contain a
-    # BUILD file that we can use as-is without any modification.
+    native.new_local_repository(
+        name = "zerocopy",
+        path = "external/rust/android-crates-io/crates/zerocopy",
+        build_file_content = rust_crate_build_file(
+            "zerocopy",
+            features = ["derive", "simd", "zerocopy-derive"],
+            proc_macro_deps = ["@zerocopy_derive"],
+        ),
+    )
 
-    THIRD_PARTY_CRATES = [
-        "bitflags",
-        "byteorder",
-        "cfg-if",
-        "crc32fast",
-        "hex",
-        "proc-macro2",
-        "quote",
-        "syn",
-        "unicode-ident",
-        "zerocopy",
-        "zerocopy-derive",
-    ]
+    native.new_local_repository(
+        name = "zerocopy_derive",
+        path = "external/rust/android-crates-io/crates/zerocopy-derive",
+        build_file_content = rust_crate_build_file(
+            "zerocopy_derive",
+            rule = "rust_proc_macro",
+            deps = ["@proc_macro2", "@quote", "@syn"],
+        ),
+    )
 
-    for crate in THIRD_PARTY_CRATES:
-        native.new_local_repository(
-            name = crate,
-            path = "external/rust/crates/{}".format(crate),
-            build_file = "//external/rust/crates/{}:BUILD".format(crate),
-        )
+    native.new_local_repository(
+        name = "bitflags",
+        path = "external/rust/android-crates-io/crates/bitflags",
+        build_file_content = rust_crate_build_file("bitflags"),
+    )
+
+    native.new_local_repository(
+        name = "byteorder",
+        path = "external/rust/android-crates-io/crates/byteorder",
+        build_file_content = rust_crate_build_file("byteorder"),
+    )
+
+    native.new_local_repository(
+        name = "cfg_if",
+        path = "external/rust/android-crates-io/crates/cfg-if",
+        build_file_content = rust_crate_build_file("cfg_if"),
+    )
+
+    native.new_local_repository(
+        name = "crc32fast",
+        path = "external/rust/android-crates-io/crates/crc32fast",
+        build_file_content = rust_crate_build_file(
+            "crc32fast",
+            deps = ["@cfg_if"],
+            # Current version of the crate doesn't compile with newer editions.
+            edition = "2015",
+        ),
+    )
+
+    native.new_local_repository(
+        name = "hex",
+        path = "external/rust/android-crates-io/crates/hex",
+        build_file_content = rust_crate_build_file(
+            "hex",
+            features = ["alloc", "default", "std"],
+        ),
+    )
+
+    native.new_local_repository(
+        name = "quote",
+        path = "external/rust/android-crates-io/crates/quote",
+        build_file_content = rust_crate_build_file(
+            "quote",
+            features = ["default", "proc-macro"],
+            deps = ["@proc_macro2"],
+        ),
+    )
+
+    native.new_local_repository(
+        name = "unicode_ident",
+        path = "external/rust/android-crates-io/crates/unicode-ident",
+        build_file_content = rust_crate_build_file("unicode_ident"),
+    )
+
+    native.new_local_repository(
+        name = "syn",
+        path = "external/rust/android-crates-io/crates/syn",
+        build_file_content = rust_crate_build_file(
+            "syn",
+            features = [
+                "clone-impls",
+                "default",
+                "derive",
+                "extra-traits",
+                "full",
+                "parsing",
+                "printing",
+                "proc-macro",
+                "quote",
+                "visit",
+                "visit-mut",
+            ],
+            deps = ["@proc_macro2", "@quote", "@unicode_ident"],
+        ),
+    )
+
+    native.new_local_repository(
+        name = "proc_macro2",
+        path = "external/rust/android-crates-io/crates/proc-macro2",
+        build_file_content = rust_crate_build_file(
+            "proc_macro2",
+            deps = ["@unicode_ident"],
+            features = ["default", "proc-macro", "span-locations"],
+        ),
+    )
 
     # Set up a repo to export LLVM tool/library/header/sysroot paths
     gbl_llvm_prebuilts(name = "gbl_llvm_prebuilts")
