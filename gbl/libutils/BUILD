@@ -33,4 +33,5 @@ rust_test(
     name = "test",
     crate = ":libutils",
     rustc_flags = ANDROID_RUST_LINTS,
+    visibility = ["//visibility:public"],
 )
