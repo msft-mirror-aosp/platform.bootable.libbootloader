@@ -30,4 +30,5 @@ rust_test(
     name = "libsafemath_test",
     crate = ":libsafemath",
     rustc_flags = ANDROID_RUST_LINTS,
+    visibility = ["//visibility:public"],
 )
