@@ -25,7 +25,7 @@ use zune_inflate::DeflateDecoder;
 
 /// Returns if the data is a gzip compressed data.
 pub fn is_gzip_compressed(data: &[u8]) -> bool {
-    data.starts_with(b"\x1f\xb8")
+    data.starts_with(b"\x1f\x8b")
 }
 
 /// Returns if the data is a lz4 compressed data.
@@ -107,6 +107,26 @@ pub fn decompress_kernel<'a, 'b>(
 mod test {
     use super::*;
     use crate::ops::test::FakeGblOps;
+
+    #[test]
+    fn decompress_kernel_gzip() {
+        let original_data = "Test TTTTTTTTT 123";
+        let compressed_data = [
+            0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x0b, 0x49, 0x2d, 0x2e,
+            0x51, 0x08, 0x81, 0x01, 0x05, 0x43, 0x23, 0x63, 0x00, 0xbb, 0xed, 0x15, 0xe2, 0x12,
+            0x00, 0x00, 0x00,
+        ];
+
+        // Create a buffer with the compressed data at the end.
+        let mut buffer = vec![0u8; 8 * 1024];
+        let compressed_offset = buffer.len() - compressed_data.len();
+        buffer[compressed_offset..].clone_from_slice(&compressed_data[..]);
+
+        let offset =
+            decompress_kernel(&mut FakeGblOps::default(), &mut buffer[..], compressed_offset)
+                .unwrap();
+        assert_eq!(&buffer[offset..], original_data.as_bytes());
+    }
 
     #[test]
     fn decompress_kernel_lz4() {
