@@ -14,6 +14,10 @@
 
 load(":readme.bzl", "readme_test")
 
+package(
+    default_visibility = ["//visibility:public"],
+)
+
 readme_test(
     name = "readme_test",
     readme = "docs/efi_protocols.md",
