@@ -34,6 +34,7 @@ rust_test(
     name = "libabr_test",
     crate = ":libabr",
     rustc_flags = ANDROID_RUST_LINTS,
+    visibility = ["//visibility:public"],
 )
 
 rust_static_library(

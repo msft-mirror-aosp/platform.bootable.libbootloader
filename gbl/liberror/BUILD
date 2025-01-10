@@ -33,4 +33,5 @@ rust_test(
     name = "liberror_test",
     crate = ":liberror",
     rustc_flags = ANDROID_RUST_LINTS,
+    visibility = ["//visibility:public"],
 )

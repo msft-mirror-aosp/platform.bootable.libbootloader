@@ -546,6 +546,23 @@ pub(crate) mod test {
 
         /// For return by `Self::get_image_buffer()`
         pub image_buffers: HashMap<String, LinkedList<ImageBuffer<'d>>>,
+
+        /// Custom device tree.
+        pub custom_device_tree: Option<&'a [u8]>,
+
+        /// Custom handler for `avb_handle_verification_result`
+        pub avb_handle_verification_result: Option<
+            &'a mut dyn FnMut(
+                BootStateColor,
+                Option<&CStr>,
+                Option<&[u8]>,
+                Option<&[u8]>,
+                Option<&[u8]>,
+                Option<&[u8]>,
+                Option<&[u8]>,
+                Option<&[u8]>,
+            ) -> AvbIoResult<()>,
+        >,
     }
 
     /// Print `console_out` output, which can be useful for debugging.
@@ -564,6 +581,7 @@ pub(crate) mod test {
         pub const TEST_BOOTLOADER_FILE_2: &'static [u8] = b"\x06test_2bar";
         pub const GBL_TEST_VAR: &'static str = "gbl-test-var";
         pub const GBL_TEST_VAR_VAL: &'static str = "gbl-test-var-val";
+        pub const GBL_TEST_BOOTCONFIG: &'static str = "arg1=val1\x0aarg2=val2\x0a";
 
         pub fn new(partitions: &'a [TestGblDisk]) -> Self {
             let mut res = Self {
@@ -704,16 +722,28 @@ pub(crate) mod test {
 
         fn avb_handle_verification_result(
             &mut self,
-            _color: BootStateColor,
-            _digest: Option<&CStr>,
-            _boot_os_version: Option<&[u8]>,
-            _boot_security_patch: Option<&[u8]>,
-            _system_os_version: Option<&[u8]>,
-            _system_security_patch: Option<&[u8]>,
-            _vendor_os_version: Option<&[u8]>,
-            _vendor_security_patch: Option<&[u8]>,
+            color: BootStateColor,
+            digest: Option<&CStr>,
+            boot_os_version: Option<&[u8]>,
+            boot_security_patch: Option<&[u8]>,
+            system_os_version: Option<&[u8]>,
+            system_security_patch: Option<&[u8]>,
+            vendor_os_version: Option<&[u8]>,
+            vendor_security_patch: Option<&[u8]>,
         ) -> AvbIoResult<()> {
-            unimplemented!();
+            match self.avb_handle_verification_result.as_mut() {
+                Some(f) => (*f)(
+                    color,
+                    digest,
+                    boot_os_version,
+                    boot_security_patch,
+                    system_os_version,
+                    system_security_patch,
+                    vendor_os_version,
+                    vendor_security_patch,
+                ),
+                _ => Ok(()),
+            }
         }
 
         fn get_image_buffer(
@@ -733,8 +763,8 @@ pub(crate) mod test {
             ))))
         }
 
-        fn get_custom_device_tree(&mut self) -> Option<&'static [u8]> {
-            None
+        fn get_custom_device_tree(&mut self) -> Option<&'a [u8]> {
+            self.custom_device_tree
         }
 
         fn fixup_os_commandline<'c>(
@@ -742,19 +772,21 @@ pub(crate) mod test {
             _commandline: &CStr,
             _fixup_buffer: &'c mut [u8],
         ) -> Result<Option<&'c str>, Error> {
-            unimplemented!();
+            Ok(None)
         }
 
         fn fixup_bootconfig<'c>(
             &mut self,
             _bootconfig: &[u8],
-            _fixup_buffer: &'c mut [u8],
+            fixup_buffer: &'c mut [u8],
         ) -> Result<Option<&'c [u8]>, Error> {
-            unimplemented!();
+            let (out, _) = fixup_buffer.split_at_mut(Self::GBL_TEST_BOOTCONFIG.len());
+            out.clone_from_slice(Self::GBL_TEST_BOOTCONFIG.as_bytes());
+            Ok(Some(out))
         }
 
         fn fixup_device_tree(&mut self, _: &mut [u8]) -> Result<(), Error> {
-            unimplemented!();
+            Ok(())
         }
 
         fn select_device_trees(

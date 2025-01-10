@@ -86,15 +86,10 @@ impl<'a, 'p, 'q, T: GblOps<'p, 'q>> GblAvbOps<'a, T> {
     /// Allowes implementation side to handle verification result.
     pub fn handle_verification_result(
         &mut self,
-        slot_verify: &SlotVerifyData,
+        slot_verify: Option<&SlotVerifyData>,
         color: BootStateColor,
         digest: Option<&str>,
     ) -> IoResult<()> {
-        let mut vbmeta = None;
-        let mut vbmeta_boot = None;
-        let mut vbmeta_system = None;
-        let mut vbmeta_vendor = None;
-
         // The Android build system automatically generates only the main vbmeta, but also allows
         // to have separate chained partitions like vbmeta_system (for system, product, system_ext,
         // etc.) or vbmeta_vendor (for vendor).
@@ -107,37 +102,49 @@ impl<'a, 'p, 'q, T: GblOps<'p, 'q>> GblAvbOps<'a, T> {
         // Custom chained partitions are also supported by the Android build system, but we expect
         // OEMs to follow about the same pattern.
         // https://android-review.googlesource.com/q/Id671e2c3aee9ada90256381cce432927df03169b
-        for data in slot_verify.vbmeta_data() {
-            match data.partition_name().to_str().unwrap_or_default() {
-                "vbmeta" => vbmeta = Some(data),
-                "boot" => vbmeta_boot = Some(data),
-                "vbmeta_system" => vbmeta_system = Some(data),
-                "vbmeta_vendor" => vbmeta_vendor = Some(data),
-                _ => {}
+        let (
+            boot_os_version,
+            boot_security_patch,
+            system_os_version,
+            system_security_patch,
+            vendor_os_version,
+            vendor_security_patch,
+        ) = match slot_verify {
+            Some(slot_verify) => {
+                let mut vbmeta = None;
+                let mut vbmeta_boot = None;
+                let mut vbmeta_system = None;
+                let mut vbmeta_vendor = None;
+
+                for data in slot_verify.vbmeta_data() {
+                    match data.partition_name().to_str().unwrap_or_default() {
+                        "vbmeta" => vbmeta = Some(data),
+                        "boot" => vbmeta_boot = Some(data),
+                        "vbmeta_system" => vbmeta_system = Some(data),
+                        "vbmeta_vendor" => vbmeta_vendor = Some(data),
+                        _ => {}
+                    }
+                }
+
+                let data = vbmeta.ok_or(IoError::NoSuchPartition)?;
+                let boot_data = vbmeta_boot.unwrap_or(data);
+                let system_data = vbmeta_system.unwrap_or(data);
+                let vendor_data = vbmeta_vendor.unwrap_or(data);
+
+                (
+                    boot_data.get_property_value("com.android.build.boot.os_version"),
+                    boot_data.get_property_value("com.android.build.boot.security_patch"),
+                    system_data.get_property_value("com.android.build.system.os_version"),
+                    system_data.get_property_value("com.android.build.system.security_patch"),
+                    vendor_data.get_property_value("com.android.build.vendor.os_version"),
+                    vendor_data.get_property_value("com.android.build.vendor.security_patch"),
+                )
             }
-        }
-
-        let data = vbmeta.ok_or(IoError::NoSuchPartition)?;
-        let boot_data = vbmeta_boot.unwrap_or(data);
-        let system_data = vbmeta_system.unwrap_or(data);
-        let vendor_data = vbmeta_vendor.unwrap_or(data);
-
-        let boot_os_version = boot_data.get_property_value("com.android.build.boot.os_version");
-        let boot_security_patch =
-            boot_data.get_property_value("com.android.build.boot.security_patch");
-
-        let system_os_version =
-            system_data.get_property_value("com.android.build.system.os_version");
-        let system_security_patch =
-            system_data.get_property_value("com.android.build.system.security_patch");
-
-        let vendor_os_version =
-            vendor_data.get_property_value("com.android.build.vendor.os_version");
-        let vendor_security_patch =
-            vendor_data.get_property_value("com.android.build.vendor.security_patch");
+            None => (None, None, None, None, None, None),
+        };
 
         // Convert digest rust string to null-terminated string by copying it into separate buffer.
-        let mut digest_buffer = ArrayString::<{ SHA512_DIGEST_SIZE + 1 }>::new();
+        let mut digest_buffer = ArrayString::<{ 2 * SHA512_DIGEST_SIZE + 1 }>::new();
         let digest_cstr = match digest {
             Some(digest) => {
                 write!(digest_buffer, "{}\0", digest).or(Err(IoError::InvalidValueSize))?;

@@ -15,6 +15,10 @@
 load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
+package(
+    default_visibility = ["//visibility:public"],
+)
+
 rust_library(
     name = "libgbl",
     srcs = glob(
@@ -61,33 +65,12 @@ rust_test(
     aliases = {"@itertools_noalloc": "itertools_noalloc"},
     compile_data = [
         "@gbl//libstorage/test:test_data",
+        "@gbl//libdttable/test/data:all",
+        "@gbl//libfdt/test/data:all",
     ],
     crate = ":libgbl",
     crate_features = ["uuid"],
-    data = [
-        "@gbl//libdttable/test/data:all",
-        "@gbl//libfdt/test/data:all",
-        "@gbl//libgbl/testdata:cert_metadata.bin",
-        "@gbl//libgbl/testdata:cert_permanent_attributes.bad.bin",
-        "@gbl//libgbl/testdata:cert_permanent_attributes.bad.hash",
-        "@gbl//libgbl/testdata:cert_permanent_attributes.bin",
-        "@gbl//libgbl/testdata:cert_permanent_attributes.hash",
-        "@gbl//libgbl/testdata:sparse_test.bin",
-        "@gbl//libgbl/testdata:sparse_test_blk1024.bin",
-        "@gbl//libgbl/testdata:sparse_test_raw.bin",
-        "@gbl//libgbl/testdata:testkey_rsa4096_pub.bin",
-        "@gbl//libgbl/testdata:vbmeta_a.bin",
-        "@gbl//libgbl/testdata:vbmeta_b.bin",
-        "@gbl//libgbl/testdata:vbmeta_r.bin",
-        "@gbl//libgbl/testdata:vbmeta_slotless.bin",
-        "@gbl//libgbl/testdata:writeback_test_disk.bin",
-        "@gbl//libgbl/testdata:zircon_a.vbmeta",
-        "@gbl//libgbl/testdata:zircon_a.vbmeta.cert",
-        "@gbl//libgbl/testdata:zircon_a.zbi",
-        "@gbl//libgbl/testdata:zircon_b.zbi",
-        "@gbl//libgbl/testdata:zircon_r.zbi",
-        "@gbl//libgbl/testdata:zircon_slotless.zbi",
-    ],
+    data = ["@gbl//libgbl/testdata"],
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@avb//:avb_crypto_ops_sha_impl_staticlib",
