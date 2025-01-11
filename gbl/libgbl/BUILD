@@ -35,7 +35,6 @@ rust_library(
         "@avb//:avb_bindgen",
         "@bitflags",
         "@crc32fast",
-        "@cstr",
         "@gbl//libabr",
         "@gbl//libasync",
         "@gbl//libboot",

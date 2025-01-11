@@ -185,12 +185,6 @@ cc_library(
     )
 
     native.new_local_repository(
-        name = "cstr",
-        path = "packages/modules/Virtualization/libs/cstr",
-        build_file_content = rust_crate_build_file("cstr"),
-    )
-
-    native.new_local_repository(
         name = "spin",
         path = "external/rust/android-crates-io/crates/spin",
         build_file_content = rust_crate_build_file(
