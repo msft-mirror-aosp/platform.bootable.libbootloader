@@ -747,6 +747,10 @@ mod tests {
     const TEST_VENDOR_BOOTCONFIG: &str =
         "androidboot.config_1=val_1\x0aandroidboot.config_2=val_2\x0a";
 
+    // Digest of public key used to execute AVB.
+    const TEST_PUBLIC_KEY_DIGEST: &str =
+        "7ec02ee1be696366f3fa91240a8ec68125c4145d698f597aa2b3464b59ca7fc3";
+
     /// Reads a data file under libgbl/testdata/
     fn read_test_data(file: impl AsRef<str>) -> Vec<u8> {
         println!("reading file: {}", file.as_ref());
@@ -813,9 +817,14 @@ mod tests {
     }
 
     // A helper for generating avb bootconfig with the given parameters.
-    fn avb_bootconfig(vbmeta_size: usize, digest: &str) -> std::string::String {
+    fn avb_bootconfig(
+        vbmeta_size: usize,
+        digest: &str,
+        public_key_digest: &str,
+    ) -> std::string::String {
         format!(
             "androidboot.vbmeta.device=PARTUUID=00000000-0000-0000-0000-000000000000
+androidboot.vbmeta.public_key_digest={public_key_digest}
 androidboot.vbmeta.avb_version=1.3
 androidboot.vbmeta.device_state=locked
 androidboot.vbmeta.hash_alg=sha512
@@ -856,8 +865,11 @@ androidboot.verifiedbootstate=green
         expected_digest: &str,
     ) {
         let expected_bootconfig = make_bootconfig(
-            &(avb_bootconfig(read_test_data(vbmeta_file).len(), expected_digest)
-                + FakeGblOps::GBL_TEST_BOOTCONFIG),
+            &(avb_bootconfig(
+                read_test_data(vbmeta_file).len(),
+                expected_digest,
+                TEST_PUBLIC_KEY_DIGEST,
+            ) + FakeGblOps::GBL_TEST_BOOTCONFIG),
         );
         test_android_load_verify_success(
             partitions,
@@ -905,8 +917,11 @@ androidboot.verifiedbootstate=green
         expected_vendor_bootconfig: &str,
     ) {
         let expected_bootconfig = make_bootconfig(
-            avb_bootconfig(read_test_data(vbmeta_file).len(), expected_digest)
-                + FakeGblOps::GBL_TEST_BOOTCONFIG
+            avb_bootconfig(
+                read_test_data(vbmeta_file).len(),
+                expected_digest,
+                TEST_PUBLIC_KEY_DIGEST,
+            ) + FakeGblOps::GBL_TEST_BOOTCONFIG
                 + expected_vendor_bootconfig,
         );
         test_android_load_verify_success(
