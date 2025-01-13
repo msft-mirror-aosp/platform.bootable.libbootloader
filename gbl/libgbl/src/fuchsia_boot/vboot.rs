@@ -18,18 +18,8 @@ use crate::{
     gbl_print, GblOps, Result as GblResult,
 };
 use avb::{slot_verify, Descriptor, HashtreeErrorMode, Ops as _, SlotVerifyFlags};
-use core::ffi::CStr;
 use zbi::ZbiContainer;
 use zerocopy::SplitByteSliceMut;
-
-/// Helper for getting the A/B/R suffix.
-fn slot_suffix(slot: Option<SlotIndex>) -> Option<&'static CStr> {
-    Some(match slot? {
-        SlotIndex::A => c"_a",
-        SlotIndex::B => c"_b",
-        SlotIndex::R => c"_r",
-    })
-}
 
 /// Verifies a loaded ZBI kernel.
 ///
@@ -57,8 +47,9 @@ pub(crate) fn zircon_verify_kernel<'a, 'b, 'c, B: SplitByteSliceMut + PartialEq>
 
     // Verifies the kernel.
     let part = zircon_part_name(slot);
-    let preloaded = [(part, &kernel[..])];
-    let mut avb_ops = GblAvbOps::new(gbl_ops, &preloaded[..], true);
+    let slotless_part = zircon_part_name(None);
+    let preloaded = [(slotless_part, &kernel[..])];
+    let mut avb_ops = GblAvbOps::new(gbl_ops, slot, &preloaded[..], true);
 
     // Determines verify flags and error mode.
     let unlocked = avb_ops.read_is_device_unlocked()?;
@@ -69,7 +60,7 @@ pub(crate) fn zircon_verify_kernel<'a, 'b, 'c, B: SplitByteSliceMut + PartialEq>
     };
 
     // TODO(b/334962583): Supports optional additional partitions to verify.
-    let verify_res = slot_verify(&mut avb_ops, &[c"zircon"], slot_suffix(slot), flag, mode);
+    let verify_res = slot_verify(&mut avb_ops, &[c"zircon"], slot.map(|s| s.into()), flag, mode);
     let verified_success = verify_res.is_ok();
     let verify_data = match verify_res {
         Ok(ref v) => {

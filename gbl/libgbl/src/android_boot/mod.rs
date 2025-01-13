@@ -30,7 +30,7 @@ use safemath::SafeNum;
 use zerocopy::{ByteSlice, IntoBytes, Ref};
 
 mod vboot;
-use vboot::avb_verify_slot;
+use vboot::{avb_verify_slot, PartitionsToVerify};
 
 mod load;
 pub use load::{android_load_verify, LoadedImages};
@@ -323,20 +323,14 @@ pub fn load_android_simple<'a, 'b, 'c>(
     }
 
     // Prepare partition data for avb verification
-    let (vendor_boot_load_buffer, remains) = load.split_at_mut(vendor_ramdisk_size);
-    let (init_boot_load_buffer, remains) = remains.split_at_mut(generic_ramdisk_size);
+    let (_vendor_boot_load_buffer, remains) = load.split_at_mut(vendor_ramdisk_size);
+    let (_init_boot_load_buffer, remains) = remains.split_at_mut(generic_ramdisk_size);
     let (_boot_ramdisk_load_buffer, remains) = remains.split_at_mut(boot_ramdisk_size);
     // Prepare a BootConfigBuilder to add avb generated bootconfig.
     let mut bootconfig_builder = BootConfigBuilder::new(remains)?;
-    // Perform avb verification.
-    avb_verify_slot(
-        ops,
-        boot_img_buffer,
-        vendor_boot_load_buffer,
-        init_boot_load_buffer,
-        dtbo_buffer.as_deref(),
-        &mut bootconfig_builder,
-    )?;
+
+    // Preloaded partitions aren't used. Will be fixed by using load.rs implementation
+    avb_verify_slot(ops, 0, &PartitionsToVerify::default(), &mut bootconfig_builder)?;
 
     // Move kernel to end of the boot image buffer
     let (_boot_img_buffer, kernel_tail_buffer) = {

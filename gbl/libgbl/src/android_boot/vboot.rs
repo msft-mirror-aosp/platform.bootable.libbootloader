@@ -19,59 +19,95 @@ use crate::{
     },
     gbl_print, gbl_println, GblOps, Result,
 };
+use abr::SlotIndex;
 use arrayvec::ArrayVec;
 use avb::{slot_verify, HashtreeErrorMode, Ops as _, SlotVerifyFlags};
 use bootparams::{bootconfig::BootConfigBuilder, entry::CommandlineParser};
-use core::fmt::Write;
+use core::{ffi::CStr, fmt::Write};
 use liberror::Error;
 
-/// Helper function for performing libavb verification.
+// Maximum number of partition allowed for verification.
+//
+// The value is randomly chosen for now. We can update it as we see more usecases.
+const MAX_NUM_PARTITION: usize = 16;
+
+// Type alias for ArrayVec of size `MAX_NUM_PARTITION`:
+type ArrayMaxParts<T> = ArrayVec<T, MAX_NUM_PARTITION>;
+
+/// A container holding partitions for libavb verification
+pub(crate) struct PartitionsToVerify<'a> {
+    partitions: ArrayMaxParts<&'a CStr>,
+    preloaded: ArrayMaxParts<(&'a str, &'a [u8])>,
+}
+
+impl<'a> PartitionsToVerify<'a> {
+    /// Appends a partition, along with its preloaded data
+    pub fn try_push_preloaded(&mut self, name: &'a CStr, data: &'a [u8]) -> Result<()> {
+        let err = Err(Error::TooManyPartitions(MAX_NUM_PARTITION));
+        self.partitions.try_push(name).or(err)?;
+        self.preloaded.try_push((name.to_str().unwrap(), data)).or(err)?;
+        Ok(())
+    }
+
+    /// Appends partitions, along with preloaded data
+    pub fn try_extend_preloaded(&mut self, partitions: &PartitionsToVerify<'a>) -> Result<()> {
+        let err = Err(Error::TooManyPartitions(MAX_NUM_PARTITION));
+        self.partitions.try_extend_from_slice(partitions.partitions()).or(err)?;
+        self.preloaded.try_extend_from_slice(partitions.preloaded()).or(err)?;
+        Ok(())
+    }
+
+    fn partitions(&self) -> &[&'a CStr] {
+        &self.partitions
+    }
+
+    fn preloaded(&self) -> &[(&'a str, &'a [u8])] {
+        &self.preloaded
+    }
+}
+
+impl<'a> Default for PartitionsToVerify<'a> {
+    fn default() -> Self {
+        Self { partitions: ArrayMaxParts::new(), preloaded: ArrayMaxParts::new() }
+    }
+}
+
+/// Android verified boot flow.
 ///
-/// Currently this requires the caller to preload all relevant images from disk; in its final
+/// All relevant images from disk must be preloaded and provided as `partitions`; in its final
 /// state `ops` will provide the necessary callbacks for where the images should go in RAM and
 /// which ones are preloaded.
 ///
 /// # Arguments
 /// * `ops`: [GblOps] providing device-specific backend.
-/// * `kernel`: buffer containing the `boot` image loaded from disk.
-/// * `vendor_boot`: buffer containing the `vendor_boot` image loaded from disk.
-/// * `init_boot`: buffer containing the `init_boot` image loaded from disk.
-/// * `dtbo`: buffer containing the `dtbo` image loaded from disk, if it exists.
+/// * `slot`: The slot index.
+/// * `partitions`: [PartitionsToVerify] providing pre-loaded partitions.
 /// * `bootconfig_builder`: object to write the bootconfig data into.
 ///
 /// # Returns
 /// `()` on success. Returns an error if verification process failed and boot cannot
 /// continue, or if parsing the command line or updating the boot configuration fail.
-pub(crate) fn avb_verify_slot<'a, 'b>(
+pub(crate) fn avb_verify_slot<'a, 'b, 'c>(
     ops: &mut impl GblOps<'a, 'b>,
-    kernel: &[u8],
-    vendor_boot: &[u8],
-    init_boot: &[u8],
-    dtbo: Option<&[u8]>,
+    slot: u8,
+    partitions: &PartitionsToVerify<'c>,
     bootconfig_builder: &mut BootConfigBuilder,
 ) -> Result<()> {
-    // We need the list of partition names to verify with libavb, and a corresponding list of
-    // (name, image) tuples to register as [GblAvbOps] preloaded data.
-    let mut partitions = ArrayVec::<_, 4>::new();
-    let mut preloaded = ArrayVec::<_, 4>::new();
-    for (c_name, image) in [
-        (c"boot", Some(kernel)),
-        (c"vendor_boot", Some(vendor_boot)),
-        (c"init_boot", Some(init_boot)),
-        (c"dtbo", dtbo),
-    ] {
-        if let Some(image) = image {
-            partitions.push(c_name);
-            preloaded.push((c_name.to_str().unwrap(), image));
+    let slot = match slot {
+        0 => SlotIndex::A,
+        1 => SlotIndex::B,
+        _ => {
+            gbl_println!(ops, "AVB: Invalid slot index: {slot}");
+            return Err(Error::InvalidInput.into());
         }
-    }
+    };
 
-    let mut avb_ops = GblAvbOps::new(ops, &preloaded[..], false);
+    let mut avb_ops = GblAvbOps::new(ops, Some(slot), partitions.preloaded(), false);
     let unlocked = avb_ops.read_is_device_unlocked()?;
     let verify_result = slot_verify(
         &mut avb_ops,
-        &partitions,
-        Some(c"_a"),
+        partitions.partitions(),
+        Some(slot.into()),
         // TODO(b/337846185): Pass AVB_SLOT_VERIFY_FLAGS_RESTART_CAUSED_BY_HASHTREE_CORRUPTION in
         // case verity corruption is detected by HLOS.
         match unlocked {
