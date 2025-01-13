@@ -93,3 +93,8 @@ local_path_override(
     module_name = "rules_python",
     path = "external/bazelbuild-rules_python",
 )
+
+local_path_override(
+    module_name = "protobuf",
+    path = "bootable/libbootloader/gbl/fake_modules/protobuf",
+)
