@@ -95,6 +95,11 @@ local_path_override(
 )
 
 local_path_override(
+    module_name = "rules_shell",
+    path = "external/bazelbuild-rules_shell",
+)
+
+local_path_override(
     module_name = "protobuf",
     path = "bootable/libbootloader/gbl/fake_modules/protobuf",
 )
