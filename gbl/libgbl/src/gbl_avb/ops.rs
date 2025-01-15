@@ -186,8 +186,8 @@ fn cstr_to_str<E>(s: &CStr, err: E) -> Result<&str, E> {
 
 /// A helper function to split partition into base name and slot index
 fn split_slotted(partition: &str) -> Result<(&str, SlotIndex), Error> {
-    // Attempt to split on the first underscore
-    let (partition_name, suffix) = partition.split_once('_').ok_or(Error::InvalidInput)?;
+    // Attempt to split on the last underscore
+    let (partition_name, suffix) = partition.rsplit_once('_').ok_or(Error::InvalidInput)?;
 
     // Ensure suffix has exactly one character
     if suffix.len() != 1 {
@@ -548,34 +548,59 @@ mod test {
 
     #[test]
     fn read_from_preloaded_a_partition() {
-        test_read_preloaded_partition("test", Some(SlotIndex::A), c"test_a", true);
+        test_read_preloaded_partition(
+            "test_partition",
+            Some(SlotIndex::A),
+            c"test_partition_a",
+            true,
+        );
     }
 
     #[test]
     fn read_from_preloaded_b_partition() {
-        test_read_preloaded_partition("test", Some(SlotIndex::B), c"test_b", true);
+        test_read_preloaded_partition(
+            "test_partition",
+            Some(SlotIndex::B),
+            c"test_partition_b",
+            true,
+        );
     }
 
     #[test]
     fn read_from_preloaded_r_partition() {
-        test_read_preloaded_partition("test", Some(SlotIndex::R), c"test_r", true);
+        test_read_preloaded_partition(
+            "test_partition",
+            Some(SlotIndex::R),
+            c"test_partition_r",
+            true,
+        );
     }
 
     #[test]
     fn read_from_preloaded_slotless_partition() {
-        test_read_preloaded_partition("test", None, c"test", true);
+        test_read_preloaded_partition("test_partition", None, c"test_partition", true);
     }
 
     #[test]
     fn read_from_preloaded_partition_wrong_slot() {
         // Ops are slotless but _a is used, so cannot read.
-        test_read_preloaded_partition("test", None, c"test_a", false);
+        test_read_preloaded_partition("test_partition", None, c"test_partition_a", false);
 
         // Ops are using A slot but slotless is getting read, so cannot read.
-        test_read_preloaded_partition("test", Some(SlotIndex::A), c"test", false);
+        test_read_preloaded_partition(
+            "test_partition",
+            Some(SlotIndex::A),
+            c"test_partition",
+            false,
+        );
 
         // Ops are using A slot but _b is getting read, so cannot read.
-        test_read_preloaded_partition("test", Some(SlotIndex::A), c"test_b", false);
+        test_read_preloaded_partition(
+            "test_partition",
+            Some(SlotIndex::A),
+            c"test_partition_b",
+            false,
+        );
     }
 
     #[test]
