@@ -657,7 +657,7 @@ fn offset_range(lhs: Range<usize>, off: usize) -> Range<usize> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{
         gbl_avb::state::{BootStateColor, KeyValidationStatus},
@@ -683,12 +683,16 @@ mod tests {
     const TEST_VENDOR_BOOTCONFIG: &str =
         "androidboot.config_1=val_1\x0aandroidboot.config_2=val_2\x0a";
 
-    // Digest of public key used to execute AVB.
-    const TEST_PUBLIC_KEY_DIGEST: &str =
+    /// Digest of public key used to execute AVB.
+    pub(crate) const TEST_PUBLIC_KEY_DIGEST: &str =
         "7ec02ee1be696366f3fa91240a8ec68125c4145d698f597aa2b3464b59ca7fc3";
 
+    /// Vbmeta digest for vbmeta_v4_v4_init_boot_a test artifact.
+    pub(crate) const TEST_VBMETA_V4_INIT_BOOT_A_DIGEST: &str =
+        "cf41369887ecd31c543cac5fc48a868e2359e935735f528cc7bd149a7e0a4544fd36abbd5871eb03514d00fa05548bed5c804ace07e111eb17a3026adcfd1c14";
+
     /// Reads a data file under libgbl/testdata/
-    fn read_test_data(file: impl AsRef<str>) -> Vec<u8> {
+    pub(crate) fn read_test_data(file: impl AsRef<str>) -> Vec<u8> {
         println!("reading file: {}", file.as_ref());
         fs::read(Path::new(
             format!("external/gbl/libgbl/testdata/android/{}", file.as_ref()).as_str(),
@@ -697,7 +701,7 @@ mod tests {
     }
 
     /// Generates a readable string for a bootconfig bytes.
-    fn dump_bootconfig(data: &[u8]) -> String {
+    pub(crate) fn dump_bootconfig(data: &[u8]) -> String {
         let s = data.iter().map(|v| escape_default(*v).to_string()).collect::<Vec<_>>().concat();
         let s = s.split("\\\\").collect::<Vec<_>>().join("\\");
         s.split("\\n").collect::<Vec<_>>().join("\n")
@@ -752,29 +756,92 @@ mod tests {
         );
     }
 
-    // A helper for generating avb bootconfig with the given parameters.
-    fn avb_bootconfig(
+    /// A helper for generating avb bootconfig with the given parameters.
+    pub(crate) struct AvbResultBootconfigBuilder {
         vbmeta_size: usize,
-        digest: &str,
-        public_key_digest: &str,
-    ) -> std::string::String {
-        format!(
-            "androidboot.vbmeta.device=PARTUUID=00000000-0000-0000-0000-000000000000
-androidboot.vbmeta.public_key_digest={public_key_digest}
+        digest: String,
+        public_key_digest: String,
+        color: BootStateColor,
+        unlocked: bool,
+        extra: String,
+    }
+
+    impl AvbResultBootconfigBuilder {
+        pub(crate) fn new() -> Self {
+            Self {
+                vbmeta_size: 0,
+                digest: String::new(),
+                public_key_digest: String::new(),
+                color: BootStateColor::Green,
+                unlocked: false,
+                extra: String::new(),
+            }
+        }
+
+        pub(crate) fn vbmeta_size(mut self, size: usize) -> Self {
+            self.vbmeta_size = size;
+            self
+        }
+
+        pub(crate) fn digest(mut self, digest: impl Into<String>) -> Self {
+            self.digest = digest.into();
+            self
+        }
+
+        pub(crate) fn public_key_digest(mut self, pk_digest: impl Into<String>) -> Self {
+            self.public_key_digest = pk_digest.into();
+            self
+        }
+
+        pub(crate) fn color(mut self, color: BootStateColor) -> Self {
+            self.color = color;
+            self
+        }
+
+        pub(crate) fn unlocked(mut self, unlocked: bool) -> Self {
+            self.unlocked = unlocked;
+            self
+        }
+
+        pub(crate) fn extra(mut self, extra: impl Into<String>) -> Self {
+            self.extra = extra.into();
+            self
+        }
+
+        pub(crate) fn build_string(self) -> String {
+            let device_state = match self.unlocked {
+                true => "unlocked",
+                false => "locked",
+            };
+
+            format!(
+                "androidboot.vbmeta.device=PARTUUID=00000000-0000-0000-0000-000000000000
+androidboot.vbmeta.public_key_digest={}
 androidboot.vbmeta.avb_version=1.3
-androidboot.vbmeta.device_state=locked
+androidboot.vbmeta.device_state={}
 androidboot.vbmeta.hash_alg=sha512
-androidboot.vbmeta.size={vbmeta_size}
-androidboot.vbmeta.digest={digest}
+androidboot.vbmeta.size={}
+androidboot.vbmeta.digest={}
 androidboot.vbmeta.invalidate_on_error=yes
 androidboot.veritymode=enforcing
-androidboot.verifiedbootstate=green
-"
-        )
+androidboot.verifiedbootstate={}
+{}",
+                self.public_key_digest,
+                device_state,
+                self.vbmeta_size,
+                self.digest,
+                self.color,
+                self.extra
+            )
+        }
+
+        pub(crate) fn build(self) -> Vec<u8> {
+            make_bootconfig(self.build_string())
+        }
     }
 
     // A helper for generating expected bootconfig.
-    fn make_bootconfig(bootconfig: impl AsRef<str>) -> Vec<u8> {
+    pub(crate) fn make_bootconfig(bootconfig: impl AsRef<str>) -> Vec<u8> {
         let bootconfig = bootconfig.as_ref();
         let mut buffer = vec![0u8; bootconfig.len() + BOOTCONFIG_TRAILER_SIZE];
         let mut res = BootConfigBuilder::new(&mut buffer).unwrap();
@@ -800,13 +867,13 @@ androidboot.verifiedbootstate=green
         expected_dtb: &[u8],
         expected_digest: &str,
     ) {
-        let expected_bootconfig = make_bootconfig(
-            &(avb_bootconfig(
-                read_test_data(vbmeta_file).len(),
-                expected_digest,
-                TEST_PUBLIC_KEY_DIGEST,
-            ) + FakeGblOps::GBL_TEST_BOOTCONFIG),
-        );
+        let expected_bootconfig = AvbResultBootconfigBuilder::new()
+            .vbmeta_size(read_test_data(vbmeta_file).len())
+            .digest(expected_digest)
+            .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
+            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
+            .build();
+
         test_android_load_verify_success(
             partitions,
             &read_test_data("kernel_a.img"),
@@ -852,14 +919,13 @@ androidboot.verifiedbootstate=green
         expected_digest: &str,
         expected_vendor_bootconfig: &str,
     ) {
-        let expected_bootconfig = make_bootconfig(
-            avb_bootconfig(
-                read_test_data(vbmeta_file).len(),
-                expected_digest,
-                TEST_PUBLIC_KEY_DIGEST,
-            ) + FakeGblOps::GBL_TEST_BOOTCONFIG
-                + expected_vendor_bootconfig,
-        );
+        let expected_bootconfig = AvbResultBootconfigBuilder::new()
+            .vbmeta_size(read_test_data(vbmeta_file).len())
+            .digest(expected_digest)
+            .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
+            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG.to_owned() + expected_vendor_bootconfig)
+            .build();
+
         test_android_load_verify_success(
             partitions,
             &read_test_data("kernel_a.img"),
@@ -960,6 +1026,11 @@ androidboot.verifiedbootstate=green
             (c"vendor_boot_a", "vendor_boot_v4_a.img"),
             (c"vbmeta_a", vbmeta_file),
         ];
-        test_android_load_verify_v3_and_v4(&parts[..],  vbmeta_file, "cf41369887ecd31c543cac5fc48a868e2359e935735f528cc7bd149a7e0a4544fd36abbd5871eb03514d00fa05548bed5c804ace07e111eb17a3026adcfd1c14", TEST_VENDOR_BOOTCONFIG);
+        test_android_load_verify_v3_and_v4(
+            &parts[..],
+            vbmeta_file,
+            TEST_VBMETA_V4_INIT_BOOT_A_DIGEST,
+            TEST_VENDOR_BOOTCONFIG,
+        );
     }
 }
