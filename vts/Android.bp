@@ -38,7 +38,7 @@ cc_test {
     shared_libs: ["libbase"],
     static_libs: ["libgmock"],
     test_suites: [
-        // "vts",
+        "vts",
     ],
     test_options: {
         vsr_min_shipping_api_level: 202504,
