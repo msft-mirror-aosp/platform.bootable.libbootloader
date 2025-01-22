@@ -63,3 +63,7 @@ test:ants --build_metadata=generate_test_uri=fusion
 
 common:android_ci --noshow_progress
 test:android_ci --config=ants
+
+common --enable_workspace
+common --incompatible_autoload_externally=+@rules_python,-ProguardSpecProvider,-java_binary,-java_import,-java_library,-java_plugin,-java_test,-java_runtime,-java_toolchain,-java_package_configuration,-@com_google_protobuf,-@protobuf,+@rules_shell,-@rules_android
+common --noincompatible_disallow_empty_glob
