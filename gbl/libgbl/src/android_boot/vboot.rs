@@ -41,6 +41,13 @@ pub(crate) struct PartitionsToVerify<'a> {
 }
 
 impl<'a> PartitionsToVerify<'a> {
+    /// Appends a partition to verify
+    #[cfg(test)]
+    pub fn try_push(&mut self, name: &'a CStr) -> Result<()> {
+        self.partitions.try_push(name).or(Err(Error::TooManyPartitions(MAX_NUM_PARTITION)))?;
+        Ok(())
+    }
+
     /// Appends a partition, along with its preloaded data
     pub fn try_push_preloaded(&mut self, name: &'a CStr, data: &'a [u8]) -> Result<()> {
         let err = Err(Error::TooManyPartitions(MAX_NUM_PARTITION));
@@ -191,5 +198,314 @@ pub(crate) fn avb_verify_slot<'a, 'b, 'c>(
 
 #[cfg(test)]
 mod test {
-    // TODO(b/384964561): Cover AVB flow using Android test artifacts
+    use super::*;
+    use crate::{
+        android_boot::load::tests::{
+            dump_bootconfig, make_bootconfig, read_test_data, AvbResultBootconfigBuilder,
+            TEST_PUBLIC_KEY_DIGEST, TEST_VBMETA_V4_INIT_BOOT_A_DIGEST,
+        },
+        ops::test::{FakeGblOps, FakeGblOpsStorage},
+        IntegrationError::AvbIoError,
+    };
+    use avb::{IoError, SlotVerifyError};
+    use std::{collections::HashMap, ffi::CStr};
+
+    /// Helper for testing avb_verify_slot
+    fn test_avb_verify_slot<'a>(
+        partitions: &[(&CStr, &str)],
+        partitions_to_verify: &PartitionsToVerify<'a>,
+        device_unlocked: std::result::Result<bool, avb::IoError>,
+        rollback_result: std::result::Result<u64, avb::IoError>,
+        slot: u8,
+        expected_reported_color: Option<BootStateColor>,
+        expected_bootconfig: &[u8],
+    ) -> Result<()> {
+        let mut storage = FakeGblOpsStorage::default();
+        for (part, file) in partitions {
+            storage.add_raw_device(part, read_test_data(file));
+        }
+        let mut ops = FakeGblOps::new(&storage);
+        ops.avb_ops.unlock_state = device_unlocked;
+        ops.avb_ops.rollbacks = HashMap::from([(1, rollback_result)]);
+        let mut out_color = None;
+        let mut handler = |color,
+                           _: Option<&CStr>,
+                           _: Option<&[u8]>,
+                           _: Option<&[u8]>,
+                           _: Option<&[u8]>,
+                           _: Option<&[u8]>,
+                           _: Option<&[u8]>,
+                           _: Option<&[u8]>| {
+            out_color = Some(color);
+            Ok(())
+        };
+        ops.avb_handle_verification_result = Some(&mut handler);
+        ops.avb_key_validation_status = Some(Ok(KeyValidationStatus::Valid));
+
+        let mut bootconfig_buffer = vec![0u8; 512 * 1024];
+        let mut bootconfig_builder = BootConfigBuilder::new(&mut bootconfig_buffer).unwrap();
+        let verify_result =
+            avb_verify_slot(&mut ops, slot, partitions_to_verify, &mut bootconfig_builder);
+        let bootconfig_bytes = bootconfig_builder.config_bytes();
+
+        assert_eq!(out_color, expected_reported_color);
+        assert_eq!(
+            bootconfig_bytes,
+            expected_bootconfig,
+            "\nexpect: \n{}\nactual: \n{}\n",
+            dump_bootconfig(expected_bootconfig),
+            dump_bootconfig(bootconfig_bytes),
+        );
+
+        verify_result
+    }
+
+    #[test]
+    fn test_avb_verify_slot_success() {
+        let mut partitions_to_verify = PartitionsToVerify::default();
+        partitions_to_verify.try_push(c"boot").unwrap();
+        partitions_to_verify.try_push(c"init_boot").unwrap();
+        partitions_to_verify.try_push(c"vendor_boot").unwrap();
+        let partitions_data = [
+            (c"boot_a", "boot_no_ramdisk_v4_a.img"),
+            (c"init_boot_a", "init_boot_a.img"),
+            (c"vendor_boot_a", "vendor_boot_v4_a.img"),
+            (c"vbmeta_a", "vbmeta_v4_v4_init_boot_a.img"),
+        ];
+        let expected_bootconfig = AvbResultBootconfigBuilder::new()
+            .vbmeta_size(read_test_data("vbmeta_v4_v4_init_boot_a.img").len())
+            .digest(TEST_VBMETA_V4_INIT_BOOT_A_DIGEST)
+            .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
+            .build();
+
+        assert_eq!(
+            test_avb_verify_slot(
+                &partitions_data,
+                &partitions_to_verify,
+                // Unlocked result
+                Ok(false),
+                // Rollback index result
+                Ok(0),
+                // Slot
+                0,
+                // Expected color
+                Some(BootStateColor::Green),
+                // Expected bootcofnig
+                &expected_bootconfig,
+            ),
+            Ok(()),
+        );
+    }
+
+    #[test]
+    fn test_avb_verify_slot_from_preloaded_success() {
+        let boot = read_test_data("boot_no_ramdisk_v4_a.img");
+        let init_boot = read_test_data("init_boot_a.img");
+        let vendor_boot = read_test_data("vendor_boot_v4_a.img");
+
+        let mut partitions_to_verify = PartitionsToVerify::default();
+        partitions_to_verify.try_push_preloaded(c"boot", &boot).unwrap();
+        partitions_to_verify.try_push_preloaded(c"init_boot", &init_boot).unwrap();
+        partitions_to_verify.try_push_preloaded(c"vendor_boot", &vendor_boot).unwrap();
+        let partitions_data = [
+            // Required images aren't presented. Have to rely on preloaded.
+            (c"vbmeta_a", "vbmeta_v4_v4_init_boot_a.img"),
+        ];
+        let expected_bootconfig = AvbResultBootconfigBuilder::new()
+            .vbmeta_size(read_test_data("vbmeta_v4_v4_init_boot_a.img").len())
+            .digest(TEST_VBMETA_V4_INIT_BOOT_A_DIGEST)
+            .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
+            .build();
+
+        assert_eq!(
+            test_avb_verify_slot(
+                &partitions_data,
+                &partitions_to_verify,
+                // Unlocked result
+                Ok(false),
+                // Rollback index result
+                Ok(0),
+                // Slot
+                0,
+                // Expected color
+                Some(BootStateColor::Green),
+                // Expected bootcofnig
+                &expected_bootconfig,
+            ),
+            Ok(()),
+        );
+    }
+
+    #[test]
+    fn test_avb_verify_slot_success_unlocked() {
+        let mut partitions_to_verify = PartitionsToVerify::default();
+        partitions_to_verify.try_push(c"boot").unwrap();
+        partitions_to_verify.try_push(c"init_boot").unwrap();
+        partitions_to_verify.try_push(c"vendor_boot").unwrap();
+        let partitions_data = [
+            (c"boot_a", "boot_no_ramdisk_v4_a.img"),
+            (c"init_boot_a", "init_boot_a.img"),
+            (c"vendor_boot_a", "vendor_boot_v4_a.img"),
+            (c"vbmeta_a", "vbmeta_v4_v4_init_boot_a.img"),
+        ];
+        let expected_bootconfig = AvbResultBootconfigBuilder::new()
+            .vbmeta_size(read_test_data("vbmeta_v4_v4_init_boot_a.img").len())
+            .digest(TEST_VBMETA_V4_INIT_BOOT_A_DIGEST)
+            .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
+            .color(BootStateColor::Orange)
+            .unlocked(true)
+            .build();
+
+        assert_eq!(
+            test_avb_verify_slot(
+                &partitions_data,
+                &partitions_to_verify,
+                // Unlocked result
+                Ok(true),
+                // Rollback index result
+                Ok(0),
+                // Slot
+                0,
+                // Expected color
+                Some(BootStateColor::Orange),
+                // Expected bootconfig
+                &expected_bootconfig,
+            ),
+            Ok(()),
+        );
+    }
+
+    #[test]
+    fn test_avb_verify_slot_verification_failed_unlocked() {
+        let mut partitions_to_verify = PartitionsToVerify::default();
+        partitions_to_verify.try_push(c"boot").unwrap();
+        partitions_to_verify.try_push(c"init_boot").unwrap();
+        partitions_to_verify.try_push(c"vendor_boot").unwrap();
+        let partitions_data = [
+            (c"boot_a", "boot_no_ramdisk_v4_a.img"),
+            (c"init_boot_a", "init_boot_a.img"),
+            (c"vendor_boot_a", "vendor_boot_v4_a.img"),
+            (c"vbmeta_a", "vbmeta_v4_v4_init_boot_a.img"),
+        ];
+        let expected_bootconfig = AvbResultBootconfigBuilder::new()
+            .vbmeta_size(read_test_data("vbmeta_v4_v4_init_boot_a.img").len())
+            .digest(TEST_VBMETA_V4_INIT_BOOT_A_DIGEST)
+            .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
+            .color(BootStateColor::Orange)
+            .unlocked(true)
+            .build();
+
+        assert_eq!(
+            test_avb_verify_slot(
+                &partitions_data,
+                &partitions_to_verify,
+                // Unlocked result
+                Ok(true),
+                // Rollback index result
+                Ok(0),
+                // Slot
+                0,
+                // Expected color
+                Some(BootStateColor::Orange),
+                // Expected bootconfig
+                &expected_bootconfig,
+            ),
+            // Device is unlocked, so can continue boot
+            Ok(()),
+        );
+    }
+
+    #[test]
+    fn test_avb_verify_slot_verification_fatal_failed_unlocked() {
+        let mut partitions_to_verify = PartitionsToVerify::default();
+        partitions_to_verify.try_push(c"boot").unwrap();
+        partitions_to_verify.try_push(c"init_boot").unwrap();
+        partitions_to_verify.try_push(c"vendor_boot").unwrap();
+        let partitions_data = [
+            (c"boot_a", "boot_no_ramdisk_v4_a.img"),
+            (c"init_boot_a", "init_boot_a.img"),
+            (c"vendor_boot_a", "vendor_boot_v4_a.img"),
+            (c"vbmeta_a", "vbmeta_v4_v4_init_boot_a.img"),
+        ];
+        let expected_bootconfig = make_bootconfig("");
+
+        assert_eq!(
+            test_avb_verify_slot(
+                &partitions_data,
+                &partitions_to_verify,
+                // Unlocked result
+                Ok(true),
+                // Get rollback index is failed
+                Err(IoError::NoSuchValue),
+                // Slot
+                0,
+                // Expected color
+                Some(BootStateColor::Red),
+                // Expected bootconfig
+                &expected_bootconfig,
+            ),
+            // Fatal error, so cannot continue boot
+            Err(SlotVerifyError::Io.into()),
+        );
+    }
+
+    #[test]
+    fn test_avb_verify_slot_verification_failed_locked() {
+        let mut partitions_to_verify = PartitionsToVerify::default();
+        partitions_to_verify.try_push(c"boot").unwrap();
+        partitions_to_verify.try_push(c"init_boot").unwrap();
+        partitions_to_verify.try_push(c"vendor_boot").unwrap();
+        let partitions_data = [
+            // Wrong boot image, expect verification to fail.
+            (c"boot_a", "boot_v0_a.img"),
+            (c"init_boot_a", "init_boot_a.img"),
+            (c"vendor_boot_a", "vendor_boot_v4_a.img"),
+            (c"vbmeta_a", "vbmeta_v4_v4_init_boot_a.img"),
+        ];
+        let expected_bootconfig = make_bootconfig("");
+
+        assert_eq!(
+            test_avb_verify_slot(
+                &partitions_data,
+                &partitions_to_verify,
+                // Unlocked result
+                Ok(false),
+                // Rollback index result
+                Ok(0),
+                // Slot
+                0,
+                // Expected color
+                Some(BootStateColor::Red),
+                // Expected bootconfig
+                &expected_bootconfig,
+            ),
+            // Cannot continue boot
+            Err(SlotVerifyError::Verification(None).into()),
+        );
+    }
+
+    #[test]
+    fn test_avb_verify_slot_verification_failed_obtain_lock_status() {
+        let partitions_to_verify = PartitionsToVerify::default();
+        let expected_bootconfig = make_bootconfig("");
+
+        assert_eq!(
+            test_avb_verify_slot(
+                &[],
+                &partitions_to_verify,
+                // Unlocked result
+                Err(avb::IoError::NoSuchValue),
+                // Rollback index result
+                Ok(0),
+                // Slot
+                0,
+                // Expected color
+                None,
+                // Expected bootconfig
+                &expected_bootconfig,
+            ),
+            // Cannot continue boot
+            Err(AvbIoError(IoError::NoSuchValue)),
+        );
+    }
 }
