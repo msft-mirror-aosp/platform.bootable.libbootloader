@@ -92,6 +92,7 @@ typedef struct GblEfiFastbootProtocol {
                                          size_t part_name_len,
                                          uint64_t* permissions);
   EfiStatus (*wipe_user_data)(struct GblEfiFastbootProtocol* this);
+  bool (*should_stop_in_fastboot)(struct GblEfiFastbootProtocol* this);
 } GblEfiFastbootProtocol;
 
 #endif  // __GBL_EFI_FASTBOOT_PROTOCOL_H__
