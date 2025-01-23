@@ -15,7 +15,7 @@
 use super::{avb_verify_slot, cstr_bytes_to_str};
 use crate::{
     android_boot::PartitionsToVerify,
-    constants::{FDT_ALIGNMENT, KERNEL_ALIGNMENT},
+    constants::{FDT_ALIGNMENT, KERNEL_ALIGNMENT, PAGE_SIZE},
     decompress::{decompress_kernel, is_compressed},
     gbl_print, gbl_println,
     ops::GblOps,
@@ -35,9 +35,6 @@ use liberror::Error;
 use libutils::aligned_subslice;
 use safemath::SafeNum;
 use zerocopy::{IntoBytes, Ref};
-
-// Value of page size for v3/v4 header.
-const PAGE_SIZE: usize = 4096;
 
 // Represents a slot suffix.
 struct SlotSuffix([u8; 3]);

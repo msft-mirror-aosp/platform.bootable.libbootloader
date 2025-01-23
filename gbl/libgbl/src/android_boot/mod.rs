@@ -15,7 +15,8 @@
 //! Android boot support.
 
 use crate::{
-    device_tree::{DeviceTreeComponentSource, DeviceTreeComponentsRegistry, FDT_ALIGNMENT},
+    constants::{FDT_ALIGNMENT, KERNEL_ALIGNMENT, PAGE_SIZE},
+    device_tree::{DeviceTreeComponentSource, DeviceTreeComponentsRegistry},
     gbl_print, gbl_println, GblOps, Result,
 };
 use bootimg::{BootImage, VendorImageHeader};
@@ -41,8 +42,6 @@ use crate::decompress::decompress_kernel;
 
 /// Device tree bootargs property to store kernel command line.
 pub const BOOTARGS_PROP: &CStr = c"bootargs";
-/// Linux kernel requires 2MB alignment.
-const KERNEL_ALIGNMENT: usize = 2 * 1024 * 1024;
 
 /// A helper to convert a bytes slice containing a null-terminated string to `str`
 fn cstr_bytes_to_str(data: &[u8]) -> core::result::Result<&str, Error> {
@@ -58,7 +57,6 @@ fn cstr_bytes_to_str(data: &[u8]) -> core::result::Result<&str, Error> {
 fn boot_header_elements<B: ByteSlice + PartialEq>(
     hdr: &BootImage<B>,
 ) -> Result<(usize, &str, usize, usize, usize, usize)> {
-    const PAGE_SIZE: usize = 4096; // V3/V4 image has fixed page size 4096;
     Ok(match hdr {
         BootImage::V2(ref hdr) => (
             hdr._base._base.kernel_size as usize,
@@ -147,8 +145,6 @@ pub fn load_android_simple<'a, 'b, 'c>(
     ops: &mut impl GblOps<'b, 'c>,
     load: &'a mut [u8],
 ) -> Result<(&'a mut [u8], &'a mut [u8], &'a mut [u8], &'a mut [u8])> {
-    const PAGE_SIZE: usize = 4096; // V3/V4 image has fixed page size 4096;
-
     let (bcb_buffer, load) = load.split_at_mut(BootloaderMessage::SIZE_BYTES);
     ops.read_from_partition_sync("misc", 0, bcb_buffer)?;
     let bcb = BootloaderMessage::from_bytes_ref(bcb_buffer)?;
