@@ -50,6 +50,7 @@ typedef struct _GBL_EFI_FASTBOOT_PROTOCOL {
   GBL_EFI_FASTBOOT_CLEAR_LOCK                   ClearLock;
   GBL_EFI_FASTBOOT_GET_PARTITION_PERMISSIONS    GetPartitionPermissions;
   GBL_EFI_FASTBOOT_WIPE_USER_DATA               WipeUserData;
+  GBL_EFI_FASTBOOT_SHOULD_STOP_IN_FASTBOOT      ShouldStopInFastboot;
 } GBL_EFI_FASTBOOT_PROTOCOL;
 ```
 
@@ -610,3 +611,41 @@ as part of a refurbishment process, or for testing purposes.
 | `EFI_ACCESS_DENIED`     | The operation is not permitted in the current lock state. |
 | `EFI_DEVICE_ERROR`      | There was a block device or storage error.                |
 
+## `GBL_EFI_FASTBOOT_PROTOCOL.ShouldStopInFastboot()`
+
+### Summary
+
+Checks custom inputs to determine whether the device should stop in fastboot on boot.
+
+### Prototype
+
+```c
+typedef
+BOOL
+(EFIAPI * GBL_EFI_FASTBOOT_SHOULD_STOP_IN_FASTBOOT)(
+    IN GBL_EFI_FASTBOOT_PROTOCOL* This,
+);
+```
+
+### Parameters
+
+*This*
+
+A pointer to the [`GBL_EFI_FASTBOOT_PROTOCOL`](#protocol-interface-structure) instance.
+
+### Description
+
+Devices often define custom mechanisms for determining whether to enter fastboot mode
+on boot. A specific button press combination is common,
+e.g. pressing 'volume down' for three seconds while booting.
+
+`ShouldStopInFastboot()` returns whether the device should stop in fastboot mode
+due to device input.
+
+**Note:** `ShouldStopInFastboot()` should ONLY return `true` if the device specific
+button press is active. In particular, if the device supports
+[`GBL_EFI_AB_SLOT_PROTOCOL`](./gbl_efi_ab_slot_protocol.md),
+`ShouldStopInFastboot()` should NOT check the information provided by
+`GBL_EFI_AB_SLOT_PROTOCOL.GetBootReason()` or the underlying persistent boot reason.
+
+Any errors should cause a return value of `false`.
