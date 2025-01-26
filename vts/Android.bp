@@ -31,3 +31,16 @@ cc_test {
     ],
     require_root: true,
 }
+
+cc_test {
+    name: "VtsGblTest",
+    srcs: ["VtsGblTest.cpp"],
+    shared_libs: ["libbase"],
+    static_libs: ["libgmock"],
+    test_suites: [
+        "vts",
+    ],
+    test_options: {
+        vsr_min_shipping_api_level: 202504,
+    },
+}
