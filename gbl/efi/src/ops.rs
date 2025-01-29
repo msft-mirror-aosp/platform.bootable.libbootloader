@@ -26,7 +26,7 @@ use alloc::{
 use arrayvec::ArrayVec;
 use core::{
     cmp::min, ffi::CStr, fmt::Write, mem::MaybeUninit, num::NonZeroUsize, ops::DerefMut, ptr::null,
-    slice::from_raw_parts_mut,
+    slice::from_raw_parts_mut, time::Duration,
 };
 use efi::{
     efi_print, efi_println,
@@ -271,7 +271,7 @@ impl<'a, 'b, 'd> GblOps<'b, 'd> for Ops<'a, 'b> {
         let found = wait_key_stroke(
             self.efi_entry,
             |key| key.unicode_char == 0x08 || (key.unicode_char == 0x0 && key.scan_code == 0x08),
-            2000,
+            Duration::from_secs(2),
         );
         if matches!(found, Ok(true)) {
             efi_println!(self.efi_entry, "Backspace pressed, entering fastboot");

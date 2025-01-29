@@ -14,6 +14,7 @@
 
 use crate::efi;
 use ::efi::EfiMemoryAttributesTable;
+use core::time::Duration;
 use efi::{
     protocol::{
         device_path::{DevicePathProtocol, DevicePathText, DevicePathToTextProtocol},
@@ -92,18 +93,22 @@ pub fn efi_to_e820_mem_type(efi_mem_type: u32) -> u32 {
 /// Repetitively runs a closure until it signals completion or timeout.
 ///
 /// * If `f` returns `Ok(R)`, an `Ok(Some(R))` is returned immediately.
-/// * If `f` has been repetitively called and returning `Err(false)` for `timeout_ms`,  an
+/// * If `f` has been repetitively called and returning `Err(false)` for `timeout_duration`,  an
 ///   `Ok(None)` is returned. This is the time out case.
 /// * If `f` returns `Err(true)` the timeout is reset.
-pub fn loop_with_timeout<F, R>(efi_entry: &EfiEntry, timeout_ms: u64, mut f: F) -> Result<Option<R>>
+pub fn loop_with_timeout<F, R>(
+    efi_entry: &EfiEntry,
+    timeout_duration: Duration,
+    mut f: F,
+) -> Result<Option<R>>
 where
     F: FnMut() -> core::result::Result<R, bool>,
 {
-    let timeout = Timeout::new(efi_entry, timeout_ms)?;
+    let timeout = Timeout::new(efi_entry, timeout_duration)?;
     while !timeout.check()? {
         match f() {
             Ok(v) => return Ok(Some(v)),
-            Err(true) => timeout.reset(timeout_ms)?,
+            Err(true) => timeout.reset(timeout_duration)?,
             _ => {}
         }
     }
@@ -116,13 +121,13 @@ where
 pub fn wait_key_stroke(
     efi_entry: &EfiEntry,
     pred: impl Fn(EfiInputKey) -> bool,
-    timeout_ms: u64,
+    timeout: Duration,
 ) -> Result<bool> {
     let input = efi_entry
         .system_table()
         .boot_services()
         .find_first_and_open::<SimpleTextInputProtocol>()?;
-    loop_with_timeout(efi_entry, timeout_ms, || -> core::result::Result<Result<bool>, bool> {
+    loop_with_timeout(efi_entry, timeout, || -> core::result::Result<Result<bool>, bool> {
         match input.read_key_stroke() {
             Ok(Some(key)) if pred(key) => Ok(Ok(true)),
             Err(e) => Ok(Err(e.into())),
