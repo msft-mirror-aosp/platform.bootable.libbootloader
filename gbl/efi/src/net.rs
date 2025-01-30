@@ -20,11 +20,12 @@ use alloc::{boxed::Box, vec::Vec};
 use core::{
     fmt::Write,
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 use efi::{
     efi_print, efi_println,
     protocol::{simple_network::SimpleNetworkProtocol, Protocol},
-    utils::{ms_to_100ns, Timeout},
+    utils::Timeout,
     DeviceHandle, EfiEntry, Event, EventNotify, EventType, Tpl,
 };
 use efi_types::{EfiEvent, EfiMacAddress, EFI_TIMER_DELAY_TIMER_PERIODIC};
@@ -46,8 +47,8 @@ use smoltcp::{
 
 /// Ethernet frame size for frame pool.
 const ETHERNET_FRAME_SIZE: usize = 1536;
-// Update period in milliseconds for `NETWORK_TIMESTAMP`.
-const NETWORK_TIMESTAMP_UPDATE_PERIOD: u64 = 50;
+// Update period for `NETWORK_TIMESTAMP`.
+const NETWORK_TIMESTAMP_UPDATE_PERIOD: Duration = Duration::from_millis(50);
 // Size of the socket tx/rx application data buffer.
 const SOCKET_TX_RX_BUFFER: usize = 256 * 1024;
 
@@ -118,8 +119,14 @@ impl Drop for EfiNetworkDevice<'_> {
 
 // Implements network device trait backend for the `smoltcp` crate.
 impl<'a> Device for EfiNetworkDevice<'a> {
-    type RxToken<'b> = RxToken<'b> where Self: 'b;
-    type TxToken<'b> = TxToken<'a, 'b> where Self: 'b;
+    type RxToken<'b>
+        = RxToken<'b>
+    where
+        Self: 'b;
+    type TxToken<'b>
+        = TxToken<'a, 'b>
+    where
+        Self: 'b;
 
     fn capabilities(&self) -> DeviceCapabilities {
         // Taken from upstream example.
@@ -204,7 +211,9 @@ impl phy::TxToken for TxToken<'_, '_> {
         F: FnOnce(&mut [u8]) -> R,
     {
         loop {
-            match loop_with_timeout(self.efi_entry, 5000, || self.try_get_buffer().ok_or(false)) {
+            match loop_with_timeout(self.efi_entry, Duration::from_secs(5), || {
+                self.try_get_buffer().ok_or(false)
+            }) {
                 Ok(Some(send_buffer)) => {
                     // SAFETY:
                     // * The pointer is confirmed to come from one of `self.tx_frames`. It's
@@ -320,7 +329,7 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
     pub fn listen(&mut self, port: u16) -> Result<()> {
         self.get_socket().abort();
         self.get_socket().listen(port).map_err(listen_to_unified)?;
-        self.last_listen_timestamp = Some(self.timestamp(0));
+        self.last_listen_timestamp = Some(self.timestamp(0).as_millis() as u64);
         Ok(())
     }
 
@@ -330,9 +339,9 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
     }
 
     /// Returns the amount of time elapsed since last call to `Self::listen()`. If `listen()` has
-    /// never been called, `u64::MAX` is returned.
-    pub fn time_since_last_listen(&mut self) -> u64 {
-        self.last_listen_timestamp.map(|v| self.timestamp(v)).unwrap_or(u64::MAX)
+    /// never been called, `Duration::MAX` is returned.
+    pub fn time_since_last_listen(&mut self) -> Duration {
+        self.last_listen_timestamp.map(|v| self.timestamp(v)).unwrap_or(Duration::MAX)
     }
 
     /// Polls network device.
@@ -364,7 +373,7 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
     }
 
     /// Receives exactly `out.len()` number of bytes to `out`.
-    pub async fn receive_exact(&mut self, out: &mut [u8], timeout: u64) -> Result<()> {
+    pub async fn receive_exact(&mut self, out: &mut [u8], timeout: Duration) -> Result<()> {
         let timer = Timeout::new(self.efi_entry, timeout)?;
         let mut curr = &mut out[..];
         while !curr.is_empty() {
@@ -394,7 +403,7 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
     }
 
     /// Sends exactly `data.len()` number of bytes from `data`.
-    pub async fn send_exact(&mut self, data: &[u8], timeout: u64) -> Result<()> {
+    pub async fn send_exact(&mut self, data: &[u8], timeout: Duration) -> Result<()> {
         let timer = Timeout::new(self.efi_entry, timeout)?;
         let mut curr = &data[..];
         let mut last_send_queue = self.get_socket().send_queue();
@@ -437,19 +446,19 @@ impl<'a, 'b> EfiTcpSocket<'a, 'b> {
         &self.interface
     }
 
-    /// Returns the number of milliseconds elapsed since the `base` timestamp.
-    pub fn timestamp(&self, base: u64) -> u64 {
+    /// Returns the duration elapsed since the `base` timestamp.
+    pub fn timestamp(&self, base_in_millis: u64) -> Duration {
         let curr = self.timestamp.load(Ordering::Relaxed);
         // Assume there can be at most one overflow.
-        match curr < base {
-            true => u64::MAX - (base - curr),
-            false => curr - base,
-        }
+        Duration::from_millis(match curr < base_in_millis {
+            true => u64::MAX - (base_in_millis - curr),
+            false => curr - base_in_millis,
+        })
     }
 
     /// Returns a smoltcp time `Instant` value.
     fn instant(&self) -> Instant {
-        to_smoltcp_instant(self.timestamp(0))
+        to_smoltcp_instant(self.timestamp(0).as_millis() as u64)
     }
 
     /// Broadcasts Fuchsia Fastboot MDNS service once.
@@ -551,7 +560,10 @@ impl<'a, 'b, 'c> EfiGblNetworkInternal<'a, 'b, 'c> {
         // Initializes notification functions.
         if self.notify_fn.is_none() {
             self.notify_fn = Some(Box::new(|_: EfiEvent| {
-                self.timestamp.fetch_add(NETWORK_TIMESTAMP_UPDATE_PERIOD, Ordering::Relaxed);
+                self.timestamp.fetch_add(
+                    NETWORK_TIMESTAMP_UPDATE_PERIOD.as_millis() as u64,
+                    Ordering::Relaxed,
+                );
             }));
             self.notify = Some(EventNotify::new(Tpl::Callback, self.notify_fn.as_mut().unwrap()));
         }
@@ -569,7 +581,7 @@ impl<'a, 'b, 'c> EfiGblNetworkInternal<'a, 'b, 'c> {
         bs.set_timer(
             &_time_update_event,
             EFI_TIMER_DELAY_TIMER_PERIODIC,
-            ms_to_100ns(NETWORK_TIMESTAMP_UPDATE_PERIOD)?,
+            NETWORK_TIMESTAMP_UPDATE_PERIOD,
         )?;
 
         // Gets our MAC address and IPv6 address.

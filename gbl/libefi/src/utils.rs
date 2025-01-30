@@ -15,7 +15,7 @@
 //! This file provides some utilities built on EFI APIs.
 
 use crate::{EfiEntry, Event, EventType};
-use core::future::Future;
+use core::{future::Future, time::Duration};
 use efi_types::EFI_TIMER_DELAY_TIMER_RELATIVE;
 use gbl_async::{select, yield_now};
 use liberror::Result;
@@ -34,10 +34,10 @@ pub struct Timeout<'a> {
 
 impl<'a> Timeout<'a> {
     /// Creates a new instance and starts the timeout timer.
-    pub fn new(efi_entry: &'a EfiEntry, timeout_ms: u64) -> Result<Self> {
+    pub fn new(efi_entry: &'a EfiEntry, timeout: Duration) -> Result<Self> {
         let bs = efi_entry.system_table().boot_services();
         let timer = bs.create_event(EventType::Timer)?;
-        bs.set_timer(&timer, EFI_TIMER_DELAY_TIMER_RELATIVE, ms_to_100ns(timeout_ms)?)?;
+        bs.set_timer(&timer, EFI_TIMER_DELAY_TIMER_RELATIVE, timeout)?;
         Ok(Self { efi_entry, timer })
     }
 
@@ -47,17 +47,17 @@ impl<'a> Timeout<'a> {
     }
 
     /// Resets the timeout.
-    pub fn reset(&self, timeout_ms: u64) -> Result<()> {
+    pub fn reset(&self, timeout: Duration) -> Result<()> {
         let bs = self.efi_entry.system_table().boot_services();
-        bs.set_timer(&self.timer, EFI_TIMER_DELAY_TIMER_RELATIVE, ms_to_100ns(timeout_ms)?)?;
+        bs.set_timer(&self.timer, EFI_TIMER_DELAY_TIMER_RELATIVE, timeout)?;
         Ok(())
     }
 }
 
 /// Waits for a given amount of time.
-pub async fn wait(efi_entry: &EfiEntry, duration_ms: u64) -> Result<()> {
+pub async fn wait(efi_entry: &EfiEntry, duration: Duration) -> Result<()> {
     // EFI boot service has a `stall` API. But it's not async.
-    let timeout = Timeout::new(efi_entry, duration_ms)?;
+    let timeout = Timeout::new(efi_entry, duration)?;
     while !timeout.check()? {
         yield_now().await;
     }
@@ -74,9 +74,9 @@ pub async fn wait(efi_entry: &EfiEntry, duration_ms: u64) -> Result<()> {
 pub async fn with_timeout<F: Future<Output = R>, R>(
     efi_entry: &EfiEntry,
     fut: F,
-    timeout_ms: u64,
+    timeout: Duration,
 ) -> Result<Option<R>> {
-    let (timeout_res, res) = select(wait(efi_entry, timeout_ms), fut).await;
+    let (timeout_res, res) = select(wait(efi_entry, timeout), fut).await;
     match timeout_res {
         Some(Err(e)) => return Err(e),
         _ => Ok(res),

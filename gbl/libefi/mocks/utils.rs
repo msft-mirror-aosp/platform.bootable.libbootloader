@@ -15,6 +15,7 @@
 //! Mock utils.
 
 use crate::MockEfiEntry;
+use core::time::Duration;
 use liberror::Result;
 use mockall::mock;
 
@@ -22,11 +23,11 @@ mock! {
     /// Mock [efi::utils::Timeout].
     pub Timeout {
         /// Creates a new [MockTimeout].
-        pub fn new(efi_entry: &MockEfiEntry, timeout_ms: u64) -> Result<Self>;
+        pub fn new(efi_entry: &MockEfiEntry, timeout: Duration) -> Result<Self>;
         /// Checks the timeout.
         pub fn check(&self) -> Result<bool>;
         /// Resets the timeout.
-        pub fn reset(&self, timeout_ms: u64) -> Result<()>;
+        pub fn reset(&self, timeout: Duration) -> Result<()>;
     }
 }
 /// Map to the libefi name so code under test can just use one name.

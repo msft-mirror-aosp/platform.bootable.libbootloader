@@ -67,7 +67,7 @@ pub mod utils;
 #[cfg(not(test))]
 use core::{fmt::Write, panic::PanicInfo};
 
-use core::{marker::PhantomData, ptr::null_mut, slice::from_raw_parts};
+use core::{marker::PhantomData, ptr::null_mut, slice::from_raw_parts, time::Duration};
 use efi_types::{
     EfiBootService, EfiConfigurationTable, EfiEvent, EfiGuid, EfiHandle,
     EfiMemoryAttributesTableHeader, EfiMemoryDescriptor, EfiMemoryType, EfiRuntimeService,
@@ -496,11 +496,16 @@ impl<'a> BootServices<'a> {
         &self,
         event: &Event,
         delay_type: EfiTimerDelay,
-        trigger_time: u64,
+        trigger_time: Duration,
     ) -> Result<()> {
         // SAFETY: EFI_BOOT_SERVICES method call.
         unsafe {
-            efi_call!(self.boot_services.set_timer, event.efi_event, delay_type, trigger_time)
+            efi_call!(
+                self.boot_services.set_timer,
+                event.efi_event,
+                delay_type,
+                (trigger_time.as_nanos() / 100).try_into()?
+            )
         }
     }
 }
