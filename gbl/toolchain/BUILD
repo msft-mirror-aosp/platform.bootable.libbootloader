@@ -183,7 +183,12 @@ cc_flags_common = [
 # x86_64 UEFI targets
 gbl_clang_cc_toolchain(
     name = "x86_64_uefi_clang_cc_toolchain",
-    cc_flags = cc_flags_common,
+    cc_flags = cc_flags_common + [
+        # Adding this prevents the compiler from generating mmx, sse instructions such as
+        # "movsd (%esp),%xmm0" which likely isn't enabled during the bootloader stage and causes
+        # crash as a result.
+        "-mgeneral-regs-only",
+    ],
     target_cpu = "x86_64",
     target_system_triple = "x86_64-unknown-windows-msvc",
 )
