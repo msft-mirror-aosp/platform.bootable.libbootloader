@@ -62,6 +62,12 @@ const LOAD_ADDR_HIGH: usize = 0x10_0000;
 // Flag value to use high address for protected mode kernel.
 const LOAD_FLAG_LOADED_HIGH: u8 = 0x1;
 
+/// In 64-bit boot protocol, the kernel is started by jumping to the
+/// 64-bit kernel entry point, which is the start address of loaded
+/// 64-bit kernel plus 0x200.
+#[cfg(target_arch = "x86_64")]
+const ENTRY_POINT_OFFSET: usize = 0x200;
+
 /// E820 RAM address range type.
 pub const E820_ADDRESS_TYPE_RAM: u32 = 1;
 /// E820 reserved address range type.
@@ -249,7 +255,7 @@ where
             "cld",
             "cli",
             "jmp {ep}",
-            ep = in(reg) LOAD_ADDR_HIGH,
+            ep = in(reg) LOAD_ADDR_HIGH + ENTRY_POINT_OFFSET,
             in("rsi") low_mem_addr,
         );
     }
