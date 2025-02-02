@@ -218,6 +218,19 @@ impl Protocol<'_, GblFastbootProtocol> {
         unsafe { efi_call!(self.interface()?.wipe_user_data, self.interface) }
     }
 
+    /// Wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.should_stop_in_fastboot()`
+    pub fn should_stop_in_fastboot(&self) -> bool {
+        let Ok(interface) = self.interface() else { return false };
+
+        let Some(should_stop_in_fastboot) = interface.should_stop_in_fastboot else { return false };
+        // SAFETY:
+        // `self.interface` is non-null due to check above.
+        // `self.interface` is an input parameter and will not be retained. It outlives the call.
+        // `should_stop_in_fastboot` is non-null due to check above.
+        // `should_stop_in_fastboot` is responsible for validating its input.
+        unsafe { should_stop_in_fastboot(self.interface) }
+    }
+
     /// Wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.serial_number`
     pub fn serial_number(&self) -> Result<&str> {
         let serial_number = &self.interface()?.serial_number;
@@ -237,10 +250,11 @@ mod test {
     use crate::{
         protocol::GetVarAllCallback,
         test::{generate_protocol, run_test},
-        EfiEntry,
+        DeviceHandle, EfiEntry,
     };
     use core::{
         ffi::{c_void, CStr},
+        ptr::null_mut,
         slice::from_raw_parts_mut,
     };
     use efi_types::{EfiStatus, EFI_STATUS_SUCCESS};
@@ -409,6 +423,48 @@ mod test {
                 })
                 .unwrap();
             assert_eq!(out, ["<Number of arguments exceeds limit>: "])
+        });
+    }
+
+    #[test]
+    fn test_should_stop_in_fastboot() {
+        unsafe extern "C" fn test_should_stop_in_fastboot(_: *mut GblEfiFastbootProtocol) -> bool {
+            true
+        }
+        run_test(|image_handle, systab_ptr| {
+            let mut fb = GblEfiFastbootProtocol {
+                should_stop_in_fastboot: Some(test_should_stop_in_fastboot),
+                ..Default::default()
+            };
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+            let protocol = generate_protocol::<GblFastbootProtocol>(&efi_entry, &mut fb);
+            assert!(protocol.should_stop_in_fastboot());
+        });
+    }
+
+    #[test]
+    fn test_should_stop_in_fastboot_no_interface() {
+        run_test(|image_handle, systab_ptr| {
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+            // SAFETY: `protocol.interface` is explicitly null for testing.
+            let protocol = unsafe {
+                Protocol::<GblFastbootProtocol>::new(
+                    DeviceHandle::new(null_mut()),
+                    null_mut(),
+                    &efi_entry,
+                )
+            };
+            assert!(!protocol.should_stop_in_fastboot());
+        });
+    }
+
+    #[test]
+    fn test_should_stop_in_fastboot_no_method() {
+        run_test(|image_handle, systab_ptr| {
+            let mut fb: GblEfiFastbootProtocol = Default::default();
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+            let protocol = generate_protocol::<GblFastbootProtocol>(&efi_entry, &mut fb);
+            assert!(!protocol.should_stop_in_fastboot());
         });
     }
 }
