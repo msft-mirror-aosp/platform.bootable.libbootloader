@@ -22,7 +22,10 @@ use crate::{
     ops::Ops,
 };
 use alloc::{boxed::Box, vec::Vec};
-use core::{cmp::min, fmt::Write, future::Future, mem::take, pin::Pin, sync::atomic::AtomicU64};
+use core::{
+    cmp::min, fmt::Write, future::Future, mem::take, pin::Pin, sync::atomic::AtomicU64,
+    time::Duration,
+};
 use efi::{
     efi_print, efi_println,
     protocol::{gbl_efi_fastboot_usb::GblFastbootUsbProtocol, Protocol},
@@ -33,7 +36,7 @@ use gbl_async::{block_on, YieldCounter};
 use liberror::{Error, Result};
 use libgbl::fastboot::{run_gbl_fastboot, GblTcpStream, GblUsbTransport, PinFutContainer};
 
-const DEFAULT_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 const FASTBOOT_TCP_PORT: u16 = 5554;
 
 struct EfiFastbootTcpTransport<'a, 'b, 'c> {
@@ -49,12 +52,12 @@ impl<'a, 'b, 'c> EfiFastbootTcpTransport<'a, 'b, 'c> {
 impl TcpStream for EfiFastbootTcpTransport<'_, '_, '_> {
     /// Reads to `out` for exactly `out.len()` number bytes from the TCP connection.
     async fn read_exact(&mut self, out: &mut [u8]) -> Result<()> {
-        self.socket.receive_exact(out, DEFAULT_TIMEOUT_MS).await
+        self.socket.receive_exact(out, DEFAULT_TIMEOUT).await
     }
 
     /// Sends exactly `data.len()` number bytes from `data` to the TCP connection.
     async fn write_exact(&mut self, data: &[u8]) -> Result<()> {
-        self.socket.send_exact(data, DEFAULT_TIMEOUT_MS).await
+        self.socket.send_exact(data, DEFAULT_TIMEOUT).await
     }
 }
 
@@ -63,12 +66,12 @@ impl GblTcpStream for EfiFastbootTcpTransport<'_, '_, '_> {
         let efi_entry = self.socket.efi_entry;
         self.socket.poll();
         // If not listenining, start listening.
-        // If not connected but it's been `DEFAULT_TIMEOUT_MS`, restart listening in case the remote
+        // If not connected but it's been `DEFAULT_TIMEOUT`, restart listening in case the remote
         // client disconnects in the middle of TCP handshake and leaves the socket in a half open
         // state.
         if !self.socket.is_listening_or_handshaking()
             || (!self.socket.check_active()
-                && self.socket.time_since_last_listen() > DEFAULT_TIMEOUT_MS)
+                && self.socket.time_since_last_listen() > DEFAULT_TIMEOUT)
         {
             let _ = self
                 .socket
@@ -150,7 +153,7 @@ impl Transport for UsbTransport<'_> {
         let mut curr = &packet[..];
         while !curr.is_empty() {
             let to_send = min(curr.len(), self.max_packet_size);
-            self.protocol.send_packet(&curr[..to_send], DEFAULT_TIMEOUT_MS).await?;
+            self.protocol.send_packet(&curr[..to_send], DEFAULT_TIMEOUT).await?;
             // Forces a yield to the executor if the data received/sent reaches a certain
             // threshold. This is to prevent the async code from holding up the CPU for too long
             // in case IO speed is high and the executor uses cooperative scheduling.
