@@ -19,6 +19,7 @@ use crate::{
     utils::with_timeout,
     {efi_call, Event},
 };
+use core::time::Duration;
 use efi_types::{EfiGuid, GblEfiFastbootUsbProtocol};
 use gbl_async::yield_now;
 use liberror::{Error, Result};
@@ -130,8 +131,8 @@ impl Protocol<'_, GblFastbootUsbProtocol> {
     }
 
     /// Sends a packet over the USB.
-    pub async fn send_packet(&self, data: &[u8], timeout_ms: u64) -> Result<()> {
+    pub async fn send_packet(&self, data: &[u8], timeout: Duration) -> Result<()> {
         self.fastboot_usb_send(data)?;
-        with_timeout(self.efi_entry(), self.wait_send(), timeout_ms).await?.ok_or(Error::Timeout)?
+        with_timeout(self.efi_entry(), self.wait_send(), timeout).await?.ok_or(Error::Timeout)?
     }
 }

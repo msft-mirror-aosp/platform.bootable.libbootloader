@@ -15,6 +15,10 @@
 load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
+package(
+    default_visibility = ["//visibility:public"],
+)
+
 rust_library(
     name = "libgbl",
     srcs = glob(
@@ -31,7 +35,6 @@ rust_library(
         "@avb//:avb_bindgen",
         "@bitflags",
         "@crc32fast",
-        "@cstr",
         "@gbl//libabr",
         "@gbl//libasync",
         "@gbl//libboot",
@@ -61,14 +64,12 @@ rust_test(
     aliases = {"@itertools_noalloc": "itertools_noalloc"},
     compile_data = [
         "@gbl//libstorage/test:test_data",
+        "@gbl//libdttable/test/data:all",
+        "@gbl//libfdt/test/data:all",
     ],
     crate = ":libgbl",
     crate_features = ["uuid"],
-    data = [
-        "@gbl//libdttable/test/data:all",
-        "@gbl//libfdt/test/data:all",
-        "@gbl//libgbl/testdata",
-    ],
+    data = ["@gbl//libgbl/testdata"],
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@avb//:avb_crypto_ops_sha_impl_staticlib",

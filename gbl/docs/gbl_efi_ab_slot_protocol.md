@@ -634,6 +634,11 @@ system and the bootloader. For example, if the boot reason is 'recovery', the
 bootloader should load the recovery RAM disk and command line. This information
 is stored in a device specific location and format.
 
+**Note:** The boot reason should ONLY be determined by checking persistent storage.
+In particular, if a device supports [`GBL_EFI_FASTBOOT_PROTOCOL`](./gbl_efi_fastboot_protocol.md),
+the return value of `GBL_EFI_FASTBOOT_PROTOCOL.ShouldStopInFastboot()` should NOT
+affect whether the boot reason returned by `GetBootReason()` is `BOOTLOADER`.
+
 ### Status Codes Returned
 
 | Return Code             | Semantics                                                                                                                                                   |

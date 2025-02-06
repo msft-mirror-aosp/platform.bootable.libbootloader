@@ -12,20 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::cstr_bytes_to_str;
+use super::{avb_verify_slot, cstr_bytes_to_str};
 use crate::{
+    android_boot::PartitionsToVerify,
     constants::{FDT_ALIGNMENT, KERNEL_ALIGNMENT},
     decompress::{decompress_kernel, is_compressed},
-    gbl_avb::{ops::GblAvbOps, state::BootStateColor},
     gbl_print, gbl_println,
     ops::GblOps,
     partition::RAW_PARTITION_NAME_LEN,
     IntegrationError,
 };
-use arrayvec::{ArrayString, ArrayVec};
-use avb::{slot_verify, HashtreeErrorMode, SlotVerifyFlags};
+use arrayvec::ArrayString;
 use bootimg::{defs::*, BootImage, VendorImageHeader};
-use bootparams::{bootconfig::BootConfigBuilder, entry::CommandlineParser};
+use bootparams::bootconfig::BootConfigBuilder;
 use core::{
     array,
     ffi::CStr,
@@ -38,14 +37,6 @@ use zerocopy::{IntoBytes, Ref};
 
 // Value of page size for v3/v4 header.
 const PAGE_SIZE: usize = 4096;
-
-// Maximum number of partition allowed for verification.
-//
-// The value is randomly chosen for now. We can update it as we see more usecases.
-const MAX_NUM_PARTITION: usize = 16;
-
-// Type alias for ArrayVec of size `MAX_NUM_PARTITION`:
-type ArrayMaxParts<T> = ArrayVec<T, MAX_NUM_PARTITION>;
 
 // Represents a slot suffix.
 struct SlotSuffix([u8; 3]);
@@ -270,24 +261,21 @@ pub fn android_load_verify<'a, 'b, 'c>(
     let (dtbo, remains) = load_entire_part(ops, &dtbo_part, &mut load[..])?;
 
     // Additional partitions loaded before loading standard boot images.
-    let mut parts = ArrayVec::<_, 1>::new();
-    let mut preloaded = ArrayVec::<_, 1>::new();
+    let mut partitions = PartitionsToVerify::default();
     if dtbo.len() > 0 {
-        parts.push(c"dtbo");
-        preloaded.push((&dtbo_part as &str, &dtbo[..]));
+        partitions.try_push_preloaded(c"dtbo", &dtbo[..])?;
     }
 
     // Loads boot image header and inspect version
     ops.read_from_partition_sync(&slotted_part("boot", slot)?, 0, &mut remains[..PAGE_SIZE])?;
     match BootImage::parse(&remains[..]).map_err(Error::from)? {
         BootImage::V3(_) | BootImage::V4(_) => {
-            load_verify_v3_and_v4(ops, slot, &parts, &preloaded, &mut res, remains)?
+            load_verify_v3_and_v4(ops, slot, &partitions, &mut res, remains)?
         }
-        _ => load_verify_v2_and_lower(ops, slot, &parts, &preloaded, &mut res, remains)?,
+        _ => load_verify_v2_and_lower(ops, slot, &partitions, &mut res, remains)?,
     };
 
-    drop(parts);
-    drop(preloaded);
+    drop(partitions);
     res.dtbo = dtbo;
     Ok(res)
 }
@@ -301,15 +289,13 @@ pub fn android_load_verify<'a, 'b, 'c>(
 ///
 /// * `ops`: An implementation of [GblOps].
 /// * `slot`: slot index.
-/// * `additional_parts`: Additional partitions for verification.
-/// * `additional_preloaded`: Additional preloaded images.
+/// * `additional_partitions`: Additional partitions for verification.
 /// * `out`: A `&mut LoadedImages` for output.
 /// * `load`: The load buffer. The boot header must be preloaded into this buffer.
 fn load_verify_v2_and_lower<'a, 'b, 'c>(
     ops: &mut impl GblOps<'a, 'b>,
     slot: u8,
-    additional_parts: &[&CStr],
-    additional_preloaded: &[(&str, &[u8])],
+    additional_partitions: &PartitionsToVerify,
     out: &mut LoadedImages<'c>,
     load: &'c mut [u8],
 ) -> Result<(), IntegrationError> {
@@ -323,16 +309,13 @@ fn load_verify_v2_and_lower<'a, 'b, 'c>(
 
     // Prepares a BootConfigBuilder to add avb generated bootconfig.
     let mut bootconfig_builder = BootConfigBuilder::new(remains)?;
-    // Puts in a subscope for auto dropping `to_verify` and `preload`, so that the slices they
-    // borrow can be released.
+    // Puts in a subscope for auto dropping `to_verify`, so that the slices it
+    // borrows can be released.
     {
-        // Prepares partitions and preloaded images
-        let err = || IntegrationError::from(Error::TooManyPartitions(MAX_NUM_PARTITION));
-        let mut to_verify = ArrayMaxParts::try_from(additional_parts).map_err(|_| err())?;
-        let mut preloaded = ArrayMaxParts::try_from(additional_preloaded).map_err(|_| err())?;
-        to_verify.try_push(c"boot").map_err(|_| err())?;
-        preloaded.try_push((&boot_part, &boot[..])).map_err(|_| err())?;
-        avb_verify_slot(ops, slot, &to_verify[..], &preloaded[..], &mut bootconfig_builder)?;
+        let mut to_verify = PartitionsToVerify::default();
+        to_verify.try_push_preloaded(c"boot", &boot[..])?;
+        to_verify.try_extend_preloaded(additional_partitions)?;
+        avb_verify_slot(ops, slot, &to_verify, &mut bootconfig_builder)?;
     }
 
     // Adds platform-specific bootconfig.
@@ -416,15 +399,13 @@ fn load_verify_v2_and_lower<'a, 'b, 'c>(
 ///
 /// * `ops`: An implementation of [GblOps].
 /// * `slot`: slot index.
-/// * `additional_parts`: Additional partitions for verification.
-/// * `additional_preloaded`: Additional preloaded images.
+/// * `additional_partitions`: Additional partitions for verification.
 /// * `out`: A `&mut LoadedImages` for output.
 /// * `load`: The load buffer. The boot header must be preloaded into this buffer.
 fn load_verify_v3_and_v4<'a, 'b, 'c>(
     ops: &mut impl GblOps<'a, 'b>,
     slot: u8,
-    additional_parts: &[&CStr],
-    additional_preloaded: &[(&str, &[u8])],
+    additional_partitions: &PartitionsToVerify,
     out: &mut LoadedImages<'c>,
     load: &'c mut [u8],
 ) -> Result<(), IntegrationError> {
@@ -463,21 +444,17 @@ fn load_verify_v3_and_v4<'a, 'b, 'c>(
 
     // Prepares a BootConfigBuilder to add avb generated bootconfig.
     let mut bootconfig_builder = BootConfigBuilder::new(remains)?;
-    // Puts in a subscope for auto dropping `to_verify` and `preload`, so that the slices they
-    // borrow can be released.
+    // Puts in a subscope for auto dropping `to_verify`, so that the slices it
+    // borrows can be released.
     {
-        // Prepares partitions and preloaded images
-        let err = || IntegrationError::from(Error::TooManyPartitions(MAX_NUM_PARTITION));
-        let mut to_verify = ArrayMaxParts::try_from(additional_parts).map_err(|_| err())?;
-        let mut preloaded = ArrayMaxParts::try_from(additional_preloaded).map_err(|_| err())?;
-        to_verify.try_extend_from_slice(&[c"boot", c"vendor_boot"]).map_err(|_| err())?;
-        preloaded.try_push((&boot_part as _, &boot[..])).map_err(|_| err())?;
-        preloaded.try_push((&vendor_boot_part as _, &vendor_boot[..])).map_err(|_| err())?;
+        let mut to_verify = PartitionsToVerify::default();
+        to_verify.try_push_preloaded(c"boot", &boot)?;
+        to_verify.try_push_preloaded(c"vendor_boot", &vendor_boot)?;
         if init_boot.len() > 0 {
-            to_verify.try_push(c"init_boot").map_err(|_| err())?;
-            preloaded.try_push((&init_boot_part, &init_boot[..])).map_err(|_| err())?;
+            to_verify.try_push_preloaded(c"init_boot", &init_boot)?;
         }
-        avb_verify_slot(ops, slot, &to_verify[..], &preloaded[..], &mut bootconfig_builder)?;
+        to_verify.try_extend_preloaded(additional_partitions)?;
+        avb_verify_slot(ops, slot, &to_verify, &mut bootconfig_builder)?;
     }
 
     // Adds platform-specific bootconfig.
@@ -679,52 +656,11 @@ fn offset_range(lhs: Range<usize>, off: usize) -> Range<usize> {
     lhs.start.checked_add(off).unwrap()..lhs.end.checked_add(off).unwrap()
 }
 
-/// Helper for performing AVB verification.
-///
-/// TODO(b/384964561): This is a temporary placeholder for testing. A production version of this
-/// API is under development in libgbl/src/android_boot/vboot.rs, which will replace this one.
-///
-/// # Args
-///
-/// * `ops`: An implementation of GblOps.
-/// * `slot`: The slot index.
-/// * `parts_to_verify`: List of partitions to verify.
-/// * `preloaded`: Preloaded partitions.
-/// * `bootconfig_builder`: A [BootConfigBuilder] for libavb to add avb bootconfig.
-fn avb_verify_slot<'a, 'b, 'c>(
-    ops: &'c mut impl GblOps<'a, 'b>,
-    slot: u8,
-    partitions: &[&CStr],
-    preloaded: &'c [(&'c str, &'c [u8])],
-    bootconfig_builder: &mut BootConfigBuilder,
-) -> Result<(), IntegrationError> {
-    let mut avb_ops = GblAvbOps::new(ops, preloaded, false);
-    let res = slot_verify(
-        &mut avb_ops,
-        partitions,
-        Some(SlotSuffix::new(slot)?.as_cstr()),
-        SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_NONE,
-        HashtreeErrorMode::AVB_HASHTREE_ERROR_MODE_RESTART_AND_INVALIDATE,
-    )
-    .map_err(|e| IntegrationError::from(e.without_verify_data()))?;
-
-    for entry in CommandlineParser::new(res.cmdline().to_str().unwrap()) {
-        write!(bootconfig_builder, "{}\n", entry?).or(Err(Error::BufferTooSmall(None)))?;
-    }
-
-    avb_ops.handle_verification_result(Some(&res), BootStateColor::Green, None)?;
-
-    // Append "androidboot.verifiedbootstate="
-    write!(bootconfig_builder, "androidboot.verifiedbootstate={}\n", BootStateColor::Green)
-        .or(Err(Error::BufferTooSmall(None)))?;
-    Ok(())
-}
-
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{
-        gbl_avb::state::KeyValidationStatus,
+        gbl_avb::state::{BootStateColor, KeyValidationStatus},
         ops::test::{FakeGblOps, FakeGblOpsStorage},
         tests::AlignedBuffer,
     };
@@ -747,8 +683,16 @@ mod tests {
     const TEST_VENDOR_BOOTCONFIG: &str =
         "androidboot.config_1=val_1\x0aandroidboot.config_2=val_2\x0a";
 
+    /// Digest of public key used to execute AVB.
+    pub(crate) const TEST_PUBLIC_KEY_DIGEST: &str =
+        "7ec02ee1be696366f3fa91240a8ec68125c4145d698f597aa2b3464b59ca7fc3";
+
+    /// Vbmeta digest for vbmeta_v4_v4_init_boot_a test artifact.
+    pub(crate) const TEST_VBMETA_V4_INIT_BOOT_A_DIGEST: &str =
+        "cf41369887ecd31c543cac5fc48a868e2359e935735f528cc7bd149a7e0a4544fd36abbd5871eb03514d00fa05548bed5c804ace07e111eb17a3026adcfd1c14";
+
     /// Reads a data file under libgbl/testdata/
-    fn read_test_data(file: impl AsRef<str>) -> Vec<u8> {
+    pub(crate) fn read_test_data(file: impl AsRef<str>) -> Vec<u8> {
         println!("reading file: {}", file.as_ref());
         fs::read(Path::new(
             format!("external/gbl/libgbl/testdata/android/{}", file.as_ref()).as_str(),
@@ -757,7 +701,7 @@ mod tests {
     }
 
     /// Generates a readable string for a bootconfig bytes.
-    fn dump_bootconfig(data: &[u8]) -> String {
+    pub(crate) fn dump_bootconfig(data: &[u8]) -> String {
         let s = data.iter().map(|v| escape_default(*v).to_string()).collect::<Vec<_>>().concat();
         let s = s.split("\\\\").collect::<Vec<_>>().join("\\");
         s.split("\\n").collect::<Vec<_>>().join("\n")
@@ -812,24 +756,92 @@ mod tests {
         );
     }
 
-    // A helper for generating avb bootconfig with the given parameters.
-    fn avb_bootconfig(vbmeta_size: usize, digest: &str) -> std::string::String {
-        format!(
-            "androidboot.vbmeta.device=PARTUUID=00000000-0000-0000-0000-000000000000
+    /// A helper for generating avb bootconfig with the given parameters.
+    pub(crate) struct AvbResultBootconfigBuilder {
+        vbmeta_size: usize,
+        digest: String,
+        public_key_digest: String,
+        color: BootStateColor,
+        unlocked: bool,
+        extra: String,
+    }
+
+    impl AvbResultBootconfigBuilder {
+        pub(crate) fn new() -> Self {
+            Self {
+                vbmeta_size: 0,
+                digest: String::new(),
+                public_key_digest: String::new(),
+                color: BootStateColor::Green,
+                unlocked: false,
+                extra: String::new(),
+            }
+        }
+
+        pub(crate) fn vbmeta_size(mut self, size: usize) -> Self {
+            self.vbmeta_size = size;
+            self
+        }
+
+        pub(crate) fn digest(mut self, digest: impl Into<String>) -> Self {
+            self.digest = digest.into();
+            self
+        }
+
+        pub(crate) fn public_key_digest(mut self, pk_digest: impl Into<String>) -> Self {
+            self.public_key_digest = pk_digest.into();
+            self
+        }
+
+        pub(crate) fn color(mut self, color: BootStateColor) -> Self {
+            self.color = color;
+            self
+        }
+
+        pub(crate) fn unlocked(mut self, unlocked: bool) -> Self {
+            self.unlocked = unlocked;
+            self
+        }
+
+        pub(crate) fn extra(mut self, extra: impl Into<String>) -> Self {
+            self.extra = extra.into();
+            self
+        }
+
+        pub(crate) fn build_string(self) -> String {
+            let device_state = match self.unlocked {
+                true => "unlocked",
+                false => "locked",
+            };
+
+            format!(
+                "androidboot.vbmeta.device=PARTUUID=00000000-0000-0000-0000-000000000000
+androidboot.vbmeta.public_key_digest={}
 androidboot.vbmeta.avb_version=1.3
-androidboot.vbmeta.device_state=locked
+androidboot.vbmeta.device_state={}
 androidboot.vbmeta.hash_alg=sha512
-androidboot.vbmeta.size={vbmeta_size}
-androidboot.vbmeta.digest={digest}
+androidboot.vbmeta.size={}
+androidboot.vbmeta.digest={}
 androidboot.vbmeta.invalidate_on_error=yes
 androidboot.veritymode=enforcing
-androidboot.verifiedbootstate=green
-"
-        )
+androidboot.verifiedbootstate={}
+{}",
+                self.public_key_digest,
+                device_state,
+                self.vbmeta_size,
+                self.digest,
+                self.color,
+                self.extra
+            )
+        }
+
+        pub(crate) fn build(self) -> Vec<u8> {
+            make_bootconfig(self.build_string())
+        }
     }
 
     // A helper for generating expected bootconfig.
-    fn make_bootconfig(bootconfig: impl AsRef<str>) -> Vec<u8> {
+    pub(crate) fn make_bootconfig(bootconfig: impl AsRef<str>) -> Vec<u8> {
         let bootconfig = bootconfig.as_ref();
         let mut buffer = vec![0u8; bootconfig.len() + BOOTCONFIG_TRAILER_SIZE];
         let mut res = BootConfigBuilder::new(&mut buffer).unwrap();
@@ -855,10 +867,13 @@ androidboot.verifiedbootstate=green
         expected_dtb: &[u8],
         expected_digest: &str,
     ) {
-        let expected_bootconfig = make_bootconfig(
-            &(avb_bootconfig(read_test_data(vbmeta_file).len(), expected_digest)
-                + FakeGblOps::GBL_TEST_BOOTCONFIG),
-        );
+        let expected_bootconfig = AvbResultBootconfigBuilder::new()
+            .vbmeta_size(read_test_data(vbmeta_file).len())
+            .digest(expected_digest)
+            .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
+            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
+            .build();
+
         test_android_load_verify_success(
             partitions,
             &read_test_data("kernel_a.img"),
@@ -904,11 +919,13 @@ androidboot.verifiedbootstate=green
         expected_digest: &str,
         expected_vendor_bootconfig: &str,
     ) {
-        let expected_bootconfig = make_bootconfig(
-            avb_bootconfig(read_test_data(vbmeta_file).len(), expected_digest)
-                + FakeGblOps::GBL_TEST_BOOTCONFIG
-                + expected_vendor_bootconfig,
-        );
+        let expected_bootconfig = AvbResultBootconfigBuilder::new()
+            .vbmeta_size(read_test_data(vbmeta_file).len())
+            .digest(expected_digest)
+            .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
+            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG.to_owned() + expected_vendor_bootconfig)
+            .build();
+
         test_android_load_verify_success(
             partitions,
             &read_test_data("kernel_a.img"),
@@ -1009,6 +1026,11 @@ androidboot.verifiedbootstate=green
             (c"vendor_boot_a", "vendor_boot_v4_a.img"),
             (c"vbmeta_a", vbmeta_file),
         ];
-        test_android_load_verify_v3_and_v4(&parts[..],  vbmeta_file, "cf41369887ecd31c543cac5fc48a868e2359e935735f528cc7bd149a7e0a4544fd36abbd5871eb03514d00fa05548bed5c804ace07e111eb17a3026adcfd1c14", TEST_VENDOR_BOOTCONFIG);
+        test_android_load_verify_v3_and_v4(
+            &parts[..],
+            vbmeta_file,
+            TEST_VBMETA_V4_INIT_BOOT_A_DIGEST,
+            TEST_VENDOR_BOOTCONFIG,
+        );
     }
 }

@@ -26,7 +26,7 @@ use alloc::{
 use arrayvec::ArrayVec;
 use core::{
     cmp::min, ffi::CStr, fmt::Write, mem::MaybeUninit, num::NonZeroUsize, ops::DerefMut, ptr::null,
-    slice::from_raw_parts_mut,
+    slice::from_raw_parts_mut, time::Duration,
 };
 use efi::{
     efi_print, efi_println,
@@ -271,7 +271,7 @@ impl<'a, 'b, 'd> GblOps<'b, 'd> for Ops<'a, 'b> {
         let found = wait_key_stroke(
             self.efi_entry,
             |key| key.unicode_char == 0x08 || (key.unicode_char == 0x0 && key.scan_code == 0x08),
-            2000,
+            Duration::from_secs(2),
         );
         if matches!(found, Ok(true)) {
             efi_println!(self.efi_entry, "Backspace pressed, entering fastboot");
@@ -562,7 +562,9 @@ impl<'a, 'b, 'd> GblOps<'b, 'd> for Ops<'a, 'b> {
 
                 Ok(())
             }
-            _ => components_registry.autoselect(),
+            // Protocol is optional.
+            Err(Error::NotFound) => components_registry.autoselect(),
+            Err(e) => Err(e),
         }
     }
 
@@ -904,6 +906,7 @@ mod test {
     };
     use efi_types::GBL_EFI_BOOT_REASON;
     use mockall::predicate::eq;
+    use std::slice;
 
     #[test]
     fn ops_write_trait() {
@@ -981,7 +984,7 @@ mod test {
         mock_efi
             .boot_services
             .expect_find_first_and_open::<GblAvbProtocol>()
-            .returning(|| Err(Error::NotFound));
+            .return_const(Err(Error::NotFound));
 
         let installed = mock_efi.install();
         let ops = Ops::new(installed.entry(), &[], None);
@@ -1021,7 +1024,7 @@ mod test {
         mock_efi
             .boot_services
             .expect_find_first_and_open::<GblAvbProtocol>()
-            .returning(|| Err(Error::NotFound));
+            .return_const(Err(Error::NotFound));
 
         let installed = mock_efi.install();
         let mut ops = Ops::new(installed.entry(), &[], None);
@@ -1061,7 +1064,7 @@ mod test {
         mock_efi
             .boot_services
             .expect_find_first_and_open::<GblAvbProtocol>()
-            .returning(|| Err(Error::NotFound));
+            .return_const(Err(Error::NotFound));
 
         let installed = mock_efi.install();
         let mut ops = Ops::new(installed.entry(), &[], None);
@@ -1101,7 +1104,7 @@ mod test {
         mock_efi
             .boot_services
             .expect_find_first_and_open::<GblAvbProtocol>()
-            .returning(|| Err(Error::NotFound));
+            .return_const(Err(Error::NotFound));
 
         let installed = mock_efi.install();
         let mut ops = Ops::new(installed.entry(), &[], None);
@@ -1145,7 +1148,7 @@ mod test {
         mock_efi
             .boot_services
             .expect_find_first_and_open::<GblAvbProtocol>()
-            .returning(|| Err(Error::NotFound));
+            .return_const(Err(Error::NotFound));
 
         let installed = mock_efi.install();
         let mut ops = Ops::new(installed.entry(), &[], None);
@@ -1189,7 +1192,7 @@ mod test {
         mock_efi
             .boot_services
             .expect_find_first_and_open::<GblAvbProtocol>()
-            .returning(|| Err(Error::NotFound));
+            .return_const(Err(Error::NotFound));
 
         let installed = mock_efi.install();
         let mut ops = Ops::new(installed.entry(), &[], None);
@@ -1229,7 +1232,7 @@ mod test {
         mock_efi
             .boot_services
             .expect_find_first_and_open::<GblAvbProtocol>()
-            .returning(|| Err(Error::NotFound));
+            .return_const(Err(Error::NotFound));
 
         let installed = mock_efi.install();
         let mut ops = Ops::new(installed.entry(), &[], None);
@@ -1240,10 +1243,10 @@ mod test {
     /// Helper for testing `set_boot_reason`
     fn test_set_reboot_reason(input: RebootReason, expect: GBL_EFI_BOOT_REASON) {
         let mut mock_efi = MockEfi::new();
-        mock_efi.boot_services.expect_find_first_and_open::<GblSlotProtocol>().times(1).returning(
+        mock_efi.boot_services.expect_find_first_and_open::<GblSlotProtocol>().return_once(
             move || {
                 let mut slot = GblSlotProtocol::default();
-                slot.expect_set_boot_reason().times(1).returning(move |reason, _| {
+                slot.expect_set_boot_reason().return_once(move |reason, _| {
                     assert_eq!(reason, expect);
                     Ok(())
                 });
@@ -1278,10 +1281,10 @@ mod test {
     /// Helper for testing `get_boot_reason`
     fn test_get_reboot_reason(input: GBL_EFI_BOOT_REASON, expect: RebootReason) {
         let mut mock_efi = MockEfi::new();
-        mock_efi.boot_services.expect_find_first_and_open::<GblSlotProtocol>().times(1).returning(
+        mock_efi.boot_services.expect_find_first_and_open::<GblSlotProtocol>().return_once(
             move || {
                 let mut slot = GblSlotProtocol::default();
-                slot.expect_get_boot_reason().times(1).returning(move |_| Ok((input, 0)));
+                slot.expect_get_boot_reason().return_once(move |_| Ok((input, 0)));
                 Ok(slot)
             },
         );
@@ -1316,7 +1319,6 @@ mod test {
         mock_efi
             .boot_services
             .expect_find_first_and_open::<GblFastbootProtocol>()
-            .times(1)
             .return_once(|| Err(Error::NotFound));
         let installed = mock_efi.install();
         let mut ops = Ops::new(installed.entry(), &[], None);
@@ -1329,7 +1331,6 @@ mod test {
         mock_efi
             .boot_services
             .expect_find_first_and_open::<GblFastbootProtocol>()
-            .times(1)
             .return_once(|| Err(Error::InvalidInput));
         let installed = mock_efi.install();
         let mut ops = Ops::new(installed.entry(), &[], None);
@@ -1348,15 +1349,14 @@ mod test {
         mock_efi
             .boot_services
             .expect_find_first_and_open::<GblOsConfigurationProtocol>()
-            .times(1)
-            .returning(move || {
+            .return_once(move || {
                 if let Some(error) = protocol_lookup_error {
                     return Err(error);
                 }
 
                 let mut os_configuration = GblOsConfigurationProtocol::default();
 
-                os_configuration.expect_fixup_kernel_commandline().times(1).returning(
+                os_configuration.expect_fixup_kernel_commandline().return_once(
                     move |base, buffer| {
                         assert_eq!(base, expected_base);
                         buffer[..fixup_to_apply.len()].copy_from_slice(fixup_to_apply);
@@ -1508,26 +1508,23 @@ mod test {
         mock_efi
             .boot_services
             .expect_find_first_and_open::<GblOsConfigurationProtocol>()
-            .times(1)
-            .returning(move || {
+            .return_once(move || {
                 if let Some(error) = protocol_lookup_error {
                     return Err(error);
                 }
 
                 let mut os_configuration = GblOsConfigurationProtocol::default();
 
-                os_configuration.expect_fixup_bootconfig().times(1).returning(
-                    move |base, buffer| {
-                        assert_eq!(base, expected_base);
-                        buffer[..fixup_to_apply.len()].copy_from_slice(fixup_to_apply);
+                os_configuration.expect_fixup_bootconfig().return_once(move |base, buffer| {
+                    assert_eq!(base, expected_base);
+                    buffer[..fixup_to_apply.len()].copy_from_slice(fixup_to_apply);
 
-                        if let Some(protocol_result_error) = protocol_result_error {
-                            return Err(protocol_result_error);
-                        }
+                    if let Some(protocol_result_error) = protocol_result_error {
+                        return Err(protocol_result_error);
+                    }
 
-                        Ok(fixup_to_apply.len())
-                    },
-                );
+                    Ok(fixup_to_apply.len())
+                });
 
                 Ok(os_configuration)
             });
@@ -1622,7 +1619,137 @@ mod test {
         );
     }
 
-    // TODO(b/353272981): cover `GblOsConfigurationProtocol.select_device_trees` with tests.
+    #[test]
+    fn test_select_device_tree_components_select_base_and_overlay() {
+        let base = include_bytes!("../../libfdt/test/data/base.dtb").to_vec();
+        let overlay = include_bytes!("../../libfdt/test/data/overlay_by_path.dtbo").to_vec();
+        let overlay2 = include_bytes!("../../libfdt/test/data/overlay_by_reference.dtbo").to_vec();
+        let mut buffer = vec![0u8; 2 * 1024 * 1024]; // 2 MB
+
+        let base_scoped = base.clone();
+        let overlay_scoped = overlay.clone();
+        let overlay2_scoped = overlay2.clone();
+        let mut mock_efi = MockEfi::new();
+        mock_efi.con_out.expect_write_str().return_const(Ok(()));
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblOsConfigurationProtocol>()
+            .return_once(|| {
+                let mut os_configuration = GblOsConfigurationProtocol::default();
+
+                os_configuration.expect_select_device_trees().return_once(move |components| {
+                    assert_eq!(components.len(), 3);
+
+                    // SAFETY:
+                    // `components[*].device_trees` are pointing to corresponding base device
+                    // tree and overlays buffers.
+                    let (base_passed, overlay_passed, overlay2_passed) = unsafe {
+                        (
+                            slice::from_raw_parts(
+                                components[0].device_tree as *const u8,
+                                base_scoped.len(),
+                            ),
+                            slice::from_raw_parts(
+                                components[1].device_tree as *const u8,
+                                overlay_scoped.len(),
+                            ),
+                            slice::from_raw_parts(
+                                components[2].device_tree as *const u8,
+                                overlay2_scoped.len(),
+                            ),
+                        )
+                    };
+
+                    assert_eq!(base_passed, &base_scoped);
+                    assert_eq!(overlay_passed, &overlay_scoped[..]);
+                    assert_eq!(overlay2_passed, &overlay2_scoped[..]);
+
+                    // Select the base device and the second overlay. The first overlay is not
+                    // being selected.
+                    components[0].selected = true;
+                    components[2].selected = true;
+                    Ok(())
+                });
+
+                Ok(os_configuration)
+            });
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        let mut registry = DeviceTreeComponentsRegistry::new();
+        let mut current_buffer = &mut buffer[..];
+        current_buffer = registry
+            .append(&mut ops, DeviceTreeComponentSource::VendorBoot, &base, current_buffer)
+            .unwrap();
+        current_buffer = registry
+            .append(
+                &mut ops,
+                DeviceTreeComponentSource::Dtbo(Default::default()),
+                &overlay,
+                current_buffer,
+            )
+            .unwrap();
+        registry
+            .append(
+                &mut ops,
+                DeviceTreeComponentSource::Dtbo(Default::default()),
+                &overlay2,
+                current_buffer,
+            )
+            .unwrap();
+
+        assert_eq!(ops.select_device_trees(&mut registry), Ok(()));
+        assert_eq!(registry.selected(), Ok((&base[..], &[&overlay2[..]][..])));
+    }
+
+    #[test]
+    fn test_select_device_tree_protocol_error() {
+        let mut mock_efi = MockEfi::new();
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblOsConfigurationProtocol>()
+            .return_once(move || {
+                let mut os_configuration = GblOsConfigurationProtocol::default();
+
+                os_configuration
+                    .expect_select_device_trees()
+                    .return_once(move |_components| Err(Error::InvalidInput));
+
+                Ok(os_configuration)
+            });
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        let mut registry = DeviceTreeComponentsRegistry::new();
+
+        assert_eq!(ops.select_device_trees(&mut registry), Err(Error::InvalidInput));
+    }
+
+    #[test]
+    fn test_select_device_tree_protocol_not_found() {
+        let base = include_bytes!("../../libfdt/test/data/base.dtb").to_vec();
+        let mut buffer = vec![0u8; 2 * 1024 * 1024]; // 2 MB
+
+        let mut mock_efi = MockEfi::new();
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblOsConfigurationProtocol>()
+            .return_once(move || Err(Error::NotFound));
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None);
+
+        // Appends some data to ensure autoselect is passed.
+        let mut registry = DeviceTreeComponentsRegistry::new();
+        let current_buffer = &mut buffer[..];
+        registry
+            .append(&mut ops, DeviceTreeComponentSource::VendorBoot, &base, current_buffer)
+            .unwrap();
+
+        assert_eq!(ops.select_device_trees(&mut registry), Ok(()));
+    }
 
     /// Helper for testing `DtFixupProtocol.fixup`
     fn test_fixup_device_tree(
@@ -1632,7 +1759,7 @@ mod test {
         protocol_result: Result<()>,
     ) -> Result<()> {
         let mut mock_efi = MockEfi::new();
-        mock_efi.boot_services.expect_find_first_and_open::<DtFixupProtocol>().times(1).returning(
+        mock_efi.boot_services.expect_find_first_and_open::<DtFixupProtocol>().return_once(
             move || {
                 if let Some(error) = protocol_lookup_error {
                     return Err(error);
@@ -1640,7 +1767,7 @@ mod test {
 
                 let mut dt_fixup = DtFixupProtocol::default();
 
-                dt_fixup.expect_fixup().times(1).returning(move |buffer| {
+                dt_fixup.expect_fixup().return_once(move |buffer| {
                     buffer.copy_from_slice(base_after_fixup);
                     protocol_result
                 });

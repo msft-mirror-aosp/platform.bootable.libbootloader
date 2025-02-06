@@ -45,11 +45,6 @@ bazel_dep(
 )
 
 local_path_override(
-    module_name = "apple_support",
-    path = "external/bazelbuild-apple_support",
-)
-
-local_path_override(
     module_name = "bazel_features",
     path = "external/bazel-contrib-bazel_features",
 )
@@ -71,7 +66,12 @@ local_path_override(
 
 local_path_override(
     module_name = "rules_java",
-    path = "external/bazelbuild-rules_java",
+    path = "bootable/libbootloader/gbl/fake_modules/rules_java",
+)
+
+local_path_override(
+    module_name = "rules_kotlin",
+    path = "bootable/libbootloader/gbl/fake_modules/rules_kotlin",
 )
 
 local_path_override(
@@ -87,4 +87,14 @@ local_path_override(
 local_path_override(
     module_name = "rules_python",
     path = "external/bazelbuild-rules_python",
+)
+
+local_path_override(
+    module_name = "rules_shell",
+    path = "external/bazelbuild-rules_shell",
+)
+
+local_path_override(
+    module_name = "protobuf",
+    path = "bootable/libbootloader/gbl/fake_modules/protobuf",
 )
