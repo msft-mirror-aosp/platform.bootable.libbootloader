@@ -29,6 +29,7 @@ rust_library(
         "@gbl//libasync",
         "@gbl//libefi_types",
         "@gbl//liberror",
+        "@gbl//libfastboot",
         "@gbl//libgbl",
         "@gbl//libsafemath",
         "@gbl//libstorage",
