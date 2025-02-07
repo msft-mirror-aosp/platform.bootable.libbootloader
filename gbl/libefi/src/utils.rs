@@ -16,15 +16,9 @@
 
 use crate::{EfiEntry, Event, EventType};
 use core::{future::Future, time::Duration};
-use efi_types::EFI_TIMER_DELAY_TIMER_RELATIVE;
+use efi_types::{EFI_TIMER_DELAY_TIMER_PERIODIC, EFI_TIMER_DELAY_TIMER_RELATIVE};
 use gbl_async::{select, yield_now};
 use liberror::Result;
-use safemath::SafeNum;
-
-/// Converts 1 ms to number of 100 nano seconds
-pub fn ms_to_100ns(ms: u64) -> Result<u64> {
-    Ok((SafeNum::from(ms) * 10 * 1000).try_into()?)
-}
 
 /// `Timeout` provide APIs for checking timeout.
 pub struct Timeout<'a> {
@@ -80,5 +74,26 @@ pub async fn with_timeout<F: Future<Output = R>, R>(
     match timeout_res {
         Some(Err(e)) => return Err(e),
         _ => Ok(res),
+    }
+}
+
+/// Wrapper helping for a periodic timer.
+pub struct RecurringTimer<'a> {
+    efi_entry: &'a EfiEntry,
+    timer: Event<'a, 'static>,
+}
+
+impl<'a> RecurringTimer<'a> {
+    /// Constructs and starts a new periodic timer.
+    pub fn new(efi_entry: &'a EfiEntry, timeout: Duration) -> Result<Self> {
+        let bs = efi_entry.system_table().boot_services();
+        let timer = bs.create_event(EventType::Timer)?;
+        bs.set_timer(&timer, EFI_TIMER_DELAY_TIMER_PERIODIC, timeout)?;
+        Ok(Self { efi_entry, timer })
+    }
+
+    /// Checks whether the timer has expried.
+    pub fn check(&self) -> Result<bool> {
+        Ok(self.efi_entry.system_table().boot_services().check_event(&self.timer)?)
     }
 }
