@@ -46,7 +46,7 @@ pub fn android_boot_demo(entry: EfiEntry) -> Result<()> {
     gbl_println!(ops, "Try booting as Android");
 
     // Allocate buffer for load.
-    let mut load_buffer = vec![0u8; 128 * 1024 * 1024]; // 128MB
+    let mut load_buffer = vec![0u8; 256 * 1024 * 1024]; // 256MB
 
     let (ramdisk, fdt, kernel, remains) = if bootimg_buffer.starts_with(b"ANDROID!") {
         let mut ramboot_ops = RambootOps { ops: &mut ops, bootimg_buffer };
