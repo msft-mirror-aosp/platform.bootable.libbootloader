@@ -76,6 +76,9 @@ use gbl_async::{block_on, yield_now};
 use liberror::{Error, Result};
 use libutils::{snprintf, FormattedBytes};
 
+/// Local session module
+pub mod local_session;
+
 /// Maximum packet size that can be accepted from the host.
 ///
 /// The transport layer may have its own size limits that reduce the packet size further.

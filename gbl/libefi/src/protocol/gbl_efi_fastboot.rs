@@ -20,7 +20,7 @@ use crate::{
 };
 use core::{
     ffi::{c_char, c_void, CStr},
-    ptr::null,
+    ptr::{null, null_mut},
     slice::from_raw_parts,
     str::from_utf8,
 };
@@ -41,6 +41,9 @@ impl ProtocolInfo for GblFastbootProtocol {
     const GUID: EfiGuid =
         EfiGuid::new(0xc67e48a0, 0x5eb8, 0x4127, [0xbe, 0x89, 0xdf, 0x2e, 0xd9, 0x3d, 0x8a, 0x9a]);
 }
+
+/// Wrapper type for context parameter used in a fastboot local session.
+pub struct LocalSessionContext(*mut c_void);
 
 impl Protocol<'_, GblFastbootProtocol> {
     /// Wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.get_var`
@@ -207,6 +210,45 @@ impl Protocol<'_, GblFastbootProtocol> {
             )?
         };
         Ok(permissions)
+    }
+
+    /// Wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.start_local_session()`
+    pub fn start_local_session(&self) -> Result<LocalSessionContext> {
+        let mut ctx = null_mut();
+        // SAFETY:
+        // `self.interface()?` guarantees self.interface is non-null and points to a valid object
+        // established by `Protocol::new()`.
+        // No parameters are retained, all parameters outlive the call, and no pointers are Null.
+        unsafe { efi_call!(self.interface()?.start_local_session, self.interface, &mut ctx)? };
+        Ok(LocalSessionContext(ctx))
+    }
+
+    /// Wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.update_local_session()`
+    pub fn update_local_session(&self, ctx: &LocalSessionContext, out: &mut [u8]) -> Result<usize> {
+        let mut bufsize = out.len();
+
+        // SAFETY:
+        // `self.interface()?` guarantees self.interface is non-null and points to a valid object
+        // established by `Protocol::new()`.
+        // No parameters are retained, all parameters outlive the call, and no pointers are Null.
+        unsafe {
+            efi_call!(
+                @bufsize bufsize,
+                self.interface()?.update_local_session,
+                self.interface,
+                ctx.0, out.as_mut_ptr(),
+                &mut bufsize)?
+        };
+        Ok(bufsize)
+    }
+
+    /// Wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.close_local_session()`
+    pub fn close_local_session(&self, ctx: &LocalSessionContext) -> Result<()> {
+        // SAFETY:
+        // `self.interface()?` guarantees self.interface is non-null and points to a valid object
+        // established by `Protocol::new()`.
+        // No parameters are retained, all parameters outlive the call, and no pointers are Null.
+        unsafe { efi_call!(self.interface()?.close_local_session, self.interface, ctx.0) }
     }
 
     /// Wrapper of `GBL_EFI_FASTBOOT_PROTOCOL.wipe_user_data()`

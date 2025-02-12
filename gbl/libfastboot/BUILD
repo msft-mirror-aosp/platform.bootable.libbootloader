@@ -21,7 +21,7 @@ package(
 
 rust_library(
     name = "libfastboot",
-    srcs = ["src/lib.rs"],
+    srcs = glob(["**/*.rs"]),
     crate_name = "fastboot",
     edition = "2021",
     rustc_flags = ANDROID_RUST_LINTS,
