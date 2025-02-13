@@ -1,4 +1,4 @@
-// Copyright 2023-2024, The Android Open Source Project
+// Copyright 2023-2025, The Android Open Source Project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -30,6 +30,7 @@ use safemath::SafeNum;
 
 pub use strcmp::{strcmp, strncmp};
 
+pub mod print;
 pub mod strchr;
 pub mod strcmp;
 pub mod strtoul;
@@ -45,6 +46,17 @@ extern "C" {
     pub fn memcpy(dest: *mut c_void, src: *const c_void, n: usize) -> *mut c_void;
     /// size_t strlen(const char *s)
     pub fn strlen(s: *const c_char) -> usize;
+}
+
+// Linking the platform-specific functionality expected to be provided by the
+// library/app, which includes the GBL `libc`.
+extern "Rust" {
+    /// GBL `libc` expects user to provide platform-specific text output implementation
+    /// to allow libc to expose it for external C libraries.
+    ///
+    /// A default POSIX-based implementation is available at `libc/deps/posix.rs`.
+    /// An EFI-specific implementation is provided by `libefi/src/libc.rs`.
+    fn gbl_print(d: &dyn core::fmt::Display);
 }
 
 /// Extended version of void *malloc(size_t size) with ptr alignment configuration support.

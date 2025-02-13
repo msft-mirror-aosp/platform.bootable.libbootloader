@@ -517,6 +517,8 @@ where
 mod tests {
     extern crate avb_sysdeps;
     extern crate avb_test;
+    extern crate libc_deps_posix;
+
     use super::*;
     use crate::ops::test::FakeGblOps;
     use avb::{CertPermanentAttributes, SlotVerifyError};
