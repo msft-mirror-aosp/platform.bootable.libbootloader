@@ -57,6 +57,9 @@ use alloc::vec::Vec;
 mod allocation;
 
 #[cfg(not(test))]
+pub mod libc;
+
+#[cfg(not(test))]
 pub use allocation::{efi_free, efi_malloc, EfiAllocator};
 
 /// The Android EFI protocol implementation of an A/B slot manager.

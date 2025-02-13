@@ -14,6 +14,7 @@
 
 load("@gbl//toolchain:gbl_toolchain.bzl", "link_static_cc_library")
 load("@gbl_llvm_prebuilts//:info.bzl", "LLVM_PREBUILTS_C_INCLUDE")
+load("@rules_cc//cc:defs.bzl", "cc_library")
 load("@rules_rust//bindgen:defs.bzl", "rust_bindgen")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 
@@ -86,9 +87,8 @@ cc_library(
         "libavb/avb_vbmeta_image.c",
         "libavb/avb_version.c",
         "libavb_cert/avb_cert_validate.c",
-
-        # Contains noop placeholder for avb_printv/avb_printf
-        "@gbl//libavb:print.c",
+        # C implementations for sysdeps which cannot be implemented using Rust
+        "@gbl//libavb:deps.c",
     ],
     copts = [
         "-D_FILE_OFFSET_BITS=64",
