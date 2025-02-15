@@ -256,6 +256,7 @@ pub fn android_load_verify<'a, 'b, 'c>(
 ) -> Result<LoadedImages<'c>, IntegrationError> {
     let mut res = LoadedImages::default();
 
+    let slot_suffix = SlotSuffix::new(slot)?;
     // Loads dtbo.
     let dtbo_part = slotted_part("dtbo", slot)?;
     let (dtbo, remains) = load_entire_part(ops, &dtbo_part, &mut load[..])?;
@@ -266,13 +267,19 @@ pub fn android_load_verify<'a, 'b, 'c>(
         partitions.try_push_preloaded(c"dtbo", &dtbo[..])?;
     }
 
+    let add = |v: &mut BootConfigBuilder| {
+        // TODO(b/384964561): Support reocvery mode.
+        v.add("androidboot.force_normal_boot=1\n")?;
+        Ok(write!(v, "androidboot.slot_suffix={}\n", &slot_suffix as &str)?)
+    };
+
     // Loads boot image header and inspect version
     ops.read_from_partition_sync(&slotted_part("boot", slot)?, 0, &mut remains[..PAGE_SIZE])?;
     match BootImage::parse(&remains[..]).map_err(Error::from)? {
         BootImage::V3(_) | BootImage::V4(_) => {
-            load_verify_v3_and_v4(ops, slot, &partitions, &mut res, remains)?
+            load_verify_v3_and_v4(ops, slot, &partitions, add, &mut res, remains)?
         }
-        _ => load_verify_v2_and_lower(ops, slot, &partitions, &mut res, remains)?,
+        _ => load_verify_v2_and_lower(ops, slot, &partitions, add, &mut res, remains)?,
     };
 
     drop(partitions);
@@ -296,6 +303,7 @@ fn load_verify_v2_and_lower<'a, 'b, 'c>(
     ops: &mut impl GblOps<'a, 'b>,
     slot: u8,
     additional_partitions: &PartitionsToVerify,
+    add_additional_bootconfig: impl FnOnce(&mut BootConfigBuilder) -> Result<(), Error>,
     out: &mut LoadedImages<'c>,
     load: &'c mut [u8],
 ) -> Result<(), IntegrationError> {
@@ -322,6 +330,7 @@ fn load_verify_v2_and_lower<'a, 'b, 'c>(
     bootconfig_builder.add_with(|bytes, out| {
         Ok(ops.fixup_bootconfig(&bytes, out)?.map(|slice| slice.len()).unwrap_or(0))
     })?;
+    add_additional_bootconfig(&mut bootconfig_builder)?;
     let bootconfig_size = bootconfig_builder.config_bytes().len();
 
     // We now have the following layout:
@@ -406,6 +415,7 @@ fn load_verify_v3_and_v4<'a, 'b, 'c>(
     ops: &mut impl GblOps<'a, 'b>,
     slot: u8,
     additional_partitions: &PartitionsToVerify,
+    add_additional_bootconfig: impl FnOnce(&mut BootConfigBuilder) -> Result<(), Error>,
     out: &mut LoadedImages<'c>,
     load: &'c mut [u8],
 ) -> Result<(), IntegrationError> {
@@ -461,6 +471,7 @@ fn load_verify_v3_and_v4<'a, 'b, 'c>(
     bootconfig_builder.add_with(|bytes, out| {
         Ok(ops.fixup_bootconfig(&bytes, out)?.map(|slice| slice.len()).unwrap_or(0))
     })?;
+    add_additional_bootconfig(&mut bootconfig_builder)?;
 
     // We now have the following layout:
     //
@@ -665,7 +676,9 @@ pub(crate) mod tests {
         tests::AlignedBuffer,
     };
     use bootparams::bootconfig::BOOTCONFIG_TRAILER_SIZE;
-    use std::{ascii::escape_default, collections::HashMap, fs, path::Path, string::String};
+    use std::{
+        ascii::escape_default, collections::HashMap, ffi::CString, fs, path::Path, string::String,
+    };
 
     // See libgbl/testdata/gen_test_data.py for test data generation.
     const TEST_ROLLBACK_INDEX_LOCATION: usize = 1;
@@ -709,6 +722,7 @@ pub(crate) mod tests {
 
     /// Helper for testing load/verify and assert verfiication success.
     fn test_android_load_verify_success(
+        slot: u8,
         partitions: &[(&CStr, &str)],
         expected_kernel: &[u8],
         expected_ramdisk: &[u8],
@@ -738,7 +752,7 @@ pub(crate) mod tests {
         };
         ops.avb_handle_verification_result = Some(&mut handler);
         ops.avb_key_validation_status = Some(Ok(KeyValidationStatus::Valid));
-        let loaded = android_load_verify(&mut ops, 0, &mut load_buffer).unwrap();
+        let loaded = android_load_verify(&mut ops, slot, &mut load_buffer).unwrap();
 
         assert!(loaded.dtb.starts_with(expected_dtb));
         assert_eq!(out_color, Some(BootStateColor::Green));
@@ -804,7 +818,7 @@ pub(crate) mod tests {
         }
 
         pub(crate) fn extra(mut self, extra: impl Into<String>) -> Self {
-            self.extra = extra.into();
+            self.extra += &extra.into();
             self
         }
 
@@ -862,6 +876,7 @@ androidboot.verifiedbootstate={}
     /// * `expected_dtb`: The expected DTB.
     /// * `expected_digest`: The expected digest outputed by vbmeta.
     fn test_android_load_verify_v2_and_lower(
+        slot: char,
         partitions: &[(&CStr, &str)],
         vbmeta_file: &str,
         expected_dtb: &[u8],
@@ -872,37 +887,59 @@ androidboot.verifiedbootstate={}
             .digest(expected_digest)
             .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
             .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
+            .extra("androidboot.force_normal_boot=1\n")
+            .extra(format!("androidboot.slot_suffix=_{slot}\n"))
             .build();
 
         test_android_load_verify_success(
+            (u64::from(slot) - ('a' as u64)).try_into().unwrap(),
             partitions,
-            &read_test_data("kernel_a.img"),
-            &read_test_data("generic_ramdisk_a.img"),
+            &read_test_data(format!("kernel_{slot}.img")),
+            &read_test_data(format!("generic_ramdisk_{slot}.img")),
             &expected_bootconfig,
             expected_dtb,
             "",
         );
     }
 
-    #[test]
-    fn test_android_load_verify_v0() {
-        let vbmeta = "vbmeta_v0_a.img";
-        let parts = [(c"boot_a", "boot_v0_a.img"), (c"vbmeta_a", vbmeta)];
-        test_android_load_verify_v2_and_lower(&parts[..], vbmeta, &[], "0976e60490f1213035010310ec3ba277e9cf7ad6ca68433a9eb43871bdf1ae317df70f412714b5d2f54ee9ce4723f3e855be25e0c87b31da6aedddb61fbeb0c6");
+    // Helper for testing load/verify for a/b slot v0,1,2 image.
+    fn test_android_load_verify_v2_and_lower_slot(ver: u8, slot: char, expected_digest: &str) {
+        let vbmeta = &format!("vbmeta_v{ver}_{slot}.img");
+        let parts: [(&CStr, &str); 2] = [
+            (&CString::new(format!("boot_{slot}")).unwrap(), &format!("boot_v{ver}_{slot}.img")),
+            (&CString::new(format!("vbmeta_{slot}")).unwrap(), vbmeta),
+        ];
+        test_android_load_verify_v2_and_lower(slot, &parts[..], vbmeta, &[], expected_digest);
     }
 
     #[test]
-    fn test_android_load_verify_v1() {
-        let vbmeta = "vbmeta_v1_a.img";
-        let parts = [(c"boot_a", "boot_v1_a.img"), (c"vbmeta_a", vbmeta)];
-        test_android_load_verify_v2_and_lower(&parts[..], vbmeta, &[], "f483f94d975bc741562e64ac6814d6970b6c589dee84b7160c63e726d8848fe65c3e165393df22dd69338a65082f4f6d289549de05018e03b1184116fda111ce");
+    fn test_android_load_verify_v0_slot_a() {
+        test_android_load_verify_v2_and_lower_slot(0, 'a', "0976e60490f1213035010310ec3ba277e9cf7ad6ca68433a9eb43871bdf1ae317df70f412714b5d2f54ee9ce4723f3e855be25e0c87b31da6aedddb61fbeb0c6")
     }
 
     #[test]
-    fn test_android_load_verify_v2() {
-        let vbmeta = "vbmeta_v2_a.img";
-        let parts = [(c"boot_a", "boot_v2_a.img"), (c"vbmeta_a", vbmeta)];
-        test_android_load_verify_v2_and_lower(&parts[..], vbmeta, BASE_DTB, "554568eef20d8550c37c06f7988cc76d9ed113b3403a04f345ed4fb0d5acccff531a9f4f862a19f0a3977af8f574c11018f0c8eac142897f0d17527da1911ffe");
+    fn test_android_load_verify_v0_slot_b() {
+        test_android_load_verify_v2_and_lower_slot(0, 'b', "26701d1eb0b486699b12f5787a63d948d46659eb9533b6d1c950b650a292ce17eae030ed5b626ab5956090ef425ebd9b3082027cc259f050c648c22323e6ff4f");
+    }
+
+    #[test]
+    fn test_android_load_verify_v1_slot_a() {
+        test_android_load_verify_v2_and_lower_slot(1, 'a', "f483f94d975bc741562e64ac6814d6970b6c589dee84b7160c63e726d8848fe65c3e165393df22dd69338a65082f4f6d289549de05018e03b1184116fda111ce")
+    }
+
+    #[test]
+    fn test_android_load_verify_v1_slot_b() {
+        test_android_load_verify_v2_and_lower_slot(1, 'b', "84057e2cc7e695778509a557bfcd1880e25dce2e78d7bb9ef1920e0b0baec115c8f812aa8da81b4e769a834d38bd05c1700f64f76ebc6aa22a7eecbe28c13391");
+    }
+
+    #[test]
+    fn test_android_load_verify_v2_slot_a() {
+        test_android_load_verify_v2_and_lower_slot(2, 'a', "554568eef20d8550c37c06f7988cc76d9ed113b3403a04f345ed4fb0d5acccff531a9f4f862a19f0a3977af8f574c11018f0c8eac142897f0d17527da1911ffe")
+    }
+
+    #[test]
+    fn test_android_load_verify_v2_slot_b() {
+        test_android_load_verify_v2_and_lower_slot(2, 'b', "5306a57481f25882084f3480de56df3782a9acb4d46bdbec3fe1a2dc4da20236798677bac809d923e145e56a28b275deefa92f9a02966a0091ecebca3e3e9030");
     }
 
     /// Helper for testing load/verify for v3/v4 boot/vendor_boot images.
@@ -914,6 +951,7 @@ androidboot.verifiedbootstate={}
     /// * `expected_digest`: The expected digest outputed by vbmeta.
     /// * `expected_vendor_bootconfig`: The expected vendor_boot_config.
     fn test_android_load_verify_v3_and_v4(
+        slot: char,
         partitions: &[(&CStr, &str)],
         vbmeta_file: &str,
         expected_digest: &str,
@@ -923,114 +961,167 @@ androidboot.verifiedbootstate={}
             .vbmeta_size(read_test_data(vbmeta_file).len())
             .digest(expected_digest)
             .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
-            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG.to_owned() + expected_vendor_bootconfig)
+            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
+            .extra("androidboot.force_normal_boot=1\n")
+            .extra(format!("androidboot.slot_suffix=_{slot}\n"))
+            .extra(expected_vendor_bootconfig)
             .build();
 
         test_android_load_verify_success(
+            (u64::from(slot) - ('a' as u64)).try_into().unwrap(),
             partitions,
-            &read_test_data("kernel_a.img"),
-            &[read_test_data("vendor_ramdisk_a.img"), read_test_data("generic_ramdisk_a.img")]
-                .concat(),
+            &read_test_data(format!("kernel_{slot}.img")),
+            &[
+                read_test_data(format!("vendor_ramdisk_{slot}.img")),
+                read_test_data(format!("generic_ramdisk_{slot}.img")),
+            ]
+            .concat(),
             &expected_bootconfig,
             BASE_DTB,
             TEST_VENDOR_CMDLINE,
         );
     }
 
-    #[test]
-    fn test_android_load_verify_boot_v3_vendor_v3_no_init_boot() {
-        let vbmeta_file = "vbmeta_v3_v3_a.img";
-        let parts = [
-            (c"boot_a", "boot_v3_a.img"),
-            (c"vendor_boot_a", "vendor_boot_v3_a.img"),
-            (c"vbmeta_a", vbmeta_file),
-        ];
-        test_android_load_verify_v3_and_v4(&parts[..],  vbmeta_file, "c9ff8edd4be86f3a7b0850529bbe6a8095a00af8162151387f98393a5f551c28bcec5ef6c15c91ee994d075afcde9becfe236c62968750e32bd5f74ac2625c32", "");
-    }
-
-    #[test]
-    fn test_android_load_verify_boot_v3_vendor_v3_init_boot() {
-        let vbmeta_file = "vbmeta_v3_v3_init_boot_a.img";
-        let parts = [
-            (c"boot_a", "boot_no_ramdisk_v3_a.img"),
-            (c"init_boot_a", "init_boot_a.img"),
-            (c"vendor_boot_a", "vendor_boot_v3_a.img"),
-            (c"vbmeta_a", vbmeta_file),
-        ];
-        test_android_load_verify_v3_and_v4(&parts[..],  vbmeta_file, "c46faba2db23fb6758021747f2276165cff909d17b8d05938c267ec5bd370d09c94014dfd3adc5d36dd3a05eae94dce638197f06ee67fb726c55ef752383b5f7", "");
-    }
-
-    #[test]
-    fn test_android_load_verify_boot_v3_vendor_v4_no_init_boot() {
-        let vbmeta_file = "vbmeta_v3_v4_a.img";
-        let parts = [
-            (c"boot_a", "boot_v3_a.img"),
-            (c"vendor_boot_a", "vendor_boot_v4_a.img"),
-            (c"vbmeta_a", vbmeta_file),
-        ];
-        test_android_load_verify_v3_and_v4(&parts[..],  vbmeta_file, "1034811a69575d8f276cdbf4ddfb2eaf028d79cc78215fdfbadd50452b4155b64e484ed632ab85159cb91f40d084bf5aa48bfb3080a2229b4ecad2900114e765", TEST_VENDOR_BOOTCONFIG);
-    }
-
-    #[test]
-    fn test_android_load_verify_boot_v3_vendor_v4_init_boot() {
-        let vbmeta_file = "vbmeta_v3_v4_init_boot_a.img";
-        let parts = [
-            (c"boot_a", "boot_no_ramdisk_v3_a.img"),
-            (c"init_boot_a", "init_boot_a.img"),
-            (c"vendor_boot_a", "vendor_boot_v4_a.img"),
-            (c"vbmeta_a", vbmeta_file),
-        ];
-        test_android_load_verify_v3_and_v4(&parts[..],  vbmeta_file, "66bc22d274eddcb405001e7548404f143adef5d3e628e5b083ed7b88b11442e3dc09429b2ddd693a8b0dcd7d133b9b5f60f597845ab98d32e158b3996a450d65", TEST_VENDOR_BOOTCONFIG);
-    }
-
-    #[test]
-    fn test_android_load_verify_boot_v4_vendor_v3_no_init_boot() {
-        let vbmeta_file = "vbmeta_v4_v3_a.img";
-        let parts = [
-            (c"boot_a", "boot_v4_a.img"),
-            (c"vendor_boot_a", "vendor_boot_v3_a.img"),
-            (c"vbmeta_a", vbmeta_file),
-        ];
-        test_android_load_verify_v3_and_v4(&parts[..],  vbmeta_file, "6a87e40686eb4a56d4cff406475f153d846ed8dba8ce68666e1433b33f75adcf524fb510fcb34753e5c1778a2bec5de7b2fbeab31995518a339cec99a2d20e8b", "");
-    }
-
-    #[test]
-    fn test_android_load_verify_boot_v4_vendor_v3_init_boot() {
-        let vbmeta_file = "vbmeta_v4_v3_init_boot_a.img";
-        let parts = [
-            (c"boot_a", "boot_no_ramdisk_v4_a.img"),
-            (c"init_boot_a", "init_boot_a.img"),
-            (c"vendor_boot_a", "vendor_boot_v3_a.img"),
-            (c"vbmeta_a", vbmeta_file),
-        ];
-        test_android_load_verify_v3_and_v4(&parts[..],  vbmeta_file, "59b109531b311e0d66ee58ca2d347db9e379a2877d048625fb5bde6bcb80df03120b9be482c282bd8c753524c7114a9cf6cfbfa336e137bcb1af55c6bc4d169a", "");
-    }
-
-    #[test]
-    fn test_android_load_verify_boot_v4_vendor_v4_no_init_boot() {
-        let vbmeta_file = "vbmeta_v4_v4_a.img";
-        let parts = [
-            (c"boot_a", "boot_v4_a.img"),
-            (c"vendor_boot_a", "vendor_boot_v4_a.img"),
-            (c"vbmeta_a", vbmeta_file),
-        ];
-        test_android_load_verify_v3_and_v4(&parts[..],  vbmeta_file, "f074f0c7330873e71dadc4b00f010fa9aa0fcf81db1b1c3bc3cc9e98dd5ee572699d34b067f6b9cb44e8948f4e3c7182bec6761cf796f9f00c142a348b78264d", TEST_VENDOR_BOOTCONFIG);
-    }
-
-    #[test]
-    fn test_android_load_verify_boot_v4_vendor_v4_init_boot() {
-        let vbmeta_file = "vbmeta_v4_v4_init_boot_a.img";
-        let parts = [
-            (c"boot_a", "boot_no_ramdisk_v4_a.img"),
-            (c"init_boot_a", "init_boot_a.img"),
-            (c"vendor_boot_a", "vendor_boot_v4_a.img"),
-            (c"vbmeta_a", vbmeta_file),
+    fn test_android_load_verify_boot_v3_v4_slot_no_init_boot(
+        slot: char,
+        boot_ver: u32,
+        vendor_ver: u32,
+        expected_digest: &str,
+        expected_vendor_bootconfig: &str,
+    ) {
+        let vbmeta = &format!("vbmeta_v{boot_ver}_v{vendor_ver}_{slot}.img");
+        let parts: [(&CStr, &str); 3] = [
+            (
+                &CString::new(format!("boot_{slot}")).unwrap(),
+                &format!("boot_v{boot_ver}_{slot}.img"),
+            ),
+            (
+                &CString::new(format!("vendor_boot_{slot}")).unwrap(),
+                &format!("vendor_boot_v{vendor_ver}_{slot}.img"),
+            ),
+            (&CString::new(format!("vbmeta_{slot}")).unwrap(), vbmeta),
         ];
         test_android_load_verify_v3_and_v4(
+            slot,
             &parts[..],
-            vbmeta_file,
+            vbmeta,
+            expected_digest,
+            expected_vendor_bootconfig,
+        );
+    }
+
+    fn test_android_load_verify_boot_v3_v4_slot_init_boot(
+        slot: char,
+        boot_ver: u32,
+        vendor_ver: u32,
+        expected_digest: &str,
+        expected_vendor_bootconfig: &str,
+    ) {
+        let vbmeta = &format!("vbmeta_v{boot_ver}_v{vendor_ver}_init_boot_{slot}.img");
+        let parts: [(&CStr, &str); 4] = [
+            (
+                &CString::new(format!("boot_{slot}")).unwrap(),
+                &format!("boot_no_ramdisk_v{boot_ver}_{slot}.img"),
+            ),
+            (
+                &CString::new(format!("vendor_boot_{slot}")).unwrap(),
+                &format!("vendor_boot_v{vendor_ver}_{slot}.img"),
+            ),
+            (&CString::new(format!("init_boot_{slot}")).unwrap(), &format!("init_boot_{slot}.img")),
+            (&CString::new(format!("vbmeta_{slot}")).unwrap(), vbmeta),
+        ];
+        test_android_load_verify_v3_and_v4(
+            slot,
+            &parts[..],
+            vbmeta,
+            expected_digest,
+            expected_vendor_bootconfig,
+        );
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v3_no_init_boot_slot_a() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot('a', 3, 3, "c9ff8edd4be86f3a7b0850529bbe6a8095a00af8162151387f98393a5f551c28bcec5ef6c15c91ee994d075afcde9becfe236c62968750e32bd5f74ac2625c32", "")
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v3_no_init_boot_slot_b() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot('b', 3, 3, "ce22db604b8edfa1ad3e5200adafb5f57f7b215baea3d4ba4c94e50e72ac1eb2cf41ad36e95337e436882e43c9ba07a968263309b778667eade94c705ca31d23", "")
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v3_init_boot_slot_a() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot('a', 3, 3, "c46faba2db23fb6758021747f2276165cff909d17b8d05938c267ec5bd370d09c94014dfd3adc5d36dd3a05eae94dce638197f06ee67fb726c55ef752383b5f7", "")
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v3_init_boot_slot_b() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot('b', 3, 3, "ba32f2f4ae5391a95283a18a9fde8aab6f7e10b68e6dc80afafec22548f42b4e96b31bf0d022269fde985977141b01582495e0d255782689077613cab228e578", "")
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v4_no_init_boot_slot_a() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot('a', 3, 4, "1034811a69575d8f276cdbf4ddfb2eaf028d79cc78215fdfbadd50452b4155b64e484ed632ab85159cb91f40d084bf5aa48bfb3080a2229b4ecad2900114e765", TEST_VENDOR_BOOTCONFIG)
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v4_no_init_boot_slot_b() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot('b', 3, 4, "627142b0d59f111963684fa117ce16a195bb0e7f7469a45c544780a68b181bb0a46e5244258243b0661bfd5f2bc3c968e169c695dbffd8f92ca538eb814060ea", TEST_VENDOR_BOOTCONFIG)
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v4_init_boot_slot_a() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot('a', 3, 4, "66bc22d274eddcb405001e7548404f143adef5d3e628e5b083ed7b88b11442e3dc09429b2ddd693a8b0dcd7d133b9b5f60f597845ab98d32e158b3996a450d65", TEST_VENDOR_BOOTCONFIG)
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v4_init_boot_slot_b() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot('b', 3, 4, "a1aa54756576b588188f5f91694e399523962e40c34bd35437ddf387e2fd18160040cdcf1d82b2c9eced7a5b57f8a1ef34a2f4baaf1c4a459eba0a5f3d0302e3", TEST_VENDOR_BOOTCONFIG)
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v3_no_init_boot_slot_a() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot('a', 4, 3, "6a87e40686eb4a56d4cff406475f153d846ed8dba8ce68666e1433b33f75adcf524fb510fcb34753e5c1778a2bec5de7b2fbeab31995518a339cec99a2d20e8b", "")
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v3_no_init_boot_slot_b() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot('b', 4, 3, "c6aba5cd59a8f641c36fc6e6aec016c9d82fec3a072ef451cfc577c0b877933e547e8b36f27c0a034042110716d6834a197d7d86788a7edd080b85d24d4e42a2", "")
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v3_init_boot_slot_a() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot('a', 4, 3, "59b109531b311e0d66ee58ca2d347db9e379a2877d048625fb5bde6bcb80df03120b9be482c282bd8c753524c7114a9cf6cfbfa336e137bcb1af55c6bc4d169a", "")
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v3_init_boot_slot_b() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot('b', 4, 3, "f4b86fba5c1c5d5831edaa747393e17f147f04452c637238940669dc323d091fdf6dddc3c68bdae02d9199b5d4664b9e5e016e63a3250a87277f9b618214d520", "")
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v4_no_init_boot_slot_a() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot('a', 4, 4, "f074f0c7330873e71dadc4b00f010fa9aa0fcf81db1b1c3bc3cc9e98dd5ee572699d34b067f6b9cb44e8948f4e3c7182bec6761cf796f9f00c142a348b78264d", TEST_VENDOR_BOOTCONFIG)
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v4_no_init_boot_slot_b() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot('b', 4, 4, "d528e0f964294eec3cae518f5177abe9647b675f088ca95e162b7ee679bc8e897de34f4d67166af5bf790331587dc23c02e75f733b2277a19396e817964bc462", TEST_VENDOR_BOOTCONFIG)
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v4_init_boot_slot_a() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot(
+            'a',
+            4,
+            4,
             TEST_VBMETA_V4_INIT_BOOT_A_DIGEST,
             TEST_VENDOR_BOOTCONFIG,
-        );
+        )
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v4_init_boot_slot_b() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot('b', 4, 4, "a2b36b9dd223191ec4b953e672a5ee2cef85a2c48026d690fee0f465b82cd5a6dfbfb1663ec23150d4f4b067db9ccaa8991e62a70e8cfffa3a698304cc9e4d6a", TEST_VENDOR_BOOTCONFIG)
     }
 }
