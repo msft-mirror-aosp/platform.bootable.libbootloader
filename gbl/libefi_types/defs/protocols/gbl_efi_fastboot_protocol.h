@@ -86,6 +86,14 @@ typedef struct GblEfiFastbootProtocol {
   EfiStatus (*clear_lock)(struct GblEfiFastbootProtocol* this,
                           uint64_t lock_state);
 
+  // Local session methods
+  EfiStatus (*start_local_session)(struct GblEfiFastbootProtocol* this,
+                                   void** ctx);
+  EfiStatus (*update_local_session)(struct GblEfiFastbootProtocol* this,
+                                    void* ctx, uint8_t* buf, size_t* buf_size);
+  EfiStatus (*close_local_session)(struct GblEfiFastbootProtocol* this,
+                                   void* ctx);
+
   // Misc methods
   EfiStatus (*get_partition_permissions)(struct GblEfiFastbootProtocol* this,
                                          const char8_t* part_name,

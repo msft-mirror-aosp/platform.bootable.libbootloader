@@ -61,6 +61,9 @@ pub use allocation::{efi_free, efi_malloc, EfiAllocator};
 
 /// The Android EFI protocol implementation of an A/B slot manager.
 pub mod ab_slots;
+/// Local fastboot/bootmenu support.
+pub mod local_session;
+/// Idiomatic wrappers around EFI protocols.
 pub mod protocol;
 pub mod utils;
 
@@ -950,8 +953,10 @@ mod test {
         EfiBlockIoProtocol, EfiEventNotify, EfiLocateHandleSearchType, EfiStatus, EfiTpl,
         EFI_MEMORY_TYPE_LOADER_CODE, EFI_MEMORY_TYPE_LOADER_DATA, EFI_STATUS_NOT_FOUND,
         EFI_STATUS_NOT_READY, EFI_STATUS_SUCCESS, EFI_STATUS_UNSUPPORTED,
+        EFI_TIMER_DELAY_TIMER_PERIODIC,
     };
     use std::{cell::RefCell, collections::VecDeque, mem::size_of, slice::from_raw_parts_mut};
+    use utils::RecurringTimer;
     use zerocopy::IntoBytes;
 
     /// Helper function to generate a Protocol from an interface type.
@@ -975,6 +980,7 @@ mod test {
         pub create_event_trace: CreateEventTrace,
         pub close_event_trace: CloseEventTrace,
         pub check_event_trace: CheckEventTrace,
+        pub set_timer_trace: SetTimerTrace,
     }
 
     // Declares a global instance of EfiCallTraces.
@@ -1220,6 +1226,28 @@ mod test {
         })
     }
 
+    /// EFI_BOOT_SERVICE.SetTimer.
+    #[derive(Default)]
+    pub struct SetTimerTrace {
+        // Capture call params
+        pub inputs: VecDeque<(EfiEvent, EfiTimerDelay, u64)>,
+        // EfiStatus for return
+        pub outputs: VecDeque<EfiStatus>,
+    }
+
+    /// Mock of the `EFI_BOOT_SERVICE.SetTimer` C API in test environment.
+    extern "C" fn set_timer(
+        event: EfiEvent,
+        delay_type: EfiTimerDelay,
+        duration: u64,
+    ) -> EfiStatus {
+        EFI_CALL_TRACES.with(|trace| {
+            let trace = &mut trace.borrow_mut().set_timer_trace;
+            trace.inputs.push_back((event, delay_type, duration));
+            trace.outputs.pop_front().unwrap()
+        })
+    }
+
     /// A test wrapper that sets up a system table, image handle and runs a test function like it
     /// is an EFI application.
     /// TODO(300168989): Investigate using procedural macro to generate test that auto calls this.
@@ -1241,6 +1269,7 @@ mod test {
         boot_services.create_event = Some(create_event);
         boot_services.close_event = Some(close_event);
         boot_services.check_event = Some(check_event);
+        boot_services.set_timer = Some(set_timer);
         systab.boot_services = &mut boot_services as *mut _;
         let image_handle: usize = 1234; // Don't care.
 
@@ -1642,6 +1671,40 @@ mod test {
             assert_eq!(efi_entry.system_table().boot_services().check_event(&res), Ok(true));
             assert_eq!(efi_entry.system_table().boot_services().check_event(&res), Ok(false));
             assert!(efi_entry.system_table().boot_services().check_event(&res).is_err());
+        });
+    }
+
+    #[test]
+    fn test_check_recurring_timer() {
+        run_test(|image_handle, systab_ptr| {
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+            let event: EfiEvent = 666usize as _;
+
+            EFI_CALL_TRACES.with(|traces| {
+                let mut t = traces.borrow_mut();
+                t.create_event_trace.outputs.push_back(event);
+                t.set_timer_trace.outputs.push_back(EFI_STATUS_SUCCESS);
+                t.check_event_trace.outputs.push_back(EFI_STATUS_SUCCESS);
+            });
+
+            let recurring_timer =
+                RecurringTimer::new(&efi_entry, Duration::from_nanos(2112)).unwrap();
+
+            EFI_CALL_TRACES.with(|traces| {
+                let traces = traces.borrow();
+                assert_eq!(
+                    traces.create_event_trace.inputs,
+                    [(EventType::Timer as _, 0, None, null_mut())]
+                );
+                assert_eq!(
+                    traces.set_timer_trace.inputs,
+                    [(event, EFI_TIMER_DELAY_TIMER_PERIODIC, 21u64)]
+                );
+                // Make sure timer doesn't check itself automatically during construction.
+                assert_eq!(traces.check_event_trace.outputs, [EFI_STATUS_SUCCESS]);
+            });
+
+            assert_eq!(recurring_timer.check(), Ok(true));
         });
     }
 }
