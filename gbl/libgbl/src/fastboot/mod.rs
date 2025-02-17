@@ -26,9 +26,9 @@ use core::{
     mem::take, ops::DerefMut, pin::Pin, str::from_utf8,
 };
 use fastboot::{
-    next_arg, next_arg_u64, process_next_command, run_tcp_session, CommandError, CommandResult,
-    FastbootImplementation, InfoSender, OkaySender, RebootMode, UploadBuilder, Uploader,
-    VarInfoSender, MAX_COMMAND_SIZE,
+    local_session::LocalSession, next_arg, next_arg_u64, process_next_command, run_tcp_session,
+    CommandError, CommandResult, FastbootImplementation, InfoSender, OkaySender, RebootMode,
+    UploadBuilder, Uploader, VarInfoSender, MAX_COMMAND_SIZE,
 };
 use gbl_async::{join, yield_now};
 use gbl_storage::{BlockIo, Disk, Gpt};
@@ -237,21 +237,31 @@ where
         self.tasks
     }
 
-    /// Listens on the given USB/TCP channels and runs fastboot.
+    /// Listens on the given USB, TCP, and local session channels and runs fastboot.
     async fn run(
         &mut self,
+        mut local: Option<impl LocalSession>,
         mut usb: Option<impl GblUsbTransport>,
         mut tcp: Option<impl GblTcpStream>,
     ) {
-        if usb.is_none() && tcp.is_none() {
-            gbl_println!(self.gbl_ops, "No USB or TCP found for GBL Fastboot");
-            return;
+        if usb.is_none() && tcp.is_none() && local.is_none() {
+            gbl_println!(self.gbl_ops, "No USB, TCP, or local session found for GBL Fastboot");
         }
         let tasks = self.tasks();
         // The fastboot command loop task for interacting with the remote host.
         let cmd_loop_end = Shared::from(false);
         let cmd_loop_task = async {
             loop {
+                if let Some(ref mut l) = local {
+                    let res = match process_next_command(l, self).await {
+                        Ok(true) => break,
+                        l => l,
+                    };
+                    if res.is_err() {
+                        gbl_println!(self.gbl_ops, "GBL Fastboot local session error: {:?}", res);
+                    }
+                }
+
                 if let Some(v) = usb.as_mut() {
                     if v.has_packet() {
                         let res = match process_next_command(v, self).await {
@@ -749,6 +759,7 @@ pub async fn run_gbl_fastboot<'a: 'c, 'b: 'c, 'c, 'd>(
     gbl_ops: &mut impl GblOps<'a, 'd>,
     buffer_pool: &'b Shared<impl BufferPool>,
     tasks: impl PinFutContainer<'c> + 'c,
+    local: Option<impl LocalSession>,
     usb: Option<impl GblUsbTransport>,
     tcp: Option<impl GblTcpStream>,
     bootimg_buf: &'b mut [u8],
@@ -756,7 +767,7 @@ pub async fn run_gbl_fastboot<'a: 'c, 'b: 'c, 'c, 'd>(
     let tasks = tasks.into();
     let disks = gbl_ops.disks();
     GblFastboot::new(gbl_ops, disks, Task::run, &tasks, buffer_pool, bootimg_buf)
-        .run(usb, tcp)
+        .run(local, usb, tcp)
         .await;
 }
 
@@ -779,6 +790,7 @@ pub async fn run_gbl_fastboot<'a: 'c, 'b: 'c, 'c, 'd>(
 pub async fn run_gbl_fastboot_stack<'a, 'b, const N: usize>(
     gbl_ops: &mut impl GblOps<'a, 'b>,
     buffer_pool: impl BufferPool,
+    local: Option<impl LocalSession>,
     usb: Option<impl GblUsbTransport>,
     tcp: Option<impl GblTcpStream>,
     bootimg_buf: &mut [u8],
@@ -804,7 +816,7 @@ pub async fn run_gbl_fastboot_stack<'a, 'b, const N: usize>(
     let tasks = PinFutSlice::new(&mut tasks[..]).into();
     let disks = gbl_ops.disks();
     GblFastboot::new(gbl_ops, disks, Task::run, &tasks, &buffer_pool, bootimg_buf)
-        .run(usb, tcp)
+        .run(local, usb, tcp)
         .await;
 }
 
@@ -861,6 +873,7 @@ pub fn fuchsia_fastboot_mdns_packet(node_name: &str, ipv6_addr: &[u8]) -> Result
 mod test {
     use super::*;
     use crate::{
+        constants::KiB,
         ops::test::{FakeGblOps, FakeGblOpsStorage},
         Os,
     };
@@ -943,7 +956,7 @@ mod test {
 
     #[test]
     fn test_get_var_gbl() {
-        let dl_buffers = Shared::from(vec![vec![0u8; 128 * 1024]; 1]);
+        let dl_buffers = Shared::from(vec![vec![0u8; KiB!(128)]; 1]);
         let storage = FakeGblOpsStorage::default();
         let mut gbl_ops = FakeGblOps::new(&storage);
         let tasks = vec![].into();
@@ -960,12 +973,12 @@ mod test {
 
     #[test]
     fn test_get_var_partition_info() {
-        let dl_buffers = Shared::from(vec![vec![0u8; 128 * 1024]; 1]);
+        let dl_buffers = Shared::from(vec![vec![0u8; KiB!(128)]; 1]);
         let mut storage = FakeGblOpsStorage::default();
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
-        storage.add_raw_device(c"raw_0", [0xaau8; 4 * 1024]);
-        storage.add_raw_device(c"raw_1", [0x55u8; 8 * 1024]);
+        storage.add_raw_device(c"raw_0", [0xaau8; KiB!(4)]);
+        storage.add_raw_device(c"raw_1", [0x55u8; KiB!(8)]);
         let mut gbl_ops = FakeGblOps::new(&storage);
         let tasks = vec![].into();
         let parts = gbl_ops.disks();
@@ -1019,12 +1032,12 @@ mod test {
 
     #[test]
     fn test_get_var_all() {
-        let dl_buffers = Shared::from(vec![vec![0u8; 128 * 1024]; 1]);
+        let dl_buffers = Shared::from(vec![vec![0u8; KiB!(128)]; 1]);
         let mut storage = FakeGblOpsStorage::default();
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
-        storage.add_raw_device(c"raw_0", [0xaau8; 4 * 1024]);
-        storage.add_raw_device(c"raw_1", [0x55u8; 8 * 1024]);
+        storage.add_raw_device(c"raw_0", [0xaau8; KiB!(4)]);
+        storage.add_raw_device(c"raw_1", [0x55u8; KiB!(8)]);
         let mut gbl_ops = FakeGblOps::new(&storage);
         let tasks = vec![].into();
         let parts = gbl_ops.disks();
@@ -1088,7 +1101,7 @@ mod test {
 
     #[test]
     fn test_fetch_invalid_partition_arg() {
-        let dl_buffers = Shared::from(vec![vec![0u8; 128 * 1024]; 1]);
+        let dl_buffers = Shared::from(vec![vec![0u8; KiB!(128)]; 1]);
         let mut storage = FakeGblOpsStorage::default();
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
@@ -1137,7 +1150,7 @@ mod test {
 
     #[test]
     fn test_fetch_raw_block() {
-        let dl_buffers = Shared::from(vec![vec![0u8; 128 * 1024]; 1]);
+        let dl_buffers = Shared::from(vec![vec![0u8; KiB!(128)]; 1]);
         let mut storage = FakeGblOpsStorage::default();
         let disk_0 = include_bytes!("../../../libstorage/test/gpt_test_1.bin");
         let disk_1 = include_bytes!("../../../libstorage/test/gpt_test_2.bin");
@@ -1179,12 +1192,12 @@ mod test {
 
     #[test]
     fn test_fetch_partition() {
-        let dl_buffers = Shared::from(vec![vec![0u8; 128 * 1024]; 1]);
+        let dl_buffers = Shared::from(vec![vec![0u8; KiB!(128)]; 1]);
         let mut storage = FakeGblOpsStorage::default();
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
-        storage.add_raw_device(c"raw_0", [0xaau8; 4 * 1024]);
-        storage.add_raw_device(c"raw_1", [0x55u8; 8 * 1024]);
+        storage.add_raw_device(c"raw_0", [0xaau8; KiB!(4)]);
+        storage.add_raw_device(c"raw_1", [0x55u8; KiB!(8)]);
         let mut gbl_ops = FakeGblOps::new(&storage);
         let tasks = vec![].into();
         let parts = gbl_ops.disks();
@@ -1203,16 +1216,16 @@ mod test {
         check_part_upload(&mut gbl_fb, "boot_b", off, size, Some(0), expect_boot_b);
         check_part_upload(&mut gbl_fb, "vendor_boot_a", off, size, Some(1), expect_vendor_boot_a);
         check_part_upload(&mut gbl_fb, "vendor_boot_b", off, size, Some(1), expect_vendor_boot_b);
-        check_part_upload(&mut gbl_fb, "raw_0", off, size, Some(2), &[0xaau8; 4 * 1024]);
-        check_part_upload(&mut gbl_fb, "raw_1", off, size, Some(3), &[0x55u8; 8 * 1024]);
+        check_part_upload(&mut gbl_fb, "raw_0", off, size, Some(2), &[0xaau8; KiB!(4)]);
+        check_part_upload(&mut gbl_fb, "raw_1", off, size, Some(3), &[0x55u8; KiB!(8)]);
 
         // No block device id
         check_part_upload(&mut gbl_fb, "boot_a", off, size, None, expect_boot_a);
         check_part_upload(&mut gbl_fb, "boot_b", off, size, None, expect_boot_b);
         check_part_upload(&mut gbl_fb, "vendor_boot_a", off, size, None, expect_vendor_boot_a);
         check_part_upload(&mut gbl_fb, "vendor_boot_b", off, size, None, expect_vendor_boot_b);
-        check_part_upload(&mut gbl_fb, "raw_0", off, size, None, &[0xaau8; 4 * 1024]);
-        check_part_upload(&mut gbl_fb, "raw_1", off, size, None, &[0x55u8; 8 * 1024]);
+        check_part_upload(&mut gbl_fb, "raw_0", off, size, None, &[0xaau8; KiB!(4)]);
+        check_part_upload(&mut gbl_fb, "raw_1", off, size, None, &[0x55u8; KiB!(8)]);
     }
 
     /// A helper function to get a bit-flipped copy of the input data.
@@ -1242,12 +1255,12 @@ mod test {
     fn test_flash_partition() {
         let disk_0 = include_bytes!("../../../libstorage/test/gpt_test_1.bin");
         let disk_1 = include_bytes!("../../../libstorage/test/gpt_test_2.bin");
-        let dl_buffers = Shared::from(vec![vec![0u8; 128 * 1024]; 1]);
+        let dl_buffers = Shared::from(vec![vec![0u8; KiB!(128)]; 1]);
         let mut storage = FakeGblOpsStorage::default();
         storage.add_gpt_device(disk_0);
         storage.add_gpt_device(disk_1);
-        storage.add_raw_device(c"raw_0", [0xaau8; 4 * 1024]);
-        storage.add_raw_device(c"raw_1", [0x55u8; 8 * 1024]);
+        storage.add_raw_device(c"raw_0", [0xaau8; KiB!(4)]);
+        storage.add_raw_device(c"raw_1", [0x55u8; KiB!(8)]);
         let mut gbl_ops = FakeGblOps::new(&storage);
         let tasks = vec![].into();
         let parts = gbl_ops.disks();
@@ -1258,8 +1271,8 @@ mod test {
         let expect_boot_b = include_bytes!("../../../libstorage/test/boot_b.bin");
         check_flash_part(&mut gbl_fb, "boot_a", expect_boot_a);
         check_flash_part(&mut gbl_fb, "boot_b", expect_boot_b);
-        check_flash_part(&mut gbl_fb, "raw_0", &[0xaau8; 4 * 1024]);
-        check_flash_part(&mut gbl_fb, "raw_1", &[0x55u8; 8 * 1024]);
+        check_flash_part(&mut gbl_fb, "raw_0", &[0xaau8; KiB!(4)]);
+        check_flash_part(&mut gbl_fb, "raw_1", &[0x55u8; KiB!(8)]);
         check_flash_part(&mut gbl_fb, "/0", disk_0);
         check_flash_part(&mut gbl_fb, "/1", disk_1);
 
@@ -1276,7 +1289,7 @@ mod test {
     fn test_flash_partition_sparse() {
         let raw = include_bytes!("../../testdata/sparse_test_raw.bin");
         let sparse = include_bytes!("../../testdata/sparse_test.bin");
-        let dl_buffers = Shared::from(vec![vec![0u8; 128 * 1024]; 1]);
+        let dl_buffers = Shared::from(vec![vec![0u8; KiB!(128)]; 1]);
         let mut storage = FakeGblOpsStorage::default();
         storage.add_raw_device(c"raw", vec![0u8; raw.len()]);
         let mut gbl_ops = FakeGblOps::new(&storage);
@@ -1317,7 +1330,7 @@ mod test {
         gpt_builder.add("sparse", [1u8; GPT_GUID_LEN], [1u8; GPT_GUID_LEN], 0, None).unwrap();
         block_on(gpt_builder.persist()).unwrap();
         let mut gbl_ops = FakeGblOps::new(&storage);
-        let dl_buffers = Shared::from(vec![vec![0u8; 128 * 1024]; 2]);
+        let dl_buffers = Shared::from(vec![vec![0u8; KiB!(128)]; 2]);
         let tasks = vec![].into();
         let parts = gbl_ops.disks();
         let mut gbl_fb =
@@ -1365,7 +1378,7 @@ mod test {
 
     #[test]
     fn test_async_flash_block_on_busy_blk() {
-        let dl_buffers = Shared::from(vec![vec![0u8; 128 * 1024]; 2]);
+        let dl_buffers = Shared::from(vec![vec![0u8; KiB!(128)]; 2]);
         let mut storage = FakeGblOpsStorage::default();
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
@@ -1420,7 +1433,7 @@ mod test {
         expected = "A Fastboot async task failed: Other(Some(\"test\")), context: flash:boot_a"
     )]
     fn test_async_flash_error() {
-        let dl_buffers = Shared::from(vec![vec![0u8; 128 * 1024]; 2]);
+        let dl_buffers = Shared::from(vec![vec![0u8; KiB!(128)]; 2]);
         let mut storage = FakeGblOpsStorage::default();
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
         let mut gbl_ops = FakeGblOps::new(&storage);
@@ -1446,7 +1459,7 @@ mod test {
 
     #[test]
     fn test_async_erase() {
-        let dl_buffers = Shared::from(vec![vec![0u8; 128 * 1024]; 2]);
+        let dl_buffers = Shared::from(vec![vec![0u8; KiB!(128)]; 2]);
         let mut storage = FakeGblOpsStorage::default();
         storage.add_raw_device(c"raw_0", [0xaau8; 4096]);
         storage.add_raw_device(c"raw_1", [0x55u8; 4096]);
@@ -1495,7 +1508,7 @@ mod test {
         expected = "A Fastboot async task failed: Other(Some(\"test\")), context: erase:boot_a"
     )]
     fn test_async_erase_error() {
-        let dl_buffers = Shared::from(vec![vec![0u8; 128 * 1024]; 2]);
+        let dl_buffers = Shared::from(vec![vec![0u8; KiB!(128)]; 2]);
         let mut storage = FakeGblOpsStorage::default();
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
         let mut gbl_ops = FakeGblOps::new(&storage);
@@ -1519,14 +1532,14 @@ mod test {
 
     #[test]
     fn test_default_block() {
-        let dl_buffers = Shared::from(vec![vec![0u8; 128 * 1024]; 1]);
+        let dl_buffers = Shared::from(vec![vec![0u8; KiB!(128)]; 1]);
         let mut storage = FakeGblOpsStorage::default();
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
         let disk_dup = include_bytes!("../../../libstorage/test/gpt_test_2.bin");
         storage.add_gpt_device(disk_dup);
         storage.add_gpt_device(disk_dup);
-        let raw_a = [0xaau8; 4 * 1024];
-        let raw_b = [0x55u8; 8 * 1024];
+        let raw_a = [0xaau8; KiB!(4)];
+        let raw_b = [0x55u8; KiB!(8)];
         storage.add_raw_device(c"raw", raw_a);
         storage.add_raw_device(c"raw", raw_b);
         let mut gbl_ops = FakeGblOps::new(&storage);
@@ -1584,7 +1597,7 @@ mod test {
 
     #[test]
     fn test_set_default_block_invalid_arg() {
-        let dl_buffers = Shared::from(vec![vec![0u8; 128 * 1024]; 2]);
+        let dl_buffers = Shared::from(vec![vec![0u8; KiB!(128)]; 2]);
         let storage = FakeGblOpsStorage::default();
         let mut gbl_ops = FakeGblOps::new(&storage);
         let tasks = vec![].into();
@@ -1602,7 +1615,7 @@ mod test {
 
     #[test]
     fn test_reboot_sync_all_blocks() {
-        let dl_buffers = Shared::from(vec![vec![0u8; 128 * 1024]; 2]);
+        let dl_buffers = Shared::from(vec![vec![0u8; KiB!(128)]; 2]);
         let mut storage = FakeGblOpsStorage::default();
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
         let mut gbl_ops = FakeGblOps::new(&storage);
@@ -1637,7 +1650,7 @@ mod test {
 
     #[test]
     fn test_continue_sync_all_blocks() {
-        let dl_buffers = Shared::from(vec![vec![0u8; 128 * 1024]; 2]);
+        let dl_buffers = Shared::from(vec![vec![0u8; KiB!(128)]; 2]);
         let mut storage = FakeGblOpsStorage::default();
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
         let mut gbl_ops = FakeGblOps::new(&storage);
@@ -1793,10 +1806,47 @@ mod test {
         res
     }
 
+    #[derive(Default)]
+    struct TestLocalSession {
+        requests: VecDeque<&'static str>,
+        outgoing_packets: VecDeque<Vec<u8>>,
+    }
+
+    impl LocalSession for &mut TestLocalSession {
+        async fn update(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
+            let Some(front) = self.requests.pop_front() else {
+                return Ok(0);
+            };
+            let front_len = front.len();
+            if front_len >= buf.len() {
+                self.requests.push_front(front);
+                return Err(Error::BufferTooSmall(Some(front_len)));
+            }
+            buf[..front_len].copy_from_slice(front.as_bytes());
+            buf[front_len] = b'\0';
+            Ok(front_len)
+        }
+
+        async fn process_outgoing_packet(&mut self, buf: &[u8]) {
+            self.outgoing_packets.push_back(buf.into());
+        }
+    }
+
+    impl From<&[&'static str]> for TestLocalSession {
+        fn from(elts: &[&'static str]) -> Self {
+            let elts = elts.into_iter();
+            let mut requests = VecDeque::with_capacity(elts.len());
+            for e in elts {
+                requests.push_back(*e);
+            }
+            Self { requests, outgoing_packets: VecDeque::new() }
+        }
+    }
+
     #[test]
     fn test_run_gbl_fastboot() {
         let storage = FakeGblOpsStorage::default();
-        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
         let mut gbl_ops = FakeGblOps::new(&storage);
         let listener: SharedTestListener = Default::default();
         let (usb, tcp) = (&listener, &listener);
@@ -1805,7 +1855,14 @@ mod test {
         listener.add_tcp_input(b"FB01");
         listener.add_tcp_length_prefixed_input(b"getvar:max-download-size");
         listener.add_tcp_length_prefixed_input(b"continue");
-        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp), &mut []));
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            Some(&mut TestLocalSession::default()),
+            Some(usb),
+            Some(tcp),
+            &mut [],
+        ));
 
         assert_eq!(
             listener.usb_out_queue(),
@@ -1823,28 +1880,57 @@ mod test {
     }
 
     #[test]
+    fn test_run_gbl_fastboot_local_session() {
+        let storage = FakeGblOpsStorage::default();
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        let mut local = TestLocalSession::from(["reboot", "continue"].as_slice());
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            Some(&mut local),
+            None::<&SharedTestListener>,
+            None::<&SharedTestListener>,
+            &mut [],
+        ));
+
+        assert!(gbl_ops.rebooted);
+    }
+
+    #[test]
     fn test_run_gbl_fastboot_parallel_task() {
         let mut storage = FakeGblOpsStorage::default();
-        storage.add_raw_device(c"raw_0", [0u8; 4 * 1024]);
-        storage.add_raw_device(c"raw_1", [0u8; 8 * 1024]);
-        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        storage.add_raw_device(c"raw_0", [0u8; KiB!(4)]);
+        storage.add_raw_device(c"raw_1", [0u8; KiB!(8)]);
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
         let mut gbl_ops = FakeGblOps::new(&storage);
         let listener: SharedTestListener = Default::default();
         let (usb, tcp) = (&listener, &listener);
-        let mut fb_fut =
-            pin!(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp), &mut []));
+        let mut local = TestLocalSession::from(["getvar:all"].as_slice());
 
-        listener.add_usb_input(b"oem gbl-enable-async-task");
-        listener.add_usb_input(format!("download:{:#x}", 4 * 1024).as_bytes());
-        listener.add_usb_input(&[0x55u8; 4 * 1024]);
-        listener.add_usb_input(b"flash:raw_0");
+        // New scope to release reference on local
+        {
+            let mut fb_fut = pin!(run_gbl_fastboot_stack::<3>(
+                &mut gbl_ops,
+                buffers,
+                Some(&mut local),
+                Some(usb),
+                Some(tcp),
+                &mut []
+            ));
 
-        listener.add_tcp_input(b"FB01");
-        listener.add_tcp_length_prefixed_input(format!("download:{:#x}", 8 * 1024).as_bytes());
-        listener.add_tcp_length_prefixed_input(&[0xaau8; 8 * 1024]);
-        listener.add_tcp_length_prefixed_input(b"flash:raw_1");
+            listener.add_usb_input(b"oem gbl-enable-async-task");
+            listener.add_usb_input(format!("download:{:#x}", KiB!(4)).as_bytes());
+            listener.add_usb_input(&[0x55u8; KiB!(4)]);
+            listener.add_usb_input(b"flash:raw_0");
 
-        assert!(poll_n_times(&mut fb_fut, 100).is_none());
+            listener.add_tcp_input(b"FB01");
+            listener.add_tcp_length_prefixed_input(format!("download:{:#x}", KiB!(8)).as_bytes());
+            listener.add_tcp_length_prefixed_input(&[0xaau8; KiB!(8)]);
+            listener.add_tcp_length_prefixed_input(b"flash:raw_1");
+
+            assert!(poll_n_times(&mut fb_fut, 100).is_none());
+        }
 
         assert_eq!(
             listener.usb_out_queue(),
@@ -1871,17 +1957,40 @@ mod test {
             listener.dump_tcp_out_queue()
         );
 
+        assert_eq!(
+            local.outgoing_packets,
+            VecDeque::from(vec![
+                Vec::from(b"INFOmax-download-size: 0x20000"),
+                Vec::from(b"INFOversion-bootloader: 1.0"),
+                Vec::from(b"INFOmax-fetch-size: 0xffffffffffffffff"),
+                Vec::from(b"INFOblock-device:0:total-blocks: 0x1000"),
+                Vec::from(b"INFOblock-device:0:block-size: 0x1"),
+                Vec::from(b"INFOblock-device:0:status: idle"),
+                Vec::from(b"INFOblock-device:1:total-blocks: 0x2000"),
+                Vec::from(b"INFOblock-device:1:block-size: 0x1"),
+                Vec::from(b"INFOblock-device:1:status: idle"),
+                Vec::from(b"INFOgbl-default-block: None"),
+                Vec::from(b"INFOpartition-size:raw_0/0: 0x1000"),
+                Vec::from(b"INFOpartition-type:raw_0/0: raw"),
+                Vec::from(b"INFOpartition-size:raw_1/1: 0x2000"),
+                Vec::from(b"INFOpartition-type:raw_1/1: raw"),
+                Vec::from(b"INFOgbl-test-var:1: gbl-test-var-val:1"),
+                Vec::from(b"INFOgbl-test-var:2: gbl-test-var-val:2"),
+                Vec::from(b"OKAY"),
+            ])
+        );
+
         // Verifies flashed image on raw_0.
-        assert_eq!(storage[0].partition_io(None).unwrap().dev().io().storage, [0x55u8; 4 * 1024]);
+        assert_eq!(storage[0].partition_io(None).unwrap().dev().io().storage, [0x55u8; KiB!(4)]);
 
         // Verifies flashed image on raw_1.
-        assert_eq!(storage[1].partition_io(None).unwrap().dev().io().storage, [0xaau8; 8 * 1024]);
+        assert_eq!(storage[1].partition_io(None).unwrap().dev().io().storage, [0xaau8; KiB!(8)]);
     }
 
     #[test]
     fn test_oem_add_staged_bootloader_file() {
         let storage = FakeGblOpsStorage::default();
-        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
         let mut gbl_ops = FakeGblOps::new(&storage);
         gbl_ops.get_zbi_bootloader_files_buffer().unwrap().fill(0);
         let listener: SharedTestListener = Default::default();
@@ -1896,7 +2005,14 @@ mod test {
         listener.add_usb_input(b"oem add-staged-bootloader-file file_2");
         listener.add_usb_input(b"continue");
 
-        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp), &mut []));
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            Some(&mut TestLocalSession::default()),
+            Some(usb),
+            Some(tcp),
+            &mut [],
+        ));
 
         let buffer = gbl_ops.get_zbi_bootloader_files_buffer_aligned().unwrap();
         let container = ZbiContainer::parse(&buffer[..]).unwrap();
@@ -1909,7 +2025,7 @@ mod test {
     #[test]
     fn test_oem_add_staged_bootloader_file_missing_file_name() {
         let storage = FakeGblOpsStorage::default();
-        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
         let mut gbl_ops = FakeGblOps::new(&storage);
         let listener: SharedTestListener = Default::default();
         let (usb, tcp) = (&listener, &listener);
@@ -1919,7 +2035,14 @@ mod test {
         listener.add_usb_input(b"oem add-staged-bootloader-file");
         listener.add_usb_input(b"continue");
 
-        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp), &mut []));
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            Some(&mut TestLocalSession::default()),
+            Some(usb),
+            Some(tcp),
+            &mut [],
+        ));
 
         assert_eq!(
             listener.usb_out_queue(),
@@ -1938,7 +2061,7 @@ mod test {
     #[test]
     fn test_oem_add_staged_bootloader_file_missing_download() {
         let storage = FakeGblOpsStorage::default();
-        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
         let mut gbl_ops = FakeGblOps::new(&storage);
         let listener: SharedTestListener = Default::default();
         let (usb, tcp) = (&listener, &listener);
@@ -1946,7 +2069,14 @@ mod test {
         listener.add_usb_input(b"oem add-staged-bootloader-file file1");
         listener.add_usb_input(b"continue");
 
-        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp), &mut []));
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            Some(&mut TestLocalSession::default()),
+            Some(usb),
+            Some(tcp),
+            &mut [],
+        ));
 
         assert_eq!(
             listener.usb_out_queue(),
@@ -2001,7 +2131,7 @@ mod test {
         let mut storage = FakeGblOpsStorage::default();
         storage.add_gpt_device(&disk);
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
-        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
         let mut gbl_ops = FakeGblOps::new(&storage);
         let listener: SharedTestListener = Default::default();
         let (usb, tcp) = (&listener, &listener);
@@ -2024,7 +2154,14 @@ mod test {
 
         listener.add_usb_input(b"continue");
 
-        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp), &mut []));
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            Some(&mut TestLocalSession::default()),
+            Some(usb),
+            Some(tcp),
+            &mut [],
+        ));
 
         assert_eq!(
             listener.usb_out_queue(),
@@ -2097,7 +2234,7 @@ mod test {
         let mut storage = FakeGblOpsStorage::default();
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
         storage.add_gpt_device(&disk);
-        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
         let mut gbl_ops = FakeGblOps::new(&storage);
         let listener: SharedTestListener = Default::default();
         let (usb, tcp) = (&listener, &listener);
@@ -2115,7 +2252,14 @@ mod test {
         listener.add_usb_input(b"getvar:partition-size:boot_b");
         listener.add_usb_input(b"continue");
 
-        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp), &mut []));
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            Some(&mut TestLocalSession::default()),
+            Some(usb),
+            Some(tcp),
+            &mut [],
+        ));
 
         assert_eq!(
             listener.usb_out_queue(),
@@ -2141,7 +2285,7 @@ mod test {
         let disk = include_bytes!("../../../libstorage/test/gpt_test_1.bin");
         let mut storage = FakeGblOpsStorage::default();
         storage.add_gpt_device(&disk);
-        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
         let mut gbl_ops = FakeGblOps::new(&storage);
         let listener: SharedTestListener = Default::default();
         let (usb, tcp) = (&listener, &listener);
@@ -2149,7 +2293,14 @@ mod test {
         listener.add_usb_input(b"flash:gpt/0");
         listener.add_usb_input(b"continue");
 
-        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp), &mut []));
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            Some(&mut TestLocalSession::default()),
+            Some(usb),
+            Some(tcp),
+            &mut [],
+        ));
 
         assert_eq!(
             listener.usb_out_queue(),
@@ -2164,7 +2315,7 @@ mod test {
         let disk = include_bytes!("../../../libstorage/test/gpt_test_1.bin");
         let mut storage = FakeGblOpsStorage::default();
         storage.add_gpt_device(&disk);
-        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
         let mut gbl_ops = FakeGblOps::new(&storage);
         let listener: SharedTestListener = Default::default();
         let (usb, tcp) = (&listener, &listener);
@@ -2176,7 +2327,14 @@ mod test {
         listener.add_usb_input(b"flash:gpt/0");
         listener.add_usb_input(b"continue");
 
-        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp), &mut []));
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            Some(&mut TestLocalSession::default()),
+            Some(usb),
+            Some(tcp),
+            &mut [],
+        ));
 
         assert_eq!(
             listener.usb_out_queue(),
@@ -2199,7 +2357,7 @@ mod test {
         let mut storage = FakeGblOpsStorage::default();
         storage.add_gpt_device(&disk_orig);
         storage.add_gpt_device(&disk_orig);
-        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
         let mut gbl_ops = FakeGblOps::new(&storage);
         let listener: SharedTestListener = Default::default();
         let (usb, tcp) = (&listener, &listener);
@@ -2214,7 +2372,14 @@ mod test {
         // Invalid option.
         listener.add_usb_input(b"flash:gpt/0/invalid-arg");
         listener.add_usb_input(b"continue");
-        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp), &mut []));
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            Some(&mut TestLocalSession::default()),
+            Some(usb),
+            Some(tcp),
+            &mut [],
+        ));
 
         assert_eq!(
             listener.usb_out_queue(),
@@ -2236,8 +2401,8 @@ mod test {
     fn test_oem_update_gpt_fail_on_raw_blk() {
         let disk_orig = include_bytes!("../../../libstorage/test/gpt_test_1.bin");
         let mut storage = FakeGblOpsStorage::default();
-        storage.add_raw_device(c"raw_0", [0u8; 1024 * 1024]);
-        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        storage.add_raw_device(c"raw_0", [0u8; KiB!(1024)]);
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
         let mut gbl_ops = FakeGblOps::new(&storage);
         let listener: SharedTestListener = Default::default();
         let (usb, tcp) = (&listener, &listener);
@@ -2247,7 +2412,14 @@ mod test {
         listener.add_usb_input(gpt);
         listener.add_usb_input(b"flash:gpt/0");
         listener.add_usb_input(b"continue");
-        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp), &mut []));
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            Some(&mut TestLocalSession::default()),
+            Some(usb),
+            Some(tcp),
+            &mut [],
+        ));
 
         assert_eq!(
             listener.usb_out_queue(),
@@ -2269,7 +2441,7 @@ mod test {
         let mut storage = FakeGblOpsStorage::default();
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_1.bin"));
         storage.add_gpt_device(include_bytes!("../../../libstorage/test/gpt_test_2.bin"));
-        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
         let mut gbl_ops = FakeGblOps::new(&storage);
         let listener: SharedTestListener = Default::default();
         let (usb, tcp) = (&listener, &listener);
@@ -2284,7 +2456,14 @@ mod test {
         listener.add_usb_input(b"getvar:partition-size:vendor_boot_b");
         listener.add_usb_input(b"continue");
 
-        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp), &mut []));
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            Some(&mut TestLocalSession::default()),
+            Some(usb),
+            Some(tcp),
+            &mut [],
+        ));
 
         assert_eq!(
             listener.usb_out_queue(),
@@ -2305,15 +2484,22 @@ mod test {
     #[test]
     fn test_oem_erase_gpt_fail_on_raw_blk() {
         let mut storage = FakeGblOpsStorage::default();
-        storage.add_raw_device(c"raw_0", [0u8; 1024 * 1024]);
-        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        storage.add_raw_device(c"raw_0", [0u8; KiB!(1024)]);
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
         let mut gbl_ops = FakeGblOps::new(&storage);
         let listener: SharedTestListener = Default::default();
         let (usb, tcp) = (&listener, &listener);
 
         listener.add_usb_input(b"erase:gpt/0");
         listener.add_usb_input(b"continue");
-        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp), &mut []));
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            Some(&mut TestLocalSession::default()),
+            Some(usb),
+            Some(tcp),
+            &mut [],
+        ));
 
         assert_eq!(
             listener.usb_out_queue(),
@@ -2330,8 +2516,8 @@ mod test {
     /// Helper for testing fastboot set_active in fuchsia A/B/R mode.
     fn test_run_gbl_fastboot_set_active_fuchsia_abr(cmd: &str, slot: SlotIndex) {
         let mut storage = FakeGblOpsStorage::default();
-        storage.add_raw_device(c"durable_boot", [0x00u8; 4 * 1024]);
-        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        storage.add_raw_device(c"durable_boot", [0x00u8; KiB!(4)]);
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
         let mut gbl_ops = FakeGblOps::new(&storage);
         gbl_ops.os = Some(Os::Fuchsia);
         let listener: SharedTestListener = Default::default();
@@ -2342,15 +2528,22 @@ mod test {
 
         // Flash some data to `durable_boot` after A/B/R metadata. This is for testing that sync
         // storage is done first.
-        let data = vec![0x55u8; 4 * 1024 - ABR_DATA_SIZE];
+        let data = vec![0x55u8; KiB!(4) - ABR_DATA_SIZE];
         listener.add_usb_input(b"oem gbl-enable-async-task");
-        listener.add_usb_input(format!("download:{:#x}", 4 * 1024 - ABR_DATA_SIZE).as_bytes());
+        listener.add_usb_input(format!("download:{:#x}", KiB!(4) - ABR_DATA_SIZE).as_bytes());
         listener.add_usb_input(&data);
         listener.add_usb_input(format!("flash:durable_boot//{:#x}", ABR_DATA_SIZE).as_bytes());
         // Issues set_active commands
         listener.add_usb_input(cmd.as_bytes());
         listener.add_usb_input(b"continue");
-        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp), &mut []));
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            Some(&mut TestLocalSession::default()),
+            Some(usb),
+            Some(tcp),
+            &mut [],
+        ));
 
         assert_eq!(
             listener.usb_out_queue(),
@@ -2389,8 +2582,8 @@ mod test {
     #[test]
     fn test_run_gbl_fastboot_set_active_fuchsia_abr_invalid_slot() {
         let mut storage = FakeGblOpsStorage::default();
-        storage.add_raw_device(c"durable_boot", [0x00u8; 4 * 1024]);
-        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        storage.add_raw_device(c"durable_boot", [0x00u8; KiB!(4)]);
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
         let mut gbl_ops = FakeGblOps::new(&storage);
         gbl_ops.os = Some(Os::Fuchsia);
         let listener: SharedTestListener = Default::default();
@@ -2398,7 +2591,14 @@ mod test {
 
         listener.add_usb_input(b"set_active:r");
         listener.add_usb_input(b"continue");
-        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp), &mut []));
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            Some(&mut TestLocalSession::default()),
+            Some(usb),
+            Some(tcp),
+            &mut [],
+        ));
 
         assert_eq!(
             listener.usb_out_queue(),
@@ -2415,8 +2615,8 @@ mod test {
     #[test]
     fn test_run_gbl_fastboot_fuchsia_reboot_bootloader_abr() {
         let mut storage = FakeGblOpsStorage::default();
-        storage.add_raw_device(c"durable_boot", [0x00u8; 4 * 1024]);
-        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        storage.add_raw_device(c"durable_boot", [0x00u8; KiB!(4)]);
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
         let mut gbl_ops = FakeGblOps::new(&storage);
         gbl_ops.os = Some(Os::Fuchsia);
         let listener: SharedTestListener = Default::default();
@@ -2424,7 +2624,14 @@ mod test {
 
         listener.add_usb_input(b"reboot-bootloader");
         listener.add_usb_input(b"continue");
-        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp), &mut []));
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            Some(&mut TestLocalSession::default()),
+            Some(usb),
+            Some(tcp),
+            &mut [],
+        ));
 
         assert_eq!(
             listener.usb_out_queue(),
@@ -2446,8 +2653,8 @@ mod test {
     #[test]
     fn test_run_gbl_fastboot_fuchsia_reboot_recovery_abr() {
         let mut storage = FakeGblOpsStorage::default();
-        storage.add_raw_device(c"durable_boot", [0x00u8; 4 * 1024]);
-        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        storage.add_raw_device(c"durable_boot", [0x00u8; KiB!(4)]);
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
         let mut gbl_ops = FakeGblOps::new(&storage);
         gbl_ops.os = Some(Os::Fuchsia);
         let listener: SharedTestListener = Default::default();
@@ -2455,7 +2662,14 @@ mod test {
 
         listener.add_usb_input(b"reboot-recovery");
         listener.add_usb_input(b"continue");
-        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp), &mut []));
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            Some(&mut TestLocalSession::default()),
+            Some(usb),
+            Some(tcp),
+            &mut [],
+        ));
 
         assert_eq!(
             listener.usb_out_queue(),
@@ -2479,18 +2693,25 @@ mod test {
     #[test]
     fn test_legacy_fvm_partition_alias() {
         let mut storage = FakeGblOpsStorage::default();
-        storage.add_raw_device(c"fuchsia-fvm", [0x00u8; 4 * 1024]);
-        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        storage.add_raw_device(c"fuchsia-fvm", [0x00u8; KiB!(4)]);
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
         let mut gbl_ops = FakeGblOps::new(&storage);
         gbl_ops.os = Some(Os::Fuchsia);
         let listener: SharedTestListener = Default::default();
         let (usb, tcp) = (&listener, &listener);
 
-        listener.add_usb_input(format!("download:{:#x}", 4 * 1024).as_bytes());
-        listener.add_usb_input(&[0xaau8; 4 * 1024]);
+        listener.add_usb_input(format!("download:{:#x}", KiB!(4)).as_bytes());
+        listener.add_usb_input(&[0xaau8; KiB!(4)]);
         listener.add_usb_input(b"flash:fvm");
         listener.add_usb_input(b"continue");
-        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp), &mut []));
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            Some(&mut TestLocalSession::default()),
+            Some(usb),
+            Some(tcp),
+            &mut [],
+        ));
 
         assert_eq!(
             listener.usb_out_queue(),
@@ -2512,7 +2733,7 @@ mod test {
         let sparse = include_bytes!("../../testdata/sparse_test.bin");
         let mut storage = FakeGblOpsStorage::default();
         storage.add_raw_device(c"raw", vec![0u8; sparse_raw.len() - 1]);
-        let buffers = vec![vec![0u8; 128 * 1024]; 2];
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
         let mut gbl_ops = FakeGblOps::new(&storage);
         let listener: SharedTestListener = Default::default();
         let (usb, tcp) = (&listener, &listener);
@@ -2526,7 +2747,14 @@ mod test {
         listener.add_usb_input(sparse);
         listener.add_usb_input(b"flash:raw");
         listener.add_usb_input(b"continue");
-        block_on(run_gbl_fastboot_stack::<2>(&mut gbl_ops, buffers, Some(usb), Some(tcp), &mut []));
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            Some(&mut TestLocalSession::default()),
+            Some(usb),
+            Some(tcp),
+            &mut [],
+        ));
 
         // The out-of-range errors should be caught before async task is launched.
         assert_eq!(
