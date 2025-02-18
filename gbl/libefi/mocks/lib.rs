@@ -294,7 +294,7 @@ mock! {
 pub type RuntimeServices = MockRuntimeServices;
 
 #[cfg(test)]
-pub mod test {
+mod test {
     use super::*;
     use mockall::predicate::eq;
     use std::fmt::Write;

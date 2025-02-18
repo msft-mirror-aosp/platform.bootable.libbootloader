@@ -98,7 +98,7 @@ rust_library(
         "mem",
     ],
     crate_name = "compiler_builtins",
-    edition = "2015",
+    edition = "2021",
     rustc_flags = ["--cap-lints=allow"],
     deps = ["libcore"],
 )
