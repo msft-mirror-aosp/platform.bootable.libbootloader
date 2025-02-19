@@ -64,6 +64,8 @@ impl EfiState {
 // This is a bit ugly, but we only expect this library to be used by our EFI application so it
 // doesn't need to be super clean or scalable. The user has to declare the global variable
 // exactly as written in the [EfiAllocator] docs for this to link properly.
+//
+// TODO(b/396460116): Investigate using Mutex for the variable.
 extern "Rust" {
     static mut EFI_GLOBAL_ALLOCATOR: EfiAllocator;
 }
@@ -78,7 +80,10 @@ pub(crate) fn internal_efi_entry_and_rt(
     // event/notification/interrupt that can be triggered when they are called. This suggests that
     // there cannot be concurrent read and modification on `EFI_GLOBAL_ALLOCATOR` possible. Thus its
     // access is safe from race condition.
-    unsafe { EFI_GLOBAL_ALLOCATOR.get_efi_entry_and_rt() }
+    #[allow(static_mut_refs)]
+    unsafe {
+        EFI_GLOBAL_ALLOCATOR.get_efi_entry_and_rt()
+    }
 }
 
 /// Try to print via `EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL` in `EFI_SYSTEM_TABLE.ConOut`.
@@ -244,17 +249,4 @@ unsafe impl GlobalAlloc for EfiAllocator {
         let real_start_ptr = unsafe { ptr.sub(offset) };
         self.deallocate(real_start_ptr);
     }
-}
-
-/// API for allocating raw memory via EFI_BOOT_SERVICES
-pub fn efi_malloc(size: usize) -> *mut u8 {
-    // SAFETY: See SAFETY of `internal_efi_entry()`.
-    unsafe { EFI_GLOBAL_ALLOCATOR.allocate(size) }
-}
-
-/// API for deallocating raw memory previously allocated by `efi_malloc()`. Passing invalid
-/// pointer will cause the function to panic.
-pub fn efi_free(ptr: *mut u8) {
-    // SAFETY: See SAFETY of `internal_efi_entry()`.
-    unsafe { EFI_GLOBAL_ALLOCATOR.deallocate(ptr) }
 }

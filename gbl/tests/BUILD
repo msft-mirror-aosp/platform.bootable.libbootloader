@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@gbl//toolchain:gbl_workspace_util.bzl", "build_and_run_tests")
+load("@gbl//toolchain:build_and_run_tests.bzl", "build_and_run_tests")
 
 test_suite(
     name = "tests",

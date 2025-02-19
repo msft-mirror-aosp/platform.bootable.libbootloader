@@ -367,7 +367,7 @@ mod test {
         storage
     }
 
-    pub(crate) fn create_gbl_ops<'a>(partitions: &'a [TestGblDisk]) -> FakeGblOps<'a, '_> {
+    pub(crate) fn create_gbl_ops<'a>(partitions: &'a [TestGblDisk]) -> FakeGblOps<'a, 'static> {
         let mut ops = FakeGblOps::new(&partitions);
         ops.avb_ops.unlock_state = Ok(false);
         ops.avb_ops.rollbacks = HashMap::from([
