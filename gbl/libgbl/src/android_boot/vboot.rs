@@ -201,8 +201,8 @@ mod test {
     use super::*;
     use crate::{
         android_boot::load::tests::{
-            dump_bootconfig, make_bootconfig, read_test_data, AvbResultBootconfigBuilder,
-            TEST_PUBLIC_KEY_DIGEST, TEST_VBMETA_V4_INIT_BOOT_A_DIGEST,
+            dump_bootconfig, make_bootconfig, read_test_data, read_test_data_as_str,
+            AvbResultBootconfigBuilder, TEST_PUBLIC_KEY_DIGEST,
         },
         ops::test::{FakeGblOps, FakeGblOpsStorage},
         IntegrationError::AvbIoError,
@@ -274,7 +274,11 @@ mod test {
         ];
         let expected_bootconfig = AvbResultBootconfigBuilder::new()
             .vbmeta_size(read_test_data("vbmeta_v4_v4_init_boot_a.img").len())
-            .digest(TEST_VBMETA_V4_INIT_BOOT_A_DIGEST)
+            .digest(
+                read_test_data_as_str("vbmeta_v4_v4_init_boot_a.digest.txt")
+                    .strip_suffix("\n")
+                    .unwrap(),
+            )
             .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
             .build();
 
@@ -313,7 +317,11 @@ mod test {
         ];
         let expected_bootconfig = AvbResultBootconfigBuilder::new()
             .vbmeta_size(read_test_data("vbmeta_v4_v4_init_boot_a.img").len())
-            .digest(TEST_VBMETA_V4_INIT_BOOT_A_DIGEST)
+            .digest(
+                read_test_data_as_str("vbmeta_v4_v4_init_boot_a.digest.txt")
+                    .strip_suffix("\n")
+                    .unwrap(),
+            )
             .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
             .build();
 
@@ -350,7 +358,11 @@ mod test {
         ];
         let expected_bootconfig = AvbResultBootconfigBuilder::new()
             .vbmeta_size(read_test_data("vbmeta_v4_v4_init_boot_a.img").len())
-            .digest(TEST_VBMETA_V4_INIT_BOOT_A_DIGEST)
+            .digest(
+                read_test_data_as_str("vbmeta_v4_v4_init_boot_a.digest.txt")
+                    .strip_suffix("\n")
+                    .unwrap(),
+            )
             .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
             .color(BootStateColor::Orange)
             .unlocked(true)
@@ -389,7 +401,11 @@ mod test {
         ];
         let expected_bootconfig = AvbResultBootconfigBuilder::new()
             .vbmeta_size(read_test_data("vbmeta_v4_v4_init_boot_a.img").len())
-            .digest(TEST_VBMETA_V4_INIT_BOOT_A_DIGEST)
+            .digest(
+                read_test_data_as_str("vbmeta_v4_v4_init_boot_a.digest.txt")
+                    .strip_suffix("\n")
+                    .unwrap(),
+            )
             .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
             .color(BootStateColor::Orange)
             .unlocked(true)
