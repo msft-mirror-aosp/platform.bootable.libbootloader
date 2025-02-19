@@ -96,4 +96,12 @@ impl<'a> RecurringTimer<'a> {
     pub fn check(&self) -> Result<bool> {
         Ok(self.efi_entry.system_table().boot_services().check_event(&self.timer)?)
     }
+
+    /// Waits asynchronously until the next tick.
+    pub async fn wait(&self) -> Result<()> {
+        while !self.check()? {
+            yield_now().await;
+        }
+        Ok(())
+    }
 }

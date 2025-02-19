@@ -28,6 +28,7 @@ use core::{
 };
 use efi::{
     efi_print, efi_println,
+    local_session::LocalFastbootSession,
     protocol::{gbl_efi_fastboot_usb::GblFastbootUsbProtocol, Protocol},
     EfiEntry,
 };
@@ -206,6 +207,11 @@ pub fn fastboot(efi_gbl_ops: &mut Ops, bootimg_buf: &mut [u8]) -> Result<()> {
     let efi_entry = efi_gbl_ops.efi_entry;
     efi_println!(efi_entry, "Entering fastboot mode...");
 
+    let local_session = LocalFastbootSession::start(efi_entry, Duration::from_millis(1))
+        .inspect(|_| efi_println!(efi_entry, "Starting local bootmenu."))
+        .inspect_err(|e| efi_println!(efi_entry, "Failed to start local bootmenu: {:?}", e))
+        .ok();
+
     let usb = init_usb(efi_entry)
         .inspect(|_| efi_println!(efi_entry, "Started Fastboot over USB."))
         .inspect_err(|e| efi_println!(efi_entry, "Failed to start Fastboot over USB. {:?}.", e))
@@ -231,6 +237,7 @@ pub fn fastboot(efi_gbl_ops: &mut Ops, bootimg_buf: &mut [u8]) -> Result<()> {
         efi_gbl_ops,
         &download_buffers,
         VecPinFut::default(),
+        local_session,
         usb,
         tcp,
         bootimg_buf,

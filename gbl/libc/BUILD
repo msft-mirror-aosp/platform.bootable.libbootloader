@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@gbl//toolchain:gbl_toolchain.bzl", "link_static_cc_library")
 load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
+load("@rules_cc//cc:defs.bzl", "cc_library")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(
@@ -25,6 +27,7 @@ rust_library(
     edition = "2021",
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
+        ":libc_c_staticlib",
         "@gbl//libsafemath",
     ],
 )
@@ -35,10 +38,18 @@ rust_test(
     rustc_flags = ANDROID_RUST_LINTS,
 )
 
+rust_library(
+    name = "libc_deps_posix",
+    srcs = ["deps/posix.rs"],
+    edition = "2021",
+    rustc_flags = ANDROID_RUST_LINTS,
+)
+
 cc_library(
     name = "headers",
     hdrs = [
         "include/debug.h",
+        "include/gbl/print.h",
         "include/inttypes.h",
         "include/stdio.h",
         "include/stdlib.h",
@@ -46,4 +57,19 @@ cc_library(
         "include/sys/types.h",
     ],
     includes = ["include"],
+)
+
+cc_library(
+    name = "libc_c",
+    srcs = [
+        "src/format.c",
+    ],
+    deps = [
+        ":headers",
+    ],
+)
+
+link_static_cc_library(
+    name = "libc_c_staticlib",
+    cc_library = ":libc_c",
 )

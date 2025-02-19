@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 The Android Open Source Project
+ * Copyright (C) 2025 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -12,13 +12,14 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
  */
 
-#include <libavb/avb_sysdeps.h>
+#include <stdarg.h>
 
-// Noop placeholder for avb_printf/avb_printv
+// GBL-speicifc function to expose print implementation to 3d party C code.
+// Implementation: libc/src/print.c
+void gbl_printf(const char *fmt, va_list args);
 
-void avb_printf(const char* fmt, ...) {}
-
-void avb_printv(const char* message, ...) {}
+// Printing back-end functions to be used by `gbl_printf`.
+// Implementation: libc/src/print.rs
+void gbl_print_char(char c);

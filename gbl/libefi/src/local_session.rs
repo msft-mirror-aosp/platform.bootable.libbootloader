@@ -21,8 +21,8 @@ use crate::{
     EfiEntry,
 };
 use core::time::Duration;
-use fastboot::{local_session::LocalSession, Transport};
-use liberror::{Error, Result};
+use fastboot::local_session::LocalSession;
+use liberror::Result;
 
 /// Represents a local, usually graphically driven fastboot/bootmenu session.
 pub struct LocalFastbootSession<'a> {
@@ -45,23 +45,10 @@ impl<'a> LocalFastbootSession<'a> {
 }
 
 impl LocalSession for LocalFastbootSession<'_> {
-    fn update(&self, buf: &mut [u8]) -> Result<usize> {
-        let Ok(true) = self.timer.check() else {
-            return Ok(0);
-        };
-
+    async fn update(&mut self, buf: &mut [u8]) -> Result<usize> {
+        self.timer.wait().await?;
         let bufsize = self.protocol.update_local_session(&self.context, buf)?;
         Ok(bufsize)
-    }
-}
-
-impl Transport for LocalFastbootSession<'_> {
-    async fn receive_packet(&mut self, out: &mut [u8]) -> Result<usize> {
-        self.update(out)
-    }
-
-    async fn send_packet(&mut self, _: &[u8]) -> Result<()> {
-        Err(Error::Unsupported)
     }
 }
 
