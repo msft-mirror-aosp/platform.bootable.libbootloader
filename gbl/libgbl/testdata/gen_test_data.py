@@ -22,17 +22,26 @@ import random
 import shutil
 import subprocess
 import tempfile
-from typing import List
 
 SCRIPT_DIR = pathlib.Path(os.path.dirname(os.path.realpath(__file__)))
+AOSP_ROOT = SCRIPT_DIR.parents[4]
 GBL_ROOT = SCRIPT_DIR.parents[1]
-GPT_TOOL = pathlib.Path(SCRIPT_DIR.parents[1]) / "tools" / "gen_gpt_disk.py"
-AVB_DIR = pathlib.Path(SCRIPT_DIR.parents[4]) / "external" / "avb"
+GPT_TOOL = GBL_ROOT / "tools" / "gen_gpt_disk.py"
+AVB_DIR = AOSP_ROOT / "external" / "avb"
 AVB_TOOL = AVB_DIR / "avbtool.py"
-MKBOOTIMG_TOOL = (
-    pathlib.Path(SCRIPT_DIR.parents[4]) / "tools" / "mkbootimg" / "mkbootimg.py"
-)
+MKBOOTIMG_TOOL = AOSP_ROOT / "tools" / "mkbootimg" / "mkbootimg.py"
 AVB_TEST_DATA_DIR = AVB_DIR / "test" / "data"
+DTC_TOOL = (
+    AOSP_ROOT / "prebuilts" / "kernel-build-tools" / "linux-x86" / "bin" / "dtc"
+)
+MKDTBOIMG_TOOL = (
+    AOSP_ROOT
+    / "prebuilts"
+    / "kernel-build-tools"
+    / "linux-x86"
+    / "bin"
+    / "mkdtboimg"
+)
 SZ_KB = 1024
 
 # RNG seed values. Keep the same seed value for a given file to ensure
@@ -79,13 +88,58 @@ def gen_sparse_test_file():
     subprocess.run(
         ["img2simg", "-s", out_file_raw, SCRIPT_DIR / "sparse_test.bin"]
     )
-    subprocess.run([
-        "img2simg",
-        "-s",
-        out_file_raw,
-        SCRIPT_DIR / "sparse_test_blk1024.bin",
-        "1024",
-    ])
+    subprocess.run(
+        [
+            "img2simg",
+            "-s",
+            out_file_raw,
+            SCRIPT_DIR / "sparse_test_blk1024.bin",
+            "1024",
+        ]
+    )
+
+
+def gen_dtb(input_dts, output_dtb):
+    subprocess.run(
+        [DTC_TOOL, "-I", "dts", "-O", "dtb", "-o", output_dtb, input_dts],
+        stderr=subprocess.STDOUT,
+        check=True,
+    )
+
+
+def gen_android_test_dtb():
+    out_dir = SCRIPT_DIR / "android"
+    # Generates base test device tree.
+    gen_dtb(out_dir / "device_tree.dts", out_dir / "device_tree.dtb")
+
+    # Generates overlay
+    gen_dtb(out_dir / "overlay_a.dts", out_dir / "overlay_a.dtb")
+    gen_dtb(out_dir / "overlay_b.dts", out_dir / "overlay_b.dtb")
+
+    subprocess.run(
+        [
+            MKDTBOIMG_TOOL,
+            "create",
+            out_dir / "dtbo_a.img",
+            "--id=0x1",
+            "--rev=0x0",
+            out_dir / "overlay_a.dtb",
+        ],
+        stderr=subprocess.STDOUT,
+        check=True,
+    )
+    subprocess.run(
+        [
+            MKDTBOIMG_TOOL,
+            "create",
+            out_dir / "dtbo_b.img",
+            "--id=0x1",
+            "--rev=0x0",
+            out_dir / "overlay_b.dtb",
+        ],
+        stderr=subprocess.STDOUT,
+        check=True,
+    )
 
 
 # Generate vbmeta data for a set of images.
@@ -96,21 +150,25 @@ def gen_android_test_vbmeta(partition_file_pairs, out_vbmeta):
         for i, (part, image_file) in enumerate(partition_file_pairs):
             out = temp_dir / f"{i}.vbmeta_desc"
             desc_args += ["--include_descriptors_from_image", out]
-            subprocess.run([
-                AVB_TOOL,
-                "add_hash_footer",
-                "--image",
-                image_file,
-                "--partition_name",
-                part,
-                "--do_not_append_vbmeta_image",
-                "--output_vbmeta_image",
-                out,
-                "--salt",
-                "9f06406a750581266f21865d115e63b54db441bc0d614195c78c14451b5ecb8abb14d8cd88d816c4750545ef89cb348a3834815aac4fa359e8b02a740483d975",
-                "--partition_size",
-                "209715200",  # Randomly chosen large enough value.
-            ])
+            subprocess.run(
+                [
+                    AVB_TOOL,
+                    "add_hash_footer",
+                    "--image",
+                    image_file,
+                    "--partition_name",
+                    part,
+                    "--do_not_append_vbmeta_image",
+                    "--output_vbmeta_image",
+                    out,
+                    "--salt",
+                    "9f06406a750581266f21865d115e63b54db441bc0d614195c78c14451b5ecb8abb14d8cd88d816c4750545ef89cb348a3834815aac4fa359e8b02a740483d975",
+                    "--partition_size",
+                    "209715200",  # Randomly chosen large enough value.
+                ],
+                stderr=subprocess.STDOUT,
+                check=True,
+            )
 
         subprocess.run(
             [
@@ -132,8 +190,27 @@ def gen_android_test_vbmeta(partition_file_pairs, out_vbmeta):
             check=True,
         )
 
+        # Generates digest file
+        out_digest = out_vbmeta.with_suffix(".digest.txt")
+        digest = subprocess.run(
+            [
+                AVB_TOOL,
+                "calculate_vbmeta_digest",
+                "--image",
+                out_vbmeta,
+                "--hash_algorithm",
+                "sha512",
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        out_digest.write_text(digest.stdout)
+
 
 def gen_android_test_images():
+    gen_android_test_dtb()
+
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_dir = pathlib.Path(temp_dir)
         out_dir = SCRIPT_DIR / "android"
@@ -150,13 +227,15 @@ def gen_android_test_images():
             vendor_ramdisk.write_bytes(random.randbytes(12 * SZ_KB))
 
             vendor_bootconfig = temp_dir / f"vendor_bootconfig_{slot}.img"
-            vendor_bootconfig.write_bytes(b"""\
+            vendor_bootconfig.write_bytes(
+                b"""\
 androidboot.config_1=val_1
 androidboot.config_2=val_2
-""")
+"""
+            )
 
             boot_cmdline = "cmd_key_1=cmd_val_1,cmd_key_2=cmd_val_2"
-            vendor_cmdline = "cmd_vendor_key_1=cmd_vendor_val_1,cmd_vendor_key_1=cmd_vendor_val_1"
+            vendor_cmdline = "cmd_vendor_key_1=cmd_vendor_val_1,cmd_vendor_key_2=cmd_vendor_val_2"
 
             # Generate v3, v4 boot image without ramdisk (usecase for init_boot)
             common = [
@@ -166,7 +245,7 @@ androidboot.config_2=val_2
                 "--cmdline",
                 boot_cmdline,
                 "--dtb",
-                GBL_ROOT / "libfdt" / "test" / "data" / "base.dtb",
+                out_dir / "device_tree.dtb",
             ]
             for i in [3, 4]:
                 out = out_dir / f"boot_no_ramdisk_v{i}_{slot}.img"
@@ -213,7 +292,7 @@ androidboot.config_2=val_2
                 "--vendor_ramdisk",
                 vendor_ramdisk,
                 "--dtb",
-                GBL_ROOT / "libfdt" / "test" / "data" / "base.dtb",
+                out_dir / "device_tree.dtb",
             ]
             # Generates vendor_boot v3 (no bootconfig)
             subprocess.run(
@@ -244,7 +323,10 @@ androidboot.config_2=val_2
 
             # Generates a vbmeta data for v0 - v2 setup
             for i in [0, 1, 2]:
-                parts = [(f"boot", out_dir / f"boot_v{i}_{slot}.img")]
+                parts = [
+                    (f"boot", out_dir / f"boot_v{i}_{slot}.img"),
+                    ("dtbo", out_dir / f"dtbo_{slot}.img"),
+                ]
                 gen_android_test_vbmeta(
                     parts, out_dir / f"vbmeta_v{i}_{slot}.img"
                 )
@@ -267,14 +349,17 @@ androidboot.config_2=val_2
                         parts = [
                             (f"boot", boot),
                             (f"vendor_boot", vendor_boot),
+                            ("dtbo", out_dir / f"dtbo_{slot}.img"),
                         ]
                         prefix = f"vbmeta_v{boot_ver}_v{vendor_ver}"
                         if use_init_boot:
                             vbmeta_out = prefix + f"_init_boot_{slot}.img"
-                            parts += [(
-                                "init_boot",
-                                out_dir / f"init_boot_{slot}.img",
-                            )]
+                            parts += [
+                                (
+                                    "init_boot",
+                                    out_dir / f"init_boot_{slot}.img",
+                                )
+                            ]
                         else:
                             vbmeta_out = prefix + f"_{slot}.img"
 
@@ -306,41 +391,47 @@ def gen_zircon_test_images(zbi_tool):
             out_kernel_bin_file.write_bytes(kernel_bytes)
             out_zbi_file = SCRIPT_DIR / f"zircon_{slot}.zbi"
             # Puts image in a zbi container.
-            subprocess.run([
-                zbi_tool,
-                "--output",
-                out_zbi_file,
-                "--type=KERNEL_X64",
-                out_kernel_bin_file,
-            ])
+            subprocess.run(
+                [
+                    zbi_tool,
+                    "--output",
+                    out_zbi_file,
+                    "--type=KERNEL_X64",
+                    out_kernel_bin_file,
+                ]
+            )
 
             # Generates vbmeta descriptor.
             vbmeta_desc = f"{temp_dir}/zircon_{slot}.vbmeta.desc"
-            subprocess.run([
-                AVB_TOOL,
-                "add_hash_footer",
-                "--image",
-                out_zbi_file,
-                "--partition_name",
-                "zircon",
-                "--do_not_append_vbmeta_image",
-                "--output_vbmeta_image",
-                vbmeta_desc,
-                "--partition_size",
-                "209715200",
-            ])
+            subprocess.run(
+                [
+                    AVB_TOOL,
+                    "add_hash_footer",
+                    "--image",
+                    out_zbi_file,
+                    "--partition_name",
+                    "zircon",
+                    "--do_not_append_vbmeta_image",
+                    "--output_vbmeta_image",
+                    vbmeta_desc,
+                    "--partition_size",
+                    "209715200",
+                ]
+            )
             # Generates two cmdline ZBI items to add as property descriptors to
             # vbmeta image for test.
             vbmeta_prop_args = []
             for i in range(2):
                 prop_zbi_payload = f"{temp_dir}/prop_zbi_payload_{i}.bin"
-                subprocess.run([
-                    zbi_tool,
-                    "--output",
-                    prop_zbi_payload,
-                    "--type=CMDLINE",
-                    f"--entry=vb_prop_{i}=val",
-                ])
+                subprocess.run(
+                    [
+                        zbi_tool,
+                        "--output",
+                        prop_zbi_payload,
+                        "--type=CMDLINE",
+                        f"--entry=vb_prop_{i}=val",
+                    ]
+                )
                 vbmeta_prop_args += [
                     "--prop_from_file",
                     f"zbi_vb_prop_{i}:{prop_zbi_payload}",
@@ -486,20 +577,22 @@ def gen_vbmeta():
         )
 
         # Also creates a vbmeta using the libavb_cert extension.
-        subprocess.run([
-            AVB_TOOL,
-            "make_vbmeta_image",
-            "--key",
-            SCRIPT_DIR / "testkey_cert_psk.pem",
-            "--public_key_metadata",
-            SCRIPT_DIR / "cert_metadata.bin",
-            "--algorithm",
-            "SHA512_RSA4096",
-            "--include_descriptors_from_image",
-            hash_descriptor_path,
-            "--output",
-            SCRIPT_DIR / "zircon_a.vbmeta.cert",
-        ])
+        subprocess.run(
+            [
+                AVB_TOOL,
+                "make_vbmeta_image",
+                "--key",
+                SCRIPT_DIR / "testkey_cert_psk.pem",
+                "--public_key_metadata",
+                SCRIPT_DIR / "cert_metadata.bin",
+                "--algorithm",
+                "SHA512_RSA4096",
+                "--include_descriptors_from_image",
+                hash_descriptor_path,
+                "--output",
+                SCRIPT_DIR / "zircon_a.vbmeta.cert",
+            ]
+        )
 
 
 def _parse_args() -> argparse.Namespace:
