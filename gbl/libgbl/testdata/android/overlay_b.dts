@@ -1,0 +1,12 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    // add a new node at the root level
+    fragment@0 {
+        target-path = "/chosen";
+        __overlay__ {
+            overlay_b_property = "overlay_b_val";
+        };
+    };
+};
