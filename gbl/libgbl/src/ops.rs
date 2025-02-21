@@ -459,6 +459,7 @@ pub(crate) mod test {
         fmt::Write,
         ops::{Deref, DerefMut},
     };
+    use fdt::Fdt;
     use gbl_async::block_on;
     use gbl_storage::{new_gpt_max, Disk, GptMax, RamBlockIo};
     use libutils::snprintf;
@@ -785,15 +786,21 @@ pub(crate) mod test {
             Ok(Some(out))
         }
 
-        fn fixup_device_tree(&mut self, _: &mut [u8]) -> Result<(), Error> {
+        fn fixup_device_tree(&mut self, fdt: &mut [u8]) -> Result<(), Error> {
+            Fdt::new_mut(fdt).unwrap().set_property("chosen", c"fixup", &[1])?;
             Ok(())
         }
 
         fn select_device_trees(
             &mut self,
-            _: &mut device_tree::DeviceTreeComponentsRegistry,
+            device_tree: &mut device_tree::DeviceTreeComponentsRegistry,
         ) -> Result<(), Error> {
-            unimplemented!();
+            // Select the first dtbo.
+            match device_tree.components_mut().find(|v| !v.is_base_device_tree()) {
+                Some(v) => v.selected = true,
+                _ => {}
+            }
+            device_tree.autoselect()
         }
 
         fn fastboot_variable<'arg>(
