@@ -345,6 +345,20 @@ pub fn load_android_simple<'a, 'b, 'c>(
     // Add slot index
     bootconfig_builder.add("androidboot.slot_suffix=_a\n")?;
 
+    // Placeholder value for now. Userspace can use this value to tell if device is booted with GBL.
+    // TODO(yochiang): Generate useful value like version, build_incremental in the bootconfig.
+    bootconfig_builder.add("androidboot.gbl.version=0\n")?;
+    bootconfig_builder.add("androidboot.gbl.build_number=")?;
+    match option_env!("BUILD_NUMBER") {
+        None | Some("") => {
+            bootconfig_builder.add("eng.build\n")?;
+        }
+        Some(build_number) => {
+            bootconfig_builder.add(build_number)?;
+            bootconfig_builder.add("\n")?;
+        }
+    }
+
     match boot_mode {
         // TODO(b/329716686): Support bootloader mode
         AndroidBootMode::Normal | AndroidBootMode::BootloaderBootOnce => {
