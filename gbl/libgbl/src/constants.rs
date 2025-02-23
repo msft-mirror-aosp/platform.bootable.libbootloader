@@ -20,6 +20,8 @@ use core::fmt::{Debug, Display, Formatter};
 use liberror::Error;
 use static_assertions::const_assert_eq;
 
+/// Macro for defining Kibibyte-sized constants
+#[macro_export]
 macro_rules! KiB  (
     ($x:expr) => {
         $x*1024
@@ -28,6 +30,8 @@ macro_rules! KiB  (
 const_assert_eq!(KiB!(1), 1024);
 const_assert_eq!(KiB!(5), 5 * 1024);
 
+/// Macro for defining Mebibyte-sized constants
+#[macro_export]
 macro_rules! MiB  (
     ($x:expr) => {
         $x*KiB!(1024)
@@ -35,6 +39,9 @@ macro_rules! MiB  (
 );
 const_assert_eq!(MiB!(1), 1024 * 1024);
 const_assert_eq!(MiB!(5), 5 * 1024 * 1024);
+
+pub use KiB;
+pub use MiB;
 
 /// Kernel image alignment requirement.
 pub const KERNEL_ALIGNMENT: usize = MiB!(2);

@@ -93,6 +93,13 @@ struct BootImageV2Info<'a> {
     kernel_range: Range<usize>,
     ramdisk_range: Range<usize>,
     dtb_range: Range<usize>,
+    // Actual dtb size without padding.
+    //
+    // We need to know the exact size because the fdt buffer will be passed to
+    // `DeviceTreeComponentsRegistry::append` which assumes that the buffer contains concatenated
+    // device trees and will try to parse for additional device trees if the preivous one doesn't
+    // consume all buffer.
+    dtb_sz: usize,
     image_size: usize,
 }
 
@@ -122,13 +129,13 @@ impl<'a> BootImageV2Info<'a> {
             _ if off == 0 => page_aligned_range(start, 0, page_size)?,
             _ => return Err(Error::Other(Some("Unexpected recovery_dtbo_offset"))),
         };
-        let dtb_sz = match header {
-            BootImage::V2(v) => v.dtb_size,
+        let dtb_sz: usize = match header {
+            BootImage::V2(v) => v.dtb_size.try_into().unwrap(),
             _ => 0,
         };
         let dtb_range = page_aligned_range(recovery_dtb_range.end, dtb_sz, page_size)?;
         let image_size = dtb_range.end;
-        Ok(Self { cmdline, page_size, kernel_range, ramdisk_range, dtb_range, image_size })
+        Ok(Self { cmdline, page_size, kernel_range, ramdisk_range, dtb_range, dtb_sz, image_size })
     }
 }
 
@@ -176,6 +183,13 @@ struct VendorBootImageInfo {
     header_size: usize,
     ramdisk_range: Range<usize>,
     dtb_range: Range<usize>,
+    // Actual dtb size without padding.
+    //
+    // We need to know the exact size because the fdt buffer will be passed to
+    // `DeviceTreeComponentsRegistry::append` which assumes that the buffer contains concatenated
+    // device trees and will try to parse for additional device trees if the preivous one doesn't
+    // consume all buffer.
+    dtb_sz: usize,
     bootconfig_range: Range<usize>,
     image_size: usize,
 }
@@ -193,7 +207,8 @@ impl VendorBootImageInfo {
         .round_up(page_size)
         .try_into()?;
         let ramdisk_range = page_aligned_range(header_size, v3.vendor_ramdisk_size, page_size)?;
-        let dtb_range = page_aligned_range(ramdisk_range.end, v3.dtb_size, page_size)?;
+        let dtb_sz: usize = v3.dtb_size.try_into().unwrap();
+        let dtb_range = page_aligned_range(ramdisk_range.end, dtb_sz, page_size)?;
 
         let (table_sz, bootconfig_sz) = match header {
             VendorImageHeader::V4(hdr) => (hdr.vendor_ramdisk_table_size, hdr.bootconfig_size),
@@ -202,7 +217,7 @@ impl VendorBootImageInfo {
         let table = page_aligned_range(dtb_range.end, table_sz, page_size)?;
         let bootconfig_range = table.end..(table.end + usize::try_from(bootconfig_sz)?);
         let image_size = SafeNum::from(bootconfig_range.end).round_up(page_size).try_into()?;
-        Ok(Self { header_size, ramdisk_range, dtb_range, bootconfig_range, image_size })
+        Ok(Self { header_size, ramdisk_range, dtb_range, dtb_sz, bootconfig_range, image_size })
     }
 
     /// Gets the v3 base header.
@@ -256,6 +271,7 @@ pub fn android_load_verify<'a, 'b, 'c>(
 ) -> Result<LoadedImages<'c>, IntegrationError> {
     let mut res = LoadedImages::default();
 
+    let slot_suffix = SlotSuffix::new(slot)?;
     // Loads dtbo.
     let dtbo_part = slotted_part("dtbo", slot)?;
     let (dtbo, remains) = load_entire_part(ops, &dtbo_part, &mut load[..])?;
@@ -266,13 +282,19 @@ pub fn android_load_verify<'a, 'b, 'c>(
         partitions.try_push_preloaded(c"dtbo", &dtbo[..])?;
     }
 
+    let add = |v: &mut BootConfigBuilder| {
+        // TODO(b/384964561): Support reocvery mode.
+        v.add("androidboot.force_normal_boot=1\n")?;
+        Ok(write!(v, "androidboot.slot_suffix={}\n", &slot_suffix as &str)?)
+    };
+
     // Loads boot image header and inspect version
     ops.read_from_partition_sync(&slotted_part("boot", slot)?, 0, &mut remains[..PAGE_SIZE])?;
     match BootImage::parse(&remains[..]).map_err(Error::from)? {
         BootImage::V3(_) | BootImage::V4(_) => {
-            load_verify_v3_and_v4(ops, slot, &partitions, &mut res, remains)?
+            load_verify_v3_and_v4(ops, slot, &partitions, add, &mut res, remains)?
         }
-        _ => load_verify_v2_and_lower(ops, slot, &partitions, &mut res, remains)?,
+        _ => load_verify_v2_and_lower(ops, slot, &partitions, add, &mut res, remains)?,
     };
 
     drop(partitions);
@@ -296,6 +318,7 @@ fn load_verify_v2_and_lower<'a, 'b, 'c>(
     ops: &mut impl GblOps<'a, 'b>,
     slot: u8,
     additional_partitions: &PartitionsToVerify,
+    add_additional_bootconfig: impl FnOnce(&mut BootConfigBuilder) -> Result<(), Error>,
     out: &mut LoadedImages<'c>,
     load: &'c mut [u8],
 ) -> Result<(), IntegrationError> {
@@ -322,6 +345,7 @@ fn load_verify_v2_and_lower<'a, 'b, 'c>(
     bootconfig_builder.add_with(|bytes, out| {
         Ok(ops.fixup_bootconfig(&bytes, out)?.map(|slice| slice.len()).unwrap_or(0))
     })?;
+    add_additional_bootconfig(&mut bootconfig_builder)?;
     let bootconfig_size = bootconfig_builder.config_bytes().len();
 
     // We now have the following layout:
@@ -338,10 +362,11 @@ fn load_verify_v2_and_lower<'a, 'b, 'c>(
     let (boot_ex, remains) = load.split_at_mut(boot_size + bootconfig_size);
     let boot_img = BootImageV2Info::new(boot_ex).unwrap();
     let page_size = boot_img.page_size;
+    let dtb_sz = boot_img.dtb_sz;
     // Relocates kernel to tail.
     let kernel_range = boot_img.kernel_range;
     let kernel = boot_ex.get(kernel_range.clone()).unwrap();
-    let (remains, _) = relocate_kernel(ops, kernel, remains)?;
+    let (remains, _, kernel_sz) = relocate_kernel(ops, kernel, remains)?;
     // Relocates dtb to tail.
     let dtb_range = boot_img.dtb_range;
     let (_, dtb) = split_aligned_tail(remains, dtb_range.len(), FDT_ALIGNMENT)?;
@@ -355,10 +380,10 @@ fn load_verify_v2_and_lower<'a, 'b, 'c>(
     // | boot_hdr | ramdisk + bootconfig | unused | dtb | kernel |
     let ramdisk_sz = ramdisk_range.len() + bootconfig_size;
     let unused_sz = slice_offset(dtb, boot_ex) - page_size - ramdisk_sz;
-    let dtb_sz = dtb.len();
+    let dtb_padding = dtb.len() - dtb_sz;
     let hdr;
-    ([hdr, out.ramdisk, out.unused, out.dtb], out.kernel) =
-        split_chunks(load, &[page_size, ramdisk_sz, unused_sz, dtb_sz]);
+    ([hdr, out.ramdisk, out.unused, out.dtb, _, out.kernel], _) =
+        split_chunks(load, &[page_size, ramdisk_sz, unused_sz, dtb_sz, dtb_padding, kernel_sz]);
     out.boot_cmdline = BootImageV2Info::new(hdr).unwrap().cmdline;
     Ok(())
 }
@@ -406,6 +431,7 @@ fn load_verify_v3_and_v4<'a, 'b, 'c>(
     ops: &mut impl GblOps<'a, 'b>,
     slot: u8,
     additional_partitions: &PartitionsToVerify,
+    add_additional_bootconfig: impl FnOnce(&mut BootConfigBuilder) -> Result<(), Error>,
     out: &mut LoadedImages<'c>,
     load: &'c mut [u8],
 ) -> Result<(), IntegrationError> {
@@ -461,6 +487,7 @@ fn load_verify_v3_and_v4<'a, 'b, 'c>(
     bootconfig_builder.add_with(|bytes, out| {
         Ok(ops.fixup_bootconfig(&bytes, out)?.map(|slice| slice.len()).unwrap_or(0))
     })?;
+    add_additional_bootconfig(&mut bootconfig_builder)?;
 
     // We now have the following layout:
     //
@@ -511,8 +538,8 @@ fn load_verify_v3_and_v4<'a, 'b, 'c>(
 
     // Relocates kernel to tail.
     let kernel = boot.get(boot_img_info.kernel_range.clone()).unwrap();
-    let (remains, kernel) = relocate_kernel(ops, kernel, remains)?;
-    let kernel_sz = kernel.len();
+    let (remains, kernel, kernel_sz) = relocate_kernel(ops, kernel, remains)?;
+    let kernel_buf_len = kernel.len();
 
     // Relocates boot header to tail.
     let (remains, boot_hdr) = split_aligned_tail(remains, PAGE_SIZE, 1)?;
@@ -523,7 +550,8 @@ fn load_verify_v3_and_v4<'a, 'b, 'c>(
     let dtb = vendor_boot.get(vendor_boot_info.dtb_range).unwrap();
     let (_, dtb_reloc) = split_aligned_tail(remains, dtb.len(), FDT_ALIGNMENT)?;
     dtb_reloc[..dtb.len()].clone_from_slice(dtb);
-    let dtb_sz = dtb_reloc.len();
+    let dtb_sz = vendor_boot_info.dtb_sz;
+    let dtb_pad = dtb_reloc.len() - dtb_sz;
 
     // Moves generic ramdisk and bootconfig forward
     let generic_ramdisk_range = match init_boot_info {
@@ -560,10 +588,13 @@ fn load_verify_v3_and_v4<'a, 'b, 'c>(
     //
     // Splits out the images and returns.
     let vendor_hdr_sz = vendor_boot_info.header_size;
-    let unused_sz = load.len() - vendor_hdr_sz - ramdisk_sz - boot_hdr_sz - dtb_sz - kernel_sz;
+    let unused_sz =
+        load.len() - vendor_hdr_sz - ramdisk_sz - boot_hdr_sz - dtb_sz - dtb_pad - kernel_buf_len;
     let (vendor_hdr, boot_hdr);
-    ([vendor_hdr, out.ramdisk, out.unused, out.dtb, boot_hdr], out.kernel) =
-        split_chunks(load, &[vendor_hdr_sz, ramdisk_sz, unused_sz, dtb_sz, boot_hdr_sz]);
+    ([vendor_hdr, out.ramdisk, out.unused, out.dtb, _, boot_hdr, out.kernel], _) = split_chunks(
+        load,
+        &[vendor_hdr_sz, ramdisk_sz, unused_sz, dtb_sz, dtb_pad, boot_hdr_sz, kernel_sz],
+    );
     out.boot_cmdline = BootImageV3Info::cmdline(boot_hdr)?;
     out.vendor_cmdline = VendorBootImageInfo::cmdline(vendor_hdr)?;
     Ok(())
@@ -634,20 +665,23 @@ fn load_entire_part<'a, 'b, 'c>(
 ///
 /// The relocated kernel will be place at the tail.
 ///
-/// Returns the leading unused slice and the relocated slice.
+/// Returns the leading unused slice, the relocated slice and the actual kernel size without
+/// alignment padding.
 fn relocate_kernel<'a, 'b, 'c>(
     ops: &mut impl GblOps<'a, 'b>,
     kernel: &[u8],
     dst: &'c mut [u8],
-) -> Result<(&'c mut [u8], &'c mut [u8]), Error> {
+) -> Result<(&'c mut [u8], &'c mut [u8], usize), Error> {
     if is_compressed(kernel) {
         split(dst, kernel.len())?.0.clone_from_slice(kernel);
         let off = decompress_kernel(ops, dst, 0)?;
-        Ok(dst.split_at_mut(off))
+        let (leading, relocated) = dst.split_at_mut(off);
+        let kernel_size = relocated.len();
+        Ok((leading, relocated, kernel_size))
     } else {
         let (prefix, tail) = split_aligned_tail(dst, kernel.len(), KERNEL_ALIGNMENT)?;
         tail[..kernel.len()].clone_from_slice(kernel);
-        Ok((prefix, tail))
+        Ok((prefix, tail, kernel.len()))
     }
 }
 
@@ -665,31 +699,25 @@ pub(crate) mod tests {
         tests::AlignedBuffer,
     };
     use bootparams::bootconfig::BOOTCONFIG_TRAILER_SIZE;
-    use std::{ascii::escape_default, collections::HashMap, fs, path::Path, string::String};
+    use std::{
+        ascii::escape_default, collections::HashMap, ffi::CString, fs, path::Path, string::String,
+    };
 
     // See libgbl/testdata/gen_test_data.py for test data generation.
     const TEST_ROLLBACK_INDEX_LOCATION: usize = 1;
 
-    // The DTB in the test mkbootimg images.
-    // See libgbl/testdata/gen_test_data.py for test data generation.
-    const BASE_DTB: &[u8] = include_bytes!("../../../libfdt/test/data/base.dtb");
-
     // The commandline in the generated vendor boot image.
     // See libgbl/testdata/gen_test_data.py for test data generation.
     const TEST_VENDOR_CMDLINE: &str =
-        "cmd_vendor_key_1=cmd_vendor_val_1,cmd_vendor_key_1=cmd_vendor_val_1";
+        "cmd_vendor_key_1=cmd_vendor_val_1,cmd_vendor_key_2=cmd_vendor_val_2";
     // The vendor bootconfig in the generated vendor boot image.
     // See libgbl/testdata/gen_test_data.py for test data generation.
-    const TEST_VENDOR_BOOTCONFIG: &str =
+    pub(crate) const TEST_VENDOR_BOOTCONFIG: &str =
         "androidboot.config_1=val_1\x0aandroidboot.config_2=val_2\x0a";
 
     /// Digest of public key used to execute AVB.
     pub(crate) const TEST_PUBLIC_KEY_DIGEST: &str =
         "7ec02ee1be696366f3fa91240a8ec68125c4145d698f597aa2b3464b59ca7fc3";
-
-    /// Vbmeta digest for vbmeta_v4_v4_init_boot_a test artifact.
-    pub(crate) const TEST_VBMETA_V4_INIT_BOOT_A_DIGEST: &str =
-        "cf41369887ecd31c543cac5fc48a868e2359e935735f528cc7bd149a7e0a4544fd36abbd5871eb03514d00fa05548bed5c804ace07e111eb17a3026adcfd1c14";
 
     /// Reads a data file under libgbl/testdata/
     pub(crate) fn read_test_data(file: impl AsRef<str>) -> Vec<u8> {
@@ -698,6 +726,19 @@ pub(crate) mod tests {
             format!("external/gbl/libgbl/testdata/android/{}", file.as_ref()).as_str(),
         ))
         .unwrap()
+    }
+
+    /// Reads a data file as string under libgbl/testdata/
+    pub(crate) fn read_test_data_as_str(file: impl AsRef<str>) -> String {
+        fs::read_to_string(Path::new(
+            format!("external/gbl/libgbl/testdata/android/{}", file.as_ref()).as_str(),
+        ))
+        .unwrap()
+    }
+
+    // Returns the test dtb
+    fn test_dtb() -> Vec<u8> {
+        read_test_data("device_tree.dtb")
     }
 
     /// Generates a readable string for a bootconfig bytes.
@@ -709,11 +750,13 @@ pub(crate) mod tests {
 
     /// Helper for testing load/verify and assert verfiication success.
     fn test_android_load_verify_success(
-        partitions: &[(&CStr, &str)],
+        slot: u8,
+        partitions: &[(CString, String)],
         expected_kernel: &[u8],
         expected_ramdisk: &[u8],
         expected_bootconfig: &[u8],
         expected_dtb: &[u8],
+        expected_dtbo: &[u8],
         expected_vendor_cmdline: &str,
     ) {
         let mut storage = FakeGblOpsStorage::default();
@@ -738,13 +781,14 @@ pub(crate) mod tests {
         };
         ops.avb_handle_verification_result = Some(&mut handler);
         ops.avb_key_validation_status = Some(Ok(KeyValidationStatus::Valid));
-        let loaded = android_load_verify(&mut ops, 0, &mut load_buffer).unwrap();
+        let loaded = android_load_verify(&mut ops, slot, &mut load_buffer).unwrap();
 
-        assert!(loaded.dtb.starts_with(expected_dtb));
+        assert_eq!(loaded.dtb, expected_dtb);
         assert_eq!(out_color, Some(BootStateColor::Green));
         assert_eq!(loaded.boot_cmdline, "cmd_key_1=cmd_val_1,cmd_key_2=cmd_val_2");
         assert_eq!(loaded.vendor_cmdline, expected_vendor_cmdline);
-        assert!(loaded.kernel.starts_with(expected_kernel));
+        assert_eq!(loaded.kernel, expected_kernel);
+        assert_eq!(loaded.dtbo, expected_dtbo);
         let (ramdisk, bootconfig) = loaded.ramdisk.split_at_mut(expected_ramdisk.len());
         assert_eq!(ramdisk, expected_ramdisk);
         assert_eq!(
@@ -804,7 +848,7 @@ pub(crate) mod tests {
         }
 
         pub(crate) fn extra(mut self, extra: impl Into<String>) -> Self {
-            self.extra = extra.into();
+            self.extra += &extra.into();
             self
         }
 
@@ -853,56 +897,122 @@ androidboot.verifiedbootstate={}
         res.config_bytes().to_vec()
     }
 
-    /// Helper for testing load/verify for v0//v1/v2 boot images.
+    /// Helper for testing load/verify for a/b slot v0,1,2 image with dtbo partition.
     ///
     /// # Args
     ///
-    /// * `partitions`: A list of pair `(partition name, file name)` for creating boot storage.
-    /// * `vbmeta_file`: The vbmeta file for the storage. Used for constructing expected bootconfig.
+    /// * `ver`: Boot image version.
+    /// * `slot`: Target slot to boot.
+    /// * `additional_part`: A list of pair `(partition name, file name)` representing additional
+    ///   partitions for creating boot storage.
     /// * `expected_dtb`: The expected DTB.
-    /// * `expected_digest`: The expected digest outputed by vbmeta.
-    fn test_android_load_verify_v2_and_lower(
-        partitions: &[(&CStr, &str)],
-        vbmeta_file: &str,
+    /// * `expected_dtbo`: The expected DTBO.
+    fn test_android_load_verify_v2_and_lower_slot(
+        ver: u8,
+        slot: char,
+        additional_part: &[(CString, String)],
         expected_dtb: &[u8],
-        expected_digest: &str,
+        expected_dtbo: &[u8],
     ) {
+        let vbmeta_stem = format!("vbmeta_v{ver}_{slot}");
+        let vbmeta = format!("{vbmeta_stem}.img");
+        let vbmeta_digest = format!("{vbmeta_stem}.digest.txt");
+        let mut parts: Vec<(CString, String)> = vec![
+            (CString::new(format!("boot_{slot}")).unwrap(), format!("boot_v{ver}_{slot}.img")),
+            (CString::new(format!("vbmeta_{slot}")).unwrap(), vbmeta.clone()),
+        ];
+        parts.extend_from_slice(additional_part);
+
         let expected_bootconfig = AvbResultBootconfigBuilder::new()
-            .vbmeta_size(read_test_data(vbmeta_file).len())
-            .digest(expected_digest)
+            .vbmeta_size(read_test_data(vbmeta).len())
+            .digest(read_test_data_as_str(vbmeta_digest).strip_suffix("\n").unwrap())
             .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
             .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
+            .extra("androidboot.force_normal_boot=1\n")
+            .extra(format!("androidboot.slot_suffix=_{slot}\n"))
             .build();
 
         test_android_load_verify_success(
-            partitions,
-            &read_test_data("kernel_a.img"),
-            &read_test_data("generic_ramdisk_a.img"),
+            (u64::from(slot) - ('a' as u64)).try_into().unwrap(),
+            &parts,
+            &read_test_data(format!("kernel_{slot}.img")),
+            &read_test_data(format!("generic_ramdisk_{slot}.img")),
             &expected_bootconfig,
             expected_dtb,
+            expected_dtbo,
             "",
         );
     }
 
     #[test]
-    fn test_android_load_verify_v0() {
-        let vbmeta = "vbmeta_v0_a.img";
-        let parts = [(c"boot_a", "boot_v0_a.img"), (c"vbmeta_a", vbmeta)];
-        test_android_load_verify_v2_and_lower(&parts[..], vbmeta, &[], "0976e60490f1213035010310ec3ba277e9cf7ad6ca68433a9eb43871bdf1ae317df70f412714b5d2f54ee9ce4723f3e855be25e0c87b31da6aedddb61fbeb0c6");
+    fn test_android_load_verify_v0_slot_a() {
+        test_android_load_verify_v2_and_lower_slot(0, 'a', &[], &[], &[])
     }
 
     #[test]
-    fn test_android_load_verify_v1() {
-        let vbmeta = "vbmeta_v1_a.img";
-        let parts = [(c"boot_a", "boot_v1_a.img"), (c"vbmeta_a", vbmeta)];
-        test_android_load_verify_v2_and_lower(&parts[..], vbmeta, &[], "f483f94d975bc741562e64ac6814d6970b6c589dee84b7160c63e726d8848fe65c3e165393df22dd69338a65082f4f6d289549de05018e03b1184116fda111ce");
+    fn test_android_load_verify_v0_slot_b() {
+        test_android_load_verify_v2_and_lower_slot(0, 'b', &[], &[], &[]);
     }
 
     #[test]
-    fn test_android_load_verify_v2() {
-        let vbmeta = "vbmeta_v2_a.img";
-        let parts = [(c"boot_a", "boot_v2_a.img"), (c"vbmeta_a", vbmeta)];
-        test_android_load_verify_v2_and_lower(&parts[..], vbmeta, BASE_DTB, "554568eef20d8550c37c06f7988cc76d9ed113b3403a04f345ed4fb0d5acccff531a9f4f862a19f0a3977af8f574c11018f0c8eac142897f0d17527da1911ffe");
+    fn test_android_load_verify_v1_slot_a() {
+        test_android_load_verify_v2_and_lower_slot(1, 'a', &[], &[], &[])
+    }
+
+    #[test]
+    fn test_android_load_verify_v1_slot_b() {
+        test_android_load_verify_v2_and_lower_slot(1, 'b', &[], &[], &[]);
+    }
+
+    #[test]
+    fn test_android_load_verify_v2_slot_a() {
+        test_android_load_verify_v2_and_lower_slot(2, 'a', &[], &test_dtb(), &[])
+    }
+
+    #[test]
+    fn test_android_load_verify_v2_slot_b() {
+        test_android_load_verify_v2_and_lower_slot(2, 'b', &[], &test_dtb(), &[]);
+    }
+
+    fn test_android_load_verify_v2_and_lower_slot_with_dtbo(
+        ver: u8,
+        slot: char,
+        expected_dtb: &[u8],
+    ) {
+        let dtbo = read_test_data(format!("dtbo_{slot}.img"));
+        let parts: Vec<(CString, String)> =
+            vec![(CString::new(format!("dtbo_{slot}")).unwrap(), format!("dtbo_{slot}.img"))];
+        test_android_load_verify_v2_and_lower_slot(ver, slot, &parts, expected_dtb, &dtbo);
+    }
+
+    #[test]
+    fn test_android_load_verify_v0_slot_a_with_dtbo() {
+        test_android_load_verify_v2_and_lower_slot_with_dtbo(0, 'a', &[])
+    }
+
+    #[test]
+    fn test_android_load_verify_v0_slot_b_with_dtbo() {
+        test_android_load_verify_v2_and_lower_slot_with_dtbo(0, 'b', &[]);
+    }
+
+    #[test]
+    fn test_android_load_verify_v1_slot_a_with_dtbo() {
+        test_android_load_verify_v2_and_lower_slot_with_dtbo(1, 'a', &[])
+    }
+
+    #[test]
+    fn test_android_load_verify_v1_slot_b_with_dtbo() {
+        test_android_load_verify_v2_and_lower_slot_with_dtbo(1, 'b', &[]);
+    }
+
+    #[test]
+    fn test_android_load_verify_v2_slot_a_with_dtbo() {
+        test_android_load_verify_v2_and_lower_slot_with_dtbo(2, 'a', &test_dtb())
+    }
+
+    #[test]
+    fn test_android_load_verify_v2_slot_b_with_dtbo() {
+        test_android_load_verify_v2_and_lower_slot_with_dtbo(2, 'b', &test_dtb());
     }
 
     /// Helper for testing load/verify for v3/v4 boot/vendor_boot images.
@@ -914,123 +1024,398 @@ androidboot.verifiedbootstate={}
     /// * `expected_digest`: The expected digest outputed by vbmeta.
     /// * `expected_vendor_bootconfig`: The expected vendor_boot_config.
     fn test_android_load_verify_v3_and_v4(
-        partitions: &[(&CStr, &str)],
+        slot: char,
+        partitions: &[(CString, String)],
         vbmeta_file: &str,
         expected_digest: &str,
         expected_vendor_bootconfig: &str,
+        expected_dtbo: &[u8],
     ) {
         let expected_bootconfig = AvbResultBootconfigBuilder::new()
             .vbmeta_size(read_test_data(vbmeta_file).len())
             .digest(expected_digest)
             .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
-            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG.to_owned() + expected_vendor_bootconfig)
+            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
+            .extra("androidboot.force_normal_boot=1\n")
+            .extra(format!("androidboot.slot_suffix=_{slot}\n"))
+            .extra(expected_vendor_bootconfig)
             .build();
 
         test_android_load_verify_success(
+            (u64::from(slot) - ('a' as u64)).try_into().unwrap(),
             partitions,
-            &read_test_data("kernel_a.img"),
-            &[read_test_data("vendor_ramdisk_a.img"), read_test_data("generic_ramdisk_a.img")]
-                .concat(),
+            &read_test_data(format!("kernel_{slot}.img")),
+            &[
+                read_test_data(format!("vendor_ramdisk_{slot}.img")),
+                read_test_data(format!("generic_ramdisk_{slot}.img")),
+            ]
+            .concat(),
             &expected_bootconfig,
-            BASE_DTB,
+            &test_dtb(),
+            expected_dtbo,
             TEST_VENDOR_CMDLINE,
         );
     }
 
-    #[test]
-    fn test_android_load_verify_boot_v3_vendor_v3_no_init_boot() {
-        let vbmeta_file = "vbmeta_v3_v3_a.img";
-        let parts = [
-            (c"boot_a", "boot_v3_a.img"),
-            (c"vendor_boot_a", "vendor_boot_v3_a.img"),
-            (c"vbmeta_a", vbmeta_file),
+    /// Helper for testing v3/v4 boot image without init_boot partition.
+    fn test_android_load_verify_boot_v3_v4_slot_no_init_boot(
+        slot: char,
+        boot_ver: u32,
+        vendor_ver: u32,
+        additional_part: &[(CString, String)],
+        expected_vendor_bootconfig: &str,
+        expected_dtbo: &[u8],
+    ) {
+        let vbmeta_stem = format!("vbmeta_v{boot_ver}_v{vendor_ver}_{slot}");
+        let vbmeta = format!("{vbmeta_stem}.img");
+        let vbmeta_digest = format!("{vbmeta_stem}.digest.txt");
+        let mut parts: Vec<(CString, String)> = vec![
+            (CString::new(format!("boot_{slot}")).unwrap(), format!("boot_v{boot_ver}_{slot}.img")),
+            (
+                CString::new(format!("vendor_boot_{slot}")).unwrap(),
+                format!("vendor_boot_v{vendor_ver}_{slot}.img"),
+            ),
+            (CString::new(format!("vbmeta_{slot}")).unwrap(), vbmeta.clone()),
         ];
-        test_android_load_verify_v3_and_v4(&parts[..],  vbmeta_file, "c9ff8edd4be86f3a7b0850529bbe6a8095a00af8162151387f98393a5f551c28bcec5ef6c15c91ee994d075afcde9becfe236c62968750e32bd5f74ac2625c32", "");
-    }
-
-    #[test]
-    fn test_android_load_verify_boot_v3_vendor_v3_init_boot() {
-        let vbmeta_file = "vbmeta_v3_v3_init_boot_a.img";
-        let parts = [
-            (c"boot_a", "boot_no_ramdisk_v3_a.img"),
-            (c"init_boot_a", "init_boot_a.img"),
-            (c"vendor_boot_a", "vendor_boot_v3_a.img"),
-            (c"vbmeta_a", vbmeta_file),
-        ];
-        test_android_load_verify_v3_and_v4(&parts[..],  vbmeta_file, "c46faba2db23fb6758021747f2276165cff909d17b8d05938c267ec5bd370d09c94014dfd3adc5d36dd3a05eae94dce638197f06ee67fb726c55ef752383b5f7", "");
-    }
-
-    #[test]
-    fn test_android_load_verify_boot_v3_vendor_v4_no_init_boot() {
-        let vbmeta_file = "vbmeta_v3_v4_a.img";
-        let parts = [
-            (c"boot_a", "boot_v3_a.img"),
-            (c"vendor_boot_a", "vendor_boot_v4_a.img"),
-            (c"vbmeta_a", vbmeta_file),
-        ];
-        test_android_load_verify_v3_and_v4(&parts[..],  vbmeta_file, "1034811a69575d8f276cdbf4ddfb2eaf028d79cc78215fdfbadd50452b4155b64e484ed632ab85159cb91f40d084bf5aa48bfb3080a2229b4ecad2900114e765", TEST_VENDOR_BOOTCONFIG);
-    }
-
-    #[test]
-    fn test_android_load_verify_boot_v3_vendor_v4_init_boot() {
-        let vbmeta_file = "vbmeta_v3_v4_init_boot_a.img";
-        let parts = [
-            (c"boot_a", "boot_no_ramdisk_v3_a.img"),
-            (c"init_boot_a", "init_boot_a.img"),
-            (c"vendor_boot_a", "vendor_boot_v4_a.img"),
-            (c"vbmeta_a", vbmeta_file),
-        ];
-        test_android_load_verify_v3_and_v4(&parts[..],  vbmeta_file, "66bc22d274eddcb405001e7548404f143adef5d3e628e5b083ed7b88b11442e3dc09429b2ddd693a8b0dcd7d133b9b5f60f597845ab98d32e158b3996a450d65", TEST_VENDOR_BOOTCONFIG);
-    }
-
-    #[test]
-    fn test_android_load_verify_boot_v4_vendor_v3_no_init_boot() {
-        let vbmeta_file = "vbmeta_v4_v3_a.img";
-        let parts = [
-            (c"boot_a", "boot_v4_a.img"),
-            (c"vendor_boot_a", "vendor_boot_v3_a.img"),
-            (c"vbmeta_a", vbmeta_file),
-        ];
-        test_android_load_verify_v3_and_v4(&parts[..],  vbmeta_file, "6a87e40686eb4a56d4cff406475f153d846ed8dba8ce68666e1433b33f75adcf524fb510fcb34753e5c1778a2bec5de7b2fbeab31995518a339cec99a2d20e8b", "");
-    }
-
-    #[test]
-    fn test_android_load_verify_boot_v4_vendor_v3_init_boot() {
-        let vbmeta_file = "vbmeta_v4_v3_init_boot_a.img";
-        let parts = [
-            (c"boot_a", "boot_no_ramdisk_v4_a.img"),
-            (c"init_boot_a", "init_boot_a.img"),
-            (c"vendor_boot_a", "vendor_boot_v3_a.img"),
-            (c"vbmeta_a", vbmeta_file),
-        ];
-        test_android_load_verify_v3_and_v4(&parts[..],  vbmeta_file, "59b109531b311e0d66ee58ca2d347db9e379a2877d048625fb5bde6bcb80df03120b9be482c282bd8c753524c7114a9cf6cfbfa336e137bcb1af55c6bc4d169a", "");
-    }
-
-    #[test]
-    fn test_android_load_verify_boot_v4_vendor_v4_no_init_boot() {
-        let vbmeta_file = "vbmeta_v4_v4_a.img";
-        let parts = [
-            (c"boot_a", "boot_v4_a.img"),
-            (c"vendor_boot_a", "vendor_boot_v4_a.img"),
-            (c"vbmeta_a", vbmeta_file),
-        ];
-        test_android_load_verify_v3_and_v4(&parts[..],  vbmeta_file, "f074f0c7330873e71dadc4b00f010fa9aa0fcf81db1b1c3bc3cc9e98dd5ee572699d34b067f6b9cb44e8948f4e3c7182bec6761cf796f9f00c142a348b78264d", TEST_VENDOR_BOOTCONFIG);
-    }
-
-    #[test]
-    fn test_android_load_verify_boot_v4_vendor_v4_init_boot() {
-        let vbmeta_file = "vbmeta_v4_v4_init_boot_a.img";
-        let parts = [
-            (c"boot_a", "boot_no_ramdisk_v4_a.img"),
-            (c"init_boot_a", "init_boot_a.img"),
-            (c"vendor_boot_a", "vendor_boot_v4_a.img"),
-            (c"vbmeta_a", vbmeta_file),
-        ];
+        parts.extend_from_slice(additional_part);
         test_android_load_verify_v3_and_v4(
+            slot,
             &parts[..],
-            vbmeta_file,
-            TEST_VBMETA_V4_INIT_BOOT_A_DIGEST,
-            TEST_VENDOR_BOOTCONFIG,
+            &vbmeta,
+            &read_test_data_as_str(vbmeta_digest).strip_suffix("\n").unwrap(),
+            expected_vendor_bootconfig,
+            expected_dtbo,
         );
+    }
+
+    /// Helper for testing v3/v4 boot image with init_boot partition.
+    fn test_android_load_verify_boot_v3_v4_slot_init_boot(
+        slot: char,
+        boot_ver: u32,
+        vendor_ver: u32,
+        additional_part: &[(CString, String)],
+        expected_vendor_bootconfig: &str,
+        expected_dtbo: &[u8],
+    ) {
+        let vbmeta_stem = format!("vbmeta_v{boot_ver}_v{vendor_ver}_init_boot_{slot}");
+        let vbmeta = format!("{vbmeta_stem}.img");
+        let vbmeta_digest = format!("{vbmeta_stem}.digest.txt");
+        let mut parts: Vec<(CString, String)> = vec![
+            (
+                CString::new(format!("boot_{slot}")).unwrap(),
+                format!("boot_no_ramdisk_v{boot_ver}_{slot}.img"),
+            ),
+            (
+                CString::new(format!("vendor_boot_{slot}")).unwrap(),
+                format!("vendor_boot_v{vendor_ver}_{slot}.img"),
+            ),
+            (CString::new(format!("init_boot_{slot}")).unwrap(), format!("init_boot_{slot}.img")),
+            (CString::new(format!("vbmeta_{slot}")).unwrap(), vbmeta.clone()),
+        ];
+        parts.extend_from_slice(additional_part);
+        test_android_load_verify_v3_and_v4(
+            slot,
+            &parts[..],
+            &vbmeta,
+            &read_test_data_as_str(vbmeta_digest).strip_suffix("\n").unwrap(),
+            expected_vendor_bootconfig,
+            expected_dtbo,
+        );
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v3_no_init_boot_slot_a() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot('a', 3, 3, &[], "", &[])
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v3_no_init_boot_slot_b() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot('b', 3, 3, &[], "", &[])
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v3_init_boot_slot_a() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot('a', 3, 3, &[], "", &[])
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v3_init_boot_slot_b() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot('b', 3, 3, &[], "", &[])
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v4_no_init_boot_slot_a() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot(
+            'a',
+            3,
+            4,
+            &[],
+            TEST_VENDOR_BOOTCONFIG,
+            &[],
+        )
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v4_no_init_boot_slot_b() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot(
+            'b',
+            3,
+            4,
+            &[],
+            TEST_VENDOR_BOOTCONFIG,
+            &[],
+        )
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v4_init_boot_slot_a() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot(
+            'a',
+            3,
+            4,
+            &[],
+            TEST_VENDOR_BOOTCONFIG,
+            &[],
+        )
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v4_init_boot_slot_b() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot(
+            'b',
+            3,
+            4,
+            &[],
+            TEST_VENDOR_BOOTCONFIG,
+            &[],
+        )
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v3_no_init_boot_slot_a() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot('a', 4, 3, &[], "", &[])
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v3_no_init_boot_slot_b() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot('b', 4, 3, &[], "", &[])
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v3_init_boot_slot_a() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot('a', 4, 3, &[], "", &[])
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v3_init_boot_slot_b() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot('b', 4, 3, &[], "", &[])
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v4_no_init_boot_slot_a() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot(
+            'a',
+            4,
+            4,
+            &[],
+            TEST_VENDOR_BOOTCONFIG,
+            &[],
+        )
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v4_no_init_boot_slot_b() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot(
+            'b',
+            4,
+            4,
+            &[],
+            TEST_VENDOR_BOOTCONFIG,
+            &[],
+        )
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v4_init_boot_slot_a() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot(
+            'a',
+            4,
+            4,
+            &[],
+            TEST_VENDOR_BOOTCONFIG,
+            &[],
+        )
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v4_init_boot_slot_b() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot(
+            'b',
+            4,
+            4,
+            &[],
+            TEST_VENDOR_BOOTCONFIG,
+            &[],
+        )
+    }
+
+    /// Same as `test_android_load_verify_boot_v3_v4_slot_no_init_boot` but with dtbo partition.
+    fn test_android_load_verify_boot_v3_v4_slot_no_init_boot_with_dtbo(
+        slot: char,
+        boot_ver: u32,
+        vendor_ver: u32,
+        expected_vendor_bootconfig: &str,
+    ) {
+        let dtbo = read_test_data(format!("dtbo_{slot}.img"));
+        let parts: Vec<(CString, String)> =
+            vec![(CString::new(format!("dtbo_{slot}")).unwrap(), format!("dtbo_{slot}.img"))];
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot(
+            slot,
+            boot_ver,
+            vendor_ver,
+            &parts,
+            expected_vendor_bootconfig,
+            &dtbo,
+        );
+    }
+
+    /// Same as `test_android_load_verify_boot_v3_v4_slot_init_boot` but with dtbo partition.
+    fn test_android_load_verify_boot_v3_v4_slot_init_boot_with_dtbo(
+        slot: char,
+        boot_ver: u32,
+        vendor_ver: u32,
+        expected_vendor_bootconfig: &str,
+    ) {
+        let dtbo = read_test_data(format!("dtbo_{slot}.img"));
+        let parts: Vec<(CString, String)> =
+            vec![(CString::new(format!("dtbo_{slot}")).unwrap(), format!("dtbo_{slot}.img"))];
+        test_android_load_verify_boot_v3_v4_slot_init_boot(
+            slot,
+            boot_ver,
+            vendor_ver,
+            &parts,
+            expected_vendor_bootconfig,
+            &dtbo,
+        );
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v3_no_init_boot_slot_a_with_dtbo() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot_with_dtbo('a', 3, 3, "")
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v3_no_init_boot_slot_b_with_dtbo() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot_with_dtbo('b', 3, 3, "")
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v3_init_boot_slot_a_with_dtbo() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot_with_dtbo('a', 3, 3, "")
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v3_init_boot_slot_b_with_dtbo() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot_with_dtbo('b', 3, 3, "")
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v4_no_init_boot_slot_a_with_dtbo() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot_with_dtbo(
+            'a',
+            3,
+            4,
+            TEST_VENDOR_BOOTCONFIG,
+        )
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v4_no_init_boot_slot_b_with_dtbo() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot_with_dtbo(
+            'b',
+            3,
+            4,
+            TEST_VENDOR_BOOTCONFIG,
+        )
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v4_init_boot_slot_a_with_dtbo() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot_with_dtbo(
+            'a',
+            3,
+            4,
+            TEST_VENDOR_BOOTCONFIG,
+        )
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v3_vendor_v4_init_boot_slot_b_with_dtbo() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot_with_dtbo(
+            'b',
+            3,
+            4,
+            TEST_VENDOR_BOOTCONFIG,
+        )
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v3_no_init_boot_slot_a_with_dtbo() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot_with_dtbo('a', 4, 3, "")
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v3_no_init_boot_slot_b_with_dtbo() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot_with_dtbo('b', 4, 3, "")
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v3_init_boot_slot_a_with_dtbo() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot_with_dtbo('a', 4, 3, "")
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v3_init_boot_slot_b_with_dtbo() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot_with_dtbo('b', 4, 3, "")
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v4_no_init_boot_slot_a_with_dtbo() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot_with_dtbo(
+            'a',
+            4,
+            4,
+            TEST_VENDOR_BOOTCONFIG,
+        )
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v4_no_init_boot_slot_b_with_dtbo() {
+        test_android_load_verify_boot_v3_v4_slot_no_init_boot_with_dtbo(
+            'b',
+            4,
+            4,
+            TEST_VENDOR_BOOTCONFIG,
+        )
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v4_init_boot_slot_a_with_dtbo() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot_with_dtbo(
+            'a',
+            4,
+            4,
+            TEST_VENDOR_BOOTCONFIG,
+        )
+    }
+
+    #[test]
+    fn test_android_load_verify_boot_v4_vendor_v4_init_boot_slot_b_with_dtbo() {
+        test_android_load_verify_boot_v3_v4_slot_init_boot_with_dtbo(
+            'b',
+            4,
+            4,
+            TEST_VENDOR_BOOTCONFIG,
+        )
     }
 }

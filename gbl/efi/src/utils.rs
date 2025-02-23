@@ -56,7 +56,7 @@ pub fn loaded_image_path(entry: &EfiEntry) -> Result<DevicePathText> {
 }
 
 /// Find FDT from EFI configuration table.
-pub fn get_efi_fdt<'a>(entry: &'a EfiEntry) -> Option<(&FdtHeader, &[u8])> {
+pub fn get_efi_fdt(entry: &EfiEntry) -> Option<(&FdtHeader, &[u8])> {
     if let Some(config_tables) = entry.system_table().configuration_table() {
         for table in config_tables {
             if table.vendor_guid == EFI_DTB_TABLE_GUID {
