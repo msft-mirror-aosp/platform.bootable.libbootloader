@@ -492,10 +492,11 @@ pub fn load_android_simple<'a, 'b, 'c>(
 pub fn android_load_verify_fixup<'a, 'b, 'c>(
     ops: &mut impl GblOps<'b, 'c>,
     slot: u8,
+    is_recovery: bool,
     load: &'a mut [u8],
 ) -> Result<(&'a mut [u8], &'a mut [u8], &'a mut [u8], &'a mut [u8])> {
     let load_addr = load.as_ptr() as usize;
-    let images = android_load_verify(ops, slot, load)?;
+    let images = android_load_verify(ops, slot, is_recovery, load)?;
 
     let mut components = DeviceTreeComponentsRegistry::new();
     let fdt_load = &mut images.unused[..];
@@ -592,7 +593,10 @@ mod tests {
         ops::test::{FakeGblOps, FakeGblOpsStorage},
         tests::AlignedBuffer,
     };
-    use load::tests::{make_expected_bootconfig, read_test_data, TEST_VENDOR_BOOTCONFIG};
+    use load::tests::{
+        check_ramdisk, make_expected_bootconfig, read_test_data, read_test_data_as_str,
+        AvbResultBootconfigBuilder, TEST_PUBLIC_KEY_DIGEST, TEST_VENDOR_BOOTCONFIG,
+    };
     use std::{collections::HashMap, ffi::CString};
 
     const TEST_ROLLBACK_INDEX_LOCATION: usize = 1;
@@ -642,6 +646,7 @@ mod tests {
         custom_fdt: Option<&[u8]>,
         expected_kernel: &[u8],
         expected_ramdisk: &[u8],
+        expected_bootconfig: &[u8],
         expected_bootargs: &str,
         expected_fdt_property: &[(&str, &CStr, Option<&[u8]>)],
     ) {
@@ -670,9 +675,9 @@ mod tests {
 
         let mut load_buffer = AlignedBuffer::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
         let (ramdisk, fdt, kernel, _) =
-            android_load_verify_fixup(&mut ops, slot, &mut load_buffer).unwrap();
-        assert_eq!(ramdisk, expected_ramdisk);
+            android_load_verify_fixup(&mut ops, slot, false, &mut load_buffer).unwrap();
         assert_eq!(kernel, expected_kernel);
+        check_ramdisk(ramdisk, expected_ramdisk, expected_bootconfig);
 
         let fdt = Fdt::new(fdt).unwrap();
         // "linux,initrd-start/end" are updated.
@@ -719,17 +724,13 @@ mod tests {
         ];
         parts.extend_from_slice(additional_parts);
 
-        let expected_ramdisk = [
-            read_test_data(format!("generic_ramdisk_{slot}.img")),
-            make_expected_bootconfig(&vbmeta, slot, ""),
-        ]
-        .concat();
         test_android_load_verify_fixup(
             (u64::from(slot) - ('a' as u64)).try_into().unwrap(),
             &parts,
             custom_fdt,
             &read_test_data(format!("kernel_{slot}.img")),
-            &expected_ramdisk,
+            &read_test_data(format!("generic_ramdisk_{slot}.img")),
+            &make_expected_bootconfig(&vbmeta, slot, ""),
             "existing_arg_1=existing_val_1 existing_arg_2=existing_val_2 cmd_key_1=cmd_val_1,cmd_key_2=cmd_val_2",
             additional_expected_fdt_properties,
         )
@@ -843,7 +844,6 @@ mod tests {
         let expected_ramdisk = [
             read_test_data(format!("vendor_ramdisk_{slot}.img")),
             read_test_data(format!("generic_ramdisk_{slot}.img")),
-            make_expected_bootconfig(&vbmeta_file, slot, expected_vendor_bootconfig),
         ]
         .concat();
         test_android_load_verify_fixup(
@@ -852,6 +852,7 @@ mod tests {
             None,
             &read_test_data(format!("kernel_{slot}.img")),
             &expected_ramdisk,
+            &make_expected_bootconfig(&vbmeta_file, slot, expected_vendor_bootconfig),
             "existing_arg_1=existing_val_1 existing_arg_2=existing_val_2 cmd_key_1=cmd_val_1,cmd_key_2=cmd_val_2 cmd_vendor_key_1=cmd_vendor_val_1,cmd_vendor_key_2=cmd_vendor_val_2",
             additional_expected_fdt_properties,
         )
@@ -1187,5 +1188,33 @@ mod tests {
         let parts = &[(c"dtbo_b".into(), "dtbo_b.img".into())];
         let config = TEST_VENDOR_BOOTCONFIG;
         test_android_load_verify_fixup_v3_or_v4_init_boot(4, 4, 'b', config, parts, fdt_prop);
+    }
+
+    #[test]
+    fn test_android_load_verify_fixup_recovery_mode() {
+        // Recovery mode is specified by the absence of bootconfig arg
+        // "androidboot.force_normal_boot=1\n" and therefore independent of image versions. We can
+        // pick any image version for test. Use v2 for simplicity.
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"boot_a", read_test_data("boot_v2_a.img"));
+        storage.add_raw_device(c"vbmeta_a", read_test_data("vbmeta_v2_a.img"));
+
+        let mut ops = FakeGblOps::new(&storage);
+        ops.avb_ops.unlock_state = Ok(false);
+        ops.avb_ops.rollbacks = HashMap::from([(TEST_ROLLBACK_INDEX_LOCATION, Ok(0))]);
+        ops.avb_key_validation_status = Some(Ok(KeyValidationStatus::Valid));
+
+        let mut load_buffer = AlignedBuffer::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
+        let (ramdisk, _, _, _) =
+            android_load_verify_fixup(&mut ops, 0, true, &mut load_buffer).unwrap();
+
+        let expected_bootconfig = AvbResultBootconfigBuilder::new()
+            .vbmeta_size(read_test_data("vbmeta_v2_a.img").len())
+            .digest(read_test_data_as_str("vbmeta_v2_a.digest.txt").strip_suffix("\n").unwrap())
+            .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
+            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
+            .extra(format!("androidboot.slot_suffix=_a\n"))
+            .build();
+        check_ramdisk(ramdisk, &read_test_data("generic_ramdisk_a.img"), &expected_bootconfig);
     }
 }
