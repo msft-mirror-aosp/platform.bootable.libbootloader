@@ -283,16 +283,22 @@ pub fn load_android_simple<'a, 'b, 'c>(
     // of the buffer and move it forward as much as possible after ramdisk and fdt are loaded,
     // fixed-up and finalized.
     let boot_img_load_offset: usize = {
-        let off = SafeNum::from(load.len()) - kernel_size - boot_ramdisk_size;
+        let off = SafeNum::from(load.len())
+            - SafeNum::from(kernel_size).round_up(kernel_hdr_size)
+            - SafeNum::from(boot_ramdisk_size).round_up(kernel_hdr_size);
         let off_idx: usize = off.try_into().map_err(Error::from)?;
         let aligned_off = off - (&load[off_idx] as *const _ as usize % KERNEL_ALIGNMENT);
         aligned_off.try_into().map_err(Error::from)?
     };
     let (load, boot_img_buffer) = load.split_at_mut(boot_img_load_offset);
+    let boot_partition_load_size: usize = (SafeNum::from(kernel_size).round_up(kernel_hdr_size)
+        + SafeNum::from(boot_ramdisk_size).round_up(kernel_hdr_size))
+    .try_into()
+    .unwrap();
     ops.read_from_partition_sync(
         "boot_a",
         kernel_hdr_size.try_into().unwrap(),
-        &mut boot_img_buffer[..kernel_size + boot_ramdisk_size],
+        &mut boot_img_buffer[..boot_partition_load_size],
     )?;
 
     // Load vendor ramdisk
@@ -318,8 +324,10 @@ pub fn load_android_simple<'a, 'b, 'c>(
 
     // Load ramdisk from boot image
     if boot_ramdisk_size > 0 {
+        let kernel_size_roundup: usize =
+            SafeNum::from(kernel_size).round_up(kernel_hdr_size).try_into().unwrap();
         load[ramdisk_load_curr.try_into().map_err(Error::from)?..][..boot_ramdisk_size]
-            .copy_from_slice(&boot_img_buffer[kernel_size..][..boot_ramdisk_size]);
+            .copy_from_slice(&boot_img_buffer[kernel_size_roundup..][..boot_ramdisk_size]);
         ramdisk_load_curr += boot_ramdisk_size;
     }
 
