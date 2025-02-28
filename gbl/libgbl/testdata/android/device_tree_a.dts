@@ -1,11 +1,11 @@
 /dts-v1/;
 
 / {
-    info = "test device tree";
+    info = "test device tree from dtb partition";
 
     chosen {
         bootargs = "existing_arg_1=existing_val_1 existing_arg_2=existing_val_2";
-        builtin = [01];
+        dtb_slot = "a";
         fixup = <0x0>;
     };
 };
