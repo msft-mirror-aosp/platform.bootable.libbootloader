@@ -111,6 +111,9 @@ def gen_android_test_dtb():
     out_dir = SCRIPT_DIR / "android"
     # Generates base test device tree.
     gen_dtb(out_dir / "device_tree.dts", out_dir / "device_tree.dtb")
+    gen_dtb(
+        out_dir / "device_tree_custom.dts", out_dir / "device_tree_custom.dtb"
+    )
 
     # Generates overlay
     gen_dtb(out_dir / "overlay_a.dts", out_dir / "overlay_a.dtb")

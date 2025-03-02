@@ -20,7 +20,7 @@ u-boot-mainline branch.
 load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
 load("@gbl//toolchain:gbl_workspace_util.bzl", "android_rust_prebuilts", "gbl_llvm_prebuilts")
 
-_CLANG_VERSION = "r530567"
+_CLANG_VERSION = "r547379"
 
 def rust_crate_build_file(
         name,

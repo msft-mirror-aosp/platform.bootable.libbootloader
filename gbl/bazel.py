@@ -16,6 +16,7 @@ import argparse
 import os
 import pathlib
 import sys
+from datetime import date
 from typing import Tuple, Optional
 
 _BAZEL_REL_PATH = "prebuilts/kernel-build-tools/bazel/linux-x86_64/bazel"
@@ -78,6 +79,7 @@ class BazelWrapper(object):
         self._parse_startup_options()
         self._parse_command_args()
         self._add_extra_startup_options()
+        self._add_build_number_command_args()
 
     def add_startup_option_to_parser(self, parser):
         parser.add_argument(
@@ -143,6 +145,15 @@ class BazelWrapper(object):
         # Skip startup options (before command) and target_patterns (after --)
         _, self.transformed_command_args = parser.parse_known_args(
             self.command_args)
+
+    def _add_build_number_command_args(self):
+        """Adds options for BUILD_NUMBER."""
+        build_number = os.environ.get("BUILD_NUMBER")
+        if build_number is None:
+            # Changing the commandline causes rebuild. In order to *not* cause
+            # superfluous rebuilds, append a low-precision timestamp.
+            build_number = f"eng.{os.environ.get('USER')}.{date.today()}"
+        self.transformed_command_args += ["--action_env", f"BUILD_NUMBER={build_number}"]
 
     def _add_extra_startup_options(self):
         """Adds extra startup options after command args are parsed."""
