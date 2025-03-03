@@ -602,6 +602,35 @@ pub fn android_load_verify_fixup<'a, 'b, 'c>(
     Ok((ramdisk, fdt, kernel, unused))
 }
 
+/// Runs full Android bootloader bootflow before kernel handoff.
+///
+/// The API performs slot selection, handles boot mode, fastboot and loads and verifies Android from
+/// disk.
+///
+/// On success, returns a tuple of slices corresponding to `(ramdisk, FDT, kernel, unused)`
+pub fn android_main<'a, 'b, 'c>(
+    ops: &mut impl GblOps<'a, 'b>,
+    load: &'c mut [u8],
+) -> Result<(&'c mut [u8], &'c mut [u8], &'c mut [u8], &'c mut [u8])> {
+    let (bcb_buffer, _) = load
+        .split_at_mut_checked(BootloaderMessage::SIZE_BYTES)
+        .ok_or(Error::BufferTooSmall(Some(BootloaderMessage::SIZE_BYTES)))
+        .inspect_err(|e| gbl_println!(ops, "Buffer too small for reading misc. {e}"))?;
+    ops.read_from_partition_sync("misc", 0, bcb_buffer)
+        .inspect_err(|e| gbl_println!(ops, "Failed to read misc partition {e}"))?;
+    let bcb = BootloaderMessage::from_bytes_ref(bcb_buffer)
+        .inspect_err(|e| gbl_println!(ops, "Failed to parse bootloader messgae {e}"))?;
+    let boot_mode = bcb
+        .boot_mode()
+        .inspect_err(|e| gbl_println!(ops, "Failed to parse BCB boot mode {e}. Ignored"))
+        .unwrap_or(AndroidBootMode::Normal);
+    gbl_println!(ops, "Boot mode from BCB: {}", boot_mode);
+
+    // TODO(b/383620444): Add slot and fastboot support.
+    let is_recovery = matches!(boot_mode, AndroidBootMode::Recovery);
+    android_load_verify_fixup(ops, 0, is_recovery, load)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1210,6 +1239,42 @@ mod tests {
         test_android_load_verify_fixup_v3_or_v4_init_boot(4, 4, 'b', config, parts, fdt_prop);
     }
 
+    /// Helper for checking V2 image loaded from slot A and in normal mode.
+    fn checks_loaded_v2_slot_a_normal_mode(ramdisk: &[u8], kernel: &[u8]) {
+        let expected_bootconfig = AvbResultBootconfigBuilder::new()
+            .vbmeta_size(read_test_data("vbmeta_v2_a.img").len())
+            .digest(read_test_data_as_str("vbmeta_v2_a.digest.txt").strip_suffix("\n").unwrap())
+            .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
+            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
+            .extra("androidboot.force_normal_boot=1\n")
+            .extra(format!("androidboot.slot_suffix=_a\n"))
+            .build();
+        check_ramdisk(ramdisk, &read_test_data("generic_ramdisk_a.img"), &expected_bootconfig);
+        assert_eq!(kernel, read_test_data("kernel_a.img"));
+    }
+
+    /// Helper for checking V2 image loaded from slot A and in recovery mode.
+    fn checks_loaded_v2_slot_a_recovery_mode(ramdisk: &[u8], kernel: &[u8]) {
+        let expected_bootconfig = AvbResultBootconfigBuilder::new()
+            .vbmeta_size(read_test_data("vbmeta_v2_a.img").len())
+            .digest(read_test_data_as_str("vbmeta_v2_a.digest.txt").strip_suffix("\n").unwrap())
+            .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
+            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
+            .extra(format!("androidboot.slot_suffix=_a\n"))
+            .build();
+        check_ramdisk(ramdisk, &read_test_data("generic_ramdisk_a.img"), &expected_bootconfig);
+        assert_eq!(kernel, read_test_data("kernel_a.img"));
+    }
+
+    /// Helper for getting default FakeGblOps for tests.
+    fn default_test_gbl_ops(storage: &FakeGblOpsStorage) -> FakeGblOps {
+        let mut ops = FakeGblOps::new(&storage);
+        ops.avb_ops.unlock_state = Ok(false);
+        ops.avb_ops.rollbacks = HashMap::from([(TEST_ROLLBACK_INDEX_LOCATION, Ok(0))]);
+        ops.avb_key_validation_status = Some(Ok(KeyValidationStatus::Valid));
+        ops
+    }
+
     #[test]
     fn test_android_load_verify_fixup_recovery_mode() {
         // Recovery mode is specified by the absence of bootconfig arg
@@ -1219,22 +1284,37 @@ mod tests {
         storage.add_raw_device(c"boot_a", read_test_data("boot_v2_a.img"));
         storage.add_raw_device(c"vbmeta_a", read_test_data("vbmeta_v2_a.img"));
 
-        let mut ops = FakeGblOps::new(&storage);
-        ops.avb_ops.unlock_state = Ok(false);
-        ops.avb_ops.rollbacks = HashMap::from([(TEST_ROLLBACK_INDEX_LOCATION, Ok(0))]);
-        ops.avb_key_validation_status = Some(Ok(KeyValidationStatus::Valid));
-
+        let mut ops = default_test_gbl_ops(&storage);
         let mut load_buffer = AlignedBuffer::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
-        let (ramdisk, _, _, _) =
+        let (ramdisk, _, kernel, _) =
             android_load_verify_fixup(&mut ops, 0, true, &mut load_buffer).unwrap();
+        checks_loaded_v2_slot_a_recovery_mode(ramdisk, kernel)
+    }
 
-        let expected_bootconfig = AvbResultBootconfigBuilder::new()
-            .vbmeta_size(read_test_data("vbmeta_v2_a.img").len())
-            .digest(read_test_data_as_str("vbmeta_v2_a.digest.txt").strip_suffix("\n").unwrap())
-            .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
-            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
-            .extra(format!("androidboot.slot_suffix=_a\n"))
-            .build();
-        check_ramdisk(ramdisk, &read_test_data("generic_ramdisk_a.img"), &expected_bootconfig);
+    #[test]
+    fn test_android_main_bcb_normal_mode() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"boot_a", read_test_data("boot_v2_a.img"));
+        storage.add_raw_device(c"vbmeta_a", read_test_data("vbmeta_v2_a.img"));
+        storage.add_raw_device(c"misc", vec![0u8; 4 * 1024 * 1024]);
+
+        let mut ops = default_test_gbl_ops(&storage);
+        let mut load_buffer = AlignedBuffer::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
+        let (ramdisk, _, kernel, _) = android_main(&mut ops, &mut load_buffer).unwrap();
+        checks_loaded_v2_slot_a_normal_mode(ramdisk, kernel)
+    }
+
+    #[test]
+    fn test_android_main_bcb_recovery_mode() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"boot_a", read_test_data("boot_v2_a.img"));
+        storage.add_raw_device(c"vbmeta_a", read_test_data("vbmeta_v2_a.img"));
+        storage.add_raw_device(c"misc", vec![0u8; 4 * 1024 * 1024]);
+
+        let mut ops = default_test_gbl_ops(&storage);
+        ops.write_to_partition_sync("misc", 0, &mut b"boot-recovery".to_vec()).unwrap();
+        let mut load_buffer = AlignedBuffer::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
+        let (ramdisk, _, kernel, _) = android_main(&mut ops, &mut load_buffer).unwrap();
+        checks_loaded_v2_slot_a_recovery_mode(ramdisk, kernel)
     }
 }

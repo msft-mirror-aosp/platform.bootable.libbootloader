@@ -441,9 +441,11 @@ macro_rules! gbl_print {
 #[macro_export]
 macro_rules! gbl_println {
     ( $ops:expr, $( $x:expr ),* $(,)? ) => {
-        let newline = $ops.console_newline();
-        gbl_print!($ops, $($x,)*);
-        gbl_print!($ops, "{}", newline);
+        {
+            let newline = $ops.console_newline();
+            gbl_print!($ops, $($x,)*);
+            gbl_print!($ops, "{}", newline);
+        }
     };
 }
 
