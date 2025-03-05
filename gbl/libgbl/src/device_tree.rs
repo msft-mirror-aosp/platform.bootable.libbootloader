@@ -98,7 +98,7 @@ impl<'a> DeviceTreeComponentsRegistry<'a> {
 
     /// Load device tree components from a dt table image. Ensure components are 8 bytes
     /// aligned by using provided buffer to cut from. Returns remain buffer.
-    fn append_from_dttable<'b>(
+    pub fn append_from_dttable<'b>(
         &mut self,
         is_dtb: bool,
         dttable: &DtTableImage<'b>,

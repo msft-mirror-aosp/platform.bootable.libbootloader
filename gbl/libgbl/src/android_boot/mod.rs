@@ -283,16 +283,22 @@ pub fn load_android_simple<'a, 'b, 'c>(
     // of the buffer and move it forward as much as possible after ramdisk and fdt are loaded,
     // fixed-up and finalized.
     let boot_img_load_offset: usize = {
-        let off = SafeNum::from(load.len()) - kernel_size - boot_ramdisk_size;
+        let off = SafeNum::from(load.len())
+            - SafeNum::from(kernel_size).round_up(kernel_hdr_size)
+            - SafeNum::from(boot_ramdisk_size).round_up(kernel_hdr_size);
         let off_idx: usize = off.try_into().map_err(Error::from)?;
         let aligned_off = off - (&load[off_idx] as *const _ as usize % KERNEL_ALIGNMENT);
         aligned_off.try_into().map_err(Error::from)?
     };
     let (load, boot_img_buffer) = load.split_at_mut(boot_img_load_offset);
+    let boot_partition_load_size: usize = (SafeNum::from(kernel_size).round_up(kernel_hdr_size)
+        + SafeNum::from(boot_ramdisk_size).round_up(kernel_hdr_size))
+    .try_into()
+    .unwrap();
     ops.read_from_partition_sync(
         "boot_a",
         kernel_hdr_size.try_into().unwrap(),
-        &mut boot_img_buffer[..kernel_size + boot_ramdisk_size],
+        &mut boot_img_buffer[..boot_partition_load_size],
     )?;
 
     // Load vendor ramdisk
@@ -318,8 +324,10 @@ pub fn load_android_simple<'a, 'b, 'c>(
 
     // Load ramdisk from boot image
     if boot_ramdisk_size > 0 {
+        let kernel_size_roundup: usize =
+            SafeNum::from(kernel_size).round_up(kernel_hdr_size).try_into().unwrap();
         load[ramdisk_load_curr.try_into().map_err(Error::from)?..][..boot_ramdisk_size]
-            .copy_from_slice(&boot_img_buffer[kernel_size..][..boot_ramdisk_size]);
+            .copy_from_slice(&boot_img_buffer[kernel_size_roundup..][..boot_ramdisk_size]);
         ramdisk_load_curr += boot_ramdisk_size;
     }
 
@@ -504,14 +512,23 @@ pub fn android_load_verify_fixup<'a, 'b, 'c>(
     let (fdt_load, base, overlays) = match ops.get_custom_device_tree() {
         Some(v) => (fdt_load, v, &[][..]),
         _ => {
-            let remains = match images.dtbo.len() > 0 {
+            let mut remains = match images.dtbo.len() > 0 {
                 // TODO(b/384964561, b/374336105): Investigate if we can avoid additional copy.
                 true => components
                     .append_from_dtbo(&DtTableImage::from_bytes(images.dtbo)?, fdt_load)?,
                 _ => fdt_load,
             };
-            let remains =
-                components.append(ops, DeviceTreeComponentSource::Boot, images.dtb, remains)?;
+
+            if images.dtb.len() > 0 {
+                remains =
+                    components.append(ops, DeviceTreeComponentSource::Boot, images.dtb, remains)?;
+            }
+
+            if images.dtb_part.len() > 0 {
+                let dttable = DtTableImage::from_bytes(images.dtb_part)?;
+                remains = components.append_from_dttable(true, &dttable, remains)?;
+            }
+
             ops.select_device_trees(&mut components)?;
             let (base, overlays) = components.selected()?;
             (remains, base, overlays)
@@ -585,6 +602,35 @@ pub fn android_load_verify_fixup<'a, 'b, 'c>(
     Ok((ramdisk, fdt, kernel, unused))
 }
 
+/// Runs full Android bootloader bootflow before kernel handoff.
+///
+/// The API performs slot selection, handles boot mode, fastboot and loads and verifies Android from
+/// disk.
+///
+/// On success, returns a tuple of slices corresponding to `(ramdisk, FDT, kernel, unused)`
+pub fn android_main<'a, 'b, 'c>(
+    ops: &mut impl GblOps<'a, 'b>,
+    load: &'c mut [u8],
+) -> Result<(&'c mut [u8], &'c mut [u8], &'c mut [u8], &'c mut [u8])> {
+    let (bcb_buffer, _) = load
+        .split_at_mut_checked(BootloaderMessage::SIZE_BYTES)
+        .ok_or(Error::BufferTooSmall(Some(BootloaderMessage::SIZE_BYTES)))
+        .inspect_err(|e| gbl_println!(ops, "Buffer too small for reading misc. {e}"))?;
+    ops.read_from_partition_sync("misc", 0, bcb_buffer)
+        .inspect_err(|e| gbl_println!(ops, "Failed to read misc partition {e}"))?;
+    let bcb = BootloaderMessage::from_bytes_ref(bcb_buffer)
+        .inspect_err(|e| gbl_println!(ops, "Failed to parse bootloader messgae {e}"))?;
+    let boot_mode = bcb
+        .boot_mode()
+        .inspect_err(|e| gbl_println!(ops, "Failed to parse BCB boot mode {e}. Ignored"))
+        .unwrap_or(AndroidBootMode::Normal);
+    gbl_println!(ops, "Boot mode from BCB: {}", boot_mode);
+
+    // TODO(b/383620444): Add slot and fastboot support.
+    let is_recovery = matches!(boot_mode, AndroidBootMode::Recovery);
+    android_load_verify_fixup(ops, 0, is_recovery, load)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -643,7 +689,6 @@ mod tests {
     fn test_android_load_verify_fixup(
         slot: u8,
         partitions: &[(CString, String)],
-        custom_fdt: Option<&[u8]>,
         expected_kernel: &[u8],
         expected_ramdisk: &[u8],
         expected_bootconfig: &[u8],
@@ -655,7 +700,6 @@ mod tests {
             storage.add_raw_device(part, read_test_data(file));
         }
         let mut ops = FakeGblOps::new(&storage);
-        ops.custom_device_tree = custom_fdt;
         ops.avb_ops.unlock_state = Ok(false);
         ops.avb_ops.rollbacks = HashMap::from([(TEST_ROLLBACK_INDEX_LOCATION, Ok(0))]);
         let mut out_color = None;
@@ -713,8 +757,7 @@ mod tests {
     fn test_android_load_verify_fixup_v2_or_lower(
         ver: u8,
         slot: char,
-        custom_fdt: Option<&[u8]>,
-        additional_parts: &[(CString, String)],
+        additional_parts: &[(&CStr, &str)],
         additional_expected_fdt_properties: &[(&str, &CStr, Option<&[u8]>)],
     ) {
         let vbmeta = format!("vbmeta_v{ver}_{slot}.img");
@@ -722,12 +765,13 @@ mod tests {
             (CString::new(format!("boot_{slot}")).unwrap(), format!("boot_v{ver}_{slot}.img")),
             (CString::new(format!("vbmeta_{slot}")).unwrap(), vbmeta.clone()),
         ];
-        parts.extend_from_slice(additional_parts);
+        for (part, file) in additional_parts.iter().cloned() {
+            parts.push((part.into(), file.into()));
+        }
 
         test_android_load_verify_fixup(
             (u64::from(slot) - ('a' as u64)).try_into().unwrap(),
             &parts,
-            custom_fdt,
             &read_test_data(format!("kernel_{slot}.img")),
             &read_test_data(format!("generic_ramdisk_{slot}.img")),
             &make_expected_bootconfig(&vbmeta, slot, ""),
@@ -736,101 +780,107 @@ mod tests {
         )
     }
 
-    /// Helper for reading custom device tree.
-    fn dtb_custom() -> Vec<u8> {
-        read_test_data("device_tree_custom.dtb")
-    }
-
     #[test]
     fn test_android_load_verify_fixup_v0_slot_a() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"custom", Some(b"1\0"))];
-        // V0 image doesn't have built-in dtb. We need to provide a custom one.
-        test_android_load_verify_fixup_v2_or_lower(0, 'a', Some(&dtb_custom()), &[], fdt_prop);
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"dtb_slot", Some(b"a\0"))];
+        // V0 image doesn't have built-in dtb. We need to provide from dtb partition.
+        let parts = &[(c"dtb_a", "dtb_a.img")];
+        test_android_load_verify_fixup_v2_or_lower(0, 'a', parts, fdt_prop);
     }
 
     #[test]
     fn test_android_load_verify_fixup_v0_dtbo_slot_a() {
-        // Custom device tree ignores overlays.
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] =
-            &[("/chosen", c"custom", Some(b"1\0")), ("/chosen", c"overlay_a_property", None)];
-        let parts = &[(c"dtbo_a".into(), "dtbo_a.img".into())];
-        test_android_load_verify_fixup_v2_or_lower(0, 'a', Some(&dtb_custom()), parts, fdt_prop);
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[
+            ("/chosen", c"dtb_slot", Some(b"a\0")),
+            ("/chosen", c"overlay_a_property", Some(b"overlay_a_val\0")),
+        ];
+        let parts = &[(c"dtbo_a", "dtbo_a.img"), (c"dtb_a", "dtb_a.img")];
+        test_android_load_verify_fixup_v2_or_lower(0, 'a', parts, fdt_prop);
     }
 
     #[test]
     fn test_android_load_verify_fixup_v0_slot_b() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"custom", Some(b"1\0"))];
-        test_android_load_verify_fixup_v2_or_lower(0, 'b', Some(&dtb_custom()), &[], fdt_prop);
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"dtb_slot", Some(b"b\0"))];
+        let parts = &[(c"dtb_b", "dtb_b.img")];
+        test_android_load_verify_fixup_v2_or_lower(0, 'b', parts, fdt_prop);
     }
 
     #[test]
     fn test_android_load_verify_fixup_v0_dtbo_slot_b() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] =
-            &[("/chosen", c"custom", Some(b"1\0")), ("/chosen", c"overlay_b_property", None)];
-        let parts = &[(c"dtbo_b".into(), "dtbo_b.img".into())];
-        test_android_load_verify_fixup_v2_or_lower(0, 'b', Some(&dtb_custom()), parts, fdt_prop);
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[
+            ("/chosen", c"dtb_slot", Some(b"b\0")),
+            ("/chosen", c"overlay_b_property", Some(b"overlay_b_val\0")),
+        ];
+        let parts = &[(c"dtbo_b", "dtbo_b.img"), (c"dtb_b", "dtb_b.img")];
+        test_android_load_verify_fixup_v2_or_lower(0, 'b', parts, fdt_prop);
     }
 
     #[test]
     fn test_android_load_verify_fixup_v1_slot_a() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"custom", Some(b"1\0"))];
-        // V1 image doesn't have built-in dtb. We need to provide a custom one.
-        test_android_load_verify_fixup_v2_or_lower(1, 'a', Some(&dtb_custom()), &[], fdt_prop);
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"dtb_slot", Some(b"a\0"))];
+        // V1 image doesn't have built-in dtb. We need to provide from dtb partition.
+        let parts = &[(c"dtb_a", "dtb_a.img")];
+        test_android_load_verify_fixup_v2_or_lower(1, 'a', parts, fdt_prop);
     }
 
     #[test]
     fn test_android_load_verify_fixup_v1_dtbo_slot_a() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] =
-            &[("/chosen", c"custom", Some(b"1\0")), ("/chosen", c"overlay_a_property", None)];
-        let parts = &[(c"dtbo_a".into(), "dtbo_a.img".into())];
-        test_android_load_verify_fixup_v2_or_lower(1, 'a', Some(&dtb_custom()), parts, fdt_prop);
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[
+            ("/chosen", c"dtb_slot", Some(b"a\0")),
+            ("/chosen", c"overlay_a_property", Some(b"overlay_a_val\0")),
+        ];
+        let parts = &[(c"dtbo_a", "dtbo_a.img"), (c"dtb_a", "dtb_a.img")];
+        test_android_load_verify_fixup_v2_or_lower(1, 'a', parts, fdt_prop);
     }
 
     #[test]
     fn test_android_load_verify_fixup_v1_slot_b() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"custom", Some(b"1\0"))];
-        test_android_load_verify_fixup_v2_or_lower(1, 'b', Some(&dtb_custom()), &[], fdt_prop);
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"dtb_slot", Some(b"b\0"))];
+        let parts = &[(c"dtb_b", "dtb_b.img")];
+        test_android_load_verify_fixup_v2_or_lower(1, 'b', parts, fdt_prop);
     }
 
     #[test]
     fn test_android_load_verify_fixup_v1_dtbo_slot_b() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] =
-            &[("/chosen", c"custom", Some(b"1\0")), ("/chosen", c"overlay_b_property", None)];
-        let parts = &[(c"dtbo_b".into(), "dtbo_b.img".into())];
-        test_android_load_verify_fixup_v2_or_lower(1, 'b', Some(&dtb_custom()), parts, fdt_prop);
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[
+            ("/chosen", c"dtb_slot", Some(b"b\0")),
+            ("/chosen", c"overlay_b_property", Some(b"overlay_b_val\0")),
+        ];
+        let parts = &[(c"dtbo_b", "dtbo_b.img"), (c"dtb_b", "dtb_b.img")];
+        test_android_load_verify_fixup_v2_or_lower(1, 'b', parts, fdt_prop);
     }
 
     #[test]
     fn test_android_load_verify_fixup_v2_slot_a() {
         // V2 image has built-in dtb. We don't need to provide custom device tree.
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"custom", None)];
-        test_android_load_verify_fixup_v2_or_lower(2, 'a', None, &[], fdt_prop);
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"builtin", Some(&[1]))];
+        test_android_load_verify_fixup_v2_or_lower(2, 'a', &[], fdt_prop);
     }
 
     #[test]
     fn test_android_load_verify_fixup_v2_dtbo_slot_a() {
         let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[
-            ("/chosen", c"custom", None),
+            ("/chosen", c"builtin", Some(&[1])),
             ("/chosen", c"overlay_a_property", Some(b"overlay_a_val\0")),
         ];
         let parts = &[(c"dtbo_a".into(), "dtbo_a.img".into())];
-        test_android_load_verify_fixup_v2_or_lower(2, 'a', None, parts, fdt_prop);
+        test_android_load_verify_fixup_v2_or_lower(2, 'a', parts, fdt_prop);
     }
 
     #[test]
     fn test_android_load_verify_fixup_v2_slot_b() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"custom", None)];
-        test_android_load_verify_fixup_v2_or_lower(2, 'b', None, &[], fdt_prop);
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"builtin", Some(&[1]))];
+        test_android_load_verify_fixup_v2_or_lower(2, 'b', &[], fdt_prop);
     }
 
     #[test]
     fn test_android_load_verify_fixup_v2_dtbo_slot_b() {
         let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[
-            ("/chosen", c"custom", None),
+            ("/chosen", c"builtin", Some(&[1])),
             ("/chosen", c"overlay_b_property", Some(b"overlay_b_val\0")),
         ];
         let parts = &[(c"dtbo_b".into(), "dtbo_b.img".into())];
-        test_android_load_verify_fixup_v2_or_lower(2, 'b', None, parts, fdt_prop);
+        test_android_load_verify_fixup_v2_or_lower(2, 'b', parts, fdt_prop);
     }
 
     /// Common helper for testing `android_load_verify_fixup` for v3/v4 boot image.
@@ -849,7 +899,6 @@ mod tests {
         test_android_load_verify_fixup(
             (u64::from(slot) - ('a' as u64)).try_into().unwrap(),
             &partitions,
-            None,
             &read_test_data(format!("kernel_{slot}.img")),
             &expected_ramdisk,
             &make_expected_bootconfig(&vbmeta_file, slot, expected_vendor_bootconfig),
@@ -888,14 +937,14 @@ mod tests {
 
     #[test]
     fn test_android_load_verify_fixup_v3_v3_no_init_boot_slot_a() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"custom", None)];
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"builtin", Some(&[1]))];
         test_android_load_verify_fixup_v3_or_v4_no_init_boot(3, 3, 'a', "", &[], fdt_prop);
     }
 
     #[test]
     fn test_android_load_verify_fixup_v3_v3_no_init_boot_dtbo_slot_a() {
         let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[
-            ("/chosen", c"custom", None),
+            ("/chosen", c"builtin", Some(&[1])),
             ("/chosen", c"overlay_a_property", Some(b"overlay_a_val\0")),
         ];
         let parts = &[(c"dtbo_a".into(), "dtbo_a.img".into())];
@@ -904,14 +953,14 @@ mod tests {
 
     #[test]
     fn test_android_load_verify_fixup_v3_v3_no_init_boot_slot_b() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"custom", None)];
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"builtin", Some(&[1]))];
         test_android_load_verify_fixup_v3_or_v4_no_init_boot(3, 3, 'a', "", &[], fdt_prop);
     }
 
     #[test]
     fn test_android_load_verify_fixup_v3_v3_no_init_boot_dtbo_slot_b() {
         let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[
-            ("/chosen", c"custom", None),
+            ("/chosen", c"builtin", Some(&[1])),
             ("/chosen", c"overlay_b_property", Some(b"overlay_b_val\0")),
         ];
         let parts = &[(c"dtbo_b".into(), "dtbo_b.img".into())];
@@ -920,14 +969,14 @@ mod tests {
 
     #[test]
     fn test_android_load_verify_fixup_v4_v3_no_init_boot_slot_a() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"custom", None)];
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"builtin", Some(&[1]))];
         test_android_load_verify_fixup_v3_or_v4_no_init_boot(4, 3, 'a', "", &[], fdt_prop);
     }
 
     #[test]
     fn test_android_load_verify_fixup_v4_v3_no_init_boot_dtbo_slot_a() {
         let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[
-            ("/chosen", c"custom", None),
+            ("/chosen", c"builtin", Some(&[1])),
             ("/chosen", c"overlay_a_property", Some(b"overlay_a_val\0")),
         ];
         let parts = &[(c"dtbo_a".into(), "dtbo_a.img".into())];
@@ -936,14 +985,14 @@ mod tests {
 
     #[test]
     fn test_android_load_verify_fixup_v4_v3_no_init_boot_slot_b() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"custom", None)];
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"builtin", Some(&[1]))];
         test_android_load_verify_fixup_v3_or_v4_no_init_boot(4, 3, 'a', "", &[], fdt_prop);
     }
 
     #[test]
     fn test_android_load_verify_fixup_v4_v3_no_init_boot_dtbo_slot_b() {
         let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[
-            ("/chosen", c"custom", None),
+            ("/chosen", c"builtin", Some(&[1])),
             ("/chosen", c"overlay_b_property", Some(b"overlay_b_val\0")),
         ];
         let parts = &[(c"dtbo_b".into(), "dtbo_b.img".into())];
@@ -952,7 +1001,7 @@ mod tests {
 
     #[test]
     fn test_android_load_verify_fixup_v3_v4_no_init_boot_slot_a() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"custom", None)];
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"builtin", Some(&[1]))];
         let config = TEST_VENDOR_BOOTCONFIG;
         test_android_load_verify_fixup_v3_or_v4_no_init_boot(3, 4, 'a', config, &[], fdt_prop);
     }
@@ -960,7 +1009,7 @@ mod tests {
     #[test]
     fn test_android_load_verify_fixup_v3_v4_no_init_boot_dtbo_slot_a() {
         let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[
-            ("/chosen", c"custom", None),
+            ("/chosen", c"builtin", Some(&[1])),
             ("/chosen", c"overlay_a_property", Some(b"overlay_a_val\0")),
         ];
         let parts = &[(c"dtbo_a".into(), "dtbo_a.img".into())];
@@ -970,7 +1019,7 @@ mod tests {
 
     #[test]
     fn test_android_load_verify_fixup_v3_v4_no_init_boot_slot_b() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"custom", None)];
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"builtin", Some(&[1]))];
         let config = TEST_VENDOR_BOOTCONFIG;
         test_android_load_verify_fixup_v3_or_v4_no_init_boot(3, 4, 'a', config, &[], fdt_prop);
     }
@@ -978,7 +1027,7 @@ mod tests {
     #[test]
     fn test_android_load_verify_fixup_v3_v4_no_init_boot_dtbo_slot_b() {
         let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[
-            ("/chosen", c"custom", None),
+            ("/chosen", c"builtin", Some(&[1])),
             ("/chosen", c"overlay_b_property", Some(b"overlay_b_val\0")),
         ];
         let parts = &[(c"dtbo_b".into(), "dtbo_b.img".into())];
@@ -988,7 +1037,7 @@ mod tests {
 
     #[test]
     fn test_android_load_verify_fixup_v4_v4_no_init_boot_slot_a() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"custom", None)];
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"builtin", Some(&[1]))];
         let config = TEST_VENDOR_BOOTCONFIG;
         test_android_load_verify_fixup_v3_or_v4_no_init_boot(4, 4, 'a', config, &[], fdt_prop);
     }
@@ -996,7 +1045,7 @@ mod tests {
     #[test]
     fn test_android_load_verify_fixup_v4_v4_no_init_boot_dtbo_slot_a() {
         let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[
-            ("/chosen", c"custom", None),
+            ("/chosen", c"builtin", Some(&[1])),
             ("/chosen", c"overlay_a_property", Some(b"overlay_a_val\0")),
         ];
         let parts = &[(c"dtbo_a".into(), "dtbo_a.img".into())];
@@ -1006,7 +1055,7 @@ mod tests {
 
     #[test]
     fn test_android_load_verify_fixup_v4_v4_no_init_boot_slot_b() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"custom", None)];
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"builtin", Some(&[1]))];
         let config = TEST_VENDOR_BOOTCONFIG;
         test_android_load_verify_fixup_v3_or_v4_no_init_boot(4, 4, 'a', config, &[], fdt_prop);
     }
@@ -1014,7 +1063,7 @@ mod tests {
     #[test]
     fn test_android_load_verify_fixup_v4_v4_no_init_boot_dtbo_slot_b() {
         let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[
-            ("/chosen", c"custom", None),
+            ("/chosen", c"builtin", Some(&[1])),
             ("/chosen", c"overlay_b_property", Some(b"overlay_b_val\0")),
         ];
         let parts = &[(c"dtbo_b".into(), "dtbo_b.img".into())];
@@ -1056,14 +1105,14 @@ mod tests {
 
     #[test]
     fn test_android_load_verify_fixup_v3_v3_init_boot_slot_a() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"custom", None)];
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"builtin", Some(&[1]))];
         test_android_load_verify_fixup_v3_or_v4_init_boot(3, 3, 'a', "", &[], fdt_prop);
     }
 
     #[test]
     fn test_android_load_verify_fixup_v3_v3_init_boot_dtbo_slot_a() {
         let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[
-            ("/chosen", c"custom", None),
+            ("/chosen", c"builtin", Some(&[1])),
             ("/chosen", c"overlay_a_property", Some(b"overlay_a_val\0")),
         ];
         let parts = &[(c"dtbo_a".into(), "dtbo_a.img".into())];
@@ -1072,14 +1121,14 @@ mod tests {
 
     #[test]
     fn test_android_load_verify_fixup_v3_v3_init_boot_slot_b() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"custom", None)];
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"builtin", Some(&[1]))];
         test_android_load_verify_fixup_v3_or_v4_init_boot(3, 3, 'a', "", &[], fdt_prop);
     }
 
     #[test]
     fn test_android_load_verify_fixup_v3_v3_init_boot_dtbo_slot_b() {
         let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[
-            ("/chosen", c"custom", None),
+            ("/chosen", c"builtin", Some(&[1])),
             ("/chosen", c"overlay_b_property", Some(b"overlay_b_val\0")),
         ];
         let parts = &[(c"dtbo_b".into(), "dtbo_b.img".into())];
@@ -1088,14 +1137,14 @@ mod tests {
 
     #[test]
     fn test_android_load_verify_fixup_v4_v3_init_boot_slot_a() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"custom", None)];
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"builtin", Some(&[1]))];
         test_android_load_verify_fixup_v3_or_v4_init_boot(4, 3, 'a', "", &[], fdt_prop);
     }
 
     #[test]
     fn test_android_load_verify_fixup_v4_v3_init_boot_dtbo_slot_a() {
         let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[
-            ("/chosen", c"custom", None),
+            ("/chosen", c"builtin", Some(&[1])),
             ("/chosen", c"overlay_a_property", Some(b"overlay_a_val\0")),
         ];
         let parts = &[(c"dtbo_a".into(), "dtbo_a.img".into())];
@@ -1104,14 +1153,14 @@ mod tests {
 
     #[test]
     fn test_android_load_verify_fixup_v4_v3_init_boot_slot_b() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"custom", None)];
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"builtin", Some(&[1]))];
         test_android_load_verify_fixup_v3_or_v4_init_boot(4, 3, 'a', "", &[], fdt_prop);
     }
 
     #[test]
     fn test_android_load_verify_fixup_v4_v3_init_boot_dtbo_slot_b() {
         let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[
-            ("/chosen", c"custom", None),
+            ("/chosen", c"builtin", Some(&[1])),
             ("/chosen", c"overlay_b_property", Some(b"overlay_b_val\0")),
         ];
         let parts = &[(c"dtbo_b".into(), "dtbo_b.img".into())];
@@ -1120,7 +1169,7 @@ mod tests {
 
     #[test]
     fn test_android_load_verify_fixup_v3_v4_init_boot_slot_a() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"custom", None)];
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"builtin", Some(&[1]))];
         let config = TEST_VENDOR_BOOTCONFIG;
         test_android_load_verify_fixup_v3_or_v4_init_boot(3, 4, 'a', config, &[], fdt_prop);
     }
@@ -1128,7 +1177,7 @@ mod tests {
     #[test]
     fn test_android_load_verify_fixup_v3_v4_init_boot_dtbo_slot_a() {
         let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[
-            ("/chosen", c"custom", None),
+            ("/chosen", c"builtin", Some(&[1])),
             ("/chosen", c"overlay_a_property", Some(b"overlay_a_val\0")),
         ];
         let parts = &[(c"dtbo_a".into(), "dtbo_a.img".into())];
@@ -1138,7 +1187,7 @@ mod tests {
 
     #[test]
     fn test_android_load_verify_fixup_v3_v4_init_boot_slot_b() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"custom", None)];
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"builtin", Some(&[1]))];
         let config = TEST_VENDOR_BOOTCONFIG;
         test_android_load_verify_fixup_v3_or_v4_init_boot(3, 4, 'a', config, &[], fdt_prop);
     }
@@ -1146,7 +1195,7 @@ mod tests {
     #[test]
     fn test_android_load_verify_fixup_v3_v4_init_boot_dtbo_slot_b() {
         let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[
-            ("/chosen", c"custom", None),
+            ("/chosen", c"builtin", Some(&[1])),
             ("/chosen", c"overlay_b_property", Some(b"overlay_b_val\0")),
         ];
         let parts = &[(c"dtbo_b".into(), "dtbo_b.img".into())];
@@ -1156,7 +1205,7 @@ mod tests {
 
     #[test]
     fn test_android_load_verify_fixup_v4_v4_init_boot_slot_a() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"custom", None)];
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"builtin", Some(&[1]))];
         let config = TEST_VENDOR_BOOTCONFIG;
         test_android_load_verify_fixup_v3_or_v4_init_boot(4, 4, 'a', config, &[], fdt_prop);
     }
@@ -1164,7 +1213,7 @@ mod tests {
     #[test]
     fn test_android_load_verify_fixup_v4_v4_init_boot_dtbo_slot_a() {
         let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[
-            ("/chosen", c"custom", None),
+            ("/chosen", c"builtin", Some(&[1])),
             ("/chosen", c"overlay_a_property", Some(b"overlay_a_val\0")),
         ];
         let parts = &[(c"dtbo_a".into(), "dtbo_a.img".into())];
@@ -1174,7 +1223,7 @@ mod tests {
 
     #[test]
     fn test_android_load_verify_fixup_v4_v4_init_boot_slot_b() {
-        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"custom", None)];
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"builtin", Some(&[1]))];
         let config = TEST_VENDOR_BOOTCONFIG;
         test_android_load_verify_fixup_v3_or_v4_init_boot(4, 4, 'a', config, &[], fdt_prop);
     }
@@ -1182,12 +1231,48 @@ mod tests {
     #[test]
     fn test_android_load_verify_fixup_v4_v4_init_boot_dtbo_slot_b() {
         let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[
-            ("/chosen", c"custom", None),
+            ("/chosen", c"builtin", Some(&[1])),
             ("/chosen", c"overlay_b_property", Some(b"overlay_b_val\0")),
         ];
         let parts = &[(c"dtbo_b".into(), "dtbo_b.img".into())];
         let config = TEST_VENDOR_BOOTCONFIG;
         test_android_load_verify_fixup_v3_or_v4_init_boot(4, 4, 'b', config, parts, fdt_prop);
+    }
+
+    /// Helper for checking V2 image loaded from slot A and in normal mode.
+    fn checks_loaded_v2_slot_a_normal_mode(ramdisk: &[u8], kernel: &[u8]) {
+        let expected_bootconfig = AvbResultBootconfigBuilder::new()
+            .vbmeta_size(read_test_data("vbmeta_v2_a.img").len())
+            .digest(read_test_data_as_str("vbmeta_v2_a.digest.txt").strip_suffix("\n").unwrap())
+            .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
+            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
+            .extra("androidboot.force_normal_boot=1\n")
+            .extra(format!("androidboot.slot_suffix=_a\n"))
+            .build();
+        check_ramdisk(ramdisk, &read_test_data("generic_ramdisk_a.img"), &expected_bootconfig);
+        assert_eq!(kernel, read_test_data("kernel_a.img"));
+    }
+
+    /// Helper for checking V2 image loaded from slot A and in recovery mode.
+    fn checks_loaded_v2_slot_a_recovery_mode(ramdisk: &[u8], kernel: &[u8]) {
+        let expected_bootconfig = AvbResultBootconfigBuilder::new()
+            .vbmeta_size(read_test_data("vbmeta_v2_a.img").len())
+            .digest(read_test_data_as_str("vbmeta_v2_a.digest.txt").strip_suffix("\n").unwrap())
+            .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
+            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
+            .extra(format!("androidboot.slot_suffix=_a\n"))
+            .build();
+        check_ramdisk(ramdisk, &read_test_data("generic_ramdisk_a.img"), &expected_bootconfig);
+        assert_eq!(kernel, read_test_data("kernel_a.img"));
+    }
+
+    /// Helper for getting default FakeGblOps for tests.
+    fn default_test_gbl_ops(storage: &FakeGblOpsStorage) -> FakeGblOps {
+        let mut ops = FakeGblOps::new(&storage);
+        ops.avb_ops.unlock_state = Ok(false);
+        ops.avb_ops.rollbacks = HashMap::from([(TEST_ROLLBACK_INDEX_LOCATION, Ok(0))]);
+        ops.avb_key_validation_status = Some(Ok(KeyValidationStatus::Valid));
+        ops
     }
 
     #[test]
@@ -1199,22 +1284,37 @@ mod tests {
         storage.add_raw_device(c"boot_a", read_test_data("boot_v2_a.img"));
         storage.add_raw_device(c"vbmeta_a", read_test_data("vbmeta_v2_a.img"));
 
-        let mut ops = FakeGblOps::new(&storage);
-        ops.avb_ops.unlock_state = Ok(false);
-        ops.avb_ops.rollbacks = HashMap::from([(TEST_ROLLBACK_INDEX_LOCATION, Ok(0))]);
-        ops.avb_key_validation_status = Some(Ok(KeyValidationStatus::Valid));
-
+        let mut ops = default_test_gbl_ops(&storage);
         let mut load_buffer = AlignedBuffer::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
-        let (ramdisk, _, _, _) =
+        let (ramdisk, _, kernel, _) =
             android_load_verify_fixup(&mut ops, 0, true, &mut load_buffer).unwrap();
+        checks_loaded_v2_slot_a_recovery_mode(ramdisk, kernel)
+    }
 
-        let expected_bootconfig = AvbResultBootconfigBuilder::new()
-            .vbmeta_size(read_test_data("vbmeta_v2_a.img").len())
-            .digest(read_test_data_as_str("vbmeta_v2_a.digest.txt").strip_suffix("\n").unwrap())
-            .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
-            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
-            .extra(format!("androidboot.slot_suffix=_a\n"))
-            .build();
-        check_ramdisk(ramdisk, &read_test_data("generic_ramdisk_a.img"), &expected_bootconfig);
+    #[test]
+    fn test_android_main_bcb_normal_mode() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"boot_a", read_test_data("boot_v2_a.img"));
+        storage.add_raw_device(c"vbmeta_a", read_test_data("vbmeta_v2_a.img"));
+        storage.add_raw_device(c"misc", vec![0u8; 4 * 1024 * 1024]);
+
+        let mut ops = default_test_gbl_ops(&storage);
+        let mut load_buffer = AlignedBuffer::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
+        let (ramdisk, _, kernel, _) = android_main(&mut ops, &mut load_buffer).unwrap();
+        checks_loaded_v2_slot_a_normal_mode(ramdisk, kernel)
+    }
+
+    #[test]
+    fn test_android_main_bcb_recovery_mode() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"boot_a", read_test_data("boot_v2_a.img"));
+        storage.add_raw_device(c"vbmeta_a", read_test_data("vbmeta_v2_a.img"));
+        storage.add_raw_device(c"misc", vec![0u8; 4 * 1024 * 1024]);
+
+        let mut ops = default_test_gbl_ops(&storage);
+        ops.write_to_partition_sync("misc", 0, &mut b"boot-recovery".to_vec()).unwrap();
+        let mut load_buffer = AlignedBuffer::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
+        let (ramdisk, _, kernel, _) = android_main(&mut ops, &mut load_buffer).unwrap();
+        checks_loaded_v2_slot_a_recovery_mode(ramdisk, kernel)
     }
 }
