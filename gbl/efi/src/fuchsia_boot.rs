@@ -25,6 +25,7 @@ use efi_types::{
 use liberror::Error;
 use liberror::Error::BufferTooSmall;
 use libgbl::{
+    constants::PAGE_SIZE as PAGE_SIZE_USIZE,
     fuchsia_boot::{zircon_check_enter_fastboot, zircon_load_verify_abr, zircon_part_name},
     partition::check_part_unique,
     IntegrationError::UnificationError,
@@ -34,7 +35,7 @@ use safemath::SafeNum;
 use zbi::{zbi_format::zbi_mem_range_t, ZbiContainer, ZbiFlags, ZbiType};
 use zerocopy::{Ref, SplitByteSliceMut};
 
-const PAGE_SIZE: u64 = 4096;
+const PAGE_SIZE: u64 = PAGE_SIZE_USIZE as u64;
 
 /// Check if the disk GPT layout is a Fuchsia device layout.
 pub fn is_fuchsia_gpt(efi_entry: &EfiEntry) -> Result<()> {
