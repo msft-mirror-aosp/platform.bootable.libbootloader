@@ -97,7 +97,7 @@ pub fn app_main(entry: EfiEntry) -> Result<()> {
 
     match get_target_os(&entry) {
         TargetOs::Fuchsia => fuchsia_boot::fuchsia_boot_demo(entry)?,
-        TargetOs::Android => android_boot::android_boot_demo(entry)?,
+        TargetOs::Android => android_boot::android_efi_main(entry)?,
     }
 
     Ok(())
