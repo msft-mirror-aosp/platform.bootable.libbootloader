@@ -35,7 +35,9 @@ use efi::{
 use fastboot::{TcpStream, Transport};
 use gbl_async::{block_on, YieldCounter};
 use liberror::{Error, Result};
-use libgbl::fastboot::{run_gbl_fastboot, GblTcpStream, GblUsbTransport, PinFutContainer};
+use libgbl::fastboot::{
+    run_gbl_fastboot, GblFastbootResult, GblTcpStream, GblUsbTransport, PinFutContainer,
+};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 const FASTBOOT_TCP_PORT: u16 = 5554;
@@ -203,7 +205,7 @@ impl<'a> PinFutContainer<'a> for VecPinFut<'a> {
     }
 }
 
-pub fn fastboot(efi_gbl_ops: &mut Ops, bootimg_buf: &mut [u8]) -> Result<()> {
+pub fn fastboot(efi_gbl_ops: &mut Ops, bootimg_buf: &mut [u8]) -> Result<GblFastbootResult> {
     let efi_entry = efi_gbl_ops.efi_entry;
     efi_println!(efi_entry, "Entering fastboot mode...");
 
@@ -233,7 +235,7 @@ pub fn fastboot(efi_gbl_ops: &mut Ops, bootimg_buf: &mut [u8]) -> Result<()> {
     let tcp = tcp.as_mut().map(|v| EfiFastbootTcpTransport::new(v));
 
     let download_buffers = vec![vec![0u8; 512 * 1024 * 1024]; 2].into();
-    block_on(run_gbl_fastboot(
+    let res = block_on(run_gbl_fastboot(
         efi_gbl_ops,
         &download_buffers,
         VecPinFut::default(),
@@ -245,5 +247,5 @@ pub fn fastboot(efi_gbl_ops: &mut Ops, bootimg_buf: &mut [u8]) -> Result<()> {
 
     efi_println!(efi_entry, "Leaving fastboot mode...");
 
-    Ok(())
+    Ok(res)
 }
