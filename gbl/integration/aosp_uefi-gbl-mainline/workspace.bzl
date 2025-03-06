@@ -98,10 +98,9 @@ def define_gbl_workspace(name = None):
         path = "external/bazelbuild-rules_license",
     )
 
-    # TODO(b/383783832): migrate to android-crates-io
     native.new_local_repository(
         name = "rules_rust_tinyjson",
-        path = "external/rust/crates/tinyjson",
+        path = "external/rust/android-crates-io/crates/tinyjson",
         build_file = "@rules_rust//util/process_wrapper:BUILD.tinyjson.bazel",
     )
 
