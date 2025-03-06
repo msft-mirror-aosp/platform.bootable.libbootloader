@@ -15,8 +15,9 @@
 //! Android boot support.
 
 use crate::{
-    device_tree::{DeviceTreeComponentSource, DeviceTreeComponentsRegistry, FDT_ALIGNMENT},
-    gbl_print, gbl_println, GblOps, Result,
+    constants::{FDT_ALIGNMENT, KERNEL_ALIGNMENT, PAGE_SIZE},
+    device_tree::{DeviceTreeComponentSource, DeviceTreeComponentsRegistry},
+    gbl_print, gbl_println, GblOps, Result, SuffixBytes,
 };
 use bootimg::{BootImage, VendorImageHeader};
 use bootparams::{bootconfig::BootConfigBuilder, commandline::CommandlineBuilder};
@@ -41,8 +42,6 @@ use crate::decompress::decompress_kernel;
 
 /// Device tree bootargs property to store kernel command line.
 pub const BOOTARGS_PROP: &CStr = c"bootargs";
-/// Linux kernel requires 2MB alignment.
-const KERNEL_ALIGNMENT: usize = 2 * 1024 * 1024;
 
 /// A helper to convert a bytes slice containing a null-terminated string to `str`
 fn cstr_bytes_to_str(data: &[u8]) -> core::result::Result<&str, Error> {
@@ -58,7 +57,6 @@ fn cstr_bytes_to_str(data: &[u8]) -> core::result::Result<&str, Error> {
 fn boot_header_elements<B: ByteSlice + PartialEq>(
     hdr: &BootImage<B>,
 ) -> Result<(usize, &str, usize, usize, usize, usize)> {
-    const PAGE_SIZE: usize = 4096; // V3/V4 image has fixed page size 4096;
     Ok(match hdr {
         BootImage::V2(ref hdr) => (
             hdr._base._base.kernel_size as usize,
@@ -147,8 +145,6 @@ pub fn load_android_simple<'a, 'b, 'c>(
     ops: &mut impl GblOps<'b, 'c>,
     load: &'a mut [u8],
 ) -> Result<(&'a mut [u8], &'a mut [u8], &'a mut [u8], &'a mut [u8])> {
-    const PAGE_SIZE: usize = 4096; // V3/V4 image has fixed page size 4096;
-
     let (bcb_buffer, load) = load.split_at_mut(BootloaderMessage::SIZE_BYTES);
     ops.read_from_partition_sync("misc", 0, bcb_buffer)?;
     let bcb = BootloaderMessage::from_bytes_ref(bcb_buffer)?;
@@ -626,9 +622,34 @@ pub fn android_main<'a, 'b, 'c>(
         .unwrap_or(AndroidBootMode::Normal);
     gbl_println!(ops, "Boot mode from BCB: {}", boot_mode);
 
+    let slot_idx = match ops.get_boot_slot(true) {
+        Ok(slot) => {
+            // TODO(b/383620444): Checks whether fastboot has set a different active slot and resets
+            // if it does.
+
+            // Currently we assume slot suffix only takes value within 'a' to 'z'. Revisit if this
+            // is not the case.
+            //
+            // It's a little awkward to convert suffix char to integer which will then be converted
+            // back to char by the API. Consider passing in the char bytes directly.
+            let suffix_bytes = SuffixBytes::from(slot.suffix);
+            suffix_bytes[0] - b'a'
+        }
+        Err(Error::Unsupported) => {
+            // Default to slot A if slotting is not supported.
+            // Slotless partition name is currently not supported. Revisit if this causes problems.
+            gbl_println!(ops, "Slotting is not supported. Choose A slot by default");
+            0
+        }
+        Err(e) => {
+            gbl_println!(ops, "Failed to get boot slot: {e}");
+            return Err(e.into());
+        }
+    };
+
     // TODO(b/383620444): Add slot and fastboot support.
     let is_recovery = matches!(boot_mode, AndroidBootMode::Recovery);
-    android_load_verify_fixup(ops, 0, is_recovery, load)
+    android_load_verify_fixup(ops, slot_idx, is_recovery, load)
 }
 
 #[cfg(test)]
@@ -636,7 +657,7 @@ mod tests {
     use super::*;
     use crate::{
         gbl_avb::state::{BootStateColor, KeyValidationStatus},
-        ops::test::{FakeGblOps, FakeGblOpsStorage},
+        ops::test::{slot, FakeGblOps, FakeGblOpsStorage},
         tests::AlignedBuffer,
     };
     use load::tests::{
@@ -1272,6 +1293,7 @@ mod tests {
         ops.avb_ops.unlock_state = Ok(false);
         ops.avb_ops.rollbacks = HashMap::from([(TEST_ROLLBACK_INDEX_LOCATION, Ok(0))]);
         ops.avb_key_validation_status = Some(Ok(KeyValidationStatus::Valid));
+        ops.current_slot = Some(Ok(slot('a')));
         ops
     }
 
@@ -1316,5 +1338,96 @@ mod tests {
         let mut load_buffer = AlignedBuffer::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
         let (ramdisk, _, kernel, _) = android_main(&mut ops, &mut load_buffer).unwrap();
         checks_loaded_v2_slot_a_recovery_mode(ramdisk, kernel)
+    }
+
+    /// Helper for checking V2 image loaded from slot B and in normal mode.
+    fn checks_loaded_v2_slot_b_normal_mode(ramdisk: &[u8], kernel: &[u8]) {
+        let expected_bootconfig = AvbResultBootconfigBuilder::new()
+            .vbmeta_size(read_test_data("vbmeta_v2_b.img").len())
+            .digest(read_test_data_as_str("vbmeta_v2_b.digest.txt").strip_suffix("\n").unwrap())
+            .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
+            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
+            .extra("androidboot.force_normal_boot=1\n")
+            .extra(format!("androidboot.slot_suffix=_b\n"))
+            .build();
+        check_ramdisk(ramdisk, &read_test_data("generic_ramdisk_b.img"), &expected_bootconfig);
+        assert_eq!(kernel, read_test_data("kernel_b.img"));
+    }
+
+    #[test]
+    fn test_android_main_slotted_gbl_slot_a() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"boot_a", read_test_data("boot_v2_a.img"));
+        storage.add_raw_device(c"vbmeta_a", read_test_data("vbmeta_v2_a.img"));
+        storage.add_raw_device(c"misc", vec![0u8; 4 * 1024 * 1024]);
+
+        let mut ops = default_test_gbl_ops(&storage);
+        let mut load_buffer = AlignedBuffer::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
+        let (ramdisk, _, kernel, _) = android_main(&mut ops, &mut load_buffer).unwrap();
+        assert_eq!(ops.mark_boot_attempt_called, 0);
+        checks_loaded_v2_slot_a_normal_mode(ramdisk, kernel)
+    }
+
+    #[test]
+    fn test_android_main_slotless_gbl_slot_a() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"boot_a", read_test_data("boot_v2_a.img"));
+        storage.add_raw_device(c"vbmeta_a", read_test_data("vbmeta_v2_a.img"));
+        storage.add_raw_device(c"misc", vec![0u8; 4 * 1024 * 1024]);
+
+        let mut ops = default_test_gbl_ops(&storage);
+        ops.current_slot = Some(Err(Error::Unsupported));
+        ops.next_slot = Some(Ok(slot('a')));
+        let mut load_buffer = AlignedBuffer::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
+        let (ramdisk, _, kernel, _) = android_main(&mut ops, &mut load_buffer).unwrap();
+        assert_eq!(ops.mark_boot_attempt_called, 1);
+        checks_loaded_v2_slot_a_normal_mode(ramdisk, kernel)
+    }
+
+    #[test]
+    fn test_android_main_slotted_gbl_slot_b() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"boot_b", read_test_data("boot_v2_b.img"));
+        storage.add_raw_device(c"vbmeta_b", read_test_data("vbmeta_v2_b.img"));
+        storage.add_raw_device(c"misc", vec![0u8; 4 * 1024 * 1024]);
+
+        let mut ops = default_test_gbl_ops(&storage);
+        ops.current_slot = Some(Ok(slot('b')));
+
+        let mut load_buffer = AlignedBuffer::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
+        let (ramdisk, _, kernel, _) = android_main(&mut ops, &mut load_buffer).unwrap();
+        assert_eq!(ops.mark_boot_attempt_called, 0);
+        checks_loaded_v2_slot_b_normal_mode(ramdisk, kernel)
+    }
+
+    #[test]
+    fn test_android_main_slotless_gbl_slot_b() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"boot_b", read_test_data("boot_v2_b.img"));
+        storage.add_raw_device(c"vbmeta_b", read_test_data("vbmeta_v2_b.img"));
+        storage.add_raw_device(c"misc", vec![0u8; 4 * 1024 * 1024]);
+
+        let mut ops = default_test_gbl_ops(&storage);
+        ops.current_slot = Some(Err(Error::Unsupported));
+        ops.next_slot = Some(Ok(slot('b')));
+        let mut load_buffer = AlignedBuffer::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
+        let (ramdisk, _, kernel, _) = android_main(&mut ops, &mut load_buffer).unwrap();
+        assert_eq!(ops.mark_boot_attempt_called, 1);
+        checks_loaded_v2_slot_b_normal_mode(ramdisk, kernel);
+    }
+
+    #[test]
+    fn test_android_main_unsupported_slot_default_to_a() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"boot_a", read_test_data("boot_v2_a.img"));
+        storage.add_raw_device(c"vbmeta_a", read_test_data("vbmeta_v2_a.img"));
+        storage.add_raw_device(c"misc", vec![0u8; 4 * 1024 * 1024]);
+
+        let mut ops = default_test_gbl_ops(&storage);
+        ops.current_slot = Some(Err(Error::Unsupported));
+        ops.next_slot = Some(Err(Error::Unsupported));
+        let mut load_buffer = AlignedBuffer::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
+        let (ramdisk, _, kernel, _) = android_main(&mut ops, &mut load_buffer).unwrap();
+        checks_loaded_v2_slot_a_normal_mode(ramdisk, kernel)
     }
 }

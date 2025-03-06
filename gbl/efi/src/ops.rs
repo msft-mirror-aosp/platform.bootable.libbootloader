@@ -608,6 +608,39 @@ impl<'a, 'b, 'd> GblOps<'b, 'd> for Ops<'a, 'b> {
         })
     }
 
+    #[cfg(not(test))]
+    fn get_current_slot(&mut self) -> Result<Slot> {
+        // TODO(b/383620444): GBL EFI slot protocol is currently implemented on a few platforms such
+        // as Cuttlefish but is out of sync. Wait until protocol is more stable and all platforms
+        // pick up the latest before enabling.
+        Err(Error::Unsupported)
+    }
+
+    #[cfg(not(test))]
+    fn get_next_slot(&mut self, _: bool) -> Result<Slot> {
+        // TODO(b/383620444): See `get_current_slot()`.
+        Err(Error::Unsupported)
+    }
+
+    #[cfg(not(test))]
+    fn set_active_slot(&mut self, _: u8) -> Result<()> {
+        // TODO(b/383620444): See `get_current_slot()`.
+        Err(Error::Unsupported)
+    }
+
+    #[cfg(not(test))]
+    fn set_reboot_reason(&mut self, _: RebootReason) -> Result<()> {
+        // TODO(b/383620444): See `get_current_slot()`.
+        Err(Error::Unsupported)
+    }
+
+    #[cfg(not(test))]
+    fn get_reboot_reason(&mut self) -> Result<RebootReason> {
+        // TODO(b/383620444): See `get_current_slot()`.
+        Err(Error::Unsupported)
+    }
+
+    #[cfg(test)]
     fn get_current_slot(&mut self) -> Result<Slot> {
         // TODO(b/363075013): Refactors the opening of slot protocol into a common helper once
         // `MockBootServices::find_first_and_open` is updated to return Protocol<'_, T>.
@@ -619,6 +652,7 @@ impl<'a, 'b, 'd> GblOps<'b, 'd> for Ops<'a, 'b> {
             .try_into()
     }
 
+    #[cfg(test)]
     fn get_next_slot(&mut self, mark_boot_attempt: bool) -> Result<Slot> {
         self.efi_entry
             .system_table()
@@ -628,6 +662,7 @@ impl<'a, 'b, 'd> GblOps<'b, 'd> for Ops<'a, 'b> {
             .try_into()
     }
 
+    #[cfg(test)]
     fn set_active_slot(&mut self, slot: u8) -> Result<()> {
         self.efi_entry
             .system_table()
@@ -636,6 +671,7 @@ impl<'a, 'b, 'd> GblOps<'b, 'd> for Ops<'a, 'b> {
             .set_active_slot(slot)
     }
 
+    #[cfg(test)]
     fn set_reboot_reason(&mut self, reason: RebootReason) -> Result<()> {
         self.efi_entry
             .system_table()
@@ -644,6 +680,7 @@ impl<'a, 'b, 'd> GblOps<'b, 'd> for Ops<'a, 'b> {
             .set_boot_reason(gbl_to_efi_boot_reason(reason), b"")
     }
 
+    #[cfg(test)]
     fn get_reboot_reason(&mut self) -> Result<RebootReason> {
         let mut subreason = [0u8; 128];
         self.efi_entry
@@ -656,6 +693,8 @@ impl<'a, 'b, 'd> GblOps<'b, 'd> for Ops<'a, 'b> {
 }
 
 /// Converts a [GblEfiBootReason] to [RebootReason].
+// TODO(b/383620444): Remove the attribute once all boards picks up the stable Slot protocol.
+#[allow(dead_code)]
 fn efi_to_gbl_boot_reason(reason: GblEfiBootReason) -> RebootReason {
     match reason {
         GBL_EFI_BOOT_REASON_RECOVERY => RebootReason::Recovery,
@@ -666,6 +705,8 @@ fn efi_to_gbl_boot_reason(reason: GblEfiBootReason) -> RebootReason {
 }
 
 /// Converts a [RebootReason] to [GblEfiBootReason].
+// TODO(b/383620444): Remove the attribute once all boards picks up the stable Slot protocol.
+#[allow(dead_code)]
 fn gbl_to_efi_boot_reason(reason: RebootReason) -> GblEfiBootReason {
     match reason {
         RebootReason::Recovery => GBL_EFI_BOOT_REASON_RECOVERY,
