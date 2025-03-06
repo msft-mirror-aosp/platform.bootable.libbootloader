@@ -17,7 +17,7 @@
 use crate::{
     constants::{FDT_ALIGNMENT, KERNEL_ALIGNMENT, PAGE_SIZE},
     device_tree::{DeviceTreeComponentSource, DeviceTreeComponentsRegistry},
-    gbl_print, gbl_println, GblOps, Result, SuffixBytes,
+    gbl_print, gbl_println, GblOps, Result,
 };
 use bootimg::{BootImage, VendorImageHeader};
 use bootparams::{bootconfig::BootConfigBuilder, commandline::CommandlineBuilder};
@@ -33,7 +33,7 @@ use zerocopy::{ByteSlice, IntoBytes, Ref};
 mod vboot;
 use vboot::{avb_verify_slot, PartitionsToVerify};
 
-mod load;
+pub(crate) mod load;
 use load::split_chunks;
 pub use load::{android_load_verify, LoadedImages};
 
@@ -598,6 +598,40 @@ pub fn android_load_verify_fixup<'a, 'b, 'c>(
     Ok((ramdisk, fdt, kernel, unused))
 }
 
+/// Gets the target slot to boot.
+///
+/// * If GBL is slotless (`GblOps::get_current_slot()` returns `Error::Unsupported`), the API
+///   behaves the same as `GblOps::get_next_slot()`.
+/// * If GBL is slotted, the API behaves the same as `GblOps::get_current_slot()` and
+///   `mark_boot_attempt` is ignored.
+/// * Default to A slot if slotting backend is not implemented on the platform.
+pub(crate) fn get_boot_slot<'a, 'b, 'c>(
+    ops: &mut impl GblOps<'a, 'b>,
+    mark_boot_attempt: bool,
+) -> Result<char> {
+    let slot = match ops.get_current_slot() {
+        // Slotless bootloader
+        Err(Error::Unsupported) => {
+            gbl_println!(ops, "GBL is Slotless.");
+            ops.get_next_slot(mark_boot_attempt)
+        }
+        v => v,
+    };
+    match slot {
+        Ok(slot) => Ok(slot.suffix.0),
+        Err(Error::Unsupported) => {
+            // Default to slot A if slotting is not supported.
+            // Slotless partition name is currently not supported. Revisit if this causes problems.
+            gbl_println!(ops, "Slotting is not supported. Choose A slot by default");
+            Ok('a')
+        }
+        Err(e) => {
+            gbl_println!(ops, "Failed to get boot slot: {e}");
+            Err(e.into())
+        }
+    }
+}
+
 /// Runs full Android bootloader bootflow before kernel handoff.
 ///
 /// The API performs slot selection, handles boot mode, fastboot and loads and verifies Android from
@@ -622,30 +656,15 @@ pub fn android_main<'a, 'b, 'c>(
         .unwrap_or(AndroidBootMode::Normal);
     gbl_println!(ops, "Boot mode from BCB: {}", boot_mode);
 
-    let slot_idx = match ops.get_boot_slot(true) {
-        Ok(slot) => {
-            // TODO(b/383620444): Checks whether fastboot has set a different active slot and resets
-            // if it does.
-
-            // Currently we assume slot suffix only takes value within 'a' to 'z'. Revisit if this
-            // is not the case.
-            //
-            // It's a little awkward to convert suffix char to integer which will then be converted
-            // back to char by the API. Consider passing in the char bytes directly.
-            let suffix_bytes = SuffixBytes::from(slot.suffix);
-            suffix_bytes[0] - b'a'
-        }
-        Err(Error::Unsupported) => {
-            // Default to slot A if slotting is not supported.
-            // Slotless partition name is currently not supported. Revisit if this causes problems.
-            gbl_println!(ops, "Slotting is not supported. Choose A slot by default");
-            0
-        }
-        Err(e) => {
-            gbl_println!(ops, "Failed to get boot slot: {e}");
-            return Err(e.into());
-        }
-    };
+    // TODO(b/383620444): Checks whether fastboot has set a different active slot and resets
+    // if it does.
+    //
+    // Currently we assume slot suffix only takes value within 'a' to 'z'. Revisit if this
+    // is not the case.
+    //
+    // It's a little awkward to convert suffix char to integer which will then be converted
+    // back to char by the API. Consider passing in the char bytes directly.
+    let slot_idx = (u64::from(get_boot_slot(ops, true)?) - u64::from('a')).try_into().unwrap();
 
     // TODO(b/383620444): Add slot and fastboot support.
     let is_recovery = matches!(boot_mode, AndroidBootMode::Recovery);
@@ -653,7 +672,7 @@ pub fn android_main<'a, 'b, 'c>(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{
         gbl_avb::state::{BootStateColor, KeyValidationStatus},
@@ -1261,7 +1280,7 @@ mod tests {
     }
 
     /// Helper for checking V2 image loaded from slot A and in normal mode.
-    fn checks_loaded_v2_slot_a_normal_mode(ramdisk: &[u8], kernel: &[u8]) {
+    pub(crate) fn checks_loaded_v2_slot_a_normal_mode(ramdisk: &[u8], kernel: &[u8]) {
         let expected_bootconfig = AvbResultBootconfigBuilder::new()
             .vbmeta_size(read_test_data("vbmeta_v2_a.img").len())
             .digest(read_test_data_as_str("vbmeta_v2_a.digest.txt").strip_suffix("\n").unwrap())
@@ -1288,7 +1307,7 @@ mod tests {
     }
 
     /// Helper for getting default FakeGblOps for tests.
-    fn default_test_gbl_ops(storage: &FakeGblOpsStorage) -> FakeGblOps {
+    pub(crate) fn default_test_gbl_ops(storage: &FakeGblOpsStorage) -> FakeGblOps {
         let mut ops = FakeGblOps::new(&storage);
         ops.avb_ops.unlock_state = Ok(false);
         ops.avb_ops.rollbacks = HashMap::from([(TEST_ROLLBACK_INDEX_LOCATION, Ok(0))]);
@@ -1341,7 +1360,7 @@ mod tests {
     }
 
     /// Helper for checking V2 image loaded from slot B and in normal mode.
-    fn checks_loaded_v2_slot_b_normal_mode(ramdisk: &[u8], kernel: &[u8]) {
+    pub(crate) fn checks_loaded_v2_slot_b_normal_mode(ramdisk: &[u8], kernel: &[u8]) {
         let expected_bootconfig = AvbResultBootconfigBuilder::new()
             .vbmeta_size(read_test_data("vbmeta_v2_b.img").len())
             .digest(read_test_data_as_str("vbmeta_v2_b.digest.txt").strip_suffix("\n").unwrap())
