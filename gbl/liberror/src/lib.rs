@@ -241,6 +241,8 @@ pub enum Error {
     Unaddressable,
     /// An unknown, unexpected EFI_STATUS error code was returned,
     UnexpectedEfiError(efi::EfiStatus),
+    /// Return from function that is not expected to return.
+    UnexpectedReturn,
     /// Operation is unsupported
     Unsupported,
     /// Data verification has encountered a version number that is not supported.

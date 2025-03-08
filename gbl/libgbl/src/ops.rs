@@ -807,6 +807,12 @@ pub(crate) mod test {
 
         /// Number of times `get_next_slot()` is called with `mark_boot_attempt` set to true.
         pub mark_boot_attempt_called: usize,
+
+        /// slot index last set active by `set_active()`,
+        pub last_set_active_slot: Option<u8>,
+
+        /// For returned by `get_reboot_reason()`
+        pub reboot_reason: Option<Result<RebootReason, Error>>,
     }
 
     /// Print `console_out` output, which can be useful for debugging.
@@ -1088,8 +1094,9 @@ pub(crate) mod test {
             self.next_slot.unwrap()
         }
 
-        fn set_active_slot(&mut self, _: u8) -> Result<(), Error> {
-            unimplemented!()
+        fn set_active_slot(&mut self, slot: u8) -> Result<(), Error> {
+            self.last_set_active_slot = Some(slot);
+            Ok(())
         }
 
         fn set_reboot_reason(&mut self, _: RebootReason) -> Result<(), Error> {
@@ -1097,7 +1104,7 @@ pub(crate) mod test {
         }
 
         fn get_reboot_reason(&mut self) -> Result<RebootReason, Error> {
-            unimplemented!()
+            self.reboot_reason.unwrap()
         }
     }
 

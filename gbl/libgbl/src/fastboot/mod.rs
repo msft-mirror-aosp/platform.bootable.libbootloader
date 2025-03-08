@@ -584,7 +584,11 @@ where
                     _ => return Err("Invalid slot index for Fuchsia A/B/R".into()),
                 },
             )?),
-            _ => Err("Not supported".into()),
+            // We currently assume that slot indices are mapped to suffix 'a' to 'z' starting from
+            // 0. Revisit if we need to support arbitrary slot suffix to index mapping.
+            _ => Ok(self
+                .gbl_ops
+                .set_active_slot(u8::try_from(slot.chars().next().unwrap())? - b'a')?),
         }
     }
 }
@@ -945,7 +949,7 @@ pub fn fuchsia_fastboot_mdns_packet(node_name: &str, ipv6_addr: &[u8]) -> Result
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use super::*;
     use crate::{
         android_boot::{
@@ -1780,7 +1784,7 @@ mod test {
 
     /// A shared [TestListener].
     #[derive(Default)]
-    struct SharedTestListener(Mutex<TestListener>);
+    pub(crate) struct SharedTestListener(Mutex<TestListener>);
 
     impl SharedTestListener {
         /// Locks the listener
@@ -1789,32 +1793,32 @@ mod test {
         }
 
         /// Adds packet to USB input
-        fn add_usb_input(&self, packet: &[u8]) {
+        pub(crate) fn add_usb_input(&self, packet: &[u8]) {
             self.lock().usb_in_queue.push_back(packet.into());
         }
 
         /// Adds bytes to input stream.
-        fn add_tcp_input(&self, data: &[u8]) {
+        pub(crate) fn add_tcp_input(&self, data: &[u8]) {
             self.lock().tcp_in_queue.append(&mut data.to_vec().into());
         }
 
         /// Adds a length pre-fixed bytes stream.
-        fn add_tcp_length_prefixed_input(&self, data: &[u8]) {
+        pub(crate) fn add_tcp_length_prefixed_input(&self, data: &[u8]) {
             self.add_tcp_input(&length_prefixed(data));
         }
 
         /// Gets a copy of `Self::usb_out_queue`.
-        fn usb_out_queue(&self) -> VecDeque<Vec<u8>> {
+        pub(crate) fn usb_out_queue(&self) -> VecDeque<Vec<u8>> {
             self.lock().usb_out_queue.clone()
         }
 
         /// Gets a copy of `Self::tcp_out_queue`.
-        fn tcp_out_queue(&self) -> VecDeque<u8> {
+        pub(crate) fn tcp_out_queue(&self) -> VecDeque<u8> {
             self.lock().tcp_out_queue.clone()
         }
 
         /// A helper for decoding USB output packets as a string
-        fn dump_usb_out_queue(&self) -> String {
+        pub(crate) fn dump_usb_out_queue(&self) -> String {
             let mut res = String::from("");
             for v in self.lock().usb_out_queue.iter() {
                 let v = String::from_utf8(v.clone()).unwrap_or(format!("{:?}", v));
@@ -1824,7 +1828,7 @@ mod test {
         }
 
         /// A helper for decoding TCP output data as strings
-        fn dump_tcp_out_queue(&self) -> String {
+        pub(crate) fn dump_tcp_out_queue(&self) -> String {
             let mut data = self.lock();
             let mut v;
             let (_, mut remains) = data.tcp_out_queue.make_contiguous().split_at(4);
@@ -1879,7 +1883,7 @@ mod test {
     }
 
     /// A helper to make an expected stream of USB output.
-    fn make_expected_usb_out(data: &[&[u8]]) -> VecDeque<Vec<u8>> {
+    pub(crate) fn make_expected_usb_out(data: &[&[u8]]) -> VecDeque<Vec<u8>> {
         VecDeque::from(data.iter().map(|v| v.to_vec()).collect::<Vec<_>>())
     }
 
@@ -1891,7 +1895,7 @@ mod test {
     }
 
     #[derive(Default)]
-    struct TestLocalSession {
+    pub(crate) struct TestLocalSession {
         requests: VecDeque<&'static str>,
         outgoing_packets: VecDeque<Vec<u8>>,
     }
@@ -2695,6 +2699,35 @@ mod test {
             "\nActual USB output:\n{}",
             listener.dump_usb_out_queue()
         );
+    }
+
+    #[test]
+    fn test_run_gbl_fastboot_set_active_android() {
+        let storage = FakeGblOpsStorage::default();
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.os = Some(Os::Android);
+        let listener: SharedTestListener = Default::default();
+        let (usb, tcp) = (&listener, &listener);
+
+        listener.add_usb_input(b"set_active:b");
+        listener.add_usb_input(b"continue");
+        block_on(run_gbl_fastboot_stack::<2>(
+            &mut gbl_ops,
+            buffers,
+            Some(&mut TestLocalSession::default()),
+            Some(usb),
+            Some(tcp),
+            &mut [],
+        ));
+
+        assert_eq!(
+            listener.usb_out_queue(),
+            make_expected_usb_out(&[b"OKAY", b"INFOSyncing storage...", b"OKAY",]),
+            "\nActual USB output:\n{}",
+            listener.dump_usb_out_queue()
+        );
+        assert_eq!(gbl_ops.last_set_active_slot, Some(1));
     }
 
     #[test]
