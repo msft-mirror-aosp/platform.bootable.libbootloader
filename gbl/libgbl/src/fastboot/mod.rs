@@ -127,6 +127,13 @@ impl<'a, 'b, B: BlockIo, P: BufferPool> Default for Task<'a, 'b, B, P> {
     }
 }
 
+/// Contains result data returned by GBL Fastboot.
+#[derive(Debug, Clone, Default)]
+pub struct GblFastbootResult {
+    /// Slot suffix that was last set active by "fastboot set_active"
+    pub last_set_active_slot: Option<char>,
+}
+
 /// `GblFastboot` implements fastboot commands in the GBL context.
 ///
 /// # Lifetimes
@@ -170,6 +177,7 @@ where
     enable_async_task: bool,
     default_block: Option<usize>,
     bootimg_buf: &'b mut [u8],
+    result: GblFastbootResult,
     // Introduces marker type so that we can enforce constraint 'd <= min('b, 'c).
     // The constraint is expressed in the implementation block for the `FastbootImplementation`
     // trait.
@@ -227,6 +235,7 @@ where
             enable_async_task: false,
             default_block: None,
             bootimg_buf,
+            result: Default::default(),
             _tasks_context_lifetime: PhantomData,
             _get_image_buffer_lifetime: PhantomData,
         }
@@ -524,6 +533,23 @@ where
         )?;
         Ok(())
     }
+
+    /// Sets active slot.
+    async fn set_active_slot(&mut self, slot: &str) -> CommandResult<()> {
+        self.sync_all_blocks().await?;
+        match self.gbl_ops.expected_os_is_fuchsia()? {
+            // TODO(b/374776896): Prioritizes platform specific `set_active_slot`  if available.
+            true => Ok(mark_slot_active(
+                &mut GblAbrOps(self.gbl_ops),
+                match slot {
+                    "a" => SlotIndex::A,
+                    "b" => SlotIndex::B,
+                    _ => return Err("Invalid slot index for Fuchsia A/B/R".into()),
+                },
+            )?),
+            _ => Err("Not supported".into()),
+        }
+    }
 }
 
 // See definition of [GblFastboot] for docs on lifetimes and generics parameters.
@@ -658,19 +684,14 @@ where
     }
 
     async fn set_active(&mut self, slot: &str, _: impl InfoSender) -> CommandResult<()> {
-        self.sync_all_blocks().await?;
-        match self.gbl_ops.expected_os_is_fuchsia()? {
-            // TODO(b/374776896): Prioritizes platform specific `set_active_slot`  if available.
-            true => Ok(mark_slot_active(
-                &mut GblAbrOps(self.gbl_ops),
-                match slot {
-                    "a" => SlotIndex::A,
-                    "b" => SlotIndex::B,
-                    _ => return Err("Invalid slot index for Fuchsia A/B/R".into()),
-                },
-            )?),
-            _ => Err("Not supported".into()),
+        if slot.len() > 1 {
+            return Err("Slot suffix must be one character".into());
         }
+
+        let slot_ch = slot.chars().next().ok_or("Invalid slot")?;
+        self.set_active_slot(slot).await?;
+        self.result.last_set_active_slot = Some(slot_ch);
+        Ok(())
     }
 
     async fn oem<'s>(
@@ -763,12 +784,12 @@ pub async fn run_gbl_fastboot<'a: 'c, 'b: 'c, 'c, 'd>(
     usb: Option<impl GblUsbTransport>,
     tcp: Option<impl GblTcpStream>,
     bootimg_buf: &'b mut [u8],
-) {
+) -> GblFastbootResult {
     let tasks = tasks.into();
     let disks = gbl_ops.disks();
-    GblFastboot::new(gbl_ops, disks, Task::run, &tasks, buffer_pool, bootimg_buf)
-        .run(local, usb, tcp)
-        .await;
+    let mut fb = GblFastboot::new(gbl_ops, disks, Task::run, &tasks, buffer_pool, bootimg_buf);
+    fb.run(local, usb, tcp).await;
+    fb.result
 }
 
 /// Runs GBL fastboot on the given USB/TCP channels with N stack allocated worker tasks.
@@ -794,7 +815,7 @@ pub async fn run_gbl_fastboot_stack<'a, 'b, const N: usize>(
     usb: Option<impl GblUsbTransport>,
     tcp: Option<impl GblTcpStream>,
     bootimg_buf: &mut [u8],
-) {
+) -> GblFastbootResult {
     let buffer_pool = buffer_pool.into();
     // Creates N worker tasks.
     let mut tasks: [_; N] = from_fn(|_| Task::default().run());
@@ -815,9 +836,9 @@ pub async fn run_gbl_fastboot_stack<'a, 'b, const N: usize>(
     let mut tasks: [_; N] = tasks.each_mut().map(|v| unsafe { Pin::new_unchecked(v) });
     let tasks = PinFutSlice::new(&mut tasks[..]).into();
     let disks = gbl_ops.disks();
-    GblFastboot::new(gbl_ops, disks, Task::run, &tasks, &buffer_pool, bootimg_buf)
-        .run(local, usb, tcp)
-        .await;
+    let mut fb = GblFastboot::new(gbl_ops, disks, Task::run, &tasks, &buffer_pool, bootimg_buf);
+    fb.run(local, usb, tcp).await;
+    fb.result
 }
 
 /// Pre-generates a Fuchsia Fastboot MDNS service broadcast packet.
@@ -2514,7 +2535,7 @@ mod test {
     }
 
     /// Helper for testing fastboot set_active in fuchsia A/B/R mode.
-    fn test_run_gbl_fastboot_set_active_fuchsia_abr(cmd: &str, slot: SlotIndex) {
+    fn test_run_gbl_fastboot_set_active_fuchsia_abr(slot_ch: char, slot: SlotIndex) {
         let mut storage = FakeGblOpsStorage::default();
         storage.add_raw_device(c"durable_boot", [0x00u8; KiB!(4)]);
         let buffers = vec![vec![0u8; KiB!(128)]; 2];
@@ -2534,9 +2555,9 @@ mod test {
         listener.add_usb_input(&data);
         listener.add_usb_input(format!("flash:durable_boot//{:#x}", ABR_DATA_SIZE).as_bytes());
         // Issues set_active commands
-        listener.add_usb_input(cmd.as_bytes());
+        listener.add_usb_input(format!("set_active:{slot_ch}").as_bytes());
         listener.add_usb_input(b"continue");
-        block_on(run_gbl_fastboot_stack::<3>(
+        let res = block_on(run_gbl_fastboot_stack::<3>(
             &mut gbl_ops,
             buffers,
             Some(&mut TestLocalSession::default()),
@@ -2544,6 +2565,7 @@ mod test {
             Some(tcp),
             &mut [],
         ));
+        assert_eq!(res.last_set_active_slot, Some(slot_ch));
 
         assert_eq!(
             listener.usb_out_queue(),
@@ -2571,12 +2593,12 @@ mod test {
 
     #[test]
     fn test_run_gbl_fastboot_set_active_fuchsia_abr_a() {
-        test_run_gbl_fastboot_set_active_fuchsia_abr("set_active:a", SlotIndex::A);
+        test_run_gbl_fastboot_set_active_fuchsia_abr('a', SlotIndex::A);
     }
 
     #[test]
     fn test_run_gbl_fastboot_set_active_fuchsia_abr_b() {
-        test_run_gbl_fastboot_set_active_fuchsia_abr("set_active:b", SlotIndex::B);
+        test_run_gbl_fastboot_set_active_fuchsia_abr('b', SlotIndex::B);
     }
 
     #[test]
@@ -2604,6 +2626,36 @@ mod test {
             listener.usb_out_queue(),
             make_expected_usb_out(&[
                 b"FAILInvalid slot index for Fuchsia A/B/R",
+                b"INFOSyncing storage...",
+                b"OKAY",
+            ]),
+            "\nActual USB output:\n{}",
+            listener.dump_usb_out_queue()
+        );
+    }
+
+    #[test]
+    fn test_run_gbl_fastboot_set_active_multichar_slot() {
+        let storage = FakeGblOpsStorage::default();
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        let listener: SharedTestListener = Default::default();
+        let (usb, tcp) = (&listener, &listener);
+        listener.add_usb_input(b"set_active:ab");
+        listener.add_usb_input(b"continue");
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            Some(&mut TestLocalSession::default()),
+            Some(usb),
+            Some(tcp),
+            &mut [],
+        ));
+
+        assert_eq!(
+            listener.usb_out_queue(),
+            make_expected_usb_out(&[
+                b"FAILSlot suffix must be one character",
                 b"INFOSyncing storage...",
                 b"OKAY",
             ]),

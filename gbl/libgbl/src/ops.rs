@@ -410,6 +410,20 @@ pub trait GblOps<'a, 'd> {
     ///   any state change.
     fn get_next_slot(&mut self, _mark_boot_attempt: bool) -> Result<Slot, Error>;
 
+    /// Gets the target slot to boot.
+    ///
+    /// * If GBL is slotless (`Self::get_current_slot()` returns `Error::Unsupported`), the API
+    ///   behaves the same as `Self::get_next_slot()`.
+    /// * If GBL is slotted, the API behaves the same as `Self::get_current_slot()` and
+    ///   `mark_boot_attempt` is ignored.
+    fn get_boot_slot(&mut self, mark_boot_attempt: bool) -> Result<Slot, Error> {
+        match self.get_current_slot() {
+            // Slotless bootloader
+            Err(Error::Unsupported) => self.get_next_slot(mark_boot_attempt),
+            v => v,
+        }
+    }
+
     /// Sets the active slot for the next A/B decision.
     ///
     /// # Args
@@ -441,9 +455,11 @@ macro_rules! gbl_print {
 #[macro_export]
 macro_rules! gbl_println {
     ( $ops:expr, $( $x:expr ),* $(,)? ) => {
-        let newline = $ops.console_newline();
-        gbl_print!($ops, $($x,)*);
-        gbl_print!($ops, "{}", newline);
+        {
+            let newline = $ops.console_newline();
+            gbl_print!($ops, $($x,)*);
+            gbl_print!($ops, "{}", newline);
+        }
     };
 }
 
@@ -564,6 +580,19 @@ pub(crate) mod test {
                 Option<&[u8]>,
             ) -> AvbIoResult<()>,
         >,
+
+        /// For returned by `get_current_slot`
+        //
+        // We wrap it in an `Option` so that if a test exercises code paths that use it but did not
+        // set it, it can panic with "unwrap()" which will give a clearer error and location
+        // message than a vague error such as `Error::Unimplemented`.
+        pub current_slot: Option<Result<Slot, Error>>,
+
+        /// For returned by `get_next_slot`
+        pub next_slot: Option<Result<Slot, Error>>,
+
+        /// Number of times `get_next_slot()` is called with `mark_boot_attempt` set to true.
+        pub mark_boot_attempt_called: usize,
     }
 
     /// Print `console_out` output, which can be useful for debugging.
@@ -837,11 +866,12 @@ pub(crate) mod test {
         }
 
         fn get_current_slot(&mut self) -> Result<Slot, Error> {
-            unimplemented!()
+            self.current_slot.unwrap()
         }
 
-        fn get_next_slot(&mut self, _: bool) -> Result<Slot, Error> {
-            unimplemented!()
+        fn get_next_slot(&mut self, mark_boot_attempt: bool) -> Result<Slot, Error> {
+            self.mark_boot_attempt_called += usize::from(mark_boot_attempt);
+            self.next_slot.unwrap()
         }
 
         fn set_active_slot(&mut self, _: u8) -> Result<(), Error> {
@@ -900,5 +930,30 @@ pub(crate) mod test {
         assert!(gbl_ops.reboot_recovery().is_err_and(|e| e == Error::Unsupported));
         // One shot recovery is not set.
         assert_eq!(get_boot_slot(&mut GblAbrOps(&mut gbl_ops), true), (SlotIndex::A, false));
+    }
+
+    /// Helper for creating a slot object.
+    pub(crate) fn slot(suffix: char) -> Slot {
+        Slot { suffix: suffix.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn test_get_boot_slot_slotted_gbl() {
+        let storage = FakeGblOpsStorage::default();
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.current_slot = Some(Ok(slot('a')));
+        assert_eq!(gbl_ops.get_current_slot().unwrap().suffix, 'a'.into());
+    }
+
+    #[test]
+    fn test_get_boot_slot_slotless_gbl() {
+        let storage = FakeGblOpsStorage::default();
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.next_slot = Some(Ok(slot('a')));
+        gbl_ops.current_slot = Some(Err(Error::Unsupported));
+        assert_eq!(gbl_ops.get_next_slot(false).unwrap().suffix, 'a'.into());
+        assert_eq!(gbl_ops.mark_boot_attempt_called, 0);
+        assert_eq!(gbl_ops.get_next_slot(true).unwrap().suffix, 'a'.into());
+        assert_eq!(gbl_ops.mark_boot_attempt_called, 1);
     }
 }

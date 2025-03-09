@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
 package(
     default_visibility = ["//visibility:public"],
 )
@@ -24,12 +26,11 @@ cc_library(
         "ufdt_node_pool.c",
         "ufdt_overlay.c",
         "ufdt_prop_dict.c",
+        "@gbl//libfdt:deps/print.c",
     ] + select({
         "@gbl//toolchain:gbl_rust_host_x86_64": ["sysdeps/libufdt_sysdeps_posix.c"],
         "//conditions:default": [
             "sysdeps/libufdt_sysdeps_vendor.c",
-            # Contains noop placeholder for dto_print from libufdt_sysdeps_vendor.c
-            "@gbl//libfdt:deps/print.c",
         ],
     }),
     hdrs = [
@@ -46,6 +47,8 @@ cc_library(
         "-DDTO_DISABLE_DEFAULT_VENDOR_LIBC_PRINT",
         # Disable default dto_malloc, dto_free implementations to include libufdt_sysdeps_vendor.c
         "-DDTO_DISABLE_DEFAULT_VENDOR_LIBC_ALLOCATION",
+        # Disable default dto_print implementation to include libufdt_sysdeps_posix.c
+        "-DDTO_DISABLE_DEFAULT_POSIX_LIBC_PRINT",
         # Disable default dto_malloc, dto_free implementations to include libufdt_sysdeps_posix.c
         "-DDTO_DISABLE_DEFAULT_POSIX_LIBC_ALLOCATION",
     ],

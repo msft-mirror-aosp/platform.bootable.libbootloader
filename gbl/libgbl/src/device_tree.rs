@@ -14,15 +14,13 @@
 
 //! GblOps trait that defines device tree components helpers.
 
-use crate::{gbl_print, gbl_println, GblOps};
+use crate::{constants::FDT_ALIGNMENT, gbl_print, gbl_println, GblOps};
 use arrayvec::ArrayVec;
 use dttable::{DtTableImage, DtTableMetadata};
 use fdt::{Fdt, FdtHeader, FDT_HEADER_SIZE};
 use liberror::{Error, Result};
 use libutils::aligned_subslice;
 
-/// Device tree alignment.
-pub const FDT_ALIGNMENT: usize = 8;
 /// Maximum amount of device tree components GBL can handle to select from.
 /// TODO(b/353272981): Use dynamic memory to store components. Currently
 /// DeviceTreeComponentsRegistry takes about 18kb of stack, which can be slow and dangerous.
@@ -98,7 +96,7 @@ impl<'a> DeviceTreeComponentsRegistry<'a> {
 
     /// Load device tree components from a dt table image. Ensure components are 8 bytes
     /// aligned by using provided buffer to cut from. Returns remain buffer.
-    fn append_from_dttable<'b>(
+    pub fn append_from_dttable<'b>(
         &mut self,
         is_dtb: bool,
         dttable: &DtTableImage<'b>,

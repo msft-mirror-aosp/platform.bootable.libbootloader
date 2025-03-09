@@ -15,6 +15,11 @@
  *
  */
 
-// Noop placeholder for dto_print from libufdt
+#include <gbl/print.h>
 
-void dto_print(const char *fmt, ...) {}
+void dto_print(const char* fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  gbl_printf(fmt, args);
+  va_end(args);
+}

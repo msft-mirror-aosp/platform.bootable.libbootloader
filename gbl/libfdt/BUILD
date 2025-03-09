@@ -137,6 +137,9 @@ rust_test(
     ],
     crate = ":libfdt",
     rustc_flags = ANDROID_RUST_LINTS,
+    deps = [
+        "@gbl//libc:libc_deps_posix",
+    ],
 )
 
 link_static_cc_library(

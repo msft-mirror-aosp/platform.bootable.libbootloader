@@ -115,6 +115,34 @@ def gen_android_test_dtb():
         out_dir / "device_tree_custom.dts", out_dir / "device_tree_custom.dtb"
     )
 
+    # Generates dtb_a/dtb_b
+    gen_dtb(out_dir / "device_tree_a.dts", out_dir / "device_tree_a.dtb")
+    gen_dtb(out_dir / "device_tree_b.dts", out_dir / "device_tree_b.dtb")
+    subprocess.run(
+        [
+            MKDTBOIMG_TOOL,
+            "create",
+            out_dir / "dtb_a.img",
+            "--id=0x1",
+            "--rev=0x0",
+            out_dir / "device_tree_a.dtb",
+        ],
+        stderr=subprocess.STDOUT,
+        check=True,
+    )
+    subprocess.run(
+        [
+            MKDTBOIMG_TOOL,
+            "create",
+            out_dir / "dtb_b.img",
+            "--id=0x1",
+            "--rev=0x0",
+            out_dir / "device_tree_b.dtb",
+        ],
+        stderr=subprocess.STDOUT,
+        check=True,
+    )
+
     # Generates overlay
     gen_dtb(out_dir / "overlay_a.dts", out_dir / "overlay_a.dtb")
     gen_dtb(out_dir / "overlay_b.dts", out_dir / "overlay_b.dtb")
@@ -329,6 +357,7 @@ androidboot.config_2=val_2
                 parts = [
                     (f"boot", out_dir / f"boot_v{i}_{slot}.img"),
                     ("dtbo", out_dir / f"dtbo_{slot}.img"),
+                    ("dtb", out_dir / f"dtb_{slot}.img"),
                 ]
                 gen_android_test_vbmeta(
                     parts, out_dir / f"vbmeta_v{i}_{slot}.img"
@@ -353,6 +382,7 @@ androidboot.config_2=val_2
                             (f"boot", boot),
                             (f"vendor_boot", vendor_boot),
                             ("dtbo", out_dir / f"dtbo_{slot}.img"),
+                            ("dtb", out_dir / f"dtb_{slot}.img"),
                         ]
                         prefix = f"vbmeta_v{boot_ver}_v{vendor_ver}"
                         if use_init_boot:

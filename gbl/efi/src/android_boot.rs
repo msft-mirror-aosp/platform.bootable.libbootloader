@@ -52,7 +52,7 @@ pub fn android_boot_demo(entry: EfiEntry) -> Result<()> {
         let mut ramboot_ops = RambootOps { ops: &mut ops, bootimg_buffer };
         load_android_simple(&mut ramboot_ops, &mut load_buffer[..])?
     } else {
-        load_android_simple(&mut ops, &mut load_buffer[..])?
+        libgbl::android_boot::android_main(&mut ops, &mut load_buffer[..])?
     };
 
     gbl_println!(ops, "");

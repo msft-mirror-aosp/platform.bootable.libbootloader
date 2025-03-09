@@ -15,7 +15,7 @@
 use super::{avb_verify_slot, cstr_bytes_to_str};
 use crate::{
     android_boot::PartitionsToVerify,
-    constants::{FDT_ALIGNMENT, KERNEL_ALIGNMENT},
+    constants::{FDT_ALIGNMENT, KERNEL_ALIGNMENT, PAGE_SIZE},
     decompress::{decompress_kernel, is_compressed},
     gbl_print, gbl_println,
     ops::GblOps,
@@ -32,11 +32,9 @@ use core::{
     ops::{Deref, Range},
 };
 use liberror::Error;
+use libutils::aligned_subslice;
 use safemath::SafeNum;
 use zerocopy::{IntoBytes, Ref};
-
-// Value of page size for v3/v4 header.
-const PAGE_SIZE: usize = 4096;
 
 // Represents a slot suffix.
 struct SlotSuffix([u8; 3]);
@@ -241,6 +239,8 @@ pub struct LoadedImages<'a> {
     pub vendor_cmdline: &'a str,
     /// DTB.
     pub dtb: &'a mut [u8],
+    /// DTB from partition.
+    pub dtb_part: &'a mut [u8],
     /// Kernel image.
     pub kernel: &'a mut [u8],
     /// Ramdisk image.
@@ -256,6 +256,7 @@ impl<'a> Default for LoadedImages<'a> {
             boot_cmdline: "",
             vendor_cmdline: "",
             dtb: &mut [][..],
+            dtb_part: &mut [][..],
             kernel: &mut [][..],
             ramdisk: &mut [][..],
             unused: &mut [][..],
@@ -273,16 +274,22 @@ pub fn android_load_verify<'a, 'b, 'c>(
     let mut res = LoadedImages::default();
 
     let slot_suffix = SlotSuffix::new(slot)?;
+    // Additional partitions loaded before loading standard boot images.
+    let mut partitions = PartitionsToVerify::default();
+
     // Loads dtbo.
     let dtbo_part = slotted_part("dtbo", slot)?;
     let (dtbo, remains) = load_entire_part(ops, &dtbo_part, &mut load[..])?;
-
-    // TODO(b/384964561): Checks existence of DTB partitions.
-
-    // Additional partitions loaded before loading standard boot images.
-    let mut partitions = PartitionsToVerify::default();
     if dtbo.len() > 0 {
         partitions.try_push_preloaded(c"dtbo", &dtbo[..])?;
+    }
+
+    // Loads dtb.
+    let remains = aligned_subslice(remains, FDT_ALIGNMENT)?;
+    let dtb_part = slotted_part("dtb", slot)?;
+    let (dtb, remains) = load_entire_part(ops, &dtb_part, &mut remains[..])?;
+    if dtb.len() > 0 {
+        partitions.try_push_preloaded(c"dtb", &dtb[..])?;
     }
 
     let add = |v: &mut BootConfigBuilder| {
@@ -303,6 +310,7 @@ pub fn android_load_verify<'a, 'b, 'c>(
 
     drop(partitions);
     res.dtbo = dtbo;
+    res.dtb_part = dtb;
     Ok(res)
 }
 
