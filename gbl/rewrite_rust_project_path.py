@@ -16,6 +16,7 @@ import json
 import os
 import logging
 import tempfile
+import shutil
 
 # To generate rust-project.json from bazel, run
 # bazel run @rules_rust//tools/rust_analyzer:gen_rust_project --norepository_disable_download @gbl//efi:main
@@ -59,12 +60,10 @@ def main(argv):
     data = json.load(fp)
     traverse(data)
 
-  with tempfile.NamedTemporaryFile("w+") as fp:
+  with tempfile.NamedTemporaryFile("w+", delete=False) as fp:
     json.dump(data, fp.file, indent=True)
-    os.rename(fp.name, rust_project_json_path)
-    # create the tempfile again so deleting it works after exiting this scope
-    with open(fp.name, "w"):
-      pass
+    tmp_path = fp.name
+  shutil.move(tmp_path, rust_project_json_path)
 
 
 if __name__ == "__main__":
