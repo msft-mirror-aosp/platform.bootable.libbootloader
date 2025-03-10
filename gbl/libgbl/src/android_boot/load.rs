@@ -353,11 +353,11 @@ fn load_verify_v2_and_lower<'a, 'b, 'c>(
         avb_verify_slot(ops, slot, &to_verify, &mut bootconfig_builder)?;
     }
 
+    add_additional_bootconfig(&mut bootconfig_builder)?;
     // Adds platform-specific bootconfig.
     bootconfig_builder.add_with(|bytes, out| {
         Ok(ops.fixup_bootconfig(&bytes, out)?.map(|slice| slice.len()).unwrap_or(0))
     })?;
-    add_additional_bootconfig(&mut bootconfig_builder)?;
     let bootconfig_size = bootconfig_builder.config_bytes().len();
 
     // We now have the following layout:
@@ -495,11 +495,11 @@ fn load_verify_v3_and_v4<'a, 'b, 'c>(
         avb_verify_slot(ops, slot, &to_verify, &mut bootconfig_builder)?;
     }
 
+    add_additional_bootconfig(&mut bootconfig_builder)?;
     // Adds platform-specific bootconfig.
     bootconfig_builder.add_with(|bytes, out| {
         Ok(ops.fixup_bootconfig(&bytes, out)?.map(|slice| slice.len()).unwrap_or(0))
     })?;
-    add_additional_bootconfig(&mut bootconfig_builder)?;
 
     // We now have the following layout:
     //
@@ -1000,9 +1000,9 @@ androidboot.veritymode=enforcing
             .vbmeta_size(read_test_data(vbmeta_file.to_str().unwrap()).len())
             .digest(read_test_data_as_str(vbmeta_digest).strip_suffix("\n").unwrap())
             .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
-            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
             .extra("androidboot.force_normal_boot=1\n")
             .extra(format!("androidboot.slot_suffix=_{slot}\n"))
+            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
             .extra(vendor_config);
 
         for name in ["boot", "vendor_boot", "init_boot", "dtbo", "dtb"].iter() {

@@ -1435,9 +1435,9 @@ pub(crate) mod tests {
                 read_test_data_as_str("vbmeta_v2_a.boot.digest.txt").strip_suffix("\n").unwrap(),
             )
             .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
-            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
             .extra("androidboot.force_normal_boot=1\n")
             .extra(format!("androidboot.slot_suffix=_a\n"))
+            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
             .build();
         check_ramdisk(ramdisk, &read_test_data("generic_ramdisk_a.img"), &expected_bootconfig);
         assert_eq!(kernel, read_test_data("kernel_a.img"));
@@ -1453,8 +1453,8 @@ pub(crate) mod tests {
                 read_test_data_as_str("vbmeta_v2_a.boot.digest.txt").strip_suffix("\n").unwrap(),
             )
             .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
-            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
             .extra(format!("androidboot.slot_suffix=_a\n"))
+            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
             .build();
         check_ramdisk(ramdisk, &read_test_data("generic_ramdisk_a.img"), &expected_bootconfig);
         assert_eq!(kernel, read_test_data("kernel_a.img"));
@@ -1538,9 +1538,9 @@ pub(crate) mod tests {
                 read_test_data_as_str("vbmeta_v2_b.boot.digest.txt").strip_suffix("\n").unwrap(),
             )
             .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
-            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
             .extra("androidboot.force_normal_boot=1\n")
             .extra(format!("androidboot.slot_suffix=_b\n"))
+            .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
             .build();
         check_ramdisk(ramdisk, &read_test_data("generic_ramdisk_b.img"), &expected_bootconfig);
         assert_eq!(kernel, read_test_data("kernel_b.img"));
