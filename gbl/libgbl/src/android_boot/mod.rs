@@ -815,7 +815,8 @@ pub(crate) mod tests {
     };
     use load::tests::{
         check_ramdisk, make_expected_bootconfig, read_test_data, read_test_data_as_str,
-        AvbResultBootconfigBuilder, TEST_PUBLIC_KEY_DIGEST, TEST_VENDOR_BOOTCONFIG,
+        AvbResultBootconfigBuilder, MakeExpectedBootconfigInclude, TEST_PUBLIC_KEY_DIGEST,
+        TEST_VENDOR_BOOTCONFIG,
     };
     use std::{collections::HashMap, ffi::CString};
 
@@ -934,6 +935,10 @@ pub(crate) mod tests {
         additional_parts: &[(&CStr, &str)],
         additional_expected_fdt_properties: &[(&str, &CStr, Option<&[u8]>)],
     ) {
+        let dtb =
+            additional_parts.iter().any(|(name, _)| name.to_str().unwrap().starts_with("dtb_"));
+        let dtbo =
+            additional_parts.iter().any(|(name, _)| name.to_str().unwrap().starts_with("dtbo_"));
         let vbmeta = format!("vbmeta_v{ver}_{slot}.img");
         let mut parts: Vec<(CString, String)> = vec![
             (CString::new(format!("boot_{slot}")).unwrap(), format!("boot_v{ver}_{slot}.img")),
@@ -948,7 +953,9 @@ pub(crate) mod tests {
             &parts,
             &read_test_data(format!("kernel_{slot}.img")),
             &read_test_data(format!("generic_ramdisk_{slot}.img")),
-            &make_expected_bootconfig(&vbmeta, slot, ""),
+            &make_expected_bootconfig(&vbmeta, slot, "",
+                MakeExpectedBootconfigInclude {dtb, dtbo, ..Default::default() }
+            ),
             "existing_arg_1=existing_val_1 existing_arg_2=existing_val_2 cmd_key_1=cmd_val_1,cmd_key_2=cmd_val_2",
             additional_expected_fdt_properties,
         )
@@ -1065,6 +1072,9 @@ pub(crate) mod tests {
         expected_vendor_bootconfig: &str,
         additional_expected_fdt_properties: &[(&str, &CStr, Option<&[u8]>)],
     ) {
+        let dtbo = partitions
+            .iter()
+            .any(|(name, _)| name.clone().into_string().unwrap().starts_with("dtbo_"));
         let expected_ramdisk = [
             read_test_data(format!("vendor_ramdisk_{slot}.img")),
             read_test_data(format!("generic_ramdisk_{slot}.img")),
@@ -1075,7 +1085,9 @@ pub(crate) mod tests {
             &partitions,
             &read_test_data(format!("kernel_{slot}.img")),
             &expected_ramdisk,
-            &make_expected_bootconfig(&vbmeta_file, slot, expected_vendor_bootconfig),
+            &make_expected_bootconfig(&vbmeta_file, slot, expected_vendor_bootconfig,
+                MakeExpectedBootconfigInclude { dtbo, dtb: false, ..Default::default() },
+                ),
             "existing_arg_1=existing_val_1 existing_arg_2=existing_val_2 cmd_key_1=cmd_val_1,cmd_key_2=cmd_val_2 cmd_vendor_key_1=cmd_vendor_val_1,cmd_vendor_key_2=cmd_vendor_val_2",
             additional_expected_fdt_properties,
         )
@@ -1418,6 +1430,10 @@ pub(crate) mod tests {
         let expected_bootconfig = AvbResultBootconfigBuilder::new()
             .vbmeta_size(read_test_data("vbmeta_v2_a.img").len())
             .digest(read_test_data_as_str("vbmeta_v2_a.digest.txt").strip_suffix("\n").unwrap())
+            .partition_digest(
+                "boot",
+                read_test_data_as_str("vbmeta_v2_a.boot.digest.txt").strip_suffix("\n").unwrap(),
+            )
             .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
             .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
             .extra("androidboot.force_normal_boot=1\n")
@@ -1432,6 +1448,10 @@ pub(crate) mod tests {
         let expected_bootconfig = AvbResultBootconfigBuilder::new()
             .vbmeta_size(read_test_data("vbmeta_v2_a.img").len())
             .digest(read_test_data_as_str("vbmeta_v2_a.digest.txt").strip_suffix("\n").unwrap())
+            .partition_digest(
+                "boot",
+                read_test_data_as_str("vbmeta_v2_a.boot.digest.txt").strip_suffix("\n").unwrap(),
+            )
             .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
             .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
             .extra(format!("androidboot.slot_suffix=_a\n"))
@@ -1513,6 +1533,10 @@ pub(crate) mod tests {
         let expected_bootconfig = AvbResultBootconfigBuilder::new()
             .vbmeta_size(read_test_data("vbmeta_v2_b.img").len())
             .digest(read_test_data_as_str("vbmeta_v2_b.digest.txt").strip_suffix("\n").unwrap())
+            .partition_digest(
+                "boot",
+                read_test_data_as_str("vbmeta_v2_b.boot.digest.txt").strip_suffix("\n").unwrap(),
+            )
             .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
             .extra(FakeGblOps::GBL_TEST_BOOTCONFIG)
             .extra("androidboot.force_normal_boot=1\n")
