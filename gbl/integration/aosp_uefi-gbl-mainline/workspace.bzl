@@ -98,6 +98,11 @@ def define_gbl_workspace(name = None):
         path = "external/bazelbuild-rules_license",
     )
 
+    native.local_repository(
+        name = "googletest",
+        path = "external/googletest",
+    )
+
     native.new_local_repository(
         name = "rules_rust_tinyjson",
         path = "external/rust/android-crates-io/crates/tinyjson",
