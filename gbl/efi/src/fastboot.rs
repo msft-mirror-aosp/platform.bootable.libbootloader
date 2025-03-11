@@ -35,12 +35,14 @@ use efi::{
 use fastboot::{TcpStream, Transport};
 use gbl_async::{block_on, YieldCounter};
 use liberror::{Error, Result};
-use libgbl::fastboot::{run_gbl_fastboot, GblTcpStream, GblUsbTransport, PinFutContainer};
+use libgbl::fastboot::{
+    run_gbl_fastboot, GblFastbootResult, GblTcpStream, GblUsbTransport, PinFutContainer,
+};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 const FASTBOOT_TCP_PORT: u16 = 5554;
 
-struct EfiFastbootTcpTransport<'a, 'b, 'c> {
+pub(crate) struct EfiFastbootTcpTransport<'a, 'b, 'c> {
     socket: &'c mut EfiTcpSocket<'a, 'b>,
 }
 
@@ -203,10 +205,11 @@ impl<'a> PinFutContainer<'a> for VecPinFut<'a> {
     }
 }
 
-pub fn fastboot(efi_gbl_ops: &mut Ops, bootimg_buf: &mut [u8]) -> Result<()> {
-    let efi_entry = efi_gbl_ops.efi_entry;
-    efi_println!(efi_entry, "Entering fastboot mode...");
-
+/// Initializes GBL EFI fastboot channels and runs a caller provided closure with them.
+pub(crate) fn with_fastboot_channels(
+    efi_entry: &EfiEntry,
+    f: impl FnOnce(Option<LocalFastbootSession>, Option<UsbTransport>, Option<EfiFastbootTcpTransport>),
+) {
     let local_session = LocalFastbootSession::start(efi_entry, Duration::from_millis(1))
         .inspect(|_| efi_println!(efi_entry, "Starting local bootmenu."))
         .inspect_err(|e| efi_println!(efi_entry, "Failed to start local bootmenu: {:?}", e))
@@ -232,18 +235,28 @@ pub fn fastboot(efi_gbl_ops: &mut Ops, bootimg_buf: &mut [u8]) -> Result<()> {
         .ok();
     let tcp = tcp.as_mut().map(|v| EfiFastbootTcpTransport::new(v));
 
-    let download_buffers = vec![vec![0u8; 512 * 1024 * 1024]; 2].into();
-    block_on(run_gbl_fastboot(
-        efi_gbl_ops,
-        &download_buffers,
-        VecPinFut::default(),
-        local_session,
-        usb,
-        tcp,
-        bootimg_buf,
-    ));
+    f(local_session, usb, tcp)
+}
+
+pub fn fastboot(efi_gbl_ops: &mut Ops, bootimg_buf: &mut [u8]) -> Result<GblFastbootResult> {
+    let efi_entry = efi_gbl_ops.efi_entry;
+    efi_println!(efi_entry, "Entering fastboot mode...");
+
+    let mut res = Default::default();
+    with_fastboot_channels(efi_entry, |local, usb, tcp| {
+        let download_buffers = vec![vec![0u8; 512 * 1024 * 1024]; 2].into();
+        res = block_on(run_gbl_fastboot(
+            efi_gbl_ops,
+            &download_buffers,
+            VecPinFut::default(),
+            local,
+            usb,
+            tcp,
+            bootimg_buf,
+        ));
+    });
 
     efi_println!(efi_entry, "Leaving fastboot mode...");
 
-    Ok(())
+    Ok(res)
 }
