@@ -14,6 +14,7 @@
 
 load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@gbl_llvm_prebuilts//:info.bzl", "LLVM_PREBUILTS_C_INCLUDE")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_rust//bindgen:defs.bzl", "rust_bindgen")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
@@ -57,7 +58,7 @@ rust_bindgen(
         "--allowlist-type",
         "(Efi.*)|(GblEfi.*)|(GBL_EFI_.*)",
         "--allowlist-var",
-        "PARTITION_NAME_LEN_U16|EFI_.*",
+        "PARTITION_NAME_LEN_U16|EFI_.*|GBL_.*",
         "--raw-line",
         """
 #![allow(non_camel_case_types)]

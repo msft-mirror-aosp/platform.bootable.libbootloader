@@ -14,10 +14,12 @@ customised buffer location in memory. And additional images for verification.
 
 ### Summary
 
-This protocol allows boards that want a specific RAM location for images to
-communicate this to GBL. Default dynamic allocation is used if a specific
-location is not provided. It also provides interface to communicate additional
-images to be verified by GBL.
+This protocol allows firmware to provide platform reserved memory spaces to
+applications for a specific usage or feature, or alternatively, specify the
+amount of memory the application should allocate dynamically for it.
+
+It also provides interface to communicate additional images to be verified by
+GBL.
 
 ### GUID
 
@@ -89,28 +91,35 @@ A pointer to the
 [`GBL_EFI_IMAGE_LOADING_PROTOCOL`](#gbl_efi_image_loading_protocol) instance.
 
 **ImageInfo** \
-Image information for the requested buffer. See
+Information for the requested buffer. See
 [`GBL_EFI_IMAGE_INFO`](#gbl_efi_image_info) for details.
 
 **Buffer** \
-Buffer that can be used to load image data. Must be at least
-`ImageInfo.SizeBytes`. See [`GBL_EFI_IMAGE_BUFFER`](#gbl_efi_image_buffer) for
-details.
+Output pointer for `GBL_EFI_IMAGE_BUFFER`. See
+[`GBL_EFI_IMAGE_BUFFER`](#gbl_efi_image_buffer) for details.
 
 ### Description
 
-`GetBuffer()` is expected to be called multiple times by GBL to get buffers for
-loading different images into RAM.
+The interface is for the firmware to provide platform reserved memory spaces
+to, or instruct caller to allocate specific amount of memory for the usage
+context described in `GBL_EFI_IMAGE_INFO.StrUtf16`. The usage context is
+application specific and may represent usages such as buffers for loading
+specific partitions, sharing data with secure world, and downloading in
+fastboot etc.
 
-Implementation can provide custom buffers only for desired images. If there is
-no buffer to provide, address (`GblEfiImageBuffer.Memory.`) should be set to
-NULL.
+If platform has a reserved memory space for the usage context,
+`GBL_EFI_IMAGE_BUFFER.Memory` and `GBL_EFI_IMAGE_BUFFER.SizeBytes` should be
+set to the address and size of the memory. Ownership of the provided memory
+must be passed exclusively to GBL, and must not be retained for any other
+purpose by firmware.
 
-Provided buffers must not overlap. GBL will verify if the same buffer was
-already returned before proceeding further.
+If the caller should allocate memory dynamically by itself for the usage
+context, `GBL_EFI_IMAGE_BUFFER.Memory` should be set to NULL and
+`GBL_EFI_IMAGE_BUFFER.SizeBytes` should be set to the amount of memory caller
+should allocate.
 
-Ownership of the provided memory must be passed exclusively to GBL, and must not
-be retained for any other purpose by firmware.
+Caller may pass a suggested size via `GBL_EFI_IMAGE_INFO.SizeBytes` based on
+its run time knowledge. Implementation should eventually determine the size.
 
 ### Status Codes Returned
 
@@ -132,16 +141,10 @@ struct GBL_EFI_IMAGE_BUFFER {
 ```
 
 **Memory** \
-Start address of the buffer
+Start address of the reserved buffer or NULL if caller should allocate.
 
 **SizeBytes** \
-Size of the buffer in bytes. This value can be bigger than requested
-size in order to facilitate additional requirements. E.g. partition containing
-boot arguments will require appending in place. Or kernel partition might
-require scratch pad space after the image.
-
-In case no buffer is provided `GBL_EFI_BUFFER.Memory` should be set to `NULL`.
-Then GBL will allocate memory for this image using available allocator.
+Size of the reserved buffer or amount of memory caller should allocate.
 
 ## GBL_EFI_IMAGE_LOADING_PROTOCOL.GetVerifyPartitions()
 
@@ -225,9 +228,21 @@ struct GBL_EFI_IMAGE_INFO {
 ```
 
 **ImageType** \
-UCS-2 C-String. This string contains partition name(s), that identifies what
-buffer to provide. The type string is at most `PARTITION_NAME_LEN_U16` of
-char16_t elements including terminating `u'\0'`. E.g. `u"dtb"`
+UCS-2 C-String. This string describes the usage context for the buffer being
+queried. It should be at most `PARTITION_NAME_LEN_U16` of char16_t elements
+including terminating `u'\0'`. E.g. `u"dtb"`
+
+Below are usage strings reserved by GBL.
+
+```c
+//******************************************************
+// GBL reserved image types
+//******************************************************
+// Buffer for loading, verifying and fixing up OS images.
+#define GBL_IMAGE_TYPE_OS_LOAD L"os_load"
+// Buffer for use as fastboot download buffer.
+#define GBL_IMAGE_TYPE_FASTBOOT L"fastboot"
+```
 
 **SizeBytes** \
-Requested size for the buffer in bytes
+Size of the buffer or allocation suggested by the caller.

@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::efi;
-use ::efi::EfiMemoryAttributesTable;
-use core::time::Duration;
+use crate::{efi, ops::get_buffer_from_protocol};
+use ::efi::{efi_print, efi_println, EfiMemoryAttributesTable};
+use core::{fmt::Write, slice::from_raw_parts_mut, time::Duration};
 use efi::{
     protocol::{
         device_path::{DevicePathProtocol, DevicePathText, DevicePathToTextProtocol},
+        gbl_efi_image_loading::EfiImageBufferInfo,
         loaded_image::LoadedImageProtocol,
         simple_text_input::SimpleTextInputProtocol,
     },
@@ -165,4 +166,41 @@ pub fn get_efi_mem_attr<'a>(entry: &'a EfiEntry) -> Option<EfiMemoryAttributesTa
             })
             .flatten()
     })
+}
+
+/// Represents either an initialized static memory space or memory to be allocated by the given
+/// size.
+pub(crate) enum BufferInfo {
+    // A static memory space, i.e. memory space reserved by platform
+    Static(&'static mut [u8]),
+    Alloc(usize),
+}
+
+/// A helper for getting platform buffer info from EFI image loading protocol.
+pub(crate) fn get_platform_buffer_info(
+    efi_entry: &EfiEntry,
+    image_type: &str,
+    default_aloc_size: usize,
+) -> BufferInfo {
+    match get_buffer_from_protocol(efi_entry, image_type, 0) {
+        Ok(EfiImageBufferInfo::Buffer(mut buffer)) => {
+            let buffer = buffer.take();
+            buffer.fill(core::mem::MaybeUninit::zeroed());
+            efi_println!(
+                efi_entry,
+                "Found \"{image_type}\" buffer from EFI protocol: addr {:#x}, sz: {:#x}.",
+                buffer.as_mut_ptr() as usize,
+                buffer.len()
+            );
+            // SAFETY:
+            // * `buffer` is a &'static [MaybeUninit<u8>] and fully initialized by the previous
+            //   line.
+            // * MaybeUninit::zeroed() is a valid initialized value for u8.
+            BufferInfo::Static(unsafe {
+                from_raw_parts_mut(buffer.as_mut_ptr() as _, buffer.len())
+            })
+        }
+        Ok(EfiImageBufferInfo::AllocSize(sz)) if sz != 0 => BufferInfo::Alloc(sz),
+        _ => BufferInfo::Alloc(default_aloc_size),
+    }
 }

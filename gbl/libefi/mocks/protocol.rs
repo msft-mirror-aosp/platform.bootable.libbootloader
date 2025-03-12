@@ -20,7 +20,7 @@
 use crate::{DeviceHandle, MOCK_EFI};
 use core::ffi::CStr;
 use core::fmt::Write;
-use efi::protocol::gbl_efi_image_loading::EfiImageBuffer;
+pub use efi::protocol::gbl_efi_image_loading::EfiImageBufferInfo;
 use efi_types::{
     EfiInputKey, GblEfiAvbKeyValidationStatus, GblEfiAvbVerificationResult, GblEfiImageInfo,
     GblEfiPartitionName, GblEfiVerifiedDeviceTree,
@@ -131,11 +131,13 @@ pub mod simple_text_output {
 pub mod gbl_efi_image_loading {
     use super::*;
 
+    pub use efi::protocol::gbl_efi_image_loading::EfiImageBufferInfo;
+
     mock! {
         /// Mock [efi::ImageLoadingProtocol].
         pub GblImageLoadingProtocol {
             /// Returns [EfiImageBuffer] matching `gbl_image_info`
-            pub fn get_buffer(&self, gbl_image_info: &GblEfiImageInfo) -> Result<EfiImageBuffer>;
+            pub fn get_buffer(&self, gbl_image_info: &GblEfiImageInfo) -> Result<EfiImageBufferInfo>;
 
             /// Returns number of partitions to be provided via `get_verify_partitions()`, and thus
             /// expected size of `partition_name` slice.
