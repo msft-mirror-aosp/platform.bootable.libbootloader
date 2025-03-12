@@ -16,17 +16,25 @@
 //! printing implementation: libc/src/print.c
 
 use crate::gbl_print;
-use core::ffi::c_char;
+use core::ffi::{c_char, CStr};
 
-/// Back-end function to print a single character.
+/// Back-end function to print a nul-terminated string.
+///
+/// # Safety:
+///
+/// * `s` must be a valid null-terminated C string.
 #[no_mangle]
-pub unsafe extern "C" fn gbl_print_char(c: c_char) {
-    let ch = c as u8 as char;
+pub unsafe extern "C" fn gbl_print_string(s: *const c_char) {
+    if s.is_null() {
+        return;
+    }
+    // SAFETY: `s` must be a valid nul-terminated C string.
+    let cstr = unsafe { CStr::from_ptr(s) };
 
     // Safety:
     // * `gbl_print` is expected to be statically linked and expected
     // core::fmt::Display compatible types.
     unsafe {
-        gbl_print(&ch);
+        gbl_print(&cstr.to_string_lossy());
     }
 }
