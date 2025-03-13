@@ -292,6 +292,7 @@ where
     ) {
         if usb.is_none() && tcp.is_none() && local.is_none() {
             gbl_println!(self.gbl_ops, "No USB, TCP, or local session found for GBL Fastboot");
+            return;
         }
         let tasks = self.tasks();
         // The fastboot command loop task for interacting with the remote host.
@@ -2974,5 +2975,21 @@ pub(crate) mod test {
         let mut load_buffer = AlignedBuffer::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
         let (ramdisk, _, kernel, _) = test_fastboot_boot_slot('b', &mut load_buffer);
         checks_loaded_v2_slot_b_normal_mode(ramdisk, kernel);
+    }
+
+    #[test]
+    fn test_fastboot_no_channels() {
+        let storage = FakeGblOpsStorage::default();
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
+        let mut gbl_ops = default_test_gbl_ops(&storage);
+
+        block_on(run_gbl_fastboot_stack::<2>(
+            &mut gbl_ops,
+            buffers,
+            None::<&mut TestLocalSession>,
+            None::<&SharedTestListener>,
+            None::<&SharedTestListener>,
+            &mut [],
+        ));
     }
 }
