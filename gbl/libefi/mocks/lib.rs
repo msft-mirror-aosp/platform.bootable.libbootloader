@@ -22,7 +22,7 @@
 pub mod protocol;
 pub mod utils;
 
-use efi_types::{EfiConfigurationTable, EfiTimerDelay};
+use efi_types::{EfiConfigurationTable, EfiGuid, EfiTimerDelay};
 use liberror::Result;
 use mockall::mock;
 use protocol::{
@@ -287,6 +287,9 @@ mock! {
     pub RuntimeServices {
         /// Performs a cold reset.
         pub fn cold_reset(&self);
+
+        /// Gets EFI variable.
+        pub fn get_variable(&self, guid: &EfiGuid, name: &str, out: &mut [u8]) -> Result<usize>;
     }
 }
 

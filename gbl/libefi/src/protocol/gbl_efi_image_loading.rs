@@ -49,6 +49,33 @@ pub struct EfiImageBuffer {
     buffer: Option<&'static mut [MaybeUninit<u8>]>,
 }
 
+/// Represents either static reserved memory space or memory to be allocated dynamically.
+#[derive(Debug)]
+pub enum EfiImageBufferInfo {
+    /// Static memory space returned from UEFI firmware.
+    Buffer(EfiImageBuffer),
+    /// Target buffer should be dynamically allocated by the given size.
+    AllocSize(usize),
+}
+
+impl EfiImageBufferInfo {
+    /// Gets as EfiImageBuffer::Buffer;
+    pub fn buffer(&mut self) -> Option<&mut [MaybeUninit<u8>]> {
+        match self {
+            Self::Buffer(EfiImageBuffer { buffer: Some(v) }) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// Move buffer ownership out of EfiImageBuffer, and consume it.
+    pub fn take(self) -> Option<&'static mut [MaybeUninit<u8>]> {
+        match self {
+            Self::Buffer(mut v) => Some(v.take()),
+            _ => None,
+        }
+    }
+}
+
 impl EfiImageBuffer {
     // # Safety
     //
@@ -73,7 +100,7 @@ impl EfiImageBuffer {
         returned_buffers.push(addr);
 
         // SAFETY:
-        // `gbl_buffer.Memory` is guarantied to be not null
+        // `gbl_buffer.Memory` is guaranteed to be not null
         // This code is relying on EFI protocol implementation to provide valid buffer pointer
         // to memory region of size `gbl_buffer.SizeBytes`.
         Ok(EfiImageBuffer {
@@ -87,7 +114,7 @@ impl EfiImageBuffer {
     }
 
     /// Move buffer ownership out of EfiImageBuffer, and consume it.
-    pub fn take(mut self) -> &'static mut [MaybeUninit<u8>] {
+    pub fn take(&mut self) -> &'static mut [MaybeUninit<u8>] {
         self.buffer.take().unwrap()
     }
 
@@ -133,7 +160,7 @@ impl Protocol<'_, GblImageLoadingProtocol> {
     /// Err(Error::EFI_STATUS_INVALID_PARAMETER) if received buffer is NULL
     /// Err(Error::EFI_STATUS_ALREADY_STARTED) buffer was already returned and is still in use.
     /// Err(err) if `err` occurred
-    pub fn get_buffer(&self, gbl_image_info: &GblEfiImageInfo) -> Result<EfiImageBuffer> {
+    pub fn get_buffer(&self, gbl_image_info: &GblEfiImageInfo) -> Result<EfiImageBufferInfo> {
         let mut gbl_buffer: GblEfiImageBuffer = Default::default();
         // SAFETY:
         // `self.interface()?` guarantees self.interface is non-null and points to a valid object
@@ -154,6 +181,8 @@ impl Protocol<'_, GblImageLoadingProtocol> {
 
         if gbl_buffer.SizeBytes < gbl_image_info.SizeBytes {
             return Err(Error::BufferTooSmall(Some(gbl_image_info.SizeBytes)));
+        } else if gbl_buffer.Memory.is_null() {
+            return Ok(EfiImageBufferInfo::AllocSize(gbl_buffer.SizeBytes));
         }
 
         // SAFETY:
@@ -161,7 +190,7 @@ impl Protocol<'_, GblImageLoadingProtocol> {
         // `gbl_buffer.Size` must be valid size of the buffer.
         // This protocol is relying on EFI protocol implementation to provide valid buffer pointer
         // to memory region of size `gbl_buffer.SizeBytes`.
-        let image_buffer = unsafe { EfiImageBuffer::new(gbl_buffer)? };
+        let image_buffer = EfiImageBufferInfo::Buffer(unsafe { EfiImageBuffer::new(gbl_buffer)? });
 
         Ok(image_buffer)
     }
@@ -785,35 +814,36 @@ mod test {
     }
 
     #[test]
-    fn test_proto_get_buffer_not_provided() {
+    fn test_proto_get_buffer_return_alloc_size() {
+        // SAFETY:
+        // * Caler must guarantee that `buffer` points to a valid instance of `GblEfiImageBuffer`.
         unsafe extern "C" fn get_buffer(
             _: *mut GblEfiImageLoadingProtocol,
-            image_info: *const GblEfiImageInfo,
+            _: *const GblEfiImageInfo,
             buffer: *mut GblEfiImageBuffer,
         ) -> EfiStatus {
-            assert!(!image_info.is_null());
-            assert!(!buffer.is_null());
             // SAFETY
-            // `buffer` must be valid pointer to `GblEfiImageBuffer`
+            // By safety requirement of this function, `buffer` points to a valid instance of
+            // `GblEfiImageBuffer`.
             let buffer = unsafe { buffer.as_mut() }.unwrap();
-
             buffer.Memory = null_mut();
-            buffer.SizeBytes = 10;
-
+            buffer.SizeBytes = MEMORY_TEST_BUF_SIZE;
             EFI_STATUS_SUCCESS
         }
 
         run_test(|image_handle, systab_ptr| {
-            let gbl_image_info: GblEfiImageInfo = Default::default();
+            let gbl_image_info: GblEfiImageInfo =
+                GblEfiImageInfo { ImageType: [0; PARTITION_NAME_LEN_U16], SizeBytes: 100 };
             let mut image_loading =
                 GblEfiImageLoadingProtocol { get_buffer: Some(get_buffer), ..Default::default() };
             let efi_entry = EfiEntry { image_handle, systab_ptr };
             let protocol =
                 generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
-
             let _memory_guard = MEMORY_TEST.with_borrow_mut(|v| v.start());
-            let res = protocol.get_buffer(&gbl_image_info);
-            assert_eq!(res.unwrap_err(), Error::InvalidInput);
+            assert!(matches!(
+                protocol.get_buffer(&gbl_image_info),
+                Ok(EfiImageBufferInfo::AllocSize(MEMORY_TEST_BUF_SIZE))
+            ));
         });
     }
 
@@ -851,8 +881,8 @@ mod test {
                 generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
 
             let _memory_guard = MEMORY_TEST.with_borrow_mut(|v| v.start());
-            let res = protocol.get_buffer(&gbl_image_info).unwrap();
-            assert!(res.buffer.as_ref().unwrap().is_empty());
+            let mut res = protocol.get_buffer(&gbl_image_info).unwrap();
+            assert!(res.buffer().as_ref().unwrap().is_empty());
         });
     }
 
@@ -934,9 +964,9 @@ mod test {
                 generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
 
             let _memory_guard = MEMORY_TEST.with_borrow_mut(|v| v.start());
-            let buf = protocol.get_buffer(&gbl_image_info).unwrap();
-            assert_ne!(buf.buffer.as_ref().unwrap().as_ptr(), null_mut());
-            assert_eq!(buf.buffer.as_ref().unwrap().len(), 100);
+            let mut buf = protocol.get_buffer(&gbl_image_info).unwrap();
+            assert_ne!(buf.buffer().as_ref().unwrap().as_ptr(), null_mut());
+            assert_eq!(buf.buffer().as_ref().unwrap().len(), 100);
         });
     }
 
@@ -1107,7 +1137,7 @@ mod test {
                 generate_protocol::<GblImageLoadingProtocol>(&efi_entry, &mut image_loading);
 
             let _memory_guard = MEMORY_TEST.with_borrow_mut(|v| v.start());
-            let mut keep_alive: Vec<EfiImageBuffer> = vec![];
+            let mut keep_alive: Vec<EfiImageBufferInfo> = vec![];
             for _ in 1..=MAX_ARRAY_SIZE + 1 {
                 keep_alive.push(protocol.get_buffer(&gbl_image_info).unwrap());
             }
@@ -1186,7 +1216,7 @@ mod test {
         let _memory_guard = MEMORY_TEST.with_borrow_mut(|v| v.start());
         // SAFETY:
         // 'gbl_buffer` represents valid buffer created by vector.
-        let res1 = unsafe { EfiImageBuffer::new(gbl_buffer) }.unwrap();
+        let mut res1 = unsafe { EfiImageBuffer::new(gbl_buffer) }.unwrap();
         let buf_no_owner = res1.take();
 
         // Since `res1` was taken, we can't reuse same buffer.
