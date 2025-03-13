@@ -71,21 +71,27 @@ pub fn android_load_verify_fixup<'a, 'b, 'c>(
         _ => {
             let mut remains = match images.dtbo.len() > 0 {
                 // TODO(b/384964561, b/374336105): Investigate if we can avoid additional copy.
-                true => components
-                    .append_from_dtbo(&DtTableImage::from_bytes(images.dtbo)?, fdt_load)?,
+                true => {
+                    gbl_println!(ops, "Handling overlays from dtbo");
+                    components
+                        .append_from_dtbo(&DtTableImage::from_bytes(images.dtbo)?, fdt_load)?
+                }
                 _ => fdt_load,
             };
 
             if images.dtb.len() > 0 {
+                gbl_println!(ops, "Handling device tree from boot/vendor_boot");
                 remains =
                     components.append(ops, DeviceTreeComponentSource::Boot, images.dtb, remains)?;
             }
 
             if images.dtb_part.len() > 0 {
+                gbl_println!(ops, "Handling device trees from dtb");
                 let dttable = DtTableImage::from_bytes(images.dtb_part)?;
                 remains = components.append_from_dttable(true, &dttable, remains)?;
             }
 
+            gbl_println!(ops, "Selecting device tree components");
             ops.select_device_trees(&mut components)?;
             let (base, overlays) = components.selected()?;
             (remains, base, overlays)
