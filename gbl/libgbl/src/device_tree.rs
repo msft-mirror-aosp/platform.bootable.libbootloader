@@ -85,6 +85,23 @@ impl<'a> DeviceTreeComponent<'a> {
     }
 }
 
+fn try_dt_totalsize_from_unaligned_bytes_ref(header: &[u8], buffer: &mut [u8]) -> Result<usize> {
+    let aligned_buffer = aligned_subslice(buffer, FDT_ALIGNMENT)?;
+    let header_slice = aligned_buffer
+        .get_mut(..FDT_HEADER_SIZE)
+        .ok_or(Error::BufferTooSmall(Some(FDT_HEADER_SIZE)))?;
+
+    // Fdt header must be aligned, so copy to an aligned buffer.
+    header_slice.copy_from_slice(
+        &header.get(..FDT_HEADER_SIZE).ok_or(Error::BufferTooSmall(Some(FDT_HEADER_SIZE)))?,
+    );
+
+    match FdtHeader::from_bytes_ref(&header_slice) {
+        Ok(header) => Ok(header.totalsize()),
+        Err(e) => Err(e),
+    }
+}
+
 impl<'a> DeviceTreeComponentsRegistry<'a> {
     /// Create new empty DeviceTreeComponentsRegistry.
     pub fn new() -> Self {
@@ -156,16 +173,10 @@ impl<'a> DeviceTreeComponentsRegistry<'a> {
         let mut components_added = 0;
         let mut data_remains = data;
         let mut buffer_remains = buffer;
-        while data_remains.len() >= FDT_HEADER_SIZE {
-            let aligned_buffer = aligned_subslice(buffer_remains, FDT_ALIGNMENT)?;
 
-            let header_slice = aligned_buffer.get_mut(..FDT_HEADER_SIZE).ok_or(Error::Other(
-                Some("Provided buffer is too small to ensure multidt entry is aligned"),
-            ))?;
-            // Fdt header must be aligned, so copy to an aligned buffer.
-            header_slice.copy_from_slice(&data_remains[..FDT_HEADER_SIZE]);
-            let next_fdt_size = FdtHeader::from_bytes_ref(header_slice)?.totalsize();
-
+        while let Ok(next_fdt_size) =
+            try_dt_totalsize_from_unaligned_bytes_ref(data_remains, buffer_remains)
+        {
             if self.components.is_full() {
                 return Err(Error::Other(Some(MAXIMUM_DEVICE_TREE_COMPONENTS_ERROR_MSG)));
             }
@@ -175,6 +186,7 @@ impl<'a> DeviceTreeComponentsRegistry<'a> {
                 data_remains.split_at_checked(next_fdt_size).ok_or(Error::Other(Some(
                     "Multidt structure has a valid header but doesn't have a device tree payload",
                 )))?;
+            let aligned_buffer = aligned_subslice(buffer_remains, FDT_ALIGNMENT)?;
             let (aligned_buffer, aligned_buffer_remains) =
                 aligned_buffer.split_at_mut_checked(next_fdt_size).ok_or(Error::Other(Some(
                     "Provided buffer is too small to ensure multidt entry is aligned",
@@ -318,6 +330,33 @@ pub(crate) mod test {
 
         registry
             .append(&mut gbl_ops, DeviceTreeComponentSource::Boot, &dt[..], &mut buffer)
+            .unwrap();
+
+        assert_eq!(registry.components().count(), 1);
+
+        let component = registry.components().next().unwrap();
+
+        assert_eq!(
+            component,
+            &DeviceTreeComponent {
+                source: DeviceTreeComponentSource::Boot,
+                dt: &dt[..],
+                selected: false,
+            }
+        );
+        assert!(component.is_base_device_tree());
+    }
+
+    #[test]
+    fn test_components_registry_append_component_with_tail() {
+        let dt = include_bytes!("../../libfdt/test/data/base.dtb").to_vec();
+        let dt_with_tail = [dt.clone(), vec![0; 100]].concat();
+        let mut buffer = vec![0u8; 2 * 1024 * 1024]; // 2 MB
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        let mut registry = DeviceTreeComponentsRegistry::new();
+
+        registry
+            .append(&mut gbl_ops, DeviceTreeComponentSource::Boot, &dt_with_tail[..], &mut buffer)
             .unwrap();
 
         assert_eq!(registry.components().count(), 1);
@@ -583,6 +622,21 @@ pub(crate) mod test {
     fn test_components_append_from_multifd() {
         let half = include_bytes!("../../libfdt/test/data/base.dtb").to_vec();
         let dt = [half.clone(), half].concat();
+        let mut buffer = vec![0u8; 2 * 1024 * 1024]; // 2 MB
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        let mut registry = DeviceTreeComponentsRegistry::new();
+
+        registry
+            .append(&mut gbl_ops, DeviceTreeComponentSource::VendorBoot, &dt[..], &mut buffer)
+            .unwrap();
+
+        assert_eq!(registry.components().count(), 2);
+    }
+
+    #[test]
+    fn test_components_append_from_multifd_with_tail() {
+        let half = include_bytes!("../../libfdt/test/data/base.dtb").to_vec();
+        let dt = [half.clone(), half, vec![0; 100]].concat();
         let mut buffer = vec![0u8; 2 * 1024 * 1024]; // 2 MB
         let mut gbl_ops = FakeGblOps::new(&[]);
         let mut registry = DeviceTreeComponentsRegistry::new();
