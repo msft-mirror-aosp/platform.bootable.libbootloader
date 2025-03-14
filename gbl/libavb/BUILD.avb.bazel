@@ -102,7 +102,7 @@ cc_library(
         "-Wno-unused-parameter",
         "-ffunction-sections",
         "-g",
-        "-DAVB_ENABLE_DEBUG",
+        "-DAVB_USE_PRINTF_LOGS",
         "-DAVB_COMPILATION",
         # libavb uses more than 4K of stack space. This prevents the compiler from inserting
         # _chkstk().
