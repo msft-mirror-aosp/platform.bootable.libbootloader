@@ -25,9 +25,4 @@ void avb_printf(const char* fmt, ...) {
   va_end(args);
 }
 
-void avb_printv(const char* message, ...) {
-  va_list args;
-  va_start(args, message);
-  gbl_printf(message, args);
-  va_end(args);
-}
+void avb_printv(const char* message, ...) {}
