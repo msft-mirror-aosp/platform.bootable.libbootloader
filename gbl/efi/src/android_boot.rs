@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use crate::{
-    efi_blocks::find_block_devices,
     fastboot::with_fastboot_channels,
     ops::Ops,
     utils::{get_platform_buffer_info, BufferInfo},
@@ -21,24 +20,25 @@ use crate::{
 use core::{fmt::Write, str::from_utf8};
 use efi::{efi_print, efi_println, exit_boot_services, EfiEntry};
 use efi_types::{GBL_IMAGE_TYPE_FASTBOOT, GBL_IMAGE_TYPE_OS_LOAD};
-use libgbl::{android_boot::android_main, gbl_print, gbl_println, GblOps, Os, Result};
+use libgbl::{android_boot::android_main, gbl_print, gbl_println, GblOps, Result};
 
 const SZ_MB: usize = 1024 * 1024;
 
-/// Android bootloader main entry.
-pub fn android_efi_main(entry: EfiEntry) -> Result<()> {
-    let blks = find_block_devices(&entry)?;
-    let mut ops = Ops::new(&entry, &blks[..], Some(Os::Android));
-
+/// Android bootloader main entry (before booting).
+///
+/// On success, returns a tuple of slices (ramdisk, fdt, kernel, remains).
+pub fn efi_android_load(
+    ops: &mut Ops,
+) -> Result<(&'static mut [u8], &'static mut [u8], &'static mut [u8], &'static mut [u8])> {
+    let entry = ops.efi_entry;
     // Prepares the OS load buffer.
-    let mut alloc;
     let img_type_os_load = from_utf8(GBL_IMAGE_TYPE_OS_LOAD).unwrap();
     let load_buffer = match get_platform_buffer_info(&entry, img_type_os_load, 256 * SZ_MB) {
         BufferInfo::Static(v) => v,
         BufferInfo::Alloc(sz) => {
-            alloc = vec![0u8; sz];
+            let alloc = vec![0u8; sz];
             gbl_println!(ops, "Allocated {:#x} bytes for OS load buffer.", alloc.len());
-            &mut alloc
+            alloc.leak()
         }
     };
 
@@ -48,7 +48,7 @@ pub fn android_efi_main(entry: EfiEntry) -> Result<()> {
 
     gbl_println!(ops, "Try booting as Android");
 
-    let (ramdisk, fdt, kernel, remains) = android_main(&mut ops, load_buffer.as_mut(), |fb| {
+    Ok(android_main(ops, load_buffer.as_mut(), |fb| {
         // Note: `get_or_insert_with` lazily evaluates closure (only when insert is necessary).
         let buffer = fastboot_buffer_info.get_or_insert_with(|| {
             get_platform_buffer_info(&entry, img_type_fastboot, 512 * SZ_MB)
@@ -68,21 +68,29 @@ pub fn android_efi_main(entry: EfiEntry) -> Result<()> {
             // This can be made configurable if necessary.
             fb.run_n::<2>(buffer, local, usb, tcp)
         })
-    })?;
+    })?)
+}
 
-    gbl_println!(ops, "");
-    gbl_println!(
-        ops,
+/// Exits boot services and boots loaded android images.
+pub fn efi_android_boot(
+    entry: EfiEntry,
+    kernel: &[u8],
+    ramdisk: &[u8],
+    fdt: &[u8],
+    remains: &mut [u8],
+) -> Result<()> {
+    efi_println!(entry, "");
+    efi_println!(
+        entry,
         "Booting kernel @ {:#x}, ramdisk @ {:#x}, fdt @ {:#x}",
         kernel.as_ptr() as usize,
         ramdisk.as_ptr() as usize,
         fdt.as_ptr() as usize
     );
-    gbl_println!(ops, "");
+    efi_println!(entry, "");
 
     #[cfg(target_arch = "aarch64")]
     {
-        drop(blks); // Drop `blks` to release the borrow on `entry`.
         let _ = exit_boot_services(entry, remains)?;
         // SAFETY: We currently targets at Cuttlefish emulator where images are provided valid.
         unsafe { boot::aarch64::jump_linux_el2_or_lower(kernel, ramdisk, fdt) };
@@ -95,7 +103,6 @@ pub fn android_efi_main(entry: EfiEntry) -> Result<()> {
         use libgbl::android_boot::BOOTARGS_PROP;
 
         let fdt = Fdt::new(&fdt[..])?;
-        drop(blks); // Drop `blks` to release the borrow on `entry`.
         let efi_mmap = exit_boot_services(entry, remains)?;
         // SAFETY: We currently target at Cuttlefish emulator where images are provided valid.
         unsafe {
@@ -130,8 +137,7 @@ pub fn android_efi_main(entry: EfiEntry) -> Result<()> {
             .boot_services()
             .find_first_and_open::<efi::protocol::riscv::RiscvBootProtocol>()?
             .get_boot_hartid()?;
-        gbl_println!(ops, "riscv boot_hart_id: {}", boot_hart_id);
-        drop(blks); // Drop `blks` to release the borrow on `entry`.
+        efi_println!(entry, "riscv boot_hart_id: {}", boot_hart_id);
         let _ = exit_boot_services(entry, remains)?;
         // SAFETY: We currently target at Cuttlefish emulator where images are provided valid.
         unsafe { boot::riscv64::jump_linux(kernel, boot_hart_id, fdt) };
