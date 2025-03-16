@@ -15,15 +15,17 @@
 //! Fastboot backend for libgbl.
 
 use crate::{
+    android_boot::{android_load_verify_fixup, get_boot_slot},
     fuchsia_boot::GblAbrOps,
     gbl_print, gbl_println,
+    ops::RambootOps,
     partition::{check_part_unique, GblDisk, PartitionIo},
     GblOps,
 };
 pub use abr::{mark_slot_active, set_one_shot_bootloader, set_one_shot_recovery, SlotIndex};
 use core::{
     array::from_fn, cmp::min, ffi::CStr, fmt::Write, future::Future, marker::PhantomData,
-    mem::take, ops::DerefMut, pin::Pin, str::from_utf8,
+    mem::take, ops::DerefMut, ops::Range, pin::Pin, str::from_utf8,
 };
 use fastboot::{
     local_session::LocalSession, next_arg, next_arg_u64, process_next_command, run_tcp_session,
@@ -33,6 +35,7 @@ use fastboot::{
 use gbl_async::{join, yield_now};
 use gbl_storage::{BlockIo, Disk, Gpt};
 use liberror::Error;
+use libutils::snprintf;
 use libutils::FormattedBytes;
 use safemath::SafeNum;
 use zbi::{ZbiContainer, ZbiType};
@@ -127,11 +130,45 @@ impl<'a, 'b, B: BlockIo, P: BufferPool> Default for Task<'a, 'b, B, P> {
     }
 }
 
+/// Contains the load buffer layout of images loaded by "fastboot boot".
+#[derive(Debug, Clone)]
+pub enum LoadedImageInfo {
+    /// Android loaded images.
+    Android {
+        /// Offset and length of ramdisk in `GblFastboot::load_buffer`.
+        ramdisk: Range<usize>,
+        /// Offset and length of fdt in `GblFastboot::load_buffer`.
+        fdt: Range<usize>,
+        /// Offset and length of kernel in `GblFastboot::load_buffer`.
+        kernel: Range<usize>,
+    },
+}
+
 /// Contains result data returned by GBL Fastboot.
 #[derive(Debug, Clone, Default)]
 pub struct GblFastbootResult {
+    /// Buffer layout for images loaded by "fastboot boot"
+    pub loaded_image_info: Option<LoadedImageInfo>,
     /// Slot suffix that was last set active by "fastboot set_active"
     pub last_set_active_slot: Option<char>,
+}
+
+impl GblFastbootResult {
+    /// Splits the given buffer into `(ramdisk, fdt, kernel, unused)` according to layout info in
+    ///  `Self::loaded_image_info` if it is a `Some(LoadedImageInfo::Android)`.
+    pub fn split_loaded_android<'a>(
+        &self,
+        load: &'a mut [u8],
+    ) -> Option<(&'a mut [u8], &'a mut [u8], &'a mut [u8], &'a mut [u8])> {
+        let Some(LoadedImageInfo::Android { ramdisk, fdt, kernel }) = &self.loaded_image_info
+        else {
+            return None;
+        };
+        let (ramdisk_buf, rem) = load[ramdisk.start..].split_at_mut(ramdisk.len());
+        let (fdt_buf, rem) = rem[fdt.start - ramdisk.end..].split_at_mut(fdt.len());
+        let (kernel_buf, rem) = rem[kernel.start - fdt.end..].split_at_mut(kernel.len());
+        Some((ramdisk_buf, fdt_buf, kernel_buf, rem))
+    }
 }
 
 /// `GblFastboot` implements fastboot commands in the GBL context.
@@ -176,7 +213,7 @@ where
     current_download_size: usize,
     enable_async_task: bool,
     default_block: Option<usize>,
-    bootimg_buf: &'b mut [u8],
+    load_buffer: &'b mut [u8],
     result: GblFastbootResult,
     // Introduces marker type so that we can enforce constraint 'd <= min('b, 'c).
     // The constraint is expressed in the implementation block for the `FastbootImplementation`
@@ -222,7 +259,7 @@ where
         task_mapper: fn(Task<'a, 'b, B, P>) -> F,
         tasks: &'d Shared<C>,
         buffer_pool: &'b Shared<P>,
-        bootimg_buf: &'b mut [u8],
+        load_buffer: &'b mut [u8],
     ) -> Self {
         Self {
             gbl_ops,
@@ -234,7 +271,7 @@ where
             current_download_size: 0,
             enable_async_task: false,
             default_block: None,
-            bootimg_buf,
+            load_buffer,
             result: Default::default(),
             _tasks_context_lifetime: PhantomData,
             _get_image_buffer_lifetime: PhantomData,
@@ -547,7 +584,11 @@ where
                     _ => return Err("Invalid slot index for Fuchsia A/B/R".into()),
                 },
             )?),
-            _ => Err("Not supported".into()),
+            // We currently assume that slot indices are mapped to suffix 'a' to 'z' starting from
+            // 0. Revisit if we need to support arbitrary slot suffix to index mapping.
+            _ => Ok(self
+                .gbl_ops
+                .set_active_slot(u8::try_from(slot.chars().next().unwrap())? - b'a')?),
         }
     }
 }
@@ -735,15 +776,32 @@ where
         }
     }
 
-    async fn boot(&mut self, mut resp: impl InfoSender + OkaySender) -> CommandResult<()> {
-        let len = core::cmp::min(self.bootimg_buf.len(), self.current_download_size);
-        let data = self.current_download_buffer.as_mut().ok_or("No file staged")?;
-        let data = &mut data[..self.current_download_size];
-
-        self.bootimg_buf[..len].copy_from_slice(&data[..len]);
-        resp.send_info("Boot into boot.img").await?;
+    async fn boot(&mut self, _: impl InfoSender + OkaySender) -> CommandResult<()> {
+        let (mut data, sz) = self.take_download().ok_or("No boot image staged")?;
+        let bootimg_buffer = &mut data[..sz];
+        let load_buffer_addr = self.load_buffer.as_ptr() as usize;
+        let slot_suffix = get_boot_slot(self.gbl_ops, false)?;
+        let mut boot_part = [0u8; 16];
+        let boot_part = snprintf!(boot_part, "boot_{slot_suffix}");
+        // We still need to specify slot because other components such as vendor_boot, dtb, dtbo and
+        // vbmeta still come from the disk.
+        let slot_idx = (u64::from(slot_suffix) - u64::from('a')).try_into().unwrap();
+        let mut ramboot_ops =
+            RambootOps { ops: self.gbl_ops, preloaded_partitions: &[(boot_part, bootimg_buffer)] };
+        let (ramdisk, fdt, kernel, _) =
+            android_load_verify_fixup(&mut ramboot_ops, slot_idx, false, self.load_buffer)?;
+        self.result.loaded_image_info = Some(LoadedImageInfo::Android {
+            ramdisk: to_range(ramdisk.as_ptr() as usize - load_buffer_addr, ramdisk.len()),
+            fdt: to_range(fdt.as_ptr() as usize - load_buffer_addr, fdt.len()),
+            kernel: to_range(kernel.as_ptr() as usize - load_buffer_addr, kernel.len()),
+        });
         Ok(())
     }
+}
+
+/// Helper to convert a offset and length to a range.
+fn to_range(off: usize, len: usize) -> Range<usize> {
+    off..off.checked_add(len).unwrap()
 }
 
 /// `GblUsbTransport` defines transport interfaces for running GBL fastboot over USB.
@@ -783,11 +841,11 @@ pub async fn run_gbl_fastboot<'a: 'c, 'b: 'c, 'c, 'd>(
     local: Option<impl LocalSession>,
     usb: Option<impl GblUsbTransport>,
     tcp: Option<impl GblTcpStream>,
-    bootimg_buf: &'b mut [u8],
+    load_buffer: &'b mut [u8],
 ) -> GblFastbootResult {
     let tasks = tasks.into();
     let disks = gbl_ops.disks();
-    let mut fb = GblFastboot::new(gbl_ops, disks, Task::run, &tasks, buffer_pool, bootimg_buf);
+    let mut fb = GblFastboot::new(gbl_ops, disks, Task::run, &tasks, buffer_pool, load_buffer);
     fb.run(local, usb, tcp).await;
     fb.result
 }
@@ -814,7 +872,7 @@ pub async fn run_gbl_fastboot_stack<'a, 'b, const N: usize>(
     local: Option<impl LocalSession>,
     usb: Option<impl GblUsbTransport>,
     tcp: Option<impl GblTcpStream>,
-    bootimg_buf: &mut [u8],
+    load_buffer: &mut [u8],
 ) -> GblFastbootResult {
     let buffer_pool = buffer_pool.into();
     // Creates N worker tasks.
@@ -836,7 +894,7 @@ pub async fn run_gbl_fastboot_stack<'a, 'b, const N: usize>(
     let mut tasks: [_; N] = tasks.each_mut().map(|v| unsafe { Pin::new_unchecked(v) });
     let tasks = PinFutSlice::new(&mut tasks[..]).into();
     let disks = gbl_ops.disks();
-    let mut fb = GblFastboot::new(gbl_ops, disks, Task::run, &tasks, &buffer_pool, bootimg_buf);
+    let mut fb = GblFastboot::new(gbl_ops, disks, Task::run, &tasks, &buffer_pool, load_buffer);
     fb.run(local, usb, tcp).await;
     fb.result
 }
@@ -891,11 +949,20 @@ pub fn fuchsia_fastboot_mdns_packet(node_name: &str, ipv6_addr: &[u8]) -> Result
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use super::*;
     use crate::{
+        android_boot::{
+            load::tests::read_test_data,
+            tests::{
+                checks_loaded_v2_slot_a_normal_mode, checks_loaded_v2_slot_b_normal_mode,
+                default_test_gbl_ops,
+            },
+        },
         constants::KiB,
-        ops::test::{FakeGblOps, FakeGblOpsStorage},
+        constants::KERNEL_ALIGNMENT,
+        ops::test::{slot, FakeGblOps, FakeGblOpsStorage},
+        tests::AlignedBuffer,
         Os,
     };
     use abr::{
@@ -1717,7 +1784,7 @@ mod test {
 
     /// A shared [TestListener].
     #[derive(Default)]
-    struct SharedTestListener(Mutex<TestListener>);
+    pub(crate) struct SharedTestListener(Mutex<TestListener>);
 
     impl SharedTestListener {
         /// Locks the listener
@@ -1726,32 +1793,32 @@ mod test {
         }
 
         /// Adds packet to USB input
-        fn add_usb_input(&self, packet: &[u8]) {
+        pub(crate) fn add_usb_input(&self, packet: &[u8]) {
             self.lock().usb_in_queue.push_back(packet.into());
         }
 
         /// Adds bytes to input stream.
-        fn add_tcp_input(&self, data: &[u8]) {
+        pub(crate) fn add_tcp_input(&self, data: &[u8]) {
             self.lock().tcp_in_queue.append(&mut data.to_vec().into());
         }
 
         /// Adds a length pre-fixed bytes stream.
-        fn add_tcp_length_prefixed_input(&self, data: &[u8]) {
+        pub(crate) fn add_tcp_length_prefixed_input(&self, data: &[u8]) {
             self.add_tcp_input(&length_prefixed(data));
         }
 
         /// Gets a copy of `Self::usb_out_queue`.
-        fn usb_out_queue(&self) -> VecDeque<Vec<u8>> {
+        pub(crate) fn usb_out_queue(&self) -> VecDeque<Vec<u8>> {
             self.lock().usb_out_queue.clone()
         }
 
         /// Gets a copy of `Self::tcp_out_queue`.
-        fn tcp_out_queue(&self) -> VecDeque<u8> {
+        pub(crate) fn tcp_out_queue(&self) -> VecDeque<u8> {
             self.lock().tcp_out_queue.clone()
         }
 
         /// A helper for decoding USB output packets as a string
-        fn dump_usb_out_queue(&self) -> String {
+        pub(crate) fn dump_usb_out_queue(&self) -> String {
             let mut res = String::from("");
             for v in self.lock().usb_out_queue.iter() {
                 let v = String::from_utf8(v.clone()).unwrap_or(format!("{:?}", v));
@@ -1761,7 +1828,7 @@ mod test {
         }
 
         /// A helper for decoding TCP output data as strings
-        fn dump_tcp_out_queue(&self) -> String {
+        pub(crate) fn dump_tcp_out_queue(&self) -> String {
             let mut data = self.lock();
             let mut v;
             let (_, mut remains) = data.tcp_out_queue.make_contiguous().split_at(4);
@@ -1816,7 +1883,7 @@ mod test {
     }
 
     /// A helper to make an expected stream of USB output.
-    fn make_expected_usb_out(data: &[&[u8]]) -> VecDeque<Vec<u8>> {
+    pub(crate) fn make_expected_usb_out(data: &[&[u8]]) -> VecDeque<Vec<u8>> {
         VecDeque::from(data.iter().map(|v| v.to_vec()).collect::<Vec<_>>())
     }
 
@@ -1828,7 +1895,7 @@ mod test {
     }
 
     #[derive(Default)]
-    struct TestLocalSession {
+    pub(crate) struct TestLocalSession {
         requests: VecDeque<&'static str>,
         outgoing_packets: VecDeque<Vec<u8>>,
     }
@@ -2635,6 +2702,35 @@ mod test {
     }
 
     #[test]
+    fn test_run_gbl_fastboot_set_active_android() {
+        let storage = FakeGblOpsStorage::default();
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.os = Some(Os::Android);
+        let listener: SharedTestListener = Default::default();
+        let (usb, tcp) = (&listener, &listener);
+
+        listener.add_usb_input(b"set_active:b");
+        listener.add_usb_input(b"continue");
+        block_on(run_gbl_fastboot_stack::<2>(
+            &mut gbl_ops,
+            buffers,
+            Some(&mut TestLocalSession::default()),
+            Some(usb),
+            Some(tcp),
+            &mut [],
+        ));
+
+        assert_eq!(
+            listener.usb_out_queue(),
+            make_expected_usb_out(&[b"OKAY", b"INFOSyncing storage...", b"OKAY",]),
+            "\nActual USB output:\n{}",
+            listener.dump_usb_out_queue()
+        );
+        assert_eq!(gbl_ops.last_set_active_slot, Some(1));
+    }
+
+    #[test]
     fn test_run_gbl_fastboot_set_active_multichar_slot() {
         let storage = FakeGblOpsStorage::default();
         let buffers = vec![vec![0u8; KiB!(128)]; 2];
@@ -2825,5 +2921,58 @@ mod test {
             "\nActual USB output:\n{}",
             listener.dump_usb_out_queue()
         );
+    }
+
+    fn test_fastboot_boot_slot(
+        suffix: char,
+        load_buffer: &mut [u8],
+    ) -> (&mut [u8], &mut [u8], &mut [u8], &mut [u8]) {
+        let mut storage = FakeGblOpsStorage::default();
+        let vbmeta = CString::new(format!("vbmeta_{suffix}")).unwrap();
+        let vbmeta_img = read_test_data(format!("vbmeta_v2_{suffix}.img"));
+        storage.add_raw_device(&vbmeta, vbmeta_img);
+        let buffers = vec![vec![0u8; KiB!(128)]; 2];
+        let mut gbl_ops = default_test_gbl_ops(&storage);
+        gbl_ops.current_slot = Some(Ok(slot(suffix)));
+        let listener: SharedTestListener = Default::default();
+        let (usb, tcp) = (&listener, &listener);
+
+        let data = read_test_data(format!("boot_v2_{suffix}.img"));
+        listener.add_usb_input(format!("download:{:#x}", data.len()).as_bytes());
+        listener.add_usb_input(&data);
+        listener.add_usb_input(b"boot");
+        listener.add_usb_input(b"continue");
+
+        let res = block_on(run_gbl_fastboot_stack::<2>(
+            &mut gbl_ops,
+            buffers,
+            Some(&mut TestLocalSession::default()),
+            Some(usb),
+            Some(tcp),
+            &mut load_buffer[..],
+        ));
+
+        assert_eq!(
+            listener.usb_out_queue(),
+            make_expected_usb_out(&[b"DATA00004000", b"OKAY", b"OKAYboot_command",]),
+            "\nActual USB output:\n{}",
+            listener.dump_usb_out_queue()
+        );
+
+        res.split_loaded_android(&mut load_buffer[..]).unwrap()
+    }
+
+    #[test]
+    fn test_fastboot_boot_slot_a() {
+        let mut load_buffer = AlignedBuffer::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
+        let (ramdisk, _, kernel, _) = test_fastboot_boot_slot('a', &mut load_buffer);
+        checks_loaded_v2_slot_a_normal_mode(ramdisk, kernel);
+    }
+
+    #[test]
+    fn test_fastboot_boot_slot_b() {
+        let mut load_buffer = AlignedBuffer::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
+        let (ramdisk, _, kernel, _) = test_fastboot_boot_slot('b', &mut load_buffer);
+        checks_loaded_v2_slot_b_normal_mode(ramdisk, kernel);
     }
 }

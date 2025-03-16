@@ -410,20 +410,6 @@ pub trait GblOps<'a, 'd> {
     ///   any state change.
     fn get_next_slot(&mut self, _mark_boot_attempt: bool) -> Result<Slot, Error>;
 
-    /// Gets the target slot to boot.
-    ///
-    /// * If GBL is slotless (`Self::get_current_slot()` returns `Error::Unsupported`), the API
-    ///   behaves the same as `Self::get_next_slot()`.
-    /// * If GBL is slotted, the API behaves the same as `Self::get_current_slot()` and
-    ///   `mark_boot_attempt` is ignored.
-    fn get_boot_slot(&mut self, mark_boot_attempt: bool) -> Result<Slot, Error> {
-        match self.get_current_slot() {
-            // Slotless bootloader
-            Err(Error::Unsupported) => self.get_next_slot(mark_boot_attempt),
-            v => v,
-        }
-    }
-
     /// Sets the active slot for the next A/B decision.
     ///
     /// # Args
@@ -461,6 +447,234 @@ macro_rules! gbl_println {
             gbl_print!($ops, "{}", newline);
         }
     };
+}
+
+/// Inherits everything from `ops` but override a few such as read boot_a from
+/// bootimg_buffer, avb_write_rollback_index(), slot operation etc
+pub(crate) struct RambootOps<'a, T> {
+    pub(crate) ops: &'a mut T,
+    pub(crate) preloaded_partitions: &'a [(&'a str, &'a [u8])],
+}
+
+impl<'a, 'd, T: GblOps<'a, 'd>> GblOps<'a, 'd> for RambootOps<'_, T> {
+    fn console_out(&mut self) -> Option<&mut dyn Write> {
+        self.ops.console_out()
+    }
+
+    fn should_stop_in_fastboot(&mut self) -> Result<bool, Error> {
+        self.ops.should_stop_in_fastboot()
+    }
+
+    fn reboot(&mut self) {
+        self.ops.reboot()
+    }
+
+    fn disks(
+        &self,
+    ) -> &'a [GblDisk<
+        Disk<impl BlockIo + 'a, impl DerefMut<Target = [u8]> + 'a>,
+        Gpt<impl DerefMut<Target = [u8]> + 'a>,
+    >] {
+        self.ops.disks()
+    }
+
+    fn expected_os(&mut self) -> Result<Option<Os>, Error> {
+        self.ops.expected_os()
+    }
+
+    fn zircon_add_device_zbi_items(
+        &mut self,
+        container: &mut ZbiContainer<&mut [u8]>,
+    ) -> Result<(), Error> {
+        self.ops.zircon_add_device_zbi_items(container)
+    }
+
+    fn get_zbi_bootloader_files_buffer(&mut self) -> Option<&mut [u8]> {
+        self.ops.get_zbi_bootloader_files_buffer()
+    }
+
+    fn load_slot_interface<'c>(
+        &'c mut self,
+        _fnmut: &'c mut dyn FnMut(&mut [u8]) -> Result<(), Error>,
+        _boot_token: crate::BootToken,
+    ) -> GblResult<slots::Cursor<'c>> {
+        self.ops.load_slot_interface(_fnmut, _boot_token)
+    }
+
+    fn avb_read_is_device_unlocked(&mut self) -> AvbIoResult<bool> {
+        self.ops.avb_read_is_device_unlocked()
+    }
+
+    fn avb_read_rollback_index(&mut self, _rollback_index_location: usize) -> AvbIoResult<u64> {
+        self.ops.avb_read_rollback_index(_rollback_index_location)
+    }
+
+    fn avb_write_rollback_index(&mut self, _: usize, _: u64) -> AvbIoResult<()> {
+        // We don't want to persist AVB related data such as updating antirollback indices.
+        Ok(())
+    }
+
+    fn avb_read_persistent_value(&mut self, name: &CStr, value: &mut [u8]) -> AvbIoResult<usize> {
+        self.ops.avb_read_persistent_value(name, value)
+    }
+
+    fn avb_write_persistent_value(&mut self, _: &CStr, _: &[u8]) -> AvbIoResult<()> {
+        // We don't want to persist AVB related data such as updating current VBH.
+        Ok(())
+    }
+
+    fn avb_erase_persistent_value(&mut self, _: &CStr) -> AvbIoResult<()> {
+        // We don't want to persist AVB related data such as updating current VBH.
+        Ok(())
+    }
+
+    fn avb_cert_read_permanent_attributes(
+        &mut self,
+        attributes: &mut CertPermanentAttributes,
+    ) -> AvbIoResult<()> {
+        self.ops.avb_cert_read_permanent_attributes(attributes)
+    }
+
+    fn avb_cert_read_permanent_attributes_hash(&mut self) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
+        self.ops.avb_cert_read_permanent_attributes_hash()
+    }
+
+    fn get_image_buffer(
+        &mut self,
+        image_name: &str,
+        size: NonZeroUsize,
+    ) -> GblResult<ImageBuffer<'d>> {
+        self.ops.get_image_buffer(image_name, size)
+    }
+
+    fn get_custom_device_tree(&mut self) -> Option<&'a [u8]> {
+        self.ops.get_custom_device_tree()
+    }
+
+    fn fixup_os_commandline<'c>(
+        &mut self,
+        commandline: &CStr,
+        fixup_buffer: &'c mut [u8],
+    ) -> Result<Option<&'c str>, Error> {
+        self.ops.fixup_os_commandline(commandline, fixup_buffer)
+    }
+
+    fn fixup_bootconfig<'c>(
+        &mut self,
+        bootconfig: &[u8],
+        fixup_buffer: &'c mut [u8],
+    ) -> Result<Option<&'c [u8]>, Error> {
+        self.ops.fixup_bootconfig(bootconfig, fixup_buffer)
+    }
+
+    fn fixup_device_tree(&mut self, device_tree: &mut [u8]) -> Result<(), Error> {
+        self.ops.fixup_device_tree(device_tree)
+    }
+
+    fn select_device_trees(
+        &mut self,
+        components_registry: &mut device_tree::DeviceTreeComponentsRegistry,
+    ) -> Result<(), Error> {
+        self.ops.select_device_trees(components_registry)
+    }
+
+    fn read_from_partition_sync(
+        &mut self,
+        part: &str,
+        off: u64,
+        out: &mut (impl SliceMaybeUninit + ?Sized),
+    ) -> Result<(), Error> {
+        match self.preloaded_partitions.iter().find(|(name, _)| *name == part) {
+            Some((_, data)) => {
+                let buf = data
+                    .get(off.try_into()?..)
+                    .and_then(|v| v.get(..out.len()))
+                    .ok_or(Error::OutOfRange)?;
+                Ok(out.clone_from_slice(buf))
+            }
+            _ => self.ops.read_from_partition_sync(part, off, out),
+        }
+    }
+
+    fn avb_handle_verification_result(
+        &mut self,
+        color: BootStateColor,
+        digest: Option<&CStr>,
+        boot_os_version: Option<&[u8]>,
+        boot_security_patch: Option<&[u8]>,
+        system_os_version: Option<&[u8]>,
+        system_security_patch: Option<&[u8]>,
+        vendor_os_version: Option<&[u8]>,
+        vendor_security_patch: Option<&[u8]>,
+    ) -> AvbIoResult<()> {
+        self.ops.avb_handle_verification_result(
+            color,
+            digest,
+            boot_os_version,
+            boot_security_patch,
+            system_os_version,
+            system_security_patch,
+            vendor_os_version,
+            vendor_security_patch,
+        )
+    }
+
+    fn avb_validate_vbmeta_public_key(
+        &self,
+        public_key: &[u8],
+        public_key_metadata: Option<&[u8]>,
+    ) -> AvbIoResult<KeyValidationStatus> {
+        self.ops.avb_validate_vbmeta_public_key(public_key, public_key_metadata)
+    }
+
+    fn slots_metadata(&mut self) -> Result<SlotsMetadata, Error> {
+        // Ramboot is not suppose to call this interface.
+        unreachable!()
+    }
+
+    fn get_current_slot(&mut self) -> Result<Slot, Error> {
+        // Ramboot is slotless
+        Err(Error::Unsupported)
+    }
+
+    fn get_next_slot(&mut self, _: bool) -> Result<Slot, Error> {
+        // Ramboot is not suppose to call this interface.
+        unreachable!()
+    }
+
+    fn set_active_slot(&mut self, _: u8) -> Result<(), Error> {
+        // Ramboot is not suppose to call this interface.
+        unreachable!()
+    }
+
+    fn set_reboot_reason(&mut self, _: RebootReason) -> Result<(), Error> {
+        // Ramboot is not suppose to call this interface.
+        unreachable!()
+    }
+
+    fn get_reboot_reason(&mut self) -> Result<RebootReason, Error> {
+        // Assumes that ramboot use normal boot mode. But we might consider supporting recovery
+        // if there is a usecase.
+        Ok(RebootReason::Normal)
+    }
+
+    fn fastboot_variable<'arg>(
+        &mut self,
+        _: &CStr,
+        _: impl Iterator<Item = &'arg CStr> + Clone,
+        _: &mut [u8],
+    ) -> Result<usize, Error> {
+        // Ramboot should not need this.
+        unreachable!();
+    }
+
+    fn fastboot_visit_all_variables(
+        &mut self,
+        _: impl FnMut(&[&CStr], &CStr),
+    ) -> Result<(), Error> {
+        // Ramboot should not need this.
+        unreachable!();
+    }
 }
 
 #[cfg(test)]
@@ -593,6 +807,12 @@ pub(crate) mod test {
 
         /// Number of times `get_next_slot()` is called with `mark_boot_attempt` set to true.
         pub mark_boot_attempt_called: usize,
+
+        /// slot index last set active by `set_active()`,
+        pub last_set_active_slot: Option<u8>,
+
+        /// For returned by `get_reboot_reason()`
+        pub reboot_reason: Option<Result<RebootReason, Error>>,
     }
 
     /// Print `console_out` output, which can be useful for debugging.
@@ -874,8 +1094,9 @@ pub(crate) mod test {
             self.next_slot.unwrap()
         }
 
-        fn set_active_slot(&mut self, _: u8) -> Result<(), Error> {
-            unimplemented!()
+        fn set_active_slot(&mut self, slot: u8) -> Result<(), Error> {
+            self.last_set_active_slot = Some(slot);
+            Ok(())
         }
 
         fn set_reboot_reason(&mut self, _: RebootReason) -> Result<(), Error> {
@@ -883,7 +1104,7 @@ pub(crate) mod test {
         }
 
         fn get_reboot_reason(&mut self) -> Result<RebootReason, Error> {
-            unimplemented!()
+            self.reboot_reason.unwrap()
         }
     }
 
@@ -935,25 +1156,5 @@ pub(crate) mod test {
     /// Helper for creating a slot object.
     pub(crate) fn slot(suffix: char) -> Slot {
         Slot { suffix: suffix.into(), ..Default::default() }
-    }
-
-    #[test]
-    fn test_get_boot_slot_slotted_gbl() {
-        let storage = FakeGblOpsStorage::default();
-        let mut gbl_ops = FakeGblOps::new(&storage);
-        gbl_ops.current_slot = Some(Ok(slot('a')));
-        assert_eq!(gbl_ops.get_current_slot().unwrap().suffix, 'a'.into());
-    }
-
-    #[test]
-    fn test_get_boot_slot_slotless_gbl() {
-        let storage = FakeGblOpsStorage::default();
-        let mut gbl_ops = FakeGblOps::new(&storage);
-        gbl_ops.next_slot = Some(Ok(slot('a')));
-        gbl_ops.current_slot = Some(Err(Error::Unsupported));
-        assert_eq!(gbl_ops.get_next_slot(false).unwrap().suffix, 'a'.into());
-        assert_eq!(gbl_ops.mark_boot_attempt_called, 0);
-        assert_eq!(gbl_ops.get_next_slot(true).unwrap().suffix, 'a'.into());
-        assert_eq!(gbl_ops.mark_boot_attempt_called, 1);
     }
 }

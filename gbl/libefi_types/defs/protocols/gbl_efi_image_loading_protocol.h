@@ -26,6 +26,14 @@ const uint64_t GBL_EFI_IMAGE_LOADING_PROTOCOL_REVISION = 0x00010000;
 
 const size_t PARTITION_NAME_LEN_U16 = 36;
 
+//******************************************************
+// GBL reserved image types
+//******************************************************
+// Buffer for loading, verifying and fixing up OS images.
+#define GBL_IMAGE_TYPE_OS_LOAD L"os_load"
+// Buffer for use as fastboot download buffer.
+#define GBL_IMAGE_TYPE_FASTBOOT L"fastboot"
+
 typedef struct GblEfiImageInfo {
   char16_t ImageType[PARTITION_NAME_LEN_U16];
   size_t SizeBytes;

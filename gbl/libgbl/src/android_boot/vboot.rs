@@ -279,6 +279,24 @@ mod test {
                     .strip_suffix("\n")
                     .unwrap(),
             )
+            .partition_digest(
+                "boot",
+                read_test_data_as_str("vbmeta_v4_v4_init_boot_a.boot.digest.txt")
+                    .strip_suffix("\n")
+                    .unwrap(),
+            )
+            .partition_digest(
+                "init_boot",
+                read_test_data_as_str("vbmeta_v4_v4_init_boot_a.init_boot.digest.txt")
+                    .strip_suffix("\n")
+                    .unwrap(),
+            )
+            .partition_digest(
+                "vendor_boot",
+                read_test_data_as_str("vbmeta_v4_v4_init_boot_a.vendor_boot.digest.txt")
+                    .strip_suffix("\n")
+                    .unwrap(),
+            )
             .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
             .build();
 
@@ -319,6 +337,24 @@ mod test {
             .vbmeta_size(read_test_data("vbmeta_v4_v4_init_boot_a.img").len())
             .digest(
                 read_test_data_as_str("vbmeta_v4_v4_init_boot_a.digest.txt")
+                    .strip_suffix("\n")
+                    .unwrap(),
+            )
+            .partition_digest(
+                "boot",
+                read_test_data_as_str("vbmeta_v4_v4_init_boot_a.boot.digest.txt")
+                    .strip_suffix("\n")
+                    .unwrap(),
+            )
+            .partition_digest(
+                "init_boot",
+                read_test_data_as_str("vbmeta_v4_v4_init_boot_a.init_boot.digest.txt")
+                    .strip_suffix("\n")
+                    .unwrap(),
+            )
+            .partition_digest(
+                "vendor_boot",
+                read_test_data_as_str("vbmeta_v4_v4_init_boot_a.vendor_boot.digest.txt")
                     .strip_suffix("\n")
                     .unwrap(),
             )
@@ -363,6 +399,24 @@ mod test {
                     .strip_suffix("\n")
                     .unwrap(),
             )
+            .partition_digest(
+                "boot",
+                read_test_data_as_str("vbmeta_v4_v4_init_boot_a.boot.digest.txt")
+                    .strip_suffix("\n")
+                    .unwrap(),
+            )
+            .partition_digest(
+                "init_boot",
+                read_test_data_as_str("vbmeta_v4_v4_init_boot_a.init_boot.digest.txt")
+                    .strip_suffix("\n")
+                    .unwrap(),
+            )
+            .partition_digest(
+                "vendor_boot",
+                read_test_data_as_str("vbmeta_v4_v4_init_boot_a.vendor_boot.digest.txt")
+                    .strip_suffix("\n")
+                    .unwrap(),
+            )
             .public_key_digest(TEST_PUBLIC_KEY_DIGEST)
             .color(BootStateColor::Orange)
             .unlocked(true)
@@ -403,6 +457,24 @@ mod test {
             .vbmeta_size(read_test_data("vbmeta_v4_v4_init_boot_a.img").len())
             .digest(
                 read_test_data_as_str("vbmeta_v4_v4_init_boot_a.digest.txt")
+                    .strip_suffix("\n")
+                    .unwrap(),
+            )
+            .partition_digest(
+                "boot",
+                read_test_data_as_str("vbmeta_v4_v4_init_boot_a.boot.digest.txt")
+                    .strip_suffix("\n")
+                    .unwrap(),
+            )
+            .partition_digest(
+                "init_boot",
+                read_test_data_as_str("vbmeta_v4_v4_init_boot_a.init_boot.digest.txt")
+                    .strip_suffix("\n")
+                    .unwrap(),
+            )
+            .partition_digest(
+                "vendor_boot",
+                read_test_data_as_str("vbmeta_v4_v4_init_boot_a.vendor_boot.digest.txt")
                     .strip_suffix("\n")
                     .unwrap(),
             )

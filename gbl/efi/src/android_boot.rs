@@ -12,48 +12,63 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{efi_blocks::find_block_devices, fastboot::fastboot, ops::Ops, ops::RambootOps};
-use efi::{exit_boot_services, EfiEntry};
-use libgbl::{android_boot::load_android_simple, gbl_print, gbl_println, GblOps, Os, Result};
+use crate::{
+    efi_blocks::find_block_devices,
+    fastboot::with_fastboot_channels,
+    ops::Ops,
+    utils::{get_platform_buffer_info, BufferInfo},
+};
+use core::{fmt::Write, str::from_utf8};
+use efi::{efi_print, efi_println, exit_boot_services, EfiEntry};
+use efi_types::{GBL_IMAGE_TYPE_FASTBOOT, GBL_IMAGE_TYPE_OS_LOAD};
+use libgbl::{android_boot::android_main, gbl_print, gbl_println, GblOps, Os, Result};
 
-// The following implements a demo for booting Android from disk. It can be run from
-// Cuttlefish by adding `--android_efi_loader=<path of this EFI binary>` to the command line.
-//
-// A number of simplifications are made (see `android_load::load_android_simple()`):
-//
-//   * No A/B slot switching is performed. It always boot from *_a slot.
-//   * No AVB is performed.
-//   * No dynamic partitions.
-//   * Only support V3/V4 image and Android 13+ (generic ramdisk from the "init_boot" partition)
-//
-// The missing pieces above are currently under development as part of the full end-to-end boot
-// flow in libgbl, which will eventually replace this demo. The demo is currently used as an
-// end-to-end test for libraries developed so far.
-pub fn android_boot_demo(entry: EfiEntry) -> Result<()> {
+const SZ_MB: usize = 1024 * 1024;
+
+/// Android bootloader main entry.
+pub fn android_efi_main(entry: EfiEntry) -> Result<()> {
     let blks = find_block_devices(&entry)?;
     let mut ops = Ops::new(&entry, &blks[..], Some(Os::Android));
-    let mut bootimg_buffer = &mut vec![0u8; 128 * 1024 * 1024][..]; // 128 MB
 
-    match ops.should_stop_in_fastboot() {
-        Ok(true) => fastboot(&mut ops, &mut bootimg_buffer)?,
-        Err(e) => {
-            gbl_println!(ops, "Warning: error while checking fastboot trigger ({:?})", e);
-            gbl_println!(ops, "Ignoring error and continuing with normal boot");
+    // Prepares the OS load buffer.
+    let mut alloc;
+    let img_type_os_load = from_utf8(GBL_IMAGE_TYPE_OS_LOAD).unwrap();
+    let load_buffer = match get_platform_buffer_info(&entry, img_type_os_load, 256 * SZ_MB) {
+        BufferInfo::Static(v) => v,
+        BufferInfo::Alloc(sz) => {
+            alloc = vec![0u8; sz];
+            gbl_println!(ops, "Allocated {:#x} bytes for OS load buffer.", alloc.len());
+            &mut alloc
         }
-        _ => {}
-    }
+    };
+
+    // Checks if we have a reserved buffer for fastboot
+    let img_type_fastboot = from_utf8(GBL_IMAGE_TYPE_FASTBOOT).unwrap();
+    let mut fastboot_buffer_info = None;
 
     gbl_println!(ops, "Try booting as Android");
 
-    // Allocate buffer for load.
-    let mut load_buffer = vec![0u8; 256 * 1024 * 1024]; // 256MB
-
-    let (ramdisk, fdt, kernel, remains) = if bootimg_buffer.starts_with(b"ANDROID!") {
-        let mut ramboot_ops = RambootOps { ops: &mut ops, bootimg_buffer };
-        load_android_simple(&mut ramboot_ops, &mut load_buffer[..])?
-    } else {
-        libgbl::android_boot::android_main(&mut ops, &mut load_buffer[..])?
-    };
+    let (ramdisk, fdt, kernel, remains) = android_main(&mut ops, load_buffer.as_mut(), |fb| {
+        // Note: `get_or_insert_with` lazily evaluates closure (only when insert is necessary).
+        let buffer = fastboot_buffer_info.get_or_insert_with(|| {
+            get_platform_buffer_info(&entry, img_type_fastboot, 512 * SZ_MB)
+        });
+        let mut alloc;
+        let buffer = match buffer {
+            BufferInfo::Static(v) => &mut v[..],
+            BufferInfo::Alloc(sz) => {
+                alloc = vec![0u8; *sz];
+                efi_println!(entry, "Allocated {:#x} bytes for fastboot buffer.", alloc.len());
+                &mut alloc
+            }
+        };
+        // TODO(b/383620444): Investigate letting GblOps return fastboot channels.
+        with_fastboot_channels(&entry, |local, usb, tcp| {
+            // We currently only consider 1 parallell flash + 1 parallel download.
+            // This can be made configurable if necessary.
+            fb.run_n::<2>(buffer, local, usb, tcp)
+        })
+    })?;
 
     gbl_println!(ops, "");
     gbl_println!(

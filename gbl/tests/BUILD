@@ -42,6 +42,7 @@ build_and_run_tests(
         "@gbl//libefi:libefi_test",
         "@gbl//libefi:mocks_test",
         "@gbl//libefi_types:libefi_types_test",
+        "@gbl//libelf:relocation_test",
         "@gbl//liberror:liberror_test",
         "@gbl//libfastboot:libfastboot_test",
         "@gbl//libfdt:libfdt_test",

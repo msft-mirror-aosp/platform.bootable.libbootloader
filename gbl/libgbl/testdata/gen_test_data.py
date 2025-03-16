@@ -22,6 +22,7 @@ import random
 import shutil
 import subprocess
 import tempfile
+import re
 
 SCRIPT_DIR = pathlib.Path(os.path.dirname(os.path.realpath(__file__)))
 AOSP_ROOT = SCRIPT_DIR.parents[4]
@@ -221,7 +222,7 @@ def gen_android_test_vbmeta(partition_file_pairs, out_vbmeta):
             check=True,
         )
 
-        # Generates digest file
+        # Generates vbmeta digest file
         out_digest = out_vbmeta.with_suffix(".digest.txt")
         digest = subprocess.run(
             [
@@ -232,12 +233,44 @@ def gen_android_test_vbmeta(partition_file_pairs, out_vbmeta):
                 "--hash_algorithm",
                 "sha512",
             ],
+
+
             check=True,
             text=True,
             capture_output=True,
         )
         out_digest.write_text(digest.stdout)
 
+        extract_vbmeta_digests(out_vbmeta)
+
+
+# Extract digests from vbmeta data
+def extract_vbmeta_digests(vbmeta):
+        # Get vbmeta digests
+        digests = (
+            re.split(
+                "\n|: ",
+                subprocess.run(
+                    [
+                        AVB_TOOL,
+                        "print_partition_digests",
+                        "--image",
+                        vbmeta,
+                    ],
+
+
+                    check=True,
+                    text=True,
+                    capture_output=True,
+                )
+                .stdout
+                )
+        )
+        digests = {digests[i]: digests[i+1] for i in range(0, len(digests), 2) if digests[i] in ["boot", "vendor_boot", "init_boot", "dtbo", "dtb"]}
+
+        for key,value in digests.items():
+            out_digest = vbmeta.with_suffix(".{}.digest.txt".format(key))
+            out_digest.write_text(value + "\n")
 
 def gen_android_test_images():
     gen_android_test_dtb()
