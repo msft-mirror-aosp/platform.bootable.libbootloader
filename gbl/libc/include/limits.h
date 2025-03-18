@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 The Android Open Source Project
+ * Copyright (C) 2025 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,15 +14,11 @@
  * limitations under the License.
  */
 
-#include <gbl/print.h>
-#include <libavb/avb_sysdeps.h>
-#include <stdarg.h>
+#ifndef __STDLIB_LIMITS_H__
+#define __STDLIB_LIMITS_H__
 
-void avb_printf(const char* fmt, ...) {
-  va_list args;
-  va_start(args, fmt);
-  gbl_printf(fmt, args);
-  va_end(args);
-}
+#define LLONG_MAX ((long long)(~0ULL >> 1))
+#define LLONG_MIN (-LLONG_MAX - 1)
+#define ULLONG_MAX (~0ULL)
 
-void avb_printv(const char* message, ...) {}
+#endif

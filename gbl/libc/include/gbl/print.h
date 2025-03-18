@@ -14,12 +14,25 @@
  * limitations under the License.
  */
 
+#ifndef __GBL_PRINT_H__
+#define __GBL_PRINT_H__
+
 #include <stdarg.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 // GBL-speicifc function to expose print implementation to 3d party C code.
 // Implementation: libc/src/print.c
-void gbl_printf(const char *fmt, va_list args);
+void gbl_printf(const char* fmt, va_list args);
 
 // Printing back-end functions to be used by `gbl_printf`.
 // Implementation: libc/src/print.rs
-void gbl_print_char(char c);
+void gbl_print_string(const char* s);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

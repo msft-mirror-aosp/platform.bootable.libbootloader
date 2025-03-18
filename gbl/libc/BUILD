@@ -14,7 +14,7 @@
 
 load("@gbl//toolchain:gbl_toolchain.bzl", "link_static_cc_library")
 load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
-load("@rules_cc//cc:defs.bzl", "cc_library")
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(
@@ -51,6 +51,7 @@ cc_library(
         "include/debug.h",
         "include/gbl/print.h",
         "include/inttypes.h",
+        "include/limits.h",
         "include/stdio.h",
         "include/stdlib.h",
         "include/string.h",
@@ -66,6 +67,18 @@ cc_library(
     ],
     deps = [
         ":headers",
+    ],
+)
+
+cc_test(
+    name = "libc_c_test",
+    srcs = ["src/format_test.cpp"],
+    target_compatible_with = [
+        "@platforms//os:linux",
+    ],
+    deps = [
+        ":libc_c",
+        "@googletest//:gtest_main",
     ],
 )
 

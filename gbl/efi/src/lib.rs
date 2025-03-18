@@ -51,9 +51,13 @@ pub(crate) use efi_mocks as efi;
 
 #[cfg(not(test))]
 use {
+    crate::{
+        efi_blocks::{find_block_devices, EfiGblDisk},
+        ops::Ops,
+    },
     core::fmt::Write,
     efi::{efi_print, efi_println, EfiEntry},
-    libgbl::Result,
+    libgbl::{Os, Result},
     utils::loaded_image_path,
 };
 
@@ -64,7 +68,7 @@ enum TargetOs {
 }
 
 #[cfg(not(test))]
-fn get_target_os(entry: &EfiEntry) -> TargetOs {
+fn get_target_os(entry: &EfiEntry, disks: &[EfiGblDisk]) -> TargetOs {
     let mut buf = [0u8; 1];
     if entry
         .system_table()
@@ -78,7 +82,7 @@ fn get_target_os(entry: &EfiEntry) -> TargetOs {
             efi::GBL_EFI_OS_BOOT_TARGET_VARNAME
         );
         TargetOs::Fuchsia
-    } else if fuchsia_boot::is_fuchsia_gpt(&entry).is_ok() {
+    } else if fuchsia_boot::is_fuchsia_gpt(disks).is_ok() {
         efi_println!(entry, "Partition layout looks like Fuchsia. Proceeding as Fuchsia");
         TargetOs::Fuchsia
     } else {
@@ -95,9 +99,20 @@ pub fn app_main(entry: EfiEntry) -> Result<()> {
         efi_println!(entry, "Image path: {}", v);
     }
 
-    match get_target_os(&entry) {
-        TargetOs::Fuchsia => fuchsia_boot::fuchsia_boot_demo(entry)?,
-        TargetOs::Android => android_boot::android_efi_main(entry)?,
+    let disks = find_block_devices(&entry)?;
+    match get_target_os(&entry, &disks) {
+        TargetOs::Fuchsia => {
+            let mut ops = Ops::new(&entry, &disks[..], Some(Os::Fuchsia));
+            let (kernel, zbi_items) = fuchsia_boot::efi_fuchsia_load(&mut ops)?;
+            drop(disks);
+            fuchsia_boot::efi_fuchsia_boot(entry, kernel, zbi_items)?;
+        }
+        TargetOs::Android => {
+            let mut ops = Ops::new(&entry, &disks[..], Some(Os::Android));
+            let (ramdisk, fdt, kernel, remains) = android_boot::efi_android_load(&mut ops)?;
+            drop(disks);
+            android_boot::efi_android_boot(entry, kernel, ramdisk, fdt, remains)?;
+        }
     }
 
     Ok(())

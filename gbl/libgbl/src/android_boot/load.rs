@@ -347,6 +347,7 @@ fn load_verify_v2_and_lower<'a, 'b, 'c>(
     out: &mut LoadedImages<'c>,
     load: &'c mut [u8],
 ) -> Result<(), IntegrationError> {
+    gbl_println!(ops, "Android loading v2 or lower");
     // Loads boot image.
     let boot_size = BootImageV2Info::new(load).unwrap().image_size;
     let boot_part = slotted_part("boot", slot)?;
@@ -460,6 +461,7 @@ fn load_verify_v3_and_v4<'a, 'b, 'c>(
     out: &mut LoadedImages<'c>,
     load: &'c mut [u8],
 ) -> Result<(), IntegrationError> {
+    gbl_println!(ops, "Android loading v3 or higher");
     // Creates a `start` marker for `slice_offset()` to compute absolute slice offset later.
     let (start, load) = load.split_at_mut(0);
 
