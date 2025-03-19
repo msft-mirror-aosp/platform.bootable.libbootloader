@@ -224,8 +224,7 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
     /// Creates a new mut [Fdt] wrapping the contents of `init`.
     pub fn new_mut(init: T) -> Result<Self> {
         let mut fdt = Fdt::new(init)?;
-        let new_size: u32 = fdt.as_mut().len().try_into().or(Err(Error::Other(None)))?;
-        fdt.header_mut()?.set_totalsize(new_size);
+        fdt.expand_to_buffer()?;
         Ok(fdt)
     }
 
@@ -240,9 +239,8 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
                 fdt.as_mut().len().try_into().or(Err(Error::Other(None)))?,
             )
         })?;
-        let new_size: u32 = fdt.as_mut().len().try_into().or(Err(Error::Other(None)))?;
         let mut ret = Fdt::new(fdt)?;
-        ret.header_mut()?.set_totalsize(new_size);
+        ret.expand_to_buffer()?;
         Ok(ret)
     }
 
@@ -258,6 +256,17 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
     pub fn shrink_to_fit(&mut self) -> Result<()> {
         let actual = self.header_ref()?.actual_size();
         self.header_mut()?.set_totalsize(actual.try_into().unwrap());
+        Ok(())
+    }
+
+    /// Expand the total size field in the header to match the full buffer size.
+    /// This allows the FDT to be modified further by ensuring sufficient space is available.
+    /// Typically used before making modifications to an existing FDT, especially if it was
+    /// previously shrunk. After modifications are complete, consider calling `shrink_to_fit`
+    /// to reduce the size before passing to the kernel.
+    pub fn expand_to_buffer(&mut self) -> Result<()> {
+        let buffer_size = self.0.as_ref().len().try_into().unwrap();
+        self.header_mut()?.set_totalsize(buffer_size);
         Ok(())
     }
 
@@ -342,6 +351,8 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
             )
         })?;
 
+        self.expand_to_buffer()?;
+
         Ok(())
     }
 
@@ -387,6 +398,7 @@ mod test {
     fn check_overlays_are_applied(fdt: &[u8]) {
         let fdt = Fdt::new(fdt).unwrap();
 
+        assert_eq!(fdt.header_ref().unwrap().totalsize(), fdt.as_ref().len());
         assert_eq!(
             CStr::from_bytes_with_nul(
                 fdt.get_property("/dev-2/dev-2.2/dev-2.2.1", c"property-1").unwrap()
@@ -595,7 +607,6 @@ mod test {
         let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &base[..]).unwrap();
 
         fdt.multioverlay_apply(&[&overlay_modify[..] as _, &overlay_modify2[..] as _]).unwrap();
-        fdt.shrink_to_fit().unwrap();
 
         check_overlays_are_applied(fdt.0);
     }
@@ -611,7 +622,6 @@ mod test {
 
         fdt.multioverlay_apply(&[&overlay_modify[..] as _]).unwrap();
         fdt.multioverlay_apply(&[&overlay_modify2[..] as _]).unwrap();
-        fdt.shrink_to_fit().unwrap();
 
         check_overlays_are_applied(fdt.0);
     }
@@ -629,7 +639,6 @@ mod test {
         let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &base[..]).unwrap();
 
         fdt.multioverlay_apply(&[&overlay_modify[..] as _, &overlay_modify2[..] as _]).unwrap();
-        fdt.shrink_to_fit().unwrap();
 
         check_overlays_are_applied(fdt.0);
     }
@@ -648,7 +657,6 @@ mod test {
 
         fdt.multioverlay_apply(&[&overlay_modify[..] as _]).unwrap();
         fdt.multioverlay_apply(&[&overlay_modify2[..] as _]).unwrap();
-        fdt.shrink_to_fit().unwrap();
 
         check_overlays_are_applied(fdt.0);
     }
