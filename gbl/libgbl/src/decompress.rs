@@ -14,92 +14,133 @@
 
 //! Image decompression support.
 
-// gzip [DeflateDecoder] requires heap allocation. LZ4 decompression currently uses the heap but
-// could potentially be adjusted to use preallocated buffers if necessary.
+// gzip [DeflateDecoder] requires heap allocation.
 extern crate alloc;
 
 use crate::{gbl_print, gbl_println, GblOps};
-use liberror::Error;
+use liberror::{Error, Result};
 use lz4_flex::decompress_into;
 use zune_inflate::DeflateDecoder;
 
+const LZ4_NEXT_BLOCK_FAILED_ERROR_MESSAGE: &str =
+    "Failed to handle next block of lz4-compressed kernel";
+
 /// Returns if the data is a gzip compressed data.
-pub fn is_gzip_compressed(data: &[u8]) -> bool {
+fn is_gzip_compressed(data: &[u8]) -> bool {
     data.starts_with(b"\x1f\x8b")
 }
 
 /// Returns if the data is a lz4 compressed data.
-pub fn is_lz4_compressed(data: &[u8]) -> bool {
+fn is_lz4_compressed(data: &[u8]) -> bool {
     data.starts_with(b"\x02\x21\x4c\x18")
 }
 
-/// Returns if the data is either lz4 or gzip compressed.
-pub fn is_compressed(data: &[u8]) -> bool {
-    is_lz4_compressed(data) || is_gzip_compressed(data)
+/// To iterate over compressed blocks within lz4 structure.
+struct LZ4BlocksIterator<'a> {
+    data: &'a [u8],
 }
 
-/// Decompresses the given kernel if necessary
+impl<'a> LZ4BlocksIterator<'a> {
+    /// Creates a new iterator from lz4 payload.
+    fn new(data: &'a [u8]) -> Self {
+        LZ4BlocksIterator { data }
+    }
+}
+
+impl<'a> Iterator for LZ4BlocksIterator<'a> {
+    type Item = Result<&'a [u8]>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.data.is_empty() {
+            return None;
+        }
+
+        let Some((block_size, data)) = self.data.split_at_checked(4) else {
+            return Some(Err(Error::Other(Some(LZ4_NEXT_BLOCK_FAILED_ERROR_MESSAGE))));
+        };
+        self.data = data;
+
+        let block_size = u32::from_le_bytes(block_size.try_into().unwrap()).try_into().unwrap();
+        // Hit end marker
+        if block_size == 0 {
+            return None;
+        }
+
+        let Some((block_content, data)) = self.data.split_at_checked(block_size) else {
+            return Some(Err(Error::Other(Some(LZ4_NEXT_BLOCK_FAILED_ERROR_MESSAGE))));
+        };
+        self.data = data;
+
+        Some(Ok(block_content))
+    }
+}
+
+/// Decompresses lz4 `content` into `out`.
+fn decompress_lz4(content: &[u8], out: &mut [u8]) -> Result<usize> {
+    let blocks = LZ4BlocksIterator::new(content);
+    let mut out_pos = 0;
+
+    for block in blocks {
+        match block {
+            Ok(block) => {
+                out_pos += decompress_into(&block, &mut out[out_pos..])
+                    .map_err(|_| Error::Other(Some("Failed to decompress lz4 block")))?;
+            }
+            Err(e) => {
+                return Err(e);
+            }
+        }
+    }
+
+    Ok(out_pos)
+}
+
+/// Decompresses gzip `content` into `out`.
 ///
-/// The possibly-compressed kernel starts in `buffer`. If it's compressed, it will be decompressed
-/// using heap memory and then copied back into the end of `buffer`.
+/// Dynamic allocation is used insize `decoder.decode_gzip()`.
+fn decompress_gzip(content: &[u8], out: &mut [u8]) -> Result<usize> {
+    let mut decoder = DeflateDecoder::new(content);
+
+    let decompressed_data =
+        decoder.decode_gzip().map_err(|_| Error::Other(Some("Failed to decompress gzip data")))?;
+
+    let decompressed_len = decompressed_data.len();
+    out.get_mut(..decompressed_len)
+        .ok_or(Error::BufferTooSmall(Some(decompressed_len)))?
+        .clone_from_slice(&decompressed_data);
+
+    Ok(decompressed_len)
+}
+
+/// Decompresses `kernel` into `out`.
 ///
-/// # Returns
-/// The offset of the decompressed kernel in `buffer`. If the kernel was not compressed. this
-/// function is a no-op and will return `kernel_start` unchanged.
+/// Supported formats: gzip, lz4, and plain (uncompressed).
+/// If the provided `kernel` is not compressed, it will be copied into `out`
+/// without decompression.
+///
+/// Returns the size of the decompressed data copied into `out`.
 pub fn decompress_kernel<'a, 'b>(
     ops: &mut impl GblOps<'a, 'b>,
-    buffer: &mut [u8],
-    kernel_start: usize,
-) -> Result<usize, Error> {
-    if is_gzip_compressed(&buffer[kernel_start..]) {
+    kernel: &[u8],
+    out: &mut [u8],
+) -> Result<usize> {
+    if is_gzip_compressed(kernel) {
         gbl_println!(ops, "kernel is gzip compressed");
-        let mut decoder = DeflateDecoder::new(&buffer[kernel_start..]);
-        let decompressed_data = match decoder.decode_gzip() {
-            Ok(decompressed_data) => decompressed_data,
-            _ => {
-                return Err(Error::InvalidInput.into());
-            }
-        };
-        gbl_println!(ops, "kernel decompressed size {}", decompressed_data.len());
-        let kernel_start = buffer.len() - decompressed_data.len();
-        // Move decompressed data to slice.
-        buffer[kernel_start..].clone_from_slice(&decompressed_data);
-        Ok(kernel_start)
-    } else if is_lz4_compressed(&buffer[kernel_start..]) {
+        let decompressed = decompress_gzip(kernel, out)?;
+        gbl_println!(ops, "kernel decompressed size: {decompressed}");
+        Ok(decompressed)
+    } else if is_lz4_compressed(kernel) {
         gbl_println!(ops, "kernel is lz4 compressed");
-        let kernel_tail_buffer = &buffer[kernel_start..];
-        let mut contents = &kernel_tail_buffer[4..];
-        let mut decompressed_kernel = alloc::vec::Vec::new();
-        loop {
-            if contents.len() < 4 {
-                if contents.len() != 0 {
-                    gbl_println!(ops, "Error: some leftover data in the content");
-                }
-                break;
-            }
-            let block_size: usize =
-                u32::from_le_bytes(contents[0..4].try_into().unwrap()).try_into().unwrap();
-            let block;
-            (block, contents) = contents.split_at(block_size + 4);
-            let block = &block[4..];
-            // extend decompressed kernel buffer by 8MB
-            let decompressed_kernel_len = decompressed_kernel.len();
-            decompressed_kernel.resize(decompressed_kernel_len + 8 * 1024 * 1024, 0);
-            // decompress the block
-            let decompressed_data_size =
-                decompress_into(&block, &mut decompressed_kernel[decompressed_kernel_len..])
-                    .unwrap();
-            // reduce the size of decompressed kernel buffer
-            decompressed_kernel.resize(decompressed_kernel_len + decompressed_data_size, 0);
-        }
-        gbl_println!(ops, "kernel decompressed size {}", decompressed_kernel.len());
-        let kernel_start = buffer.len() - decompressed_kernel.len();
-        // Move decompressed data to slice
-        buffer[kernel_start..].clone_from_slice(&decompressed_kernel);
-        Ok(kernel_start)
+        let without_magic = &kernel[4..];
+        let decompressed = decompress_lz4(without_magic, out)?;
+        gbl_println!(ops, "kernel decompressed size: {decompressed}");
+        Ok(decompressed)
     } else {
-        gbl_println!(ops, "kernel is not compressed");
-        Ok(kernel_start)
+        // Uncompressed case. Just copy into out.
+        out.get_mut(..kernel.len())
+            .ok_or(Error::BufferTooSmall(Some(kernel.len())))?
+            .clone_from_slice(kernel);
+        Ok(kernel.len())
     }
 }
 
@@ -108,42 +149,48 @@ mod test {
     use super::*;
     use crate::ops::test::FakeGblOps;
 
+    // Asserts byte slice equality with clear error on first mismatch.
+    // Avoids full data dump from default assert, which can be very verbose.
+    fn assert_bytes_eq(actual: &[u8], expected: &[u8]) {
+        assert_eq!(actual.len(), expected.len());
+
+        for (i, (l, r)) in expected.iter().zip(actual.iter()).enumerate() {
+            assert_eq!(l, r, "Unmatched byte at index {i}")
+        }
+    }
+
+    fn test_decompress_kernel(input: &[u8], expected_output: &[u8]) {
+        let mut output_buffer = vec![0u8; input.len() * 10];
+
+        let decompressed_len =
+            decompress_kernel(&mut FakeGblOps::default(), input, &mut output_buffer).unwrap();
+
+        assert_bytes_eq(&output_buffer[..decompressed_len], expected_output);
+    }
+
     #[test]
     fn decompress_kernel_gzip() {
-        let original_data = "Test TTTTTTTTT 123";
-        let compressed_data = [
-            0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x0b, 0x49, 0x2d, 0x2e,
-            0x51, 0x08, 0x81, 0x01, 0x05, 0x43, 0x23, 0x63, 0x00, 0xbb, 0xed, 0x15, 0xe2, 0x12,
-            0x00, 0x00, 0x00,
-        ];
+        let compressed_gzip = include_bytes!("../testdata/android/gki_boot_gz_kernel").to_vec();
+        let expected_result =
+            include_bytes!("../testdata/android/gki_boot_gz_kernel_uncompressed").to_vec();
 
-        // Create a buffer with the compressed data at the end.
-        let mut buffer = vec![0u8; 8 * 1024];
-        let compressed_offset = buffer.len() - compressed_data.len();
-        buffer[compressed_offset..].clone_from_slice(&compressed_data[..]);
-
-        let offset =
-            decompress_kernel(&mut FakeGblOps::default(), &mut buffer[..], compressed_offset)
-                .unwrap();
-        assert_eq!(&buffer[offset..], original_data.as_bytes());
+        test_decompress_kernel(&compressed_gzip, &expected_result);
     }
 
     #[test]
     fn decompress_kernel_lz4() {
-        let original_data = "Test TTTTTTTTT 123";
-        let compressed_data = [
-            0x02, 0x21, 0x4c, 0x18, 0x0f, 0x00, 0x00, 0x00, 0x63, 0x54, 0x65, 0x73, 0x74, 0x20,
-            0x54, 0x01, 0x00, 0x50, 0x54, 0x20, 0x31, 0x32, 0x33,
-        ];
+        let compressed_gzip = include_bytes!("../testdata/android/gki_boot_lz4_kernel").to_vec();
+        let expected_result =
+            include_bytes!("../testdata/android/gki_boot_lz4_kernel_uncompressed").to_vec();
 
-        // Create a buffer with the compressed data at the end.
-        let mut buffer = vec![0u8; 8 * 1024];
-        let compressed_offset = buffer.len() - compressed_data.len();
-        buffer[compressed_offset..].clone_from_slice(&compressed_data[..]);
+        test_decompress_kernel(&compressed_gzip, &expected_result);
+    }
 
-        let offset =
-            decompress_kernel(&mut FakeGblOps::default(), &mut buffer[..], compressed_offset)
-                .unwrap();
-        assert_eq!(&buffer[offset..], original_data.as_bytes());
+    #[test]
+    fn decompress_kernel_raw() {
+        let kernel = include_bytes!("../testdata/android/kernel_a.img").to_vec();
+        let expected_kernel = kernel.clone();
+
+        test_decompress_kernel(&kernel, &expected_kernel);
     }
 }
