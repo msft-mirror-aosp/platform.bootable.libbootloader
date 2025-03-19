@@ -13,13 +13,15 @@
 // limitations under the License.
 
 use crate::{
-    fastboot::with_fastboot_channels,
+    fastboot::{with_fastboot_channels, VecPinFut},
     ops::Ops,
     utils::{get_platform_buffer_info, BufferInfo},
 };
+use alloc::{boxed::Box, vec::Vec};
 use core::{fmt::Write, str::from_utf8};
 use efi::{efi_print, efi_println, exit_boot_services, EfiEntry};
 use efi_types::{GBL_IMAGE_TYPE_FASTBOOT, GBL_IMAGE_TYPE_OS_LOAD};
+use gbl_async::poll;
 use libgbl::{android_boot::android_main, gbl_print, gbl_println, GblOps, Result};
 
 const SZ_MB: usize = 1024 * 1024;
@@ -66,7 +68,11 @@ pub fn efi_android_load(
         with_fastboot_channels(&entry, |local, usb, tcp| {
             // We currently only consider 1 parallell flash + 1 parallel download.
             // This can be made configurable if necessary.
-            fb.run_n::<2>(buffer, local, usb, tcp)
+            const GBL_FB_N: usize = 2;
+            let mut bufs = Vec::from_iter(buffer.chunks_exact_mut(buffer.len() / GBL_FB_N));
+            let bufs = &(&mut bufs[..]).into();
+            let mut fut = Box::pin(fb.run(bufs, VecPinFut::default(), local, usb, tcp));
+            while poll(&mut fut).is_none() {}
         })
     })?)
 }
