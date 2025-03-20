@@ -308,6 +308,15 @@ pub fn android_main<'a, 'b, 'c, G: GblOps<'a, 'b>>(
         .unwrap_or(AndroidBootMode::Normal);
     gbl_println!(ops, "Boot mode from BCB: {}", boot_mode);
 
+    if matches!(boot_mode, AndroidBootMode::BootloaderBootOnce) {
+        let mut zeroed_command = [0u8; misc::COMMAND_FIELD_SIZE];
+        ops.write_to_partition_sync(
+            "misc",
+            misc::COMMAND_FIELD_OFFSET.try_into().unwrap(),
+            &mut zeroed_command,
+        )?;
+    }
+
     // Checks platform reboot reason.
     let reboot_reason = ops
         .get_reboot_reason()
@@ -1177,6 +1186,26 @@ pub(crate) mod tests {
         );
 
         checks_loaded_v2_slot_a_normal_mode(ramdisk, kernel);
+    }
+
+    #[test]
+    fn test_android_main_bootonce_bootloader_bcb_command_is_cleared() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"boot_a", read_test_data("boot_v2_a.img"));
+        storage.add_raw_device(c"vbmeta_a", read_test_data("vbmeta_v2_a.img"));
+        storage.add_raw_device(c"misc", vec![0u8; 4 * 1024 * 1024]);
+        let mut ops = default_test_gbl_ops(&storage);
+        ops.write_to_partition_sync("misc", 0, &mut b"bootonce-bootloader".to_vec()).unwrap();
+        test_fastboot_is_triggered(&mut ops);
+
+        let mut bcb_buffer = [0u8; BootloaderMessage::SIZE_BYTES];
+        ops.read_from_partition_sync("misc", 0, &mut bcb_buffer[..]).unwrap();
+        let bcb = BootloaderMessage::from_bytes_ref(&bcb_buffer).unwrap();
+        assert_eq!(
+            bcb.boot_mode().unwrap(),
+            AndroidBootMode::Normal,
+            "BCB mode is expected to be cleared after bootonce-bootloader is handled"
+        );
     }
 
     #[test]
