@@ -16,7 +16,7 @@ use super::{avb_verify_slot, cstr_bytes_to_str};
 use crate::{
     android_boot::PartitionsToVerify,
     constants::{FDT_ALIGNMENT, KERNEL_ALIGNMENT, PAGE_SIZE},
-    decompress::{decompress_kernel, is_compressed},
+    decompress::decompress_kernel,
     gbl_print, gbl_println,
     ops::GblOps,
     partition::RAW_PARTITION_NAME_LEN,
@@ -637,6 +637,16 @@ fn split(buffer: &mut [u8], size: usize) -> Result<(&mut [u8], &mut [u8]), Error
     buffer.split_at_mut_checked(size).ok_or(Error::BufferTooSmall(Some(size)))
 }
 
+/// Calculates the offset from the start of the buffer to obtain an aligned tail
+/// that can fit at least `size` bytes with the given alignment.
+///
+/// Returns the starting offset of the aligned tail slice.
+fn aligned_tail_offset(buffer: &[u8], size: usize, align: usize) -> Result<usize, Error> {
+    let off = SafeNum::from(buffer.len()) - size;
+    let rem = buffer[off.try_into()?..].as_ptr() as usize % align;
+    Ok(usize::try_from(off - rem)?)
+}
+
 /// Split buffer from the tail with the given alignment such that the buffer is at least `size`
 /// bytes.
 fn split_aligned_tail(
@@ -644,9 +654,7 @@ fn split_aligned_tail(
     size: usize,
     align: usize,
 ) -> Result<(&mut [u8], &mut [u8]), Error> {
-    let off = SafeNum::from(buffer.len()) - size;
-    let rem = buffer[off.try_into()?..].as_ptr() as usize % align;
-    split(buffer, usize::try_from(off - rem)?)
+    split(buffer, aligned_tail_offset(buffer, size, align)?)
 }
 
 /// Splits a buffer into multiple chunks of the given sizes.
@@ -699,17 +707,11 @@ fn relocate_kernel<'a, 'b, 'c>(
     kernel: &[u8],
     dst: &'c mut [u8],
 ) -> Result<(&'c mut [u8], &'c mut [u8], usize), Error> {
-    if is_compressed(kernel) {
-        split(dst, kernel.len())?.0.clone_from_slice(kernel);
-        let off = decompress_kernel(ops, dst, 0)?;
-        let (leading, relocated) = dst.split_at_mut(off);
-        let kernel_size = relocated.len();
-        Ok((leading, relocated, kernel_size))
-    } else {
-        let (prefix, tail) = split_aligned_tail(dst, kernel.len(), KERNEL_ALIGNMENT)?;
-        tail[..kernel.len()].clone_from_slice(kernel);
-        Ok((prefix, tail, kernel.len()))
-    }
+    let decompressed_size = decompress_kernel(ops, kernel, dst)?;
+    let aligned_tail_off = aligned_tail_offset(dst, decompressed_size, KERNEL_ALIGNMENT)?;
+    dst.copy_within(0..decompressed_size, aligned_tail_off);
+    let (prefix, tail) = split(dst, aligned_tail_off)?;
+    Ok((prefix, tail, decompressed_size))
 }
 
 // Adds offset to a given range i.e. [start+off, end+off)
@@ -727,7 +729,8 @@ pub(crate) mod tests {
     };
     use bootparams::bootconfig::BOOTCONFIG_TRAILER_SIZE;
     use std::{
-        ascii::escape_default, collections::HashMap, ffi::CString, fs, path::Path, string::String,
+        ascii::escape_default, collections::HashMap, ffi::CString, fmt, fs, path::Path,
+        string::String,
     };
 
     /// Export DEFAULT_BUILD_ID for other test modules.
@@ -807,7 +810,7 @@ pub(crate) mod tests {
         let mut ops = FakeGblOps::new(&storage);
         ops.avb_ops.unlock_state = Ok(false);
         ops.avb_ops.rollbacks = HashMap::from([(TEST_ROLLBACK_INDEX_LOCATION, Ok(0))]);
-        let mut load_buffer = AlignedBuffer::new(8 * 1024 * 1024, KERNEL_ALIGNMENT);
+        let mut load_buffer = AlignedBuffer::new(64 * 1024 * 1024, KERNEL_ALIGNMENT);
         let mut out_color = None;
         let mut handler = |color,
                            _: Option<&CStr>,
@@ -829,6 +832,7 @@ pub(crate) mod tests {
         assert_eq!(loaded.boot_cmdline, "cmd_key_1=cmd_val_1,cmd_key_2=cmd_val_2");
         assert_eq!(loaded.vendor_cmdline, expected_vendor_cmdline);
         assert_eq!(loaded.kernel, expected_kernel);
+        assert_eq!(loaded.kernel.as_ptr() as usize % KERNEL_ALIGNMENT, 0);
         assert_eq!(loaded.dtbo, expected_dtbo);
         check_ramdisk(loaded.ramdisk, expected_ramdisk, expected_bootconfig);
     }
@@ -1163,12 +1167,14 @@ androidboot.veritymode=enforcing
     ///
     /// * `partitions`: A list of pair `(partition name, file name)` for creating boot storage.
     /// * `vbmeta_file`: The vbmeta file for the storage. Used for constructing expected bootconfig.
+    /// * `expected_kernel`: The expected kernel.
     /// * `expected_digest`: The expected digest outputed by vbmeta.
     /// * `expected_vendor_bootconfig`: The expected vendor_boot_config.
     fn test_android_load_verify_v3_and_v4(
         slot: char,
         partitions: &[(CString, String)],
         vbmeta: &str,
+        expected_kernel: &[u8],
         expected_vendor_bootconfig: &str,
         expected_dtbo: &[u8],
     ) {
@@ -1176,7 +1182,7 @@ androidboot.veritymode=enforcing
         test_android_load_verify_success(
             (u64::from(slot) - ('a' as u64)).try_into().unwrap(),
             partitions,
-            &read_test_data(format!("kernel_{slot}.img")),
+            expected_kernel,
             &[
                 read_test_data(format!("vendor_ramdisk_{slot}.img")),
                 read_test_data(format!("generic_ramdisk_{slot}.img")),
@@ -1217,6 +1223,7 @@ androidboot.veritymode=enforcing
             slot,
             &parts[..],
             &vbmeta,
+            &read_test_data(format!("kernel_{slot}.img")),
             expected_vendor_bootconfig,
             expected_dtbo,
         );
@@ -1249,6 +1256,50 @@ androidboot.veritymode=enforcing
             slot,
             &parts[..],
             &vbmeta,
+            &read_test_data(format!("kernel_{slot}.img")),
+            expected_vendor_bootconfig,
+            expected_dtbo,
+        );
+    }
+
+    enum KernelCompression {
+        LZ4,
+        GZIP,
+    }
+
+    impl fmt::Display for KernelCompression {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self {
+                KernelCompression::LZ4 => write!(f, "lz4"),
+                KernelCompression::GZIP => write!(f, "gz"),
+            }
+        }
+    }
+
+    /// Helper for testing v4 boot image with different kernel compression.
+    fn test_android_load_verify_boot_v4_compression_slot(
+        compression: KernelCompression,
+        slot: char,
+        expected_vendor_bootconfig: &str,
+        expected_dtbo: &[u8],
+    ) {
+        let vbmeta = format!("vbmeta_v4_{compression}_{slot}.img");
+        let parts: Vec<(CString, String)> = vec![
+            (
+                CString::new(format!("boot_{slot}")).unwrap(),
+                format!("boot_v4_{compression}_{slot}.img"),
+            ),
+            (
+                CString::new(format!("vendor_boot_{slot}")).unwrap(),
+                format!("vendor_boot_v4_{slot}.img"),
+            ),
+            (CString::new(format!("vbmeta_{slot}")).unwrap(), vbmeta.clone()),
+        ];
+        test_android_load_verify_v3_and_v4(
+            slot,
+            &parts[..],
+            &vbmeta,
+            &read_test_data(format!("gki_boot_{compression}_kernel_uncompressed")),
             expected_vendor_bootconfig,
             expected_dtbo,
         );
@@ -1547,6 +1598,26 @@ androidboot.veritymode=enforcing
             4,
             4,
             TEST_VENDOR_BOOTCONFIG,
+        )
+    }
+
+    #[test]
+    fn test_android_load_verify_gzip_boot_v4_vendor_v4_slot_a() {
+        test_android_load_verify_boot_v4_compression_slot(
+            KernelCompression::GZIP,
+            'a',
+            TEST_VENDOR_BOOTCONFIG,
+            &[],
+        )
+    }
+
+    #[test]
+    fn test_android_load_verify_lz4_boot_v4_vendor_v4_slot_a() {
+        test_android_load_verify_boot_v4_compression_slot(
+            KernelCompression::LZ4,
+            'a',
+            TEST_VENDOR_BOOTCONFIG,
+            &[],
         )
     }
 }

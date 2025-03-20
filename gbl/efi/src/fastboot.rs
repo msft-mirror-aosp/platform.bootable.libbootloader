@@ -188,7 +188,7 @@ fn init_usb(efi_entry: &EfiEntry) -> Result<UsbTransport> {
 
 // Wrapper of vector of pinned futures.
 #[derive(Default)]
-struct VecPinFut<'a>(Vec<Pin<Box<dyn Future<Output = ()> + 'a>>>);
+pub(crate) struct VecPinFut<'a>(Vec<Pin<Box<dyn Future<Output = ()> + 'a>>>);
 
 impl<'a> PinFutContainer<'a> for VecPinFut<'a> {
     fn add_with<F: Future<Output = ()> + 'a>(&mut self, f: impl FnOnce() -> F) {

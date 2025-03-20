@@ -223,7 +223,7 @@ where
     ///   specific channels i.e. UX.
     /// * `usb`: An implementation of `GblUsbTransport` that represents USB channel.
     /// * `tcp`: An implementation of `GblTcpStream` that represents TCP channel.
-    pub fn run<'b: 'c, 'c>(
+    pub async fn run<'b: 'c, 'c>(
         self,
         buffer_pool: &'b Shared<impl BufferPool>,
         tasks: impl PinFutContainer<'c> + 'c,
@@ -235,7 +235,7 @@ where
         'd: 'c,
     {
         *self.result =
-            block_on(run_gbl_fastboot(self.ops, buffer_pool, tasks, local, usb, tcp, self.load));
+            run_gbl_fastboot(self.ops, buffer_pool, tasks, local, usb, tcp, self.load).await;
     }
 
     /// Runs fastboot with N pre-allocated async worker tasks.
