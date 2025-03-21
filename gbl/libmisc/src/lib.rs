@@ -50,6 +50,12 @@ impl core::fmt::Display for AndroidBootMode {
     }
 }
 
+/// BCB command field offset within BCB block.
+pub const COMMAND_FIELD_OFFSET: usize = 0;
+
+/// BCB command field size in bytes.
+pub const COMMAND_FIELD_SIZE: usize = 32;
+
 /// Android bootloader message structure that usually placed in the first block of misc partition
 ///
 /// Reference code:
@@ -57,7 +63,7 @@ impl core::fmt::Display for AndroidBootMode {
 #[repr(C, packed)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, PartialEq, Copy, Clone, Debug)]
 pub struct BootloaderMessage {
-    command: [u8; 32],
+    command: [u8; COMMAND_FIELD_SIZE],
     status: [u8; 32],
     recovery: [u8; 768],
     stage: [u8; 32],
