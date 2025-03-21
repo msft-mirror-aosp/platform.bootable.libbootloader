@@ -37,9 +37,9 @@ pub enum DeviceTreeComponentSource {
     /// Loaded from Vendor Boot partition.
     VendorBoot,
     /// Loaded from DTB partition.
-    Dtb(DtTableMetadata),
+    Dtb,
     /// Loaded from DTBO partition.
-    Dtbo(DtTableMetadata),
+    Dtbo,
 }
 
 impl core::fmt::Display for DeviceTreeComponentSource {
@@ -47,8 +47,8 @@ impl core::fmt::Display for DeviceTreeComponentSource {
         match self {
             DeviceTreeComponentSource::Boot => write!(f, "Boot"),
             DeviceTreeComponentSource::VendorBoot => write!(f, "VendorBoot"),
-            DeviceTreeComponentSource::Dtb(_) => write!(f, "Dtb"),
-            DeviceTreeComponentSource::Dtbo(_) => write!(f, "Dtbo"),
+            DeviceTreeComponentSource::Dtb => write!(f, "Dtb"),
+            DeviceTreeComponentSource::Dtbo => write!(f, "Dtbo"),
         }
     }
 }
@@ -58,6 +58,8 @@ impl core::fmt::Display for DeviceTreeComponentSource {
 pub struct DeviceTreeComponent<'a> {
     /// Source the component is loaded from.
     pub source: DeviceTreeComponentSource,
+    /// Metadata for entries loaded from dt_table structure.
+    pub metadata: Option<DtTableMetadata>,
     /// Device tree component payload. Must be 8 bytes aligned.
     pub dt: &'a [u8],
     /// Device tree component is selected.
@@ -80,7 +82,7 @@ impl<'a> DeviceTreeComponent<'a> {
             self.source,
             DeviceTreeComponentSource::Boot
                 | DeviceTreeComponentSource::VendorBoot
-                | DeviceTreeComponentSource::Dtb(_)
+                | DeviceTreeComponentSource::Dtb
         )
     }
 }
@@ -115,7 +117,7 @@ impl<'a> DeviceTreeComponentsRegistry<'a> {
     /// aligned by using provided buffer to cut from. Returns remain buffer.
     pub fn append_from_dttable<'b>(
         &mut self,
-        is_dtb: bool,
+        source: DeviceTreeComponentSource,
         dttable: &DtTableImage<'b>,
         buffer: &'a mut [u8],
     ) -> Result<&'a mut [u8]> {
@@ -134,11 +136,8 @@ impl<'a> DeviceTreeComponentsRegistry<'a> {
             aligned_buffer.copy_from_slice(entry.dtb);
 
             self.components.push(DeviceTreeComponent {
-                source: if is_dtb {
-                    DeviceTreeComponentSource::Dtb(entry.metadata)
-                } else {
-                    DeviceTreeComponentSource::Dtbo(entry.metadata)
-                },
+                source: source,
+                metadata: Some(entry.metadata),
                 dt: aligned_buffer,
                 selected: false,
             });
@@ -147,16 +146,6 @@ impl<'a> DeviceTreeComponentsRegistry<'a> {
         }
 
         Ok(remains)
-    }
-
-    /// Load device tree components from a dtbo image. Ensure components are 8 bytes
-    /// aligned by using provided `buffer` to cut from. Returns remain buffer.
-    pub fn append_from_dtbo<'b>(
-        &mut self,
-        dttable: &DtTableImage<'b>,
-        buffer: &'a mut [u8],
-    ) -> Result<&'a mut [u8]> {
-        self.append_from_dttable(false, dttable, buffer)
     }
 
     /// Append additional device trees from the buffer, where they are stored sequentially.
@@ -196,6 +185,7 @@ impl<'a> DeviceTreeComponentsRegistry<'a> {
             Fdt::new(&aligned_buffer)?;
             self.components.push(DeviceTreeComponent {
                 source: source,
+                metadata: None,
                 dt: &aligned_buffer[..],
                 selected: false,
             });
@@ -239,6 +229,7 @@ impl<'a> DeviceTreeComponentsRegistry<'a> {
         let (fdt_buffer, fdt_remains) = fdt.split_at(header.totalsize());
         self.components.push(DeviceTreeComponent {
             source: source,
+            metadata: None,
             dt: fdt_buffer,
             selected: false,
         });
@@ -340,6 +331,7 @@ pub(crate) mod test {
             component,
             &DeviceTreeComponent {
                 source: DeviceTreeComponentSource::Boot,
+                metadata: None,
                 dt: &dt[..],
                 selected: false,
             }
@@ -367,6 +359,7 @@ pub(crate) mod test {
             component,
             &DeviceTreeComponent {
                 source: DeviceTreeComponentSource::Boot,
+                metadata: None,
                 dt: &dt[..],
                 selected: false,
             }
@@ -396,20 +389,23 @@ pub(crate) mod test {
     }
 
     #[test]
-    fn test_components_append_from_dtbo() {
+    fn test_components_append_from_dttable() {
         let dttable = include_bytes!("../../libdttable/test/data/dttable.img").to_vec();
         let mut buffer = vec![0u8; 2 * 1024 * 1024]; // 2 MB
         let mut registry = DeviceTreeComponentsRegistry::new();
 
         let table = DtTableImage::from_bytes(&dttable[..]).unwrap();
-        registry.append_from_dtbo(&table, &mut buffer[..]).unwrap();
+        registry
+            .append_from_dttable(DeviceTreeComponentSource::Dtbo, &table, &mut buffer[..])
+            .unwrap();
 
         // Check data is loaded
         let components: Vec<_> = registry.components().cloned().collect();
         let expected_components: Vec<DeviceTreeComponent> = table
             .entries()
             .map(|e| DeviceTreeComponent {
-                source: DeviceTreeComponentSource::Dtbo(e.metadata),
+                source: DeviceTreeComponentSource::Dtbo,
+                metadata: Some(e.metadata),
                 dt: e.dtb,
                 selected: false,
             })
@@ -430,9 +426,9 @@ pub(crate) mod test {
         let sources = [
             DeviceTreeComponentSource::VendorBoot,
             DeviceTreeComponentSource::Boot,
-            DeviceTreeComponentSource::Dtbo(Default::default()),
-            DeviceTreeComponentSource::Dtbo(Default::default()),
-            DeviceTreeComponentSource::Dtbo(Default::default()),
+            DeviceTreeComponentSource::Dtbo,
+            DeviceTreeComponentSource::Dtbo,
+            DeviceTreeComponentSource::Dtbo,
         ];
         let mut current_buffer = &mut buffer[..];
         for source in sources.iter() {
@@ -464,9 +460,9 @@ pub(crate) mod test {
         let sources = [
             DeviceTreeComponentSource::VendorBoot,
             DeviceTreeComponentSource::Boot,
-            DeviceTreeComponentSource::Dtbo(Default::default()),
-            DeviceTreeComponentSource::Dtbo(Default::default()),
-            DeviceTreeComponentSource::Dtbo(Default::default()),
+            DeviceTreeComponentSource::Dtbo,
+            DeviceTreeComponentSource::Dtbo,
+            DeviceTreeComponentSource::Dtbo,
         ];
         let mut current_buffer = &mut buffer[..];
         for source in sources.iter() {
@@ -492,9 +488,9 @@ pub(crate) mod test {
         let sources = [
             DeviceTreeComponentSource::VendorBoot,
             DeviceTreeComponentSource::Boot,
-            DeviceTreeComponentSource::Dtbo(Default::default()),
-            DeviceTreeComponentSource::Dtbo(Default::default()),
-            DeviceTreeComponentSource::Dtbo(Default::default()),
+            DeviceTreeComponentSource::Dtbo,
+            DeviceTreeComponentSource::Dtbo,
+            DeviceTreeComponentSource::Dtbo,
         ];
         let mut current_buffer = &mut buffer[..];
         for source in sources.iter() {
@@ -519,9 +515,9 @@ pub(crate) mod test {
         let sources = [
             DeviceTreeComponentSource::VendorBoot,
             DeviceTreeComponentSource::Boot,
-            DeviceTreeComponentSource::Dtbo(Default::default()),
-            DeviceTreeComponentSource::Dtbo(Default::default()),
-            DeviceTreeComponentSource::Dtbo(Default::default()),
+            DeviceTreeComponentSource::Dtbo,
+            DeviceTreeComponentSource::Dtbo,
+            DeviceTreeComponentSource::Dtbo,
         ];
         let mut current_buffer = &mut buffer[..];
         for source in sources.iter() {
@@ -545,9 +541,9 @@ pub(crate) mod test {
 
         let sources = [
             DeviceTreeComponentSource::VendorBoot,
-            DeviceTreeComponentSource::Dtbo(Default::default()),
-            DeviceTreeComponentSource::Dtbo(Default::default()),
-            DeviceTreeComponentSource::Dtbo(Default::default()),
+            DeviceTreeComponentSource::Dtbo,
+            DeviceTreeComponentSource::Dtbo,
+            DeviceTreeComponentSource::Dtbo,
         ];
         let mut current_buffer = &mut buffer[..];
         for source in sources.iter() {
@@ -607,12 +603,7 @@ pub(crate) mod test {
         let mut registry = DeviceTreeComponentsRegistry::new();
 
         registry
-            .append(
-                &mut gbl_ops,
-                DeviceTreeComponentSource::Dtbo(Default::default()),
-                &dt[..],
-                &mut buffer,
-            )
+            .append(&mut gbl_ops, DeviceTreeComponentSource::Dtbo, &dt[..], &mut buffer)
             .unwrap();
 
         assert!(registry.autoselect().is_err());

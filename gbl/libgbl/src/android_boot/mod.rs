@@ -73,8 +73,11 @@ pub fn android_load_verify_fixup<'a, 'b, 'c>(
                 // TODO(b/384964561, b/374336105): Investigate if we can avoid additional copy.
                 true => {
                     gbl_println!(ops, "Handling overlays from dtbo");
-                    components
-                        .append_from_dtbo(&DtTableImage::from_bytes(images.dtbo)?, fdt_load)?
+                    components.append_from_dttable(
+                        DeviceTreeComponentSource::Dtbo,
+                        &DtTableImage::from_bytes(images.dtbo)?,
+                        fdt_load,
+                    )?
                 }
                 _ => fdt_load,
             };
@@ -88,7 +91,11 @@ pub fn android_load_verify_fixup<'a, 'b, 'c>(
             if images.dtb_part.len() > 0 {
                 gbl_println!(ops, "Handling device trees from dtb");
                 let dttable = DtTableImage::from_bytes(images.dtb_part)?;
-                remains = components.append_from_dttable(true, &dttable, remains)?;
+                remains = components.append_from_dttable(
+                    DeviceTreeComponentSource::Dtb,
+                    &dttable,
+                    remains,
+                )?;
             }
 
             gbl_println!(ops, "Selecting device tree components");

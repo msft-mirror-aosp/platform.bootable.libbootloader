@@ -90,10 +90,7 @@ fn avb_color_to_efi_color(color: BootStateColor) -> u32 {
 }
 
 fn dt_component_to_efi_dt(component: &DeviceTreeComponent) -> GblEfiVerifiedDeviceTree {
-    let metadata = match component.source {
-        DeviceTreeComponentSource::Dtb(m) | DeviceTreeComponentSource::Dtbo(m) => m,
-        _ => Default::default(),
-    };
+    let metadata = component.metadata.unwrap_or_default();
 
     GblEfiVerifiedDeviceTree {
         metadata: GblEfiDeviceTreeMetadata {
@@ -102,8 +99,8 @@ fn dt_component_to_efi_dt(component: &DeviceTreeComponent) -> GblEfiVerifiedDevi
                 DeviceTreeComponentSource::VendorBoot => {
                     efi_types::GBL_EFI_DEVICE_TREE_SOURCE_VENDOR_BOOT
                 }
-                DeviceTreeComponentSource::Dtb(_) => efi_types::GBL_EFI_DEVICE_TREE_SOURCE_DTB,
-                DeviceTreeComponentSource::Dtbo(_) => efi_types::GBL_EFI_DEVICE_TREE_SOURCE_DTBO,
+                DeviceTreeComponentSource::Dtb => efi_types::GBL_EFI_DEVICE_TREE_SOURCE_DTB,
+                DeviceTreeComponentSource::Dtbo => efi_types::GBL_EFI_DEVICE_TREE_SOURCE_DTBO,
             },
             id: metadata.id,
             rev: metadata.rev,
@@ -1513,20 +1510,10 @@ mod test {
             .append(&mut ops, DeviceTreeComponentSource::VendorBoot, &base, current_buffer)
             .unwrap();
         current_buffer = registry
-            .append(
-                &mut ops,
-                DeviceTreeComponentSource::Dtbo(Default::default()),
-                &overlay,
-                current_buffer,
-            )
+            .append(&mut ops, DeviceTreeComponentSource::Dtbo, &overlay, current_buffer)
             .unwrap();
         registry
-            .append(
-                &mut ops,
-                DeviceTreeComponentSource::Dtbo(Default::default()),
-                &overlay2,
-                current_buffer,
-            )
+            .append(&mut ops, DeviceTreeComponentSource::Dtbo, &overlay2, current_buffer)
             .unwrap();
 
         assert_eq!(ops.select_device_trees(&mut registry), Ok(()));
