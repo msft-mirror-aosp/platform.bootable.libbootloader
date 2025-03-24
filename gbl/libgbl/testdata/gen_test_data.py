@@ -176,6 +176,19 @@ def gen_android_test_dtb():
     gen_dtb(
         out_dir / "device_tree_custom.dts", out_dir / "device_tree_custom.dtb"
     )
+    # Generates dtb to be used inside boot/vendor_boot
+    subprocess.run(
+        [
+            MKDTBOIMG_TOOL,
+            "create",
+            out_dir / "dtb.img",
+            "--id=0x1",
+            "--rev=0x0",
+            out_dir / "device_tree.dtb",
+        ],
+        stderr=subprocess.STDOUT,
+        check=True,
+    )
 
     # Generates dtb_a/dtb_b
     gen_dtb(out_dir / "device_tree_a.dts", out_dir / "device_tree_a.dtb")
@@ -439,6 +452,8 @@ androidboot.config_2=val_2
             subprocess.run(
                 common
                 + [
+                    "--dtb",
+                    out_dir / "device_tree.dtb",
                     "--vendor_boot",
                     out_dir / f"vendor_boot_v3_{slot}.img",
                     "--header_version",
@@ -451,8 +466,26 @@ androidboot.config_2=val_2
             subprocess.run(
                 common
                 + [
+                    "--dtb",
+                    out_dir / "device_tree.dtb",
                     "--vendor_boot",
                     out_dir / f"vendor_boot_v4_{slot}.img",
+                    "--vendor_bootconfig",
+                    vendor_bootconfig,
+                    "--header_version",
+                    "4",
+                ],
+                stderr=subprocess.STDOUT,
+                check=True,
+            )
+            # Generates vendor_boot v4 with dttable structure
+            subprocess.run(
+                common
+                + [
+                    "--dtb",
+                    out_dir / "dtb.img",
+                    "--vendor_boot",
+                    out_dir / f"vendor_boot_v4_dttable_{slot}.img",
                     "--vendor_bootconfig",
                     vendor_bootconfig,
                     "--header_version",
@@ -507,6 +540,19 @@ androidboot.config_2=val_2
                             vbmeta_out = prefix + f"_{slot}.img"
 
                         gen_android_test_vbmeta(parts, out_dir / vbmeta_out)
+
+            # Generate v4 vbmeta image for vendor_boot with dttable structure
+            vbmeta_out = out_dir / \
+                f"vbmeta_v4_dttable_{slot}.img"
+            parts = [
+                (f"boot", out_dir /
+                    f"boot_v4_{slot}.img"),
+                (f"vendor_boot", out_dir /
+                    f"vendor_boot_v4_dttable_{slot}.img"),
+                ("dtbo", out_dir / f"dtbo_{slot}.img"),
+                ("dtb", out_dir / f"dtb_{slot}.img"),
+            ]
+            gen_android_test_vbmeta(parts, vbmeta_out)
 
             # Generate v4 vbmeta images for both gzip and lz4 kernel compression.
             if slot == "a":
