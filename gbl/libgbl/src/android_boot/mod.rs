@@ -29,7 +29,7 @@ use bootparams::commandline::CommandlineBuilder;
 use core::{array::from_fn, ffi::CStr};
 use dttable::DtTableImage;
 use fastboot::local_session::LocalSession;
-use fdt::Fdt;
+use fdt::{Fdt, FdtHeader};
 use gbl_async::block_on;
 use liberror::Error;
 use libutils::{aligned_offset, aligned_subslice};
@@ -73,22 +73,47 @@ pub fn android_load_verify_fixup<'a, 'b, 'c>(
                 // TODO(b/384964561, b/374336105): Investigate if we can avoid additional copy.
                 true => {
                     gbl_println!(ops, "Handling overlays from dtbo");
-                    components
-                        .append_from_dtbo(&DtTableImage::from_bytes(images.dtbo)?, fdt_load)?
+                    components.append_from_dttable(
+                        DeviceTreeComponentSource::Dtbo,
+                        &DtTableImage::from_bytes(images.dtbo)?,
+                        fdt_load,
+                    )?
                 }
                 _ => fdt_load,
             };
 
             if images.dtb.len() > 0 {
                 gbl_println!(ops, "Handling device tree from boot/vendor_boot");
-                remains =
-                    components.append(ops, DeviceTreeComponentSource::Boot, images.dtb, remains)?;
+                remains = if FdtHeader::from_bytes_ref(images.dtb).is_ok() {
+                    gbl_println!(ops, "Device tree found in boot/vendor_boot");
+                    components.append(ops, DeviceTreeComponentSource::Boot, images.dtb, remains)?
+                } else if let Ok(table) = DtTableImage::from_bytes(images.dtb) {
+                    gbl_println!(
+                        ops,
+                        "Dttable with {} entries found in boot/vendor_boot",
+                        table.entries_count()
+                    );
+                    components.append_from_dttable(
+                        DeviceTreeComponentSource::Boot,
+                        &table,
+                        remains,
+                    )?
+                } else {
+                    return Err(Error::Other(Some(
+                        "Invalid or unrecognized device tree format in boot/vendor_boot",
+                    ))
+                    .into());
+                }
             }
 
             if images.dtb_part.len() > 0 {
                 gbl_println!(ops, "Handling device trees from dtb");
                 let dttable = DtTableImage::from_bytes(images.dtb_part)?;
-                remains = components.append_from_dttable(true, &dttable, remains)?;
+                remains = components.append_from_dttable(
+                    DeviceTreeComponentSource::Dtb,
+                    &dttable,
+                    remains,
+                )?;
             }
 
             gbl_println!(ops, "Selecting device tree components");
@@ -307,6 +332,15 @@ pub fn android_main<'a, 'b, 'c, G: GblOps<'a, 'b>>(
         .inspect_err(|e| gbl_println!(ops, "Failed to parse BCB boot mode {e}. Ignored"))
         .unwrap_or(AndroidBootMode::Normal);
     gbl_println!(ops, "Boot mode from BCB: {}", boot_mode);
+
+    if matches!(boot_mode, AndroidBootMode::BootloaderBootOnce) {
+        let mut zeroed_command = [0u8; misc::COMMAND_FIELD_SIZE];
+        ops.write_to_partition_sync(
+            "misc",
+            misc::COMMAND_FIELD_OFFSET.try_into().unwrap(),
+            &mut zeroed_command,
+        )?;
+    }
 
     // Checks platform reboot reason.
     let reboot_reason = ops
@@ -779,6 +813,46 @@ pub(crate) mod tests {
         test_android_load_verify_fixup_v3_or_v4_no_init_boot(4, 4, 'b', config, parts, fdt_prop);
     }
 
+    /// Helper for testing `android_load_verify_fixup` with dttable vendor_boot
+    fn test_android_load_verify_fixup_v4_vendor_boot_dttable(
+        slot: char,
+        expected_vendor_bootconfig: &str,
+        additional_parts: &[(CString, String)],
+        additional_expected_fdt_properties: &[(&str, &CStr, Option<&[u8]>)],
+    ) {
+        let vbmeta = format!("vbmeta_v4_dttable_{slot}.img");
+        let mut parts: Vec<(CString, String)> = vec![
+            (CString::new(format!("boot_{slot}")).unwrap(), format!("boot_v4_{slot}.img")),
+            (
+                CString::new(format!("vendor_boot_{slot}")).unwrap(),
+                format!("vendor_boot_v4_dttable_{slot}.img"),
+            ),
+            (CString::new(format!("vbmeta_{slot}")).unwrap(), vbmeta.clone()),
+        ];
+        parts.extend_from_slice(additional_parts);
+        test_android_load_verify_fixup_v3_or_v4(
+            slot,
+            &parts,
+            &vbmeta,
+            expected_vendor_bootconfig,
+            additional_expected_fdt_properties,
+        );
+    }
+
+    #[test]
+    fn test_android_load_verify_fixup_v4_v4_no_init_boot_slot_dttable_vendor_boot_a() {
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"builtin", Some(&[1]))];
+        let config = TEST_VENDOR_BOOTCONFIG;
+        test_android_load_verify_fixup_v4_vendor_boot_dttable('a', config, &[], fdt_prop);
+    }
+
+    #[test]
+    fn test_android_load_verify_fixup_v4_v4_no_init_boot_slot_dttable_vendor_boot_b() {
+        let fdt_prop: &[(&str, &CStr, Option<&[u8]>)] = &[("/chosen", c"builtin", Some(&[1]))];
+        let config = TEST_VENDOR_BOOTCONFIG;
+        test_android_load_verify_fixup_v4_vendor_boot_dttable('b', config, &[], fdt_prop);
+    }
+
     /// Helper for testing `android_load_verify_fixup` for v3/v4 boot image with init_boot.
     fn test_android_load_verify_fixup_v3_or_v4_init_boot(
         boot_ver: u32,
@@ -1177,6 +1251,26 @@ pub(crate) mod tests {
         );
 
         checks_loaded_v2_slot_a_normal_mode(ramdisk, kernel);
+    }
+
+    #[test]
+    fn test_android_main_bootonce_bootloader_bcb_command_is_cleared() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"boot_a", read_test_data("boot_v2_a.img"));
+        storage.add_raw_device(c"vbmeta_a", read_test_data("vbmeta_v2_a.img"));
+        storage.add_raw_device(c"misc", vec![0u8; 4 * 1024 * 1024]);
+        let mut ops = default_test_gbl_ops(&storage);
+        ops.write_to_partition_sync("misc", 0, &mut b"bootonce-bootloader".to_vec()).unwrap();
+        test_fastboot_is_triggered(&mut ops);
+
+        let mut bcb_buffer = [0u8; BootloaderMessage::SIZE_BYTES];
+        ops.read_from_partition_sync("misc", 0, &mut bcb_buffer[..]).unwrap();
+        let bcb = BootloaderMessage::from_bytes_ref(&bcb_buffer).unwrap();
+        assert_eq!(
+            bcb.boot_mode().unwrap(),
+            AndroidBootMode::Normal,
+            "BCB mode is expected to be cleared after bootonce-bootloader is handled"
+        );
     }
 
     #[test]
