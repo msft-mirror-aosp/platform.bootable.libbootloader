@@ -497,13 +497,14 @@ impl Iterator for PartitionIterator<'_> {
     type Item = Partition;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let res = self
-            .entries
-            .get(self.idx)
-            .filter(|v| !v.is_null())
-            .map(|v| Partition::new(*v, self.block_size))?;
-        self.idx += 1;
-        Some(res)
+        while self.idx < self.entries.len() {
+            let entry = &self.entries[self.idx];
+            self.idx += 1;
+            if !entry.is_null() {
+                return Some(Partition::new(*entry, self.block_size));
+            }
+        }
+        None
     }
 }
 
@@ -720,23 +721,18 @@ impl<B: DerefMut<Target = [u8]>> Gpt<B> {
     /// Return the list of GPT entries.
     ///
     /// If there is not a valid GPT, the method returns Error.
-    pub fn entries(&self) -> Result<&[GptEntry]> {
-        self.check_valid()?;
-        let entries = LoadBufferRef::from(&self.buffer[..]).primary_entries.into_slice();
-        let n = entries.iter().position(|v| v.is_null()).unwrap_or(entries.len());
-        Ok(&entries[..n])
+    pub fn entries(&self) -> Result<PartitionIterator<'_>> {
+        self.partition_iter()
     }
 
     /// Returns the total number of partitions.
     pub fn num_partitions(&self) -> Result<usize> {
-        Ok(self.entries()?.len())
+        Ok(self.entries()?.count())
     }
 
     /// Gets the `idx`th partition.
     pub fn get_partition(&self, idx: usize) -> Result<Partition> {
-        let block_size = self.check_valid()?;
-        let entry = *self.entries()?.get(idx).ok_or(Error::BadIndex(idx))?;
-        Ok(Partition::new(entry, block_size))
+        self.entries()?.nth(idx).ok_or(Error::BadIndex(idx))
     }
 
     /// Returns the `Partition` for a partition.
@@ -745,15 +741,7 @@ impl<B: DerefMut<Target = [u8]>> Gpt<B> {
     ///
     /// * `part`: Name of the partition.
     pub fn find_partition(&self, part: &str) -> Result<Partition> {
-        let block_size = self.check_valid()?;
-        for entry in self.entries()? {
-            let mut name_conversion_buffer = [0u8; GPT_NAME_LEN_U16 * 2];
-            if entry.name_to_str(&mut name_conversion_buffer)? != part {
-                continue;
-            }
-            return Ok(Partition::new(*entry, block_size));
-        }
-        Err(Error::NotFound)
+        self.entries()?.find(|e| e.name() == Some(part)).ok_or(Error::NotFound)
     }
 
     /// Checks whether the Gpt has been initialized and returns the block size.
@@ -785,11 +773,12 @@ impl<B: DerefMut<Target = [u8]>> Gpt<B> {
         // Checks header.
         check_header(disk.io(), &header, matches!(hdr_type, HeaderType::Primary))?;
         // Loads the entries.
-        let entries_size = gpt_entries_size(header.entries_count);
+        let entries_size: usize = gpt_entries_size(header.entries_count).try_into()?;
         let entries_bytes = entries
             .as_bytes_mut()
-            .get_mut(..entries_size.try_into()?)
+            .get_mut(..entries_size)
             .ok_or(Error::GptError(GptError::EntriesTruncated))?;
+        entries_bytes.as_mut()[entries_size..].fill(0);
         let entries_offset = SafeNum::from(header.entries) * blk_sz;
         disk.read(entries_offset.try_into()?, entries_bytes.as_mut()).await?;
         // Checks entries.
@@ -846,6 +835,7 @@ impl<B: DerefMut<Target = [u8]>> Gpt<B> {
                 primary_header.as_bytes_mut().clone_from_slice(secondary_header.as_bytes());
                 primary_entries[..entries_size]
                     .clone_from_slice(&secondary_entries[..entries_size]);
+                primary_entries[entries_size..].fill(0);
                 primary_header.current = primary_header_blk;
                 primary_header.backup = secondary_header_blk.try_into()?;
                 primary_header.entries = primary_entries_blk;
@@ -874,6 +864,7 @@ impl<B: DerefMut<Target = [u8]>> Gpt<B> {
                 secondary_header.as_bytes_mut().clone_from_slice(primary_header.as_bytes());
                 secondary_entries[..entries_size]
                     .clone_from_slice(&primary_entries[..entries_size]);
+                secondary_entries[entries_size..].fill(0);
                 secondary_header.current = secondary_header_blk.try_into()?;
                 secondary_header.backup = primary_header_blk;
                 secondary_header.entries = secondary_entries_blk.try_into()?;
@@ -1103,8 +1094,7 @@ where
         }
         // Normalizes `entries_count` to actual valid entries. Some GPT disk fixes `entries_count`
         // to 128.
-        header.entries_count =
-            entries.iter().position(|v| v.is_null()).unwrap_or(entries.len()).try_into().unwrap();
+        header.entries_count = entries.iter().filter(|v| !v.is_null()).count().try_into().unwrap();
         entries.sort_unstable_by_key(|v| match v.is_null() {
             true => u64::MAX,
             _ => v.first,
@@ -1796,7 +1786,7 @@ pub(crate) mod test {
             let (dev, mut gpt) = test_disk_and_gpt(&disk);
             assert!(block_on(dev.sync_gpt(&mut gpt, false)).is_ok());
             let entries = gpt.entries().unwrap();
-            assert_eq!(entries.len(), 1);
+            assert_eq!(entries.count(), 1);
         }
     }
 
@@ -1837,7 +1827,7 @@ pub(crate) mod test {
             let (dev, mut gpt) = test_disk_and_gpt(&disk);
             assert!(block_on(dev.sync_gpt(&mut gpt, false)).is_ok());
             let entries = gpt.entries().unwrap();
-            assert_eq!(entries.len(), 1);
+            assert_eq!(entries.count(), 1);
         }
     }
 
@@ -1997,7 +1987,10 @@ pub(crate) mod test {
             // Last entry is extended.
             let expected_last =
                 (disk.len() - gpt_header_size_block_align(entries_count)) / BLOCK_SIZE - 1;
-            assert_eq!({ gpt.entries().unwrap()[1].last }, expected_last.try_into().unwrap());
+            assert_eq!(
+                { gpt.entries().unwrap().nth(1).unwrap().gpt_entry().last },
+                expected_last.try_into().unwrap()
+            );
         }
     }
 
