@@ -734,7 +734,9 @@ impl<'a, 'b> GblOps<'b> for Ops<'a, 'b> {
     ) -> Result<()> {
         match self.open_os_configuration_protocol() {
             Ok(protocol) => {
-                // Protocol detected, convert to UEFI types.
+                // The array allocation below takes up about 24 KiB of stack space. Be careful when
+                // increasing the MAXIMUM_DT_COMPONENTS limit.
+                const_assert_eq!(MAXIMUM_DT_COMPONENTS, 512);
                 let mut uefi_components: ArrayVec<_, MAXIMUM_DT_COMPONENTS> = components_registry
                     .components()
                     .map(|component| dt_component_to_efi_dt(component))

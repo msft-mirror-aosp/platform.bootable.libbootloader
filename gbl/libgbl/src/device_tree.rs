@@ -14,7 +14,10 @@
 
 //! GblOps trait that defines device tree components helpers.
 
+extern crate alloc;
+
 use crate::{constants::FDT_ALIGNMENT, gbl_println, GblOps};
+use alloc::vec::Vec;
 use arrayvec::ArrayVec;
 use dttable::{DtTableEntry, DtTableImage, DtTableMetadata};
 use fdt::{Fdt, FdtHeader, FDT_HEADER_SIZE, MAXIMUM_OVERLAYS_TO_APPLY};
@@ -22,12 +25,10 @@ use liberror::{Error, Result};
 use libutils::aligned_subslice;
 
 /// Maximum number of device tree components GBL can handle to select from.
-/// TODO(b/353272981): Use dynamic memory to store components. Currently
-/// DtComponentsRegistry takes about 20kb of stack, which can be slow and dangerous.
-pub const MAXIMUM_DT_COMPONENTS: usize = 256;
+pub const MAXIMUM_DT_COMPONENTS: usize = 512;
 /// Error message for unsupported number of device tree components.
 pub const MAXIMUM_DT_COMPONENTS_ERROR_MSG: &str =
-    "At most 256 device tree components are supported to build the final one";
+    "At most 512 device tree components are supported to build the final one";
 
 /// The source device tree component is coming from.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -101,7 +102,9 @@ pub struct DtComponent<'a> {
 
 /// Maintain, select and get the device tree components to build the final device tree.
 pub struct DtComponentsRegistry<'a> {
-    components: ArrayVec<DtComponent<'a>, MAXIMUM_DT_COMPONENTS>,
+    // TODO(b/374336105): Reconsider using dynamic memory here once the DT relocation
+    // logic is eliminated, so covariance on 'a is no longer required.
+    components: Vec<DtComponent<'a>>,
 }
 
 /// Selected device tree component.
@@ -172,7 +175,7 @@ fn try_dt_totalsize_from_unaligned_bytes_ref(header: &[u8], buffer: &mut [u8]) -
 impl<'a> DtComponentsRegistry<'a> {
     /// Create new empty DtComponentsRegistry.
     pub fn new() -> Self {
-        DtComponentsRegistry { components: ArrayVec::new() }
+        DtComponentsRegistry { components: Vec::new() }
     }
 
     fn component_type(
@@ -201,7 +204,7 @@ impl<'a> DtComponentsRegistry<'a> {
         dttable: &DtTableImage<'b>,
         buffer: &'c mut [u8],
     ) -> Result<&'c mut [u8]> {
-        if dttable.entries_count() > self.components.remaining_capacity() {
+        if self.components.len() + dttable.entries_count() > MAXIMUM_DT_COMPONENTS {
             return Err(Error::Other(Some(MAXIMUM_DT_COMPONENTS_ERROR_MSG)));
         }
 
@@ -272,7 +275,7 @@ impl<'a> DtComponentsRegistry<'a> {
         while let Ok(next_fdt_size) =
             try_dt_totalsize_from_unaligned_bytes_ref(data_remains, buffer_remains)
         {
-            if self.components.is_full() {
+            if self.components.len() >= MAXIMUM_DT_COMPONENTS {
                 return Err(Error::Other(Some(MAXIMUM_DT_COMPONENTS_ERROR_MSG)));
             }
 
@@ -331,7 +334,7 @@ impl<'a> DtComponentsRegistry<'a> {
         fdt: &'a [u8],
         buffer: &'d mut [u8],
     ) -> Result<&'d mut [u8]> {
-        if self.components.is_full() {
+        if self.components.len() >= MAXIMUM_DT_COMPONENTS {
             return Err(Error::Other(Some(MAXIMUM_DT_COMPONENTS_ERROR_MSG)));
         }
 
