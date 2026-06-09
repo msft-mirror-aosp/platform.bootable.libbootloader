@@ -72,7 +72,6 @@ unsafe impl BlockIo for EfiBlockDeviceIo<'_> {
                 self.block_io.read_blocks(self.media_id, blk_offset, out).map_err(Into::into)
             }
         }
-        .or(Err(Error::BlockIoError))
     }
 
     async fn write_blocks(&self, blk_offset: u64, data: &mut [u8]) -> Result<(), Error> {
@@ -80,7 +79,6 @@ unsafe impl BlockIo for EfiBlockDeviceIo<'_> {
             Some(v) => v.write_blocks_ex(blk_offset, data).await,
             _ => self.block_io.write_blocks(self.media_id, blk_offset, data).map_err(Into::into),
         }
-        .or(Err(Error::BlockIoError))
     }
 
     async fn erase_blocks(&self, blk_off: u64, num_blks: u64) -> Result<(), Error> {
@@ -99,11 +97,11 @@ unsafe impl BlockIo for EfiBlockDeviceIo<'_> {
     ) -> Result<(), Error> {
         // SAFETY: `read_blocks()` will only initialize the data.
         let out = unsafe { out.into().as_uninit_slice_mut() };
-        self.block_io.read_blocks(self.media_id, blk_offset, out).or(Err(Error::BlockIoError))
+        Ok(self.block_io.read_blocks(self.media_id, blk_offset, out)?)
     }
 
     fn write_blocks_sync(&self, blk_offset: u64, data: &mut [u8]) -> Result<(), Error> {
-        self.block_io.write_blocks(self.media_id, blk_offset, data).or(Err(Error::BlockIoError))
+        Ok(self.block_io.write_blocks(self.media_id, blk_offset, data)?)
     }
 
     async fn flush(&self) -> Result<(), Error> {
