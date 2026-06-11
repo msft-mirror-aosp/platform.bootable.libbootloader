@@ -614,7 +614,7 @@ pub fn avf_update_bootconfig<'a>(
                 cause GBL boot failure."
             );
         } else {
-            bootconfig.add_item(prop, true)?;
+            bootconfig.add_item(prop, 1)?;
         }
     }
     if let Some(metadata) = vmdtbo_metadata {

@@ -2394,8 +2394,8 @@ pub(crate) mod tests {
             android_load_verify_fixup(&mut ops, Some(slot('a')), false, boot_buffer).unwrap();
 
         let bootconfig = extract_bootconfig(ramdisk).unwrap();
-        bootconfig.find(&format!("{PROTECTED_PROP}=true")).unwrap();
-        bootconfig.find(&format!("{UNPROTECTED_PROP}=true")).unwrap();
+        bootconfig.find(&format!("{PROTECTED_PROP}=1")).unwrap();
+        bootconfig.find(&format!("{UNPROTECTED_PROP}=1")).unwrap();
 
         let fdt = Fdt::new(&fdt[..]).unwrap();
         assert_eq!(
