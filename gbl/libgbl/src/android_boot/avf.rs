@@ -31,7 +31,7 @@ use core::{
     mem::{align_of, size_of},
 };
 use dttable::DtTableImage;
-use fdt::{fdt_encode_cell_sized_property, std_props, Fdt};
+use fdt::{fdt_encode_cell_sized_property, fdt_ensure_reserved_memory_initialized, std_props, Fdt};
 use liberror::{Error, Result};
 use opendice::{
     dice::{Config, DiceMode, InputValues, HASH_SIZE, HIDDEN_SIZE},
@@ -380,22 +380,18 @@ fn pkvm_describe_pvmfw_resvmem<'a, T>(fdt: &mut Fdt<T>, buffer: &[u8], bin_len: 
 where
     T: AsMut<[u8]> + AsRef<[u8]>,
 {
-    const RESVMEM_PATH: &str = "/reserved-memory";
     const PVMFW_RESVMEM_PATH: &str = "/reserved-memory/pkvm_guest_firmware";
     const CONFIG_OFFSET_PROP: &CStr = c"config-data-offset";
     const MAX_REG_CELLS: usize = 8;
     const FDT_CELL_SIZE: usize = 4;
 
-    let mut reg_buf = [0u8; MAX_REG_CELLS * FDT_CELL_SIZE];
-
-    // Determine the number of u32 cells for 'reg' address and size, use default values if missing
-    let addr_cells = fdt.get_property_u32(RESVMEM_PATH, std_props::ADDRESS_CELLS).unwrap_or(2u32);
-    let size_cells = fdt.get_property_u32(RESVMEM_PATH, std_props::SIZE_CELLS).unwrap_or(1u32);
+    let resvmem = fdt_ensure_reserved_memory_initialized(fdt)?;
 
     // Serialize region address and size, and write DT node properties
+    let mut reg_buf = [0u8; MAX_REG_CELLS * FDT_CELL_SIZE];
     let reg_bytes = fdt_encode_cell_sized_property(
         &[(buffer.as_ptr() as usize), buffer.len()],
-        &[addr_cells, size_cells],
+        &[resvmem.address_cells, resvmem.size_cells],
         &mut reg_buf,
     )?;
 
@@ -708,6 +704,7 @@ pub(crate) mod test {
         device_tree::DtComponentSource,
         ops::test::{FakeGblOps, FakeGblOpsStorage},
     };
+    use fdt::{DEFAULT_ADDRESS_CELLS, DEFAULT_SIZE_CELLS};
     use libtestutils::AlignedBuffer;
 
     struct TestVerifyData<T: AsRef<[u8]>> {
@@ -928,21 +925,20 @@ pub(crate) mod test {
         let buf = AlignedBuffer::new(10, PVMFW_DATA_ALIGNMENT);
         let dummy_bin_len = 4usize;
 
-        let init = include_bytes!("../../../libfdt/test/data/res_mem_min_dt.dtb").to_vec();
-        let mut fdt_buf = vec![0u8; init.len() + 512];
-        let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
+        let mut fdt_buf = AlignedBuffer::new(1024, 8);
+        let mut fdt = Fdt::new_empty(&mut fdt_buf[..]).unwrap();
+
+        pkvm_describe_pvmfw_resvmem(&mut fdt, &buf, dummy_bin_len).unwrap();
 
         assert_eq!(
-            fdt.get_property("/reserved-memory", std_props::ADDRESS_CELLS).unwrap(),
-            &[0x0, 0x0, 0x0, 0x2]
+            fdt.get_property_u32("/reserved-memory", std_props::ADDRESS_CELLS).unwrap(),
+            DEFAULT_ADDRESS_CELLS
         );
         assert_eq!(
-            fdt.get_property("/reserved-memory", std_props::SIZE_CELLS).unwrap(),
-            &[0x0, 0x0, 0x0, 0x2]
+            fdt.get_property_u32("/reserved-memory", std_props::SIZE_CELLS).unwrap(),
+            DEFAULT_SIZE_CELLS
         );
-        assert!(fdt.get_property("/reserved-memory/pkvm_guest_firmware", std_props::REG).is_err());
-
-        assert!(pkvm_describe_pvmfw_resvmem(&mut fdt, &buf, dummy_bin_len).is_ok());
+        assert_eq!(fdt.get_property("/reserved-memory", std_props::RANGES).unwrap(), &[]);
         assert_eq!(
             fdt.get_property("/reserved-memory/pkvm_guest_firmware", std_props::COMPATIBLE)
                 .unwrap(),
@@ -955,7 +951,7 @@ pub(crate) mod test {
         let reg_prop =
             fdt.get_property("/reserved-memory/pkvm_guest_firmware", std_props::REG).unwrap();
         assert_eq!(&reg_prop[..8], (buf.as_ptr() as usize).to_be_bytes());
-        assert_eq!(&reg_prop[8..], buf.len().to_be_bytes());
+        assert_eq!(&reg_prop[8..], (buf.len() as u32).to_be_bytes());
 
         let conf_offset_prop = fdt
             .get_property("/reserved-memory/pkvm_guest_firmware", c"config-data-offset")

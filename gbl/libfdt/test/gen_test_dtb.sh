@@ -21,7 +21,8 @@ readonly DATA_DIR="${SCRIPT_DIR}/data/"
 
 dtc -@ -I dts -O dtb -o ${DATA_DIR}/base.dtb ${SCRIPT_DIR}/base.dts
 
-dtc -@ -I dts -O dtb -o ${DATA_DIR}/res_mem_min_dt.dtb ${SCRIPT_DIR}/res_mem_min_dt.dts
+dtc -@ -I dts -O dtb -o ${DATA_DIR}/reserved_memory_initialized.dtb ${SCRIPT_DIR}/reserved_memory_initialized.dts
+dtc -@ -I dts -O dtb -o ${DATA_DIR}/reserved_memory_root_initialized.dtb ${SCRIPT_DIR}/reserved_memory_root_initialized.dts
 
 dtc -@ -I dts -O dtb -o ${DATA_DIR}/overlay_by_path.dtbo ${SCRIPT_DIR}/overlay_by_path.dts
 dtc -@ -I dts -O dtb -o ${DATA_DIR}/overlay_2_by_path.dtbo ${SCRIPT_DIR}/overlay_2_by_path.dts

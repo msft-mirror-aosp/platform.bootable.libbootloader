@@ -39,6 +39,12 @@ pub const FDT_HEADER_SIZE: usize = size_of::<FdtHeader>();
 pub const MAXIMUM_OVERLAYS_TO_APPLY: usize = 32;
 const MAXIMUM_OVERLAYS_ERROR_MSG: &str = "At most 32 overlays are supported to apply at a time";
 
+/// Standard FDT node paths
+pub mod std_nodes {
+    /// Reserved memory node path
+    pub const RESERVED_MEMORY: &str = "/reserved-memory";
+}
+
 /// Standard FDT property names
 pub mod std_props {
     use core::ffi::CStr;
@@ -53,6 +59,8 @@ pub mod std_props {
     pub const REG: &CStr = c"reg";
     /// no-map property name
     pub const NO_MAP: &CStr = c"no-map";
+    /// ranges property name
+    pub const RANGES: &CStr = c"ranges";
 }
 
 /// Convert libfdt_c error code to Result
@@ -185,6 +193,52 @@ pub fn fdt_encode_cell_sized_property(
         out_buffer = rest;
     }
     Ok(total_size)
+}
+
+/// Default `#address-cells` (DT spec 2.3.5).
+pub const DEFAULT_ADDRESS_CELLS: u32 = 2;
+/// Default `#size-cells` (DT spec 2.3.5).
+pub const DEFAULT_SIZE_CELLS: u32 = 1;
+
+/// Metadata defining the layout constraints for the `/reserved-memory` node.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ReservedMemory {
+    /// Number of 32-bit cells required to encode a base address.
+    pub address_cells: u32,
+    /// Number of 32-bit cells required to encode a memory region size.
+    pub size_cells: u32,
+}
+
+/// Ensures the `/reserved-memory` node is properly initialized.
+///
+/// Prepares the `/reserved-memory` node, ensuring required properties exist [1].
+/// Sets up standard addressing from the root node and establishes a 1:1 parental
+/// mapping while preserving any existing properties.
+///
+/// [1]: https://devicetree-specification.readthedocs.io/en/latest/chapter3-devicenodes.html#reserved-memory-parent-node
+pub fn fdt_ensure_reserved_memory_initialized<T: AsMut<[u8]> + AsRef<[u8]>>(
+    fdt: &mut Fdt<T>,
+) -> Result<ReservedMemory> {
+    let address_cells =
+        fdt_ensure_cell_property(fdt, std_props::ADDRESS_CELLS, DEFAULT_ADDRESS_CELLS)?;
+    let size_cells = fdt_ensure_cell_property(fdt, std_props::SIZE_CELLS, DEFAULT_SIZE_CELLS)?;
+    fdt.ensure_property(std_nodes::RESERVED_MEMORY, std_props::RANGES, &[])?;
+    Ok(ReservedMemory { address_cells, size_cells })
+}
+
+/// Ensure `/reserved-memory` declares the cell-count property `name`, returning its
+/// effective value.
+fn fdt_ensure_cell_property<T: AsMut<[u8]> + AsRef<[u8]>>(
+    fdt: &mut Fdt<T>,
+    name: &CStr,
+    default: u32,
+) -> Result<u32> {
+    if let Ok(value) = fdt.get_property_u32(std_nodes::RESERVED_MEMORY, name) {
+        return Ok(value);
+    }
+    let inherited = fdt.get_property_u32("/", name).unwrap_or(default);
+    fdt.set_property(std_nodes::RESERVED_MEMORY, name, &inherited.to_be_bytes())?;
+    Ok(inherited)
 }
 
 /// Rust wrapper for the FDT header data.
@@ -433,6 +487,19 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
     /// Create node by `path` if it does not exist already.
     pub fn ensure_node(&mut self, path: &str) -> Result<()> {
         self.find_or_add_node(path).map(|_| ())
+    }
+
+    /// Ensures a property exists at `path`, setting it to `fallback_value` if absent.
+    pub fn ensure_property(
+        &mut self,
+        path: &str,
+        name: &CStr,
+        fallback_value: &[u8],
+    ) -> Result<()> {
+        if self.get_property(path, name).is_ok() {
+            return Ok(());
+        }
+        self.set_property(path, name, fallback_value)
     }
 
     /// Delete node by `path`. Fail if node doesn't exist.
@@ -1099,6 +1166,21 @@ mod test {
     }
 
     #[test]
+    fn test_ensure_property() {
+        let init = include_bytes!("../test/data/base.dtb").to_vec();
+        let mut fdt_buf = vec![0u8; init.len() + 512];
+        let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
+
+        // Absent property (and its node) is created with the fallback value.
+        fdt.ensure_property("/new-node", c"custom", &[0x11, 0x22]).unwrap();
+        assert_eq!(fdt.get_property("/new-node", c"custom").unwrap(), &[0x11, 0x22]);
+
+        // An existing property is left untouched.
+        fdt.ensure_property("/new-node", c"custom", &[0x33]).unwrap();
+        assert_eq!(fdt.get_property("/new-node", c"custom").unwrap(), &[0x11, 0x22]);
+    }
+
+    #[test]
     fn test_create_fdt_from_empty() {
         let mut dt_buf = AlignedBuffer::new(256, 8);
         let mut dt = Fdt::new_empty(&mut dt_buf[..]).unwrap();
@@ -1176,5 +1258,52 @@ mod test {
         fdt.delete_node("/dev-2/dev-2.2/dev-2.2.1").unwrap();
         node_offset = fdt.find_node_offset("/dev-2/dev-2.2").unwrap();
         assert!(fdt.get_first_subnode_offset(node_offset.try_into().unwrap()).is_err());
+    }
+
+    #[test]
+    fn test_fdt_ensure_reserved_memory_initialized_inherits_from_root() {
+        let init = include_bytes!("../test/data/reserved_memory_root_initialized.dtb").to_vec();
+        let mut dt_buf = vec![0u8; init.len() + 512];
+        let mut dt = Fdt::new_from_init(&mut dt_buf[..], &init[..]).unwrap();
+
+        let resvmem = fdt_ensure_reserved_memory_initialized(&mut dt).unwrap();
+        assert_eq!(resvmem, ReservedMemory { address_cells: 2, size_cells: 2 });
+        assert_eq!(dt.get_property_u32("/reserved-memory", std_props::ADDRESS_CELLS).unwrap(), 2);
+        assert_eq!(dt.get_property_u32("/reserved-memory", std_props::SIZE_CELLS).unwrap(), 2);
+        assert_eq!(dt.get_property("/reserved-memory", std_props::RANGES).unwrap(), &[]);
+    }
+
+    #[test]
+    fn test_fdt_ensure_reserved_memory_initialized_preserves_existing() {
+        let init = include_bytes!("../test/data/reserved_memory_initialized.dtb").to_vec();
+        let mut dt_buf = vec![0u8; init.len() + 512];
+        let mut dt = Fdt::new_from_init(&mut dt_buf[..], &init[..]).unwrap();
+
+        let resvmem = fdt_ensure_reserved_memory_initialized(&mut dt).unwrap();
+        assert_eq!(resvmem, ReservedMemory { address_cells: 2, size_cells: 2 });
+        assert_eq!(dt.get_property_u32("/reserved-memory", std_props::ADDRESS_CELLS).unwrap(), 2);
+        assert_eq!(dt.get_property_u32("/reserved-memory", std_props::SIZE_CELLS).unwrap(), 2);
+        assert_eq!(dt.get_property("/reserved-memory", std_props::RANGES).unwrap(), &[]);
+    }
+
+    #[test]
+    fn test_fdt_ensure_reserved_memory_initialized_defaults_when_root_silent() {
+        let mut dt_buf = AlignedBuffer::new(1024, 8);
+        let mut dt = Fdt::new_empty(&mut dt_buf[..]).unwrap();
+
+        let resvmem = fdt_ensure_reserved_memory_initialized(&mut dt).unwrap();
+        assert_eq!(
+            resvmem,
+            ReservedMemory { address_cells: DEFAULT_ADDRESS_CELLS, size_cells: DEFAULT_SIZE_CELLS }
+        );
+        assert_eq!(
+            dt.get_property_u32("/reserved-memory", std_props::ADDRESS_CELLS).unwrap(),
+            DEFAULT_ADDRESS_CELLS
+        );
+        assert_eq!(
+            dt.get_property_u32("/reserved-memory", std_props::SIZE_CELLS).unwrap(),
+            DEFAULT_SIZE_CELLS
+        );
+        assert_eq!(dt.get_property("/reserved-memory", std_props::RANGES).unwrap(), &[]);
     }
 }
