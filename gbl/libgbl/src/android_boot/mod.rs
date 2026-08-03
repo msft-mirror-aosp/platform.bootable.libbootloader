@@ -31,10 +31,8 @@ use crate::{
     GblOps, IntegrationError, Result,
 };
 use arrayvec::ArrayVec;
-use bootparams::{
-    bootconfig::{extract_bootconfig, BootConfigBuilder},
-    entry::CommandlineParser,
-};
+use bootparams::{bootconfig::BootConfigBuilder, entry::CommandlineParser};
+use cfg_if::cfg_if;
 use core::{ffi::CStr, fmt::Write, mem::take, ops::Range};
 use fdt::Fdt;
 use gbl_async::block_on;
@@ -49,9 +47,7 @@ use avf::{avf_fixup_host_dt, avf_update_bootconfig, inject_vmdtbo};
 pub(crate) mod hasher;
 
 pub mod device_tree;
-use device_tree::{
-    fdt_append_bootargs, fdt_build_bootargs, fdt_propagate_random, fdt_select, PROP_BOOTARGS,
-};
+use device_tree::{fdt_build_bootargs, fdt_propagate_random, fdt_select, PROP_BOOTARGS};
 
 pub mod vboot;
 pub use vboot::{avb_verify_slot, PartitionsToVerify};
@@ -406,7 +402,7 @@ fn vbmeta_cmdline_to_bootconfig<'a>(
 /// * `ops`: An implementation of GblOps.
 /// * `fdt`: Target FDT to fixup.
 /// * `ramdisk`: Target ramdisk for setting `linux,initrd-start/end`
-/// * `append_bootconfig`: Set to true to append bootconfig from ramdisk as bootarg.
+/// * `append_bootconfig`: Set to true to append bootconfig from ramdisk as bootarg on dev builds.
 fn finalize_dt<'b>(
     ops: &mut impl GblOps<'b>,
     fdt: &mut [u8],
@@ -422,7 +418,23 @@ fn finalize_dt<'b>(
     gbl_println!(ops, "linux,initrd-start: {:#x}", ramdisk_addr);
     gbl_println!(ops, "linux,initrd-end: {:#x}", ramdisk_end);
     if append_bootconfig {
-        fdt_append_bootargs(ops, &mut fdt, extract_bootconfig(ramdisk)?.split('\n'))?;
+        gbl_println!(ops, "WARNING: Boot image predates bootconfig support.");
+        cfg_if! {
+            if #[cfg(feature = "gbl_dev")] {
+                use bootparams::bootconfig::extract_bootconfig;
+                use device_tree::fdt_append_bootargs;
+
+                gbl_println!(ops, "Converting bootconfig into the kernel commandline.");
+                fdt_append_bootargs(ops, &mut fdt, extract_bootconfig(ramdisk)?.split('\n'))?;
+            } else {
+                let _ = ramdisk;
+                gbl_println!(
+                    ops,
+                    "OS may ignore AVB and other important configuration, and potentially fail to \
+                    boot."
+                );
+            }
+        }
     }
     // Print the final commandline. If the bootargs were changed by the firmware during fdt fixup,
     // then the firmware must ensure the bootargs end with '\0'.
@@ -877,7 +889,7 @@ pub(crate) mod tests {
         test::{dummy_pvmfw_partition, DUMMY_VENDOR_HANDOVER},
         PROTECTED_PROP, UNPROTECTED_PROP,
     };
-    use bootparams::bootconfig::{BootConfigBuilder, BOOTCONFIG_TRAILER_SIZE};
+    use bootparams::bootconfig::{extract_bootconfig, BootConfigBuilder, BOOTCONFIG_TRAILER_SIZE};
     use cfg_if::cfg_if;
     use fdt::std_props;
     use libbuild_number::{BUILD_BRANCH, BUILD_NUMBER, BUILD_REVISION, VERSION};
@@ -1463,7 +1475,7 @@ pub(crate) mod tests {
             // Appended via fixup.
             expected_bootargs.push_str(" fixup");
             // Converted items if bootconfig isn't supported.
-            if !bootconfig_supported {
+            if !bootconfig_supported && cfg!(feature = "gbl_dev") {
                 write!(expected_bootargs, " {}", &bootconfig_to_bootarg(&expected_bootconfig))
                     .unwrap();
             }
