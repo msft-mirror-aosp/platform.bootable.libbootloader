@@ -37,6 +37,7 @@ rust_library(
         "@avb//:libavb_c_sha_staticlib",
         "@cfg_if",
         "@gbl//libavb:sysdeps",
+        "@gbl//libboringssl",
         "@gbl//libboringssl:libcrypto_c_baremetal_static",
         "@gbl//libboringssl:sysdeps",
         "@gbl//libefi",
