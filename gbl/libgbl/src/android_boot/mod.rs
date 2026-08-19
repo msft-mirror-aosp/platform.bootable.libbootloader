@@ -235,7 +235,7 @@ pub fn android_load_verify_fixup<'a, 'b>(
     // This does not need to be filtered because we know it's coming from the vendor boot image
     // which is a higher level of trust than arbitrary chained vbmeta blobs; if it's compromised
     // then we've already lost control of the ramdisk so the bootconfig params are irrelevant.
-    bootconfig_builder.add_raw_with(|_, out| {
+    bootconfig_builder.add_raw_lines_with(|_, out| {
         out.get_mut(..images.vendor_bootconfig.len())
             .ok_or(Error::BufferTooSmall(Some(images.vendor_bootconfig.len())))?
             .clone_from_slice(images.vendor_bootconfig);
@@ -521,7 +521,7 @@ fn finalize_bootconfig<'a, 'b, 'c>(
         }
     }
     // Adds platform-specific bootconfig.
-    builder.add_raw_with(|bytes, out| {
+    builder.add_raw_lines_with(|bytes, out| {
         Ok(ops.fixup_bootconfig(&bytes, out)?.map(|slice| slice.len()).unwrap_or(0))
     })?;
 
@@ -1178,11 +1178,7 @@ pub(crate) mod tests {
         let bootconfig = bootconfig.as_ref();
         let mut buffer = vec![0u8; bootconfig.len() + BOOTCONFIG_TRAILER_SIZE];
         let mut res = BootConfigBuilder::new(&mut buffer).unwrap();
-        res.add_raw_with(|_, out| {
-            out[..bootconfig.len()].clone_from_slice(bootconfig.as_bytes());
-            Ok(bootconfig.as_bytes().len())
-        })
-        .unwrap();
+        write!(res, "{bootconfig}").unwrap();
         res.config_bytes().to_vec()
     }
 
@@ -2214,7 +2210,8 @@ pub(crate) mod tests {
 
         let mut sync_partition_called = false;
         const TEST_FDT_FIXUP: &str = "fixup-by-sync-partition-buffer";
-        const TEST_BOOTCONFIG_FIXUP: &str = "fixup-by-sync-partition-buffer=1\n";
+        // Not newline-terminated: `finalize_bootconfig` must add the newline itself.
+        const TEST_BOOTCONFIG_FIXUP: &str = "fixup-by-sync-partition-buffer=1";
         let mut sync_partition_buffer_handler = |ops: &mut FakeGblOps, sync_preloaded: bool| {
             assert!(!sync_preloaded);
             // Checks that this is called after images are loaded.
@@ -2257,7 +2254,7 @@ pub(crate) mod tests {
             BootStateColor::Green,
             'a',
             TEST_VENDOR_BOOTCONFIG,
-            TEST_BOOTCONFIG_FIXUP,
+            &format!("{TEST_BOOTCONFIG_FIXUP}\n"),
         );
         let expected_ramdisk = &[
             read_test_data("android/vendor_ramdisk_a.img"),

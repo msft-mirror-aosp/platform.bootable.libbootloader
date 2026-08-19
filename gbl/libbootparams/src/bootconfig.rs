@@ -82,10 +82,8 @@ impl<'a> BootConfigBuilder<'a> {
     /// config bytes. It should return the total size read if operation is successful or
     /// `Error::BufferTooSmall(Some(<minimum_buffer_size>))`. Attempting to return a size
     /// greater than the input will cause it to panic. Empty read is allowed. It's up to the caller
-    /// to make sure the read content will eventually form a valid boot config. The API is for
-    /// situations where configs are read from sources such as disk and separate buffer allocation
-    /// is not possible or desired.
-    pub fn add_raw_with<F>(&mut self, reader: F) -> Result<()>
+    /// to make sure the read content will eventually form a valid boot config.
+    fn add_raw_with<F>(&mut self, reader: F) -> Result<()>
     where
         F: FnOnce(&[u8], &mut [u8]) -> Result<usize>,
     {
@@ -103,14 +101,27 @@ impl<'a> BootConfigBuilder<'a> {
         res.and(self.update_trailer())
     }
 
-    /// Append a new config from string.
-    pub fn add_raw(&mut self, config: &str) -> Result<()> {
-        if self.remaining_capacity() < config.len() {
-            return Err(Error::BufferTooSmall(Some(config.len())));
-        }
-        self.add_raw_with(|_, out| {
-            out[..config.len()].clone_from_slice(config.as_bytes());
-            Ok(config.len())
+    /// Append raw config lines via a reader callback, ensuring newline termination.
+    ///
+    /// The callback reads config bytes into the provided remaining space (less one byte reserved
+    /// for the termination) and returns the size read. If the read content does not end with a
+    /// newline, one is appended, so that the parameters added next start on a new line. Empty
+    /// read adds nothing.
+    pub fn add_raw_lines_with<F>(&mut self, reader: F) -> Result<()>
+    where
+        F: FnOnce(&[u8], &mut [u8]) -> Result<usize>,
+    {
+        self.add_raw_with(|current, out| {
+            let reserved = out.len().saturating_sub(1);
+            let size = reader(current, &mut out[..reserved])?;
+            assert!(size <= reserved);
+            match out[..size].last() {
+                None | Some(b'\n') => Ok(size),
+                Some(_) => {
+                    out[size] = b'\n';
+                    Ok(size + 1)
+                }
+            }
         })
     }
 
@@ -304,27 +315,13 @@ androidboot.verifiedbootstate=orange
     fn test_add() {
         let mut buffer = [0u8; TEST_CONFIG.len() + TEST_CONFIG_TRAILER.len()];
         let mut builder = BootConfigBuilder::new(&mut buffer[..]).unwrap();
-        builder.add_raw(TEST_CONFIG).unwrap();
+        write!(builder, "{}", TEST_CONFIG).unwrap();
         assert_eq!(
             builder.config_bytes().to_vec(),
             [TEST_CONFIG.as_bytes(), TEST_CONFIG_TRAILER].concat().to_vec()
         );
 
         assert_eq!(extract_bootconfig(&buffer[..]).unwrap(), TEST_CONFIG);
-    }
-
-    #[test]
-    fn test_add_incremental() {
-        let mut buffer = [0u8; TEST_CONFIG.len() + TEST_CONFIG_TRAILER.len()];
-        let mut builder = BootConfigBuilder::new(&mut buffer[..]).unwrap();
-        for ele in TEST_CONFIG.strip_suffix('\n').unwrap().split('\n') {
-            let config = std::string::String::from(ele) + "\n";
-            builder.add_raw(config.as_str()).unwrap();
-        }
-        assert_eq!(
-            builder.config_bytes().to_vec(),
-            [TEST_CONFIG.as_bytes(), TEST_CONFIG_TRAILER].concat().to_vec()
-        );
     }
 
     #[test]
@@ -374,8 +371,56 @@ androidboot.verifiedbootstate=orange
         assert_eq!(extract_bootconfig(builder.config_bytes()).unwrap(), expected_config);
     }
 
+    fn add_lines(buffer: &mut [u8], chunk: &[u8]) -> Result<std::string::String> {
+        let mut builder = BootConfigBuilder::new(buffer).unwrap();
+        builder.add_raw_lines_with(|_, out| {
+            out.get_mut(..chunk.len())
+                .ok_or(Error::BufferTooSmall(Some(chunk.len())))?
+                .clone_from_slice(chunk);
+            Ok(chunk.len())
+        })?;
+        builder.add_item("androidboot.hardware", "cutf_cvm")?;
+        Ok(extract_bootconfig(builder.config_bytes()).unwrap().into())
+    }
+
     #[test]
-    fn test_add_incremental_via_fmt_write() {
+    fn test_add_raw_lines_with_appends_missing_newline() {
+        let mut buffer = [0u8; 1024];
+        assert_eq!(
+            add_lines(&mut buffer[..], b"androidboot.serialno=CUTTLEFISH").unwrap(),
+            "androidboot.serialno=CUTTLEFISH\nandroidboot.hardware=cutf_cvm\n"
+        );
+    }
+
+    #[test]
+    fn test_add_raw_lines_with_terminated_lines_unchanged() {
+        let mut buffer = [0u8; 1024];
+        assert_eq!(
+            add_lines(&mut buffer[..], b"androidboot.serialno=CUTTLEFISH\n").unwrap(),
+            "androidboot.serialno=CUTTLEFISH\nandroidboot.hardware=cutf_cvm\n"
+        );
+    }
+
+    #[test]
+    fn test_add_raw_lines_with_empty_read_adds_nothing() {
+        let mut buffer = [0u8; 1024];
+        assert_eq!(add_lines(&mut buffer[..], b"").unwrap(), "androidboot.hardware=cutf_cvm\n");
+    }
+
+    #[test]
+    fn test_add_raw_lines_with_reserves_newline_byte() {
+        // The remaining capacity fits the chunk exactly, but one byte is reserved, so the reader
+        // is offered one byte less and must report the shortage.
+        let chunk = b"androidboot.serialno=CUTTLEFISH";
+        let mut buffer = vec![0u8; chunk.len() + BOOTCONFIG_TRAILER_SIZE];
+        assert_eq!(
+            add_lines(&mut buffer[..], chunk),
+            Err(Error::BufferTooSmall(Some(chunk.len())))
+        );
+    }
+
+    #[test]
+    fn test_add_incremental() {
         let mut buffer = [0u8; TEST_CONFIG.len() + TEST_CONFIG_TRAILER.len()];
         let mut builder = BootConfigBuilder::new(&mut buffer[..]).unwrap();
         for ele in TEST_CONFIG.strip_suffix('\n').unwrap().split('\n') {
@@ -397,14 +442,14 @@ androidboot.verifiedbootstate=orange
     fn test_add_buffer_too_small() {
         let mut buffer = [0u8; BOOTCONFIG_TRAILER_SIZE + 1];
         let mut builder = BootConfigBuilder::new(&mut buffer[..]).unwrap();
-        assert!(builder.add_raw("a\n").is_err());
+        assert!(write!(builder, "a\n").is_err());
     }
 
     #[test]
     fn test_add_empty_string() {
         let mut buffer = [0u8; BOOTCONFIG_TRAILER_SIZE + 1];
         let mut builder = BootConfigBuilder::new(&mut buffer[..]).unwrap();
-        builder.add_raw("").unwrap();
+        write!(builder, "{}", "").unwrap();
     }
 
     #[test]
