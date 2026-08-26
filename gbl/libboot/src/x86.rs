@@ -69,6 +69,38 @@ const LOAD_FLAG_LOADED_HIGH: u8 = 0x1;
 #[cfg(target_arch = "x86_64")]
 const ENTRY_POINT_OFFSET: usize = 0x200;
 
+/// Selectors the 64-bit Linux boot protocol requires to be live on entry; see
+/// Documentation/arch/x86/boot.rst, "64-bit BOOT PROTOCOL".
+#[cfg(target_arch = "x86_64")]
+const BOOT_CS: u16 = 0x10;
+#[cfg(target_arch = "x86_64")]
+const BOOT_DS: u16 = 0x18;
+
+/// Operand of `lgdt`.
+#[cfg(target_arch = "x86_64")]
+#[repr(C, packed)]
+struct GdtDescriptor {
+    limit: u16,
+    base: u64,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[repr(align(8))]
+struct AlignedGdt([u64; 4]);
+
+/// Flat descriptors for [BOOT_CS] and [BOOT_DS].
+///
+/// A selector is a byte offset into the table, so [BOOT_CS] is entry 2 and [BOOT_DS] is entry 3.
+/// Entry 1 exists to place them there; it holds the 32-bit flat code descriptor that the kernel's
+/// own early GDT keeps in the same slot.
+#[cfg(target_arch = "x86_64")]
+static BOOT_GDT: AlignedGdt = AlignedGdt([
+    0,
+    0x00cf9a000000ffff, // 32-bit flat code.
+    0x00af9a000000ffff, // 64-bit flat code, BOOT_CS.
+    0x00cf92000000ffff, // Flat data, BOOT_DS.
+]);
+
 /// E820 RAM address range type.
 pub const E820_ADDRESS_TYPE_RAM: u32 = 1;
 /// E820 reserved address range type.
@@ -276,18 +308,39 @@ where
     bootparam_fixup.set_efi_info(efi_info);
     bootparam_fixup.0.e820_entries = num_entries;
 
-    // Clears stack pointers, interrupt and jumps to protected mode kernel.
+    // Establish the segment state the 64-bit boot protocol requires, then enter the kernel.
+    //
+    // A plain `jmp` would leave CS as whatever the firmware was using. The protocol requires
+    // entry through BOOT_CS, so push the selector and the target and reload CS with a far
+    // return; `.byte 0x48, 0xcb` is `rex.W retf`, which has no mnemonic in Rust's assembler.
+    //
     // SAFETY: By safety requirement of this function, input contains a valid linux kernel.
     unsafe {
+        let gdt_descriptor = GdtDescriptor {
+            limit: (size_of::<AlignedGdt>() - 1) as u16,
+            base: BOOT_GDT.0.as_ptr() as u64,
+        };
         asm!(
-            "xor ebp, ebp",
-            "xor esp, esp",
-            "cld",
+            // Mask interrupts before touching the GDT. UEFI runs boot services with interrupts
+            // enabled and ExitBootServices() does not clear IF, so an interrupt taken between
+            // the lgdt and the cli would be dispatched through the firmware IDT against a
+            // descriptor table that no longer holds the selectors it refers to.
             "cli",
-            "jmp {ep}",
-            ep = in(reg) LOAD_ADDR_HIGH + ENTRY_POINT_OFFSET,
+            "lgdt [rdx]",
+            "mov ax, {boot_ds}",
+            "mov ds, ax",
+            "mov es, ax",
+            "mov ss, ax",
+            "cld",
+            "push {boot_cs}",
+            "push rcx",
+            ".byte 0x48, 0xcb",
+            in("rdx") &gdt_descriptor,
+            in("rcx") LOAD_ADDR_HIGH + ENTRY_POINT_OFFSET,
             in("rsi") low_mem_addr,
-            options(noreturn)
+            boot_cs = const BOOT_CS,
+            boot_ds = const BOOT_DS,
+            options(noreturn),
         );
     }
 }
