@@ -256,31 +256,49 @@ pub fn android_load_verify_fixup<'a, 'b>(
 
     // Assembles DT in designated buffer if provided, otherwise allocates from `general` buffer.
     let fdt_load = designated_fdt.unwrap_or(aligned_subslice(remains, FDT_ALIGNMENT)?);
-    let mut fdt = Fdt::new_from_init(&mut fdt_load[..], selected.base_dt.dt)?;
+    let mut fdt = match &selected {
+        Some(selected) => {
+            let mut fdt = Fdt::new_from_init(&mut fdt_load[..], selected.base_dt.dt)?;
+            gbl_println!(ops, "Applying {} overlays", selected.overlays.len());
+            fdt.multioverlay_apply(selected.overlays.iter().map(|c| c.dt))?;
+            gbl_println!(ops, "Overlays applied");
+            fdt
+        }
+        // TODO(b/555762992): This is a stopgap that fakes an empty device tree so the existing
+        // fixup path still runs. Drop it once the proper no-device-tree boot flow lands.
+        #[cfg(target_arch = "x86_64")]
+        None => {
+            use crate::constants::KiB;
+            gbl_println!(ops, "WARNING: Booting with a synthesized empty device tree");
+            let sz = fdt_load.len().min(KiB!(64));
+            Fdt::new_empty(&mut fdt_load[..sz])?
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        None => unreachable!("fdt_select only returns None on x86_64"),
+    };
 
-    gbl_println!(ops, "Applying {} overlays", selected.overlays.len());
-    fdt.multioverlay_apply(selected.overlays.iter().map(|c| c.dt))?;
-    gbl_println!(ops, "Overlays applied");
+    let overlays = selected.as_ref().map_or(&[][..], |v| &v.overlays[..]);
+    let vmdtbo = selected.as_ref().and_then(|v| v.vmdtbo);
 
     // Builds the FDT commandline. Reserves 1024 bytes for separators and fixup.
     fdt_build_bootargs(
         ops,
         &mut fdt,
         &images,
-        selected.overlays.iter().map(|c| c.dt),
+        overlays.iter().map(|c| c.dt),
         boot_items.as_ref(),
         1024,
     )?;
 
     if let Some((reg, bin_sz)) = pvmfw.as_mut() {
-        let total_size = match selected.vmdtbo {
+        let total_size = match vmdtbo {
             Some(vmdtbo) => inject_vmdtbo(reg, *bin_sz, &kernel_attrs, vmdtbo.dt)?,
             None => reg.len(),
         };
         avf_fixup_host_dt(ops, &mut fdt, &reg[..total_size], *bin_sz, &verify_data)?;
     };
 
-    let selected_metadata = selected.into_metadata();
+    let selected_metadata = selected.map(|v| v.into_metadata());
 
     // Notifies platform to process loaded partitions before final bootconfig and FDT fixup, so
     // that backend can add fixup items that depend on certain partition data.
@@ -312,7 +330,7 @@ pub fn android_load_verify_fixup<'a, 'b>(
         loader.expand_bootconfig_buffer()?,
         bootconfig_sz,
         pvmfw.is_some(),
-        &selected_metadata,
+        selected_metadata.as_ref(),
         boot_items,
     )?;
     loader.set_bootconfig_size(bootconfig_sz);
@@ -489,48 +507,52 @@ fn add_firmware_version_metrics(
 /// * `buf`: Buffer containing an existing bootconfig.
 /// * `curr_bootconfig_sz`: The size including trailer of the existing bootconfig.
 /// * `avf_enabled`: Whether to write AVF-related bootconfig.
-/// * `selected_dt_metadata`: Metadata for selected device tree components.
+/// * `selected_dt_metadata`: Metadata for selected device tree components, or `None` if the boot
+///   images provided none and the device tree was synthesized.
 /// * `boot_items`: Fastboot boot items.
 fn finalize_bootconfig<'a, 'b, 'c>(
     ops: &mut impl GblOps<'b>,
     buf: &'a mut [u8],
     curr_bootconfig_sz: usize,
     avf_enabled: bool,
-    selected_dt_metadata: &SelectedDtComponentsMetadata,
+    selected_dt_metadata: Option<&SelectedDtComponentsMetadata>,
     boot_items: Option<BootItemContainer<'c>>,
 ) -> Result<usize> {
     let mut builder = BootConfigBuilder::from_prefix_unchecked(buf, curr_bootconfig_sz)?;
 
     if avf_enabled {
-        avf_update_bootconfig(ops, &mut builder, selected_dt_metadata.vmdtbo.as_ref())?;
+        let vmdtbo = selected_dt_metadata.and_then(|v| v.vmdtbo.as_ref());
+        avf_update_bootconfig(ops, &mut builder, vmdtbo)?;
     }
 
-    match &selected_dt_metadata.base_dt.location {
-        DtSourceLocation::DtIndex(source_index) => {
-            builder.add_item("androidboot.dtb_idx", source_index)?;
-            builder.add_item("androidboot.dtb_source", selected_dt_metadata.base_dt.source)?;
+    if let Some(selected_dt_metadata) = selected_dt_metadata {
+        match &selected_dt_metadata.base_dt.location {
+            DtSourceLocation::DtIndex(source_index) => {
+                builder.add_item("androidboot.dtb_idx", source_index)?;
+                builder.add_item("androidboot.dtb_source", selected_dt_metadata.base_dt.source)?;
+            }
+            DtSourceLocation::FitConfigOffset(config_offset) => {
+                builder.add_item("androidboot.fit_source", selected_dt_metadata.base_dt.source)?;
+                builder.add_item("androidboot.fit_configuration_offset", config_offset)?;
+            }
         }
-        DtSourceLocation::FitConfigOffset(config_offset) => {
-            builder.add_item("androidboot.fit_source", selected_dt_metadata.base_dt.source)?;
-            builder.add_item("androidboot.fit_configuration_offset", config_offset)?;
-        }
+
+        builder.add_array(
+            "androidboot.dtbo_idx",
+            selected_dt_metadata.overlays.iter().filter_map(|m| match m.location {
+                DtSourceLocation::DtIndex(source_index) => Some(source_index),
+                DtSourceLocation::FitConfigOffset(_) => None,
+            }),
+        )?;
+
+        builder.add_array(
+            "androidboot.dtbo_source",
+            selected_dt_metadata.overlays.iter().filter_map(|m| match m.location {
+                DtSourceLocation::DtIndex(_source_index) => Some(m.source),
+                DtSourceLocation::FitConfigOffset(_) => None,
+            }),
+        )?;
     }
-
-    builder.add_array(
-        "androidboot.dtbo_idx",
-        selected_dt_metadata.overlays.iter().filter_map(|m| match m.location {
-            DtSourceLocation::DtIndex(source_index) => Some(source_index),
-            DtSourceLocation::FitConfigOffset(_) => None,
-        }),
-    )?;
-
-    builder.add_array(
-        "androidboot.dtbo_source",
-        selected_dt_metadata.overlays.iter().filter_map(|m| match m.location {
-            DtSourceLocation::DtIndex(_source_index) => Some(m.source),
-            DtSourceLocation::FitConfigOffset(_) => None,
-        }),
-    )?;
 
     if let Some(ref v) = boot_items {
         for val in v.utf8_items(BootItem::Bootconfig) {
