@@ -874,8 +874,7 @@ where
                     self.tasks.borrow_mut().add_with(|| (self.task_mapper)(take(task)));
                 }
                 self.tasks.borrow_mut().poll_all();
-                let info =
-                    "An async task is launched. To sync manually, run \"oem gbl-sync-tasks\".";
+                let info = "Launched async task. Run \"oem gbl-sync-tasks\" to sync.";
                 responder.send_info(info).await?
             }
             _ => task.run_checked().await?,
@@ -3971,7 +3970,7 @@ pub(crate) mod test {
                 b"OKAY",
                 b"DATA00001000",
                 b"OKAY",
-                b"INFOAn async task is launched. To sync manually, run \"oem gbl-sync-tasks\".",
+                b"INFOLaunched async task. Run \"oem gbl-sync-tasks\" to sync.",
                 b"OKAY",
             ]),
             "\nActual Transport output:\n{}",
@@ -3983,7 +3982,7 @@ pub(crate) mod test {
             make_expected_tcp_out(&[
                 b"DATA00002000",
                 b"OKAY",
-                b"INFOAn async task is launched. To sync manually, run \"oem gbl-sync-tasks\".",
+                b"INFOLaunched async task. Run \"oem gbl-sync-tasks\" to sync.",
                 b"OKAY",
             ]),
             "\nActual TCP output:\n{}",
@@ -4976,7 +4975,7 @@ pub(crate) mod test {
                 b"OKAY",
                 b"DATA00000fe0",
                 b"OKAY",
-                b"INFOAn async task is launched. To sync manually, run \"oem gbl-sync-tasks\".",
+                b"INFOLaunched async task. Run \"oem gbl-sync-tasks\" to sync.",
                 b"OKAY",
                 b"OKAY",
                 b"OKAY",
