@@ -175,13 +175,9 @@ pub(crate) fn fdt_build_bootargs<'a, 'b>(
 
     fdt_append_bootargs(ops, fdt, bootargs_to_append)?;
 
-    // Disable EFI runtime services support.
-    #[cfg(feature = "efi_boot_stub")]
-    fdt_append_bootargs(
-        ops,
-        fdt,
-        if cfg!(feature = "gbl_dev") { ["efi=noruntime,debug"] } else { ["efi=noruntime"] },
-    )?;
+    // Show debug messages related to EFI.
+    #[cfg(all(feature = "efi_boot_stub", feature = "gbl_dev"))]
+    fdt_append_bootargs(ops, fdt, ["efi=debug"])?;
 
     // Appends `/chosen/bootargs_ext` to `/chosen/bootargs` after overlays are applied:
     // https://source.android.com/docs/core/architecture/dto/optimize#kernel
