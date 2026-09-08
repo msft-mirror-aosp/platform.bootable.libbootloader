@@ -186,6 +186,11 @@ impl<'a> DtComponentsRegistry<'a> {
         DtComponentsRegistry { components: Vec::new() }
     }
 
+    /// Returns whether no device tree component has been loaded.
+    pub fn is_empty(&self) -> bool {
+        self.components.is_empty()
+    }
+
     fn component_type(
         component_source: DtComponentSource,
         dt_entry: &DtTableEntry,
@@ -464,6 +469,26 @@ impl<'a> DtComponentsRegistry<'a> {
 pub(crate) mod test {
     use super::*;
     use crate::ops::test::FakeGblOps;
+
+    #[test]
+    fn test_components_registry_is_empty() {
+        let dt = include_bytes!("../../libfdt/test/data/base.dtb").to_vec();
+        let mut buffer = vec![0u8; 2 * 1024 * 1024]; // 2 MB
+        let mut gbl_ops = FakeGblOps::new(&[]);
+        let mut registry = DtComponentsRegistry::new();
+        assert!(registry.is_empty());
+
+        registry
+            .append(
+                &mut gbl_ops,
+                DtComponentSource::Boot,
+                DtComponentType::BaseDt,
+                &dt[..],
+                &mut buffer,
+            )
+            .unwrap();
+        assert!(!registry.is_empty());
+    }
 
     #[test]
     fn test_components_registry_empty() {

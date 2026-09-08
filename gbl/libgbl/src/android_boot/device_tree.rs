@@ -39,14 +39,15 @@ pub(crate) fn fdt_select<'b, 'a: 'b, 'c: 'b>(
     ops: &mut impl GblOps<'a>,
     images: &LoadedImages<'b>,
     buffer: &'c mut [u8],
-) -> Result<(SelectedDtComponents<'b>, &'c mut [u8])> {
+) -> Result<(Option<SelectedDtComponents<'b>>, &'c mut [u8])> {
     // TODO(b/385690995): Track FIT usage in metrics.
 
     // Detect FIT in DTBO partition
     if images.dtbo.len() > 0 {
         if let Ok(fit) = Fit::from_bytes(images.dtbo) {
             gbl_println!(ops, "FIT image detected in DTBO partition");
-            return get_fit_selected_devicetree(ops, fit, buffer);
+            return get_fit_selected_devicetree(ops, fit, buffer)
+                .map(|(selected, remains)| (Some(selected), remains));
         }
     }
     fdt_select_from_boot_partitions(ops, images, buffer)
@@ -96,7 +97,7 @@ pub fn fdt_select_from_boot_partitions<'b, 'a: 'b, 'c: 'b>(
     ops: &mut impl GblOps<'a>,
     images: &LoadedImages<'b>,
     buffer: &'c mut [u8],
-) -> Result<(SelectedDtComponents<'b>, &'c mut [u8])> {
+) -> Result<(Option<SelectedDtComponents<'b>>, &'c mut [u8])> {
     let mut components = DtComponentsRegistry::new();
 
     let mut remains = match images.dtbo.len() > 0 {
@@ -133,10 +134,17 @@ pub fn fdt_select_from_boot_partitions<'b, 'a: 'b, 'c: 'b>(
         remains = components.append_from_dttable(DtComponentSource::Dtb, &dttable, remains)?;
     }
 
+    // Only x86_64 boots a kernel that ignores the device tree, so only there may an empty set skip
+    // selection; elsewhere it falls through to autoselection and fails, as it must.
+    #[cfg(target_arch = "x86_64")]
+    if components.is_empty() {
+        return Ok((None, remains));
+    }
+
     gbl_println!(ops, "Selecting device tree components");
     ops.select_device_trees(&mut components)?;
 
-    Ok((components.into_selected()?, remains))
+    Ok((Some(components.into_selected()?), remains))
 }
 
 /// Device tree bootargs property to store kernel command line.
