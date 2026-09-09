@@ -2583,7 +2583,7 @@ pub(crate) mod tests {
 
         assert_eq!(
             listener.transport_out_queue(),
-            make_expected_transport_out(&[b"OKAY0x7fffffff", b"OKAY",]),
+            make_expected_transport_out(&[b"OKAY0x20000000", b"OKAY",]),
             "\nActual Transport output:\n{}",
             listener.dump_transport_out_queue()
         );
@@ -2653,7 +2653,7 @@ pub(crate) mod tests {
 
         assert_eq!(
             listener.transport_out_queue(),
-            make_expected_transport_out(&[b"OKAY0x7fffffff", b"OKAY",]),
+            make_expected_transport_out(&[b"OKAY0x20000000", b"OKAY",]),
             "\nActual Transport output:\n{}",
             listener.dump_transport_out_queue()
         );
