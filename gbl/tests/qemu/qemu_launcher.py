@@ -79,6 +79,22 @@ def parse_args() -> argparse.Namespace:
   return parser.parse_args()
 
 
+def wait_for_file(
+    path: pathlib.Path, proc: subprocess.Popen = None, timeout: float = 5.0
+):
+  """Wait for a file (e.g. Unix domain socket) to exist on disk."""
+  end_time = time.time() + timeout
+  while time.time() < end_time:
+    if path.exists():
+      return
+    if proc is not None and proc.poll() is not None:
+      raise RuntimeError(
+          f"Process exited with code {proc.returncode} while waiting for {path}"
+      )
+    time.sleep(0.01)
+  raise TimeoutError(f"Timed out waiting for {path} to be created")
+
+
 def launch_qemu(args):
   qemu = os.path.abspath(args.qemu)
   bios = os.path.abspath(args.bios)
@@ -114,7 +130,6 @@ def launch_qemu(args):
       dest_path.parent.mkdir(parents=True, exist_ok=True)
       os.symlink(os.path.abspath(src_path), dest_path)
 
-    # Starts vhost device vsock bridge first. Otherwise QEMU will fail to start.
     socket_path = test_dir / "vsock-guest.sock"
     uds_path = test_dir / "vsock-host.sock"
 
@@ -134,18 +149,9 @@ def launch_qemu(args):
       env["TEST_UNDECLARED_OUTPUTS_DIR"] = str(artifacts_dir)
     env["TEST_ARTIFACTS_OUT"] = args.artifacts_output
 
-    if args.vhost_device_vsock:
-      vhost_proc = subprocess.Popen(
-          [
-              os.path.abspath(args.vhost_device_vsock),
-              "--vm",
-              f"guest-cid=3,socket={socket_path},uds-path={uds_path}",
-          ],
-          stderr=subprocess.STDOUT,
-          cwd=test_dir,
-          env=env,
-      )
-
+    vhost_proc = None
+    qemu_proc = None
+    failed = False
     try:
       cmd_args = [qemu, "-nographic", "-cpu", "max"]
       cmd_args += [
@@ -175,6 +181,8 @@ def launch_qemu(args):
             f"file={disk_path},format=raw,if=none,id={drive_id}",
         ]
         cmd_args += ["-device", f"virtio-blk-device,drive={drive_id}"]
+
+      con_in_sock_path = test_dir / "con_in.sock"
       # Re-direct all sources of serial log to a log file
       cmd_args += ["-serial", "chardev:console"]
       cmd_args += ["-monitor", "chardev:console"]
@@ -182,7 +190,7 @@ def launch_qemu(args):
       cmd_args += ["-semihosting-config", "chardev=console"]
       cmd_args += [
           "-chardev",
-          "socket,id=console,path=con_in.sock,server=on,wait=off,mux=on,logfile=console.log",
+          f"socket,id=console,path={con_in_sock_path},server=on,wait=off,mux=on,logfile=console.log",
       ]
       # userspace vsock interface
       if args.vhost_device_vsock:
@@ -192,8 +200,8 @@ def launch_qemu(args):
         ]
         cmd_args += ["-device", "vhost-user-vsock-pci,chardev=char0"]
 
+      gdb_sock_path = test_dir / "gdb.sock"
       if args.gdb:
-        gdb_sock_path = test_dir / "gdb.sock"
         env["GBL_GDB_SOCKET"] = str(gdb_sock_path)
         # Configure GDB server over Unix socket and pause CPU at startup (-S)
         cmd_args += [
@@ -202,7 +210,25 @@ def launch_qemu(args):
             "-S",
         ]
 
-      # Generate FDT
+      def start_vhost():
+        proc = subprocess.Popen(
+            [
+                os.path.abspath(args.vhost_device_vsock),
+                "--vm",
+                f"guest-cid=3,socket={socket_path},uds-path={uds_path}",
+            ],
+            stderr=subprocess.STDOUT,
+            cwd=test_dir,
+            env=env,
+        )
+        wait_for_file(socket_path, proc)
+        wait_for_file(uds_path, proc)
+        return proc
+
+      if args.vhost_device_vsock:
+        vhost_proc = start_vhost()
+
+      # Generate FDT with the full QEMU arguments.
       subprocess.run(
           cmd_args + ["-machine", "virt,dumpdtb=fdt.dtb,memory-backend=mem"],
           check=True,
@@ -211,15 +237,29 @@ def launch_qemu(args):
           env=env,
       )
 
+      # Restart vhost-device-vsock and clean up any sockets created during
+      # dumpdtb so that the real QEMU run starts with a clean, ready socket set.
+      if vhost_proc is not None:
+        vhost_proc.terminate()
+        vhost_proc.wait()
+        vhost_proc = None
+      for sock in (socket_path, uds_path, con_in_sock_path, gdb_sock_path):
+        sock.unlink(missing_ok=True)
+      if args.vhost_device_vsock:
+        vhost_proc = start_vhost()
+
       qemu_end_time = time.time() + args.timeout
       # Launch QEMU
-      failed = False
       qemu_proc = subprocess.Popen(
           cmd_args + ["-machine", "virt,memory-backend=mem"],
           stderr=subprocess.STDOUT,
           cwd=test_dir,
           env=env,
       )
+
+      wait_for_file(con_in_sock_path, qemu_proc)
+      if args.gdb:
+        wait_for_file(gdb_sock_path, qemu_proc)
 
       # Run test script if provided
       #
@@ -250,11 +290,12 @@ def launch_qemu(args):
       print(f"QEMU error: {e}")
       raise
     finally:
-      if args.vhost_device_vsock:
+      if vhost_proc is not None:
         vhost_proc.terminate()
         vhost_proc.wait()
-      qemu_proc.terminate()
-      qemu_proc.wait()
+      if qemu_proc is not None:
+        qemu_proc.terminate()
+        qemu_proc.wait()
       if args.log_output:
         with open(args.log_output, "w") as outfile:
           outfile.write(f"=== Test Name: {args.test_name} ===\n\n")
