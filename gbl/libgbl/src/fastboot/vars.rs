@@ -51,7 +51,10 @@ const HAS_SLOT: &'static str = "has-slot";
 const MAX_FETCH_SIZE: &'static str = "max-fetch-size";
 // Limited by DATA message which only allows 8 hex digits.
 // Additionally fastboot upstream parses this value as int, so we only have 31 bits.
-const MAX_FETCH_SIZE_VAL: &'static str = "0x7fffffff";
+// Defensively capped to 512 MiB (block-aligned) to avoid scratch buffer copying
+// in libstorage, provide regular progress reporting during `fastboot fetch`, and
+// guard against buggy firmware that misreports IoAlign.
+const MAX_FETCH_SIZE_VAL: &'static str = "0x20000000";
 
 const PARTITION_SIZE: &'static str = "partition-size";
 const PARTITION_TYPE: &'static str = "partition-type";
