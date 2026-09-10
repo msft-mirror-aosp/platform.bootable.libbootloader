@@ -32,7 +32,16 @@ rust_library(
         "@gbl//liberror",
         "@gbl//libsafemath",
         "@static_assertions",
-    ],
+        "@zeroize",
+    ] + select({
+        "@gbl//toolchain:gbl_rust_uefi_aarch64": [
+            "@gbl//libboot/aarch64_cache_helper:aarch64_cache_helper_staticlib",
+        ],
+        "@gbl//toolchain:gbl_rust_uefi_aarch64_debug": [
+            "@gbl//libboot/aarch64_cache_helper:aarch64_cache_helper_staticlib",
+        ],
+        "//conditions:default": [],
+    }),
 )
 
 rust_library(

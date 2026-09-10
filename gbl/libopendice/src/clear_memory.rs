@@ -26,6 +26,7 @@ mod aarch64 {
         fn flush_dcache_range(addr: usize, len: usize);
     }
 
+    // TODO: Deduplicate `flush_dcache_buffer` across libboot, libopendice, and libutils.
     /// Flush all data cache for the given buffer.
     #[inline]
     pub fn flush_dcache_buffer(buf: &[u8]) {

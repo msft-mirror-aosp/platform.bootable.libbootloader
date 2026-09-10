@@ -29,6 +29,13 @@ pub mod shared;
 /// Generic constants and associated helper functions and macros.
 pub mod constants;
 
+/// RAII guard for zeroizing memory on drop.
+pub mod zeroize_guard;
+pub use zeroize_guard::ZeroizeGuard;
+
+#[cfg(target_arch = "aarch64")]
+pub mod aarch64;
+
 /// Returns the largest aligned subslice.
 ///
 /// This function drops as many bytes as needed from the front of the given slice to ensure the

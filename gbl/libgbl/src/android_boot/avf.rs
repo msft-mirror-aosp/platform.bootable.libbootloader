@@ -33,6 +33,7 @@ use core::{
 use dttable::DtTableImage;
 use fdt::{fdt_encode_cell_sized_property, fdt_ensure_reserved_memory_initialized, std_props, Fdt};
 use liberror::{Error, Result};
+use libutils::ZeroizeGuard;
 use opendice::{
     dice::{Config, DiceMode, InputValues, HASH_SIZE, HIDDEN_SIZE},
     dice_android_format_config_descriptor, dice_android_handover_main_flow, DiceAndroidConfig,
@@ -250,6 +251,7 @@ pub(crate) fn build_pvmfw_data_region<'a, T: AVFVerificationData>(
     dtbo_partition: &[u8],
 ) -> Result<usize> {
     check_alignment(output_buffer, kernel_attrs.page_size)?;
+    let mut output_buffer = ZeroizeGuard::new(output_buffer);
     // Split the pvmfw region into binary and configuration buffers
     let pvmfw_bin_size = pvmfw_binary.len();
     let (binary, config) = output_buffer
@@ -273,6 +275,7 @@ pub(crate) fn build_pvmfw_data_region<'a, T: AVFVerificationData>(
         .get_mut(used_size..total_size)
         .ok_or(Error::BufferTooSmall(Some(total_size)))?;
     padding.fill(0u8);
+    output_buffer.defuse();
 
     gbl_println!(ops, "AVF: init successful");
     Ok(total_size)
@@ -657,6 +660,7 @@ fn pvmfw_build_dice_handover<'a, 'b, T: AVFVerificationData>(
     boot_info: &BootInfo<T>,
     scratch_buffer: &mut [u8],
 ) -> Result<(usize, usize, &'b mut [u8])> {
+    let mut scratch_buffer = ZeroizeGuard::new(scratch_buffer);
     const MAX_CONFIG_SIZE: usize = 64; // Enough for our config descriptor
     let (conf_desc_buffer, vendor_handover_buffer) = scratch_buffer
         .split_at_mut_checked(MAX_CONFIG_SIZE)
@@ -994,6 +998,53 @@ pub(crate) mod test {
             entries: expected_entries,
         };
         assert_eq!(header, &expected_header);
+        assert!(scratch_buffer.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_scratch_buffer_zeroized_on_pvmfw_config_failure() {
+        let mut buf = AlignedBuffer::new(2000, PVMFW_DATA_ALIGNMENT);
+        let storage = FakeGblOpsStorage::default();
+        let mut ops = FakeGblOps::new(&storage);
+        ops.avf_is_supported = true;
+        // Empty vendor handover triggers an error
+        ops.avf_vendor_dice_handover = Some(&[]);
+        let testdigest = TestVerifyData::new(Some([1, 2, 3, 4, 5]), Some(0));
+        let boot_info = BootInfo::new(false, false, BootStateColor::Green, &testdigest);
+        let mut scratch_buffer = [0xAAu8; 256];
+
+        let res = write_pvmfw_config(&mut ops, &mut buf, &mut scratch_buffer, &boot_info);
+        assert!(res.is_err());
+        assert!(scratch_buffer.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_output_buffer_zeroized_on_build_pvmfw_data_region_failure() {
+        const BIN_SIZE: usize = 0xc00;
+        let attrs = KernelAttributes { reserved_size: 0, page_size: 4 * KiB!(1) };
+        let mut out_pvmfw_buf = AlignedBuffer::new(0x100000, attrs.page_size);
+        out_pvmfw_buf.fill(0x55);
+
+        let storage = FakeGblOpsStorage::default();
+        let mut ops = FakeGblOps::new(&storage);
+        ops.avf_is_supported = true;
+        ops.avb_ops.unlock_state = Ok(true);
+        ops.avb_ops.rollbacks.insert(0, Ok(1));
+        ops.avf_vendor_dice_handover = Some(&DUMMY_VENDOR_HANDOVER[..]);
+        let testdigest = TestVerifyData::new(Some([1, 2, 3, 4, 5]), Some(0));
+        let boot_info = BootInfo::new(false, false, BootStateColor::Green, &testdigest);
+        // An invalid non-empty dtbo partition triggers an error
+        let bad_dtbo = [0xFFu8; 32];
+        let res = build_pvmfw_data_region(
+            &mut ops,
+            &mut out_pvmfw_buf,
+            &dummy_pvmfw_binary(0xAB, BIN_SIZE),
+            &attrs,
+            &boot_info,
+            &bad_dtbo,
+        );
+        assert!(res.is_err());
+        assert!(out_pvmfw_buf.iter().all(|&b| b == 0));
     }
 
     #[test]

@@ -58,6 +58,7 @@ extern "C" {
     fn dcsw_op_all(op: usize);
 }
 
+// TODO: Deduplicate `flush_dcache_buffer` across libboot, libopendice, and libutils.
 /// Flush all data cache for the given buffer.
 fn flush_dcache_buffer(buf: &[u8]) {
     unsafe { flush_dcache_range(buf.as_ptr() as usize, buf.len()) }
