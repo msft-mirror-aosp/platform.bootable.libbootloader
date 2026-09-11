@@ -70,12 +70,60 @@ pub fn efi_android_boot(
         use fdt::Fdt;
         use liberror::Error;
         use libgbl::android_boot::device_tree::PROP_BOOTARGS;
+        use safemath::SafeNum;
 
         const EFI_PAGE_SIZE: u64 = efi_types::EFI_PAGE_SIZE as u64;
 
         let fdt = Fdt::new(&fdt[..])?;
         let systab_addr = entry.system_table().as_ptr() as usize;
-        let efi_mmap = efi::exit_boot_services(entry, remains)?;
+
+        // Back the EFI memory map handed to Linux with firmware-reserved memory.
+        //
+        // `remains` is bootloader-owned reclaimable RAM. It appears in the map as EfiLoaderData
+        // and is therefore reported to Linux as usable E820, so the kernel reuses it for early
+        // allocations before efi_init() parses the map. The map is corrupted by the time it is
+        // read, and the fault lands before any console is registered. Pages typed
+        // EfiACPIReclaimMemory map to E820 ACPI, which neither the kernel nor its decompressor
+        // allocates from, so the map survives until it is consumed. The Linux EFI stub uses
+        // the same type. Allocate before the final
+        // GetMemoryMap() so the map it returns already describes this buffer as reserved.
+        // Query the required capacity instead of sizing from a possibly compacted map.
+        // Allocating the buffer changes the map, so add one page of headroom.
+        let _ = remains;
+
+        let mmap_buffer = {
+            const MMAP_HEADROOM_PAGES: u64 = 1;
+            let bs = entry.system_table().boot_services();
+            let required = SafeNum::from(bs.memory_map_size()?);
+            let pages = (required + (EFI_PAGE_SIZE - 1)) / EFI_PAGE_SIZE + MMAP_HEADROOM_PAGES;
+            let mmap_pages = usize::try_from(pages).map_err(Error::ArithmeticOverflow)?;
+            let len = usize::try_from(pages * EFI_PAGE_SIZE).map_err(Error::ArithmeticOverflow)?;
+            if isize::try_from(len).is_err() {
+                return Err(Error::InvalidInput.into());
+            }
+
+            let ptr = bs.allocate_pages(
+                efi_types::EFI_MEMORY_TYPE_ACPIRECLAIM_MEMORY,
+                efi::AllocationAddress::Any,
+                mmap_pages,
+            )? as *mut u8;
+            // A conforming AllocatePages() cannot return null on success, but nothing in the
+            // type system says so and a null slice would be undefined behavior.
+            if ptr.is_null() {
+                return Err(Error::InvalidState.into());
+            }
+            // SAFETY:
+            // * `allocate_pages` returned `mmap_pages` contiguous pages owned by this code.
+            // * `len` is those pages in bytes, computed with checked arithmetic and checked
+            //   above to fit in `isize`.
+            // * `write_bytes` initializes every byte before the slice is created.
+            // * Nothing else aliases the allocation until the kernel consumes the map.
+            unsafe {
+                core::ptr::write_bytes(ptr, 0, len);
+                core::slice::from_raw_parts_mut(ptr, len)
+            }
+        };
+        let efi_mmap = efi::exit_boot_services(entry, mmap_buffer)?;
         // SAFETY: We currently target at Cuttlefish emulator where images are provided valid.
         unsafe {
             boot::x86::boot_linux_bzimage(
