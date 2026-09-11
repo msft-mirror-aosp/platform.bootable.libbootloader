@@ -608,6 +608,8 @@ impl<'a> BootServices<'a> {
     }
 
     /// Wrapper of `EFI_BOOT_SERVICES.GetMemoryMap()`.
+    ///
+    /// On `EFI_BUFFER_TOO_SMALL`, returns the required size in [`Error::BufferTooSmall`].
     pub fn get_memory_map<'b>(&self, mmap_buffer: &'b mut [u8]) -> Result<EfiMemoryMap<'b>> {
         let mut mmap_size = mmap_buffer.len();
         let mut map_key: usize = 0;
@@ -616,6 +618,7 @@ impl<'a> BootServices<'a> {
         // SAFETY: EFI_BOOT_SERVICES method call.
         unsafe {
             efi_call!(
+                @bufsize mmap_size,
                 self.boot_services.get_memory_map,
                 &mut mmap_size,
                 mmap_buffer.as_mut_ptr() as *mut _,
@@ -630,6 +633,21 @@ impl<'a> BootServices<'a> {
             descriptor_size,
             descriptor_version,
         ))
+    }
+
+    /// Returns the buffer size `EFI_BOOT_SERVICES.GetMemoryMap()` currently requires.
+    ///
+    /// Use this rather than measuring a successful call. A successful call reports the map as
+    /// written, and firmware that compacts its OS-facing map writes fewer bytes than the next
+    /// call will demand. A subsequent allocation can increase this size, so callers must add
+    /// headroom.
+    pub fn memory_map_size(&self) -> Result<usize> {
+        match self.get_memory_map(&mut []) {
+            Err(Error::BufferTooSmall(Some(size))) => Ok(size),
+            // No conforming implementation claims a map fits in nothing.
+            Ok(_) => Err(Error::InvalidState),
+            Err(e) => Err(e),
+        }
     }
 
     /// Wrapper of `EFI_BOOT_SERVICES.InstallConfigurationTable()`.
@@ -1829,6 +1847,8 @@ mod test {
         pub inputs: VecDeque<(usize, *mut EfiMemoryDescriptor)>,
         // Output value `map_key`, `memory_map_size`.
         pub outputs: VecDeque<(usize, usize)>,
+        // Status to return, one per call. `EFI_STATUS_SUCCESS` once exhausted.
+        pub statuses: VecDeque<EfiStatus>,
     }
 
     /// Mock of the `EFI_BOOT_SERVICE.GetMemoryMap` C API in test environment.
@@ -1847,11 +1867,13 @@ mod test {
         EFI_CALL_TRACES.with(|traces| {
             let trace = &mut traces.borrow_mut().get_memory_map_trace;
             trace.inputs.push_back((unsafe { *memory_map_size }, memory_map));
+            let status = trace.statuses.pop_front().unwrap_or(EFI_STATUS_SUCCESS);
+            // On EFI_BUFFER_TOO_SMALL the size written is the capacity the firmware needs.
             // SAFETY: function safety docs require valid `memory_map_size`and `map_key`.
             unsafe { (*map_key, *memory_map_size) = trace.outputs.pop_front().unwrap() };
             // SAFETY: function safety docs require valid `desc_size`.
             unsafe { *desc_size = size_of::<EfiMemoryDescriptor>() };
-            EFI_STATUS_SUCCESS
+            status
         })
     }
 
@@ -2400,6 +2422,70 @@ mod test {
             assert_eq!(desc.into_iter().map(|v| *v).collect::<Vec<_>>(), descriptors[..1].to_vec());
             // Validate that the returned `EfiMemoryMap` has the correct map_key.
             assert_eq!(desc.map_key(), map_key);
+        })
+    }
+
+    #[test]
+    fn test_get_memory_map_preserves_required_size() {
+        run_test(|image_handle, systab_ptr| {
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+            const REQUIRED: usize = 4 * size_of::<EfiMemoryDescriptor>();
+            EFI_CALL_TRACES.with(|traces| {
+                let mut t = traces.borrow_mut();
+                t.get_memory_map_trace.statuses = VecDeque::from([EFI_STATUS_BUFFER_TOO_SMALL]);
+                t.get_memory_map_trace.outputs = VecDeque::from([(0, REQUIRED)]);
+            });
+
+            let mut small = [0u8; size_of::<EfiMemoryDescriptor>()];
+            assert_eq!(
+                efi_entry
+                    .system_table()
+                    .boot_services()
+                    .get_memory_map(&mut small[..])
+                    .unwrap_err(),
+                Error::BufferTooSmall(Some(REQUIRED)),
+            );
+        })
+    }
+
+    #[test]
+    fn test_memory_map_size_reports_firmware_capacity() {
+        run_test(|image_handle, systab_ptr| {
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+            const REQUIRED: usize = 7 * size_of::<EfiMemoryDescriptor>();
+            EFI_CALL_TRACES.with(|traces| {
+                let mut t = traces.borrow_mut();
+                t.get_memory_map_trace.statuses = VecDeque::from([EFI_STATUS_BUFFER_TOO_SMALL]);
+                t.get_memory_map_trace.outputs = VecDeque::from([(0, REQUIRED)]);
+            });
+
+            let bs = efi_entry.system_table().boot_services();
+            assert_eq!(bs.memory_map_size(), Ok(REQUIRED));
+            EFI_CALL_TRACES.with(|traces| {
+                assert_eq!(traces.borrow().get_memory_map_trace.inputs.len(), 1);
+                assert_eq!(traces.borrow().get_memory_map_trace.inputs[0].0, 0);
+            });
+        })
+    }
+
+    #[test]
+    fn test_exit_boot_services_not_called_without_fresh_map() {
+        run_test(|image_handle, systab_ptr| {
+            let efi_entry = EfiEntry { image_handle, systab_ptr };
+            EFI_CALL_TRACES.with(|traces| {
+                let mut t = traces.borrow_mut();
+                t.get_memory_map_trace.statuses = VecDeque::from([EFI_STATUS_BUFFER_TOO_SMALL]);
+                t.get_memory_map_trace.outputs =
+                    VecDeque::from([(0, 8 * size_of::<EfiMemoryDescriptor>())]);
+            });
+
+            let mut buffer = vec![0u8; size_of::<EfiMemoryDescriptor>()];
+            assert!(super::exit_boot_services(efi_entry, &mut buffer[..]).is_err());
+            // A stale or absent map key would corrupt the handoff, so ExitBootServices must not
+            // be reached.
+            EFI_CALL_TRACES.with(|traces| {
+                assert!(traces.borrow().exit_boot_services_trace.inputs.is_empty());
+            });
         })
     }
 
