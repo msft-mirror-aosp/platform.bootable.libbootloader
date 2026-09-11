@@ -142,6 +142,8 @@ def _skip_license_check(target):
         # rules_cc+ is Apache 2, same as GBL.
         ("rules_cc+", "", "empty_lib"),
         ("rules_cc+", "", "link_extra_lib"),
+        # rules_rust+ is Apache 2, same as GBL.
+        ("rules_rust+", "ffi/rs", "empty_allocator_libraries"),
     ]:
         if (label.repo_name, label.package, label.name) == repo_package_name:
             return True
