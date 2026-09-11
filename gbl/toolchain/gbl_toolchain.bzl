@@ -27,6 +27,7 @@ load(
 )
 load("@gbl_llvm_prebuilts//:info.bzl", "LLVM_PREBUILTS_C_INCLUDE", "gbl_llvm_tool_path")
 load("@rules_cc//cc:action_names.bzl", "ACTION_NAMES", "ALL_CPP_COMPILE_ACTION_NAMES")
+load("@rules_cc//cc:defs.bzl", "CcToolchainConfigInfo")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
 load("@rules_cc//cc/toolchains:cc_toolchain.bzl", "cc_toolchain")
