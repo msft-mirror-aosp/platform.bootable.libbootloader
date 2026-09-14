@@ -174,7 +174,7 @@ gbl_rust_crate_repository(
 gbl_rust_crate_repository(
     name = "clap",
     compile_data = ["examples/demo.md"],
-    features = [
+    crate_features = [
         "derive",
         "error-context",
         "help",
@@ -189,7 +189,7 @@ gbl_rust_crate_repository(
 gbl_rust_crate_repository(
     name = "clap_builder",
     compile_data = ["README.md"],
-    features = [
+    crate_features = [
         "error-context",
         "help",
         "std",
@@ -225,7 +225,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "config",
-    features = [
+    crate_features = [
         "json",
         "serde_json",
         "toml",
@@ -255,7 +255,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "downcast",
-    features = [
+    crate_features = [
         "default",
         "std",
     ],
@@ -264,7 +264,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "either",
-    features = [
+    crate_features = [
         "default",
         "use_std",
     ],
@@ -273,14 +273,14 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "either_noalloc",
+    crate_features = [],
     crate_name = "either",
-    features = [],
     path = "external/rust/android-crates-io/crates/either",
 )
 
 gbl_rust_crate_repository(
     name = "env_filter",
-    features = ["std"],
+    crate_features = ["std"],
     path = "external/rust/android-crates-io/crates/env_filter",
     deps = ["@log"],
 )
@@ -321,7 +321,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "errno",
-    features = [
+    crate_features = [
         "default",
         "std",
     ],
@@ -331,7 +331,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "fastrand",
-    features = [
+    crate_features = [
         "alloc",
         "default",
         "std",
@@ -341,8 +341,8 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "figment",
+    crate_features = ["yaml"],
     edition = "2018",
-    features = ["yaml"],
     path = "external/rust/android-crates-io/crates/figment",
     deps = [
         "@parking_lot",
@@ -362,7 +362,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "foldhash",
-    features = [
+    crate_features = [
         "default",
         "std",
     ],
@@ -381,7 +381,7 @@ gbl_llvm_prebuilts(name = "gbl_llvm_prebuilts")
 gbl_rust_crate_repository(
     name = "getrandom",
     compile_data = ["README.md"],
-    features = ["std"],
+    crate_features = ["std"],
     path = "external/rust/android-crates-io/crates/getrandom",
     deps = [
         "@cfg_if",
@@ -397,7 +397,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "hashbrown",
-    features = [
+    crate_features = [
         "default-hasher",
         "equivalent",
         "inline-more",
@@ -425,7 +425,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "hex",
-    features = [
+    crate_features = [
         "alloc",
         "default",
         "std",
@@ -435,7 +435,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "indexmap",
-    features = [
+    crate_features = [
         "serde",
         "std",
     ],
@@ -449,7 +449,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "itertools",
-    features = [
+    crate_features = [
         "default",
         "use_std",
         "use_alloc",
@@ -464,8 +464,8 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "itertools_noalloc",
+    crate_features = [],
     crate_name = "itertools",
-    features = [],
     path = "external/rust/android-crates-io/crates/itertools",
     rustc_flags = [
         "-A",
@@ -486,7 +486,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "libc",
-    features = [
+    crate_features = [
         "default",
         "extra_traits",
         "std",
@@ -496,7 +496,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "half",
-    features = [],
+    crate_features = [],
     path = "external/rust/android-crates-io/crates/half",
     deps = [
         "@cfg_if",
@@ -506,13 +506,13 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "ciborium_io",
-    features = [],
+    crate_features = [],
     path = "external/rust/android-crates-io/crates/ciborium-io",
 )
 
 gbl_rust_crate_repository(
     name = "ciborium_ll",
-    features = [],
+    crate_features = [],
     path = "external/rust/android-crates-io/crates/ciborium-ll",
     rustc_flags = [
         "-A",
@@ -553,7 +553,7 @@ gbl_new_local_repository(
 
 gbl_rust_crate_repository(
     name = "lock_api",
-    features = [
+    crate_features = [
         "arc_lock",
         "atomic_usize",
         "default",
@@ -564,7 +564,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "log",
-    features = ["std"],
+    crate_features = ["std"],
     path = "external/rust/android-crates-io/crates/log",
 )
 
@@ -575,7 +575,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "lz4_flex",
-    features = ["safe-decode"],
+    crate_features = ["safe-decode"],
     path = "external/rust/android-crates-io/crates/lz4_flex",
     rustc_flags = [
         "-A",
@@ -585,7 +585,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "managed",
-    features = ["map"],
+    crate_features = ["map"],
     path = "external/rust/android-crates-io/crates/managed",
     rustc_flags = [
         "-A",
@@ -599,7 +599,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "memchr",
-    features = [
+    crate_features = [
         "alloc",
         "default",
         "std",
@@ -614,7 +614,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "minimal_lexical",
-    features = [
+    crate_features = [
         "default",
         "std",
     ],
@@ -655,7 +655,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "nix",
-    features = [
+    crate_features = [
         "event",
         "feature",
         "fs",
@@ -701,7 +701,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "once_cell",
-    features = [
+    crate_features = [
         "alloc",
         "default",
         "race",
@@ -718,7 +718,7 @@ gbl_new_local_repository(
 
 gbl_rust_crate_repository(
     name = "parking_lot",
-    features = [
+    crate_features = [
         "arc_lock",
         "default",
     ],
@@ -779,7 +779,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "proc_macro2",
-    features = [
+    crate_features = [
         "default",
         "proc-macro",
         "span-locations",
@@ -790,7 +790,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "quote",
-    features = [
+    crate_features = [
         "default",
         "proc-macro",
     ],
@@ -803,7 +803,7 @@ gbl_rust_crate_repository(
     aliases = {
         "@errno": "libc_errno",
     },
-    features = [
+    crate_features = [
         "alloc",
         "event",
         "fs",
@@ -851,7 +851,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "scopeguard",
-    features = [
+    crate_features = [
         "default",
         "use_std",
     ],
@@ -860,7 +860,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "serde",
-    features = [
+    crate_features = [
         "default",
         "derive",
         "rc",
@@ -877,12 +877,12 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "serde_core",
-    edition = "2021",
-    features = [
+    crate_features = [
         "rc",
         "result",
         "std",
     ],
+    edition = "2021",
     path = "external/rust/android-crates-io/crates/serde_core",
     rustc_env = {
         "OUT_DIR": "../out",
@@ -910,7 +910,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "serde_json",
-    features = [
+    crate_features = [
         "default",
         "std",
     ],
@@ -930,7 +930,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "serde_spanned",
-    features = [
+    crate_features = [
         "serde",
     ],
     path = "external/rust/android-crates-io/crates/serde_spanned",
@@ -955,7 +955,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "smallvec",
-    features = [
+    crate_features = [
         "const_generics",
         "const_new",
         "write",
@@ -972,7 +972,7 @@ gbl_new_local_repository(
 
 gbl_rust_crate_repository(
     name = "spin",
-    features = [
+    crate_features = [
         "mutex",
         "spin_mutex",
     ],
@@ -997,7 +997,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "syn",
-    features = [
+    crate_features = [
         "clone-impls",
         "default",
         "derive",
@@ -1069,7 +1069,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "toml",
-    features = [
+    crate_features = [
         "default",
         "display",
         "parse",
@@ -1089,7 +1089,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "toml_datetime",
-    features = [
+    crate_features = [
         "alloc",
         "serde",
     ],
@@ -1099,7 +1099,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "toml_edit",
-    features = [
+    crate_features = [
         "default",
         "display",
         "parse",
@@ -1118,7 +1118,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "toml_parser",
-    features = [
+    crate_features = [
         "alloc",
         "default",
         "std",
@@ -1129,7 +1129,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "toml_writer",
-    features = [
+    crate_features = [
         "alloc",
         "default",
         "std",
@@ -1139,7 +1139,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "uncased",
-    features = ["alloc"],
+    crate_features = ["alloc"],
     path = "external/rust/android-crates-io/crates/uncased",
     deps = ["@serde"],
 )
@@ -1161,7 +1161,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "vhost",
-    features = [
+    crate_features = [
         "default",
         "vhost-user",
         "vhost-user-backend",
@@ -1179,7 +1179,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "vhost_device_vsock",
-    features = [
+    crate_features = [
         "backend_vsock",
         "default",
         "libc",
@@ -1232,8 +1232,8 @@ gbl_rust_crate_repository(
     aliases = {
         "@log_no_std": "log",
     },
+    crate_features = ["alloc"],
     edition = "2024",
-    features = ["alloc"],
     path = "external/rust/android-crates-io/crates/virtio-drivers",
     proc_macro_deps = ["@enumn"],
     rustc_flags = [
@@ -1281,7 +1281,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "vm_memory",
-    features = [
+    crate_features = [
         "arc-swap",
         "backend-atomic",
         "backend-bitmap",
@@ -1325,7 +1325,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "winnow",
-    features = [
+    crate_features = [
         "alloc",
         "ascii",
         "binary",
@@ -1349,7 +1349,7 @@ local_repository(
 
 gbl_rust_crate_repository(
     name = "zerocopy",
-    features = [
+    crate_features = [
         "derive",
         "simd",
         "zerocopy-derive",
@@ -1360,13 +1360,13 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "zerocopy_alloc",
-    crate_name = "zerocopy",
-    features = [
+    crate_features = [
         "derive",
         "simd",
         "zerocopy-derive",
         "alloc",
     ],
+    crate_name = "zerocopy",
     path = "external/rust/android-crates-io/crates/zerocopy",
     proc_macro_deps = ["@zerocopy_derive"],
 )
@@ -1396,7 +1396,7 @@ gbl_rust_crate_repository(
 
 gbl_rust_crate_repository(
     name = "zune_inflate",
-    features = ["gzip"],
+    crate_features = ["gzip"],
     path = "external/rust/android-crates-io/crates/zune-inflate",
 )
 
