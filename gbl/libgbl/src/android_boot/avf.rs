@@ -29,6 +29,7 @@ use bootparams::bootconfig::BootConfigBuilder;
 use core::ffi::CStr;
 use dttable::DtTableImage;
 use fdt::{fdt_encode_cell_sized_property, fdt_ensure_reserved_memory_initialized, std_props, Fdt};
+use fit::Fit;
 use liberror::{Error, Result};
 use opendice::{
     dice::{Config, DiceMode, InputValues, HASH_SIZE, HIDDEN_SIZE},
@@ -273,6 +274,10 @@ pub(crate) fn build_pvmfw_data_region<'a, T: AVFVerificationData>(
 /// Finds the size of the largest VMDTBO overlay present in the DTBO partition.
 fn vmdtbo_entry_max_size(dtbo_partition: &[u8]) -> Result<usize> {
     if dtbo_partition.is_empty() {
+        return Ok(0);
+    }
+    // TODO(b/385690995): Add support for VMDTBO from FIT.
+    if Fit::from_bytes(dtbo_partition).is_ok() {
         return Ok(0);
     }
     let dttable = DtTableImage::from_bytes(dtbo_partition)
