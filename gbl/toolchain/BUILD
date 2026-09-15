@@ -20,6 +20,7 @@ load(
     "GBL_CPP_CONFIG_INC",
     "GBL_EFI_SYSROOT",
     "LINUX_SYSROOT_INCLUDES",
+    "LINUX_SYSROOT_LIB_DIR",
     "LINUX_X86_MUSL_CPP_CONFIG",
     "LLVM_PREBUILTS_CPP_INCLUDE",
     "LLVM_PREBUILTS_C_INCLUDE",
@@ -621,15 +622,36 @@ rust_toolchain(
     binary_ext = "",
     default_edition = "2021",
     dylib_ext = ".so",
-    exec_triple = "x86_64-unknown-linux-gnu",
-    extra_rustc_flags = select(rustc_dev_prod_flags_select),
+    exec_triple = "x86_64-unknown-linux-musl",
+    extra_rustc_flags = select(rustc_dev_prod_flags_select) + [
+        # Allow multiple definitions so that custom C implementations in @gbl//libc (such as
+        # strtoul) can override matching symbols in musl's static libc.a without linker collision.
+        "-C",
+        "link-arg=-Wl,--allow-multiple-definition",
+    ],
+    extra_rustc_flags_for_crate_types = {
+        # The x86_64-unknown-linux-musl target defaults to static CRT (+crt-static). For proc-macros
+        # (dynamically loaded .so plugins), static CRT linking embeds an uninitialized musl allocator
+        # into the shared object, causing SIGSEGV when dlopened by rustc. Force dynamic linking against
+        # the musl sysroot libc_musl.so for proc-macros only, while leaving host binaries statically linked.
+        "proc-macro": [
+            "-C",
+            "target-feature=-crt-static",
+            "-C",
+            "link-self-contained=no",
+            "-C",
+            "link-arg=-L" + LINUX_SYSROOT_LIB_DIR,
+            "-C",
+            "link-arg=-Wl,-rpath," + LINUX_SYSROOT_LIB_DIR,
+        ],
+    },
     global_allocator_library = None,
     rust_doc = "@rust_prebuilts//:bin/rustdoc",
-    rust_std = "@rust_prebuilts//:prebuilt_stdlibs",
+    rust_std = "@rust_prebuilts//:stdlib_x86_64-unknown-linux-musl",
     rustc = "@rust_prebuilts//:bin/rustc",
     staticlib_ext = ".a",
     stdlib_linkflags = [],
-    target_triple = "x86_64-unknown-linux-gnu",
+    target_triple = "x86_64-unknown-linux-musl",
 )
 
 toolchain(
@@ -725,7 +747,7 @@ rust_toolchain(
     binary_ext = ".efi",
     default_edition = "2021",
     dylib_ext = ".so",
-    exec_triple = "x86_64-unknown-linux-gnu",
+    exec_triple = "x86_64-unknown-linux-musl",
     extra_rustc_flags = [
         "-Z",
         "cf-protection=full",
@@ -773,7 +795,7 @@ rust_toolchain(
     binary_ext = "",
     default_edition = "2021",
     dylib_ext = ".so",
-    exec_triple = "x86_64-unknown-linux-gnu",
+    exec_triple = "x86_64-unknown-linux-musl",
     extra_rustc_flags = [
         "-Z",
         "cf-protection=full",
@@ -877,7 +899,7 @@ rust_toolchain(
     binary_ext = ".efi",
     default_edition = "2021",
     dylib_ext = ".so",
-    exec_triple = "x86_64-unknown-linux-gnu",
+    exec_triple = "x86_64-unknown-linux-musl",
     extra_rustc_flags = [
         "-Z",
         "branch-protection=bti,pac-ret,leaf",
@@ -1025,7 +1047,7 @@ rust_toolchain(
     binary_ext = "",
     default_edition = "2021",
     dylib_ext = ".so",
-    exec_triple = "x86_64-unknown-linux-gnu",
+    exec_triple = "x86_64-unknown-linux-musl",
     extra_rustc_flags = rustc_common_flags + rustc_opt_flags,
     global_allocator_library = None,
     rust_doc = "@rust_prebuilts//:bin/rustdoc",
@@ -1097,7 +1119,7 @@ rust_toolchain(
     binary_ext = "",
     default_edition = "2021",
     dylib_ext = ".so",
-    exec_triple = "x86_64-unknown-linux-gnu",
+    exec_triple = "x86_64-unknown-linux-musl",
     extra_rustc_flags = rustc_common_flags + rustc_opt_flags + [
         "-C",
         "relocation-model=pic",
