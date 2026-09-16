@@ -40,12 +40,12 @@ def _gbl_llvm_prebuilts_impl(repo_ctx):
         repo_ctx.symlink(path, "llvm-linux-x86")
 
     # Linux host toolchain additionally needs a sysroot
-    linux_glibc = repo_ctx.os.environ.get("GBL_LINUX_SYSROOT")
-    if linux_glibc:
-        repo_ctx.symlink(linux_glibc, "linux_glibc")
+    linux_sysroot = repo_ctx.os.environ.get("GBL_LINUX_SYSROOT")
+    if linux_sysroot:
+        repo_ctx.symlink(linux_sysroot, "linux_sysroot")
     else:
         path = _dir_of(repo_ctx, repo_ctx.path(Label("@linux_x86_64_sysroot//:BUILD.bazel")))
-        repo_ctx.symlink(path, "linux_glibc")
+        repo_ctx.symlink(path, "linux_sysroot")
 
     # Get the bin directory so that we can access other LLVM tools by path.
     gbl_llvm_bin_dir = _abs_path(repo_ctx, "llvm-linux-x86/bin")
@@ -85,10 +85,14 @@ GBL_CPP_CONFIG_INC = "{}"
         gbl_cpp_config_inc,
     )
 
-    # Linux sysroot headers
+    # Linux sysroot headers and musl dynamic library path
     info_bzl_content += """
-LINUX_SYSROOT_INCLUDES = \"{}\"
-""".format(_abs_path(repo_ctx, "linux_glibc/include"))
+LINUX_SYSROOT_INCLUDES = "{}"
+LINUX_SYSROOT_LIB_DIR = "{}"
+""".format(
+        _abs_path(repo_ctx, "linux_sysroot/include"),
+        _dir_of(repo_ctx, _abs_path(repo_ctx, "linux_sysroot/lib/libc_musl.so")),
+    )
 
     repo_ctx.file("info.bzl", info_bzl_content)
 
