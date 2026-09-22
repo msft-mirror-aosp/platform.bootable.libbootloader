@@ -200,7 +200,8 @@ configurations:
    cp <path to EFI image> /tmp/esp/EFI/BOOT/bootriscv64.efi && \
    qemu-system-riscv64 -nographic -machine virt -m 1G \
        -bios /usr/lib/u-boot/qemu-riscv64/u-boot.bin \
-       -drive format=raw,file=fat:rw:/tmp/esp
+       -drive if=none,format=raw,file=fat:rw:/tmp/esp,id=blk0 \
+       -device virtio-blk-device,drive=blk0
    ```
 
 ### Debug with GDB on QEMU
