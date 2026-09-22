@@ -31,9 +31,9 @@ if [[ -z $1 ]] || [[ $1 == "x64" ]]; then
     EXTRA_QEMU_OPTIONS=""
     EXTRA_GDB_INIT_CMD=""
     # Uses any version of rust-gdb that can be found from the prebuilts.
-    GDB=$(find ${REPO_ROOT}/prebuilts/rust/linux-x86/ -name rust-gdb -print -quit)
+    GDB=$(find ${REPO_ROOT}/prebuilts/rust-toolchain/linux-musl-x86/ -name rust-gdb -print -quit)
     if [[ ! (-x "${GDB}" &&  -e "${GDB}") ]]; then
-        echo "Cannot find any rust-gdb from ${REPO_ROOT}/prebuilts/rust/linux-x86/"
+        echo "Cannot find any rust-gdb from ${REPO_ROOT}/prebuilts/rust-toolchain/linux-musl-x86/"
         exit 1;
     fi
 elif [[ $1 == "aarch64" ]]; then
