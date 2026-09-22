@@ -125,22 +125,24 @@ pub unsafe extern "C" fn efi_main(image_handle: EfiHandle, systab_ptr: *mut EfiS
         semihosting::remove(c"gdb.ready").unwrap();
     }
 
-    // Mark EFI execution pages as guarded. This tests that GBL BTI setting is correct and
-    // functional and inter-operability with UEFI firmware code in non-guarded pages is feasible as
-    // expected.
-    //
-    // Notes: It seems modern EDK2 will check for a special flag
-    // EFI_IMAGE_DLLCHARACTERISTICS_EX_FORWARD_CFI_COMPAT1 in the Debug directory to take care of
-    // BTI bit setting. However our custom EFI build system doesn't support generating custom
-    // directories. Thus for now we manually mark the GBL execution range as guarded.
-    //
-    // SAFETY:
-    // * System is operating with a valid MMU page table set up by EDK.
-    // * In the qemu test setup, nothing else is accessing the page table.
     #[cfg(target_arch = "aarch64")]
-    unsafe {
-        aarch64::mark_memory_guarded(range.start, range.len()).unwrap()
-    };
+    {
+        // Mark EFI execution pages as guarded. This tests that GBL BTI setting is correct and
+        // functional and inter-operability with UEFI firmware code in non-guarded pages is
+        // feasible as expected.
+        //
+        // Notes: It seems modern EDK2 will check for a special flag
+        // EFI_IMAGE_DLLCHARACTERISTICS_EX_FORWARD_CFI_COMPAT1 in the Debug directory to take care
+        // of BTI bit setting. However our custom EFI build system doesn't support generating
+        // custom directories. Thus for now we manually mark the GBL execution range as guarded.
+        //
+        // SAFETY:
+        // * System is operating with a valid MMU page table set up by EDK.
+        // * In the qemu test setup, nothing else is accessing the page table.
+        unsafe { aarch64::mark_memory_guarded(range.start, range.len()).unwrap() };
+        aarch64::enable_pac();
+    }
+
     efi_println!(entry, "Starting GBL..");
     loaded_gbl.start().unwrap();
     unreachable!();

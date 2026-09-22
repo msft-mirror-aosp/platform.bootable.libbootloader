@@ -27,7 +27,7 @@
  * -----------------------------------------------------
  */
 mcount:
-    paciasp
+    bti c
     sub sp, sp, #0x20
     stp x29, x30, [sp]
     mov x29, sp
@@ -35,7 +35,6 @@ mcount:
     bl mcount_func_entry
     ldp x29, x30, [sp]
     add sp, sp, #0x20
-    autiasp
     ret
 
 #define CALLER_SAVE_REG_SIZE #(20 * 8)

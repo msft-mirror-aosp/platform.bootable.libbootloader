@@ -506,11 +506,15 @@ gbl_clang_cc_toolchain(
     name = "aarch64_uefi_clang_cc_toolchain",
     builtin_includes = builtin_includes_uefi_common,
     cc_flags = cc_flags_uefi_common + [
-        aarch64_branch_protection,
         "-march=armv8-a",
     ] + select({
-        ":tracing_enabled": ["-pg"],  # mcount instrumentation
-        "//conditions:default": [],
+        "//conditions:default": [aarch64_branch_protection],
+        ":tracing_enabled": [
+            # mcount overrides function return addresses on the stack, which is
+            # incompatible with pac-ret; enable only bti when tracing.
+            "-mbranch-protection=bti",
+            "-pg",  # mcount instrumentation
+        ],
     }),
     ld_flags = uefi_pe_ld_flags_common + select({
         # Switch to a dedicate main entry that sets up tracing.
@@ -926,11 +930,10 @@ rust_toolchain(
     default_edition = "2021",
     dylib_ext = ".so",
     exec_triple = "x86_64-unknown-linux-musl",
-    extra_rustc_flags = [
-        "-Z",
-        "branch-protection=bti,pac-ret,leaf",
-    ] + rustc_common_flags + rustc_opt_flags + select({
+    extra_rustc_flags = rustc_common_flags + rustc_opt_flags + select({
         ":tracing_enabled": [
+            "-Z",
+            "branch-protection=bti",
             "-Z",
             "instrument-mcount",
             "--cfg=feature=\"gbl_tracing\"",
@@ -938,7 +941,10 @@ rust_toolchain(
             "-C",
             "collapse-macro-debuginfo=yes",
         ],
-        "//conditions:default": [],
+        "//conditions:default": [
+            "-Z",
+            "branch-protection=bti,pac-ret,leaf",
+        ],
     }),
     global_allocator_library = None,
     rust_doc = "@rust_prebuilts//:bin/rustdoc",

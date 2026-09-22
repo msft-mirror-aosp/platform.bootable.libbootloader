@@ -141,3 +141,53 @@ pub unsafe fn mark_memory_guarded(va_start: usize, va_size: usize) -> Result<(),
     }
     Ok(())
 }
+
+/// Enables Pointer Authentication (PAC) in hardware using Key A (`SCTLR_ELx.EnIA`).
+///
+///
+/// Notes: must be inlined into a function that never returns (`efi_main`), because enabling
+/// `EnIA` mid-function would cause a non-inlined function's epilogue `autiasp` to authenticate
+/// an unsigned `x30` saved before `EnIA` was enabled.
+#[inline(always)]
+pub fn enable_pac() {
+    const SCTLR_ENIA: u64 = 1 << 31;
+    // SAFETY:
+    // - The assembly only accesses architectural system registers (`APIAKeyLo_EL1`,
+    //   `APIAKeyHi_EL1`, and `SCTLR_EL1`/`SCTLR_EL2` after checking `current_el()`); none of the
+    //   constants used here are interpreted as raw pointers or used to access memory.
+    // - Temporary register modifications are declared via `out(reg) _`, leaving stack and memory
+    //   state untouched.
+    // - Programming `APIAKey_EL1` and setting `SCTLR_ELx.EnIA` only enables hardware instruction
+    //   pointer authentication, which does not alter memory mappings or violate Rust's memory
+    //   safety guarantees.
+    unsafe {
+        // `.arch_extension pauth` is required for the baseline `armv8-a` target to recognize
+        // FEAT_PAuth system register names.
+        asm!(
+            ".arch_extension pauth",
+            "msr apiakeylo_el1, {key_lo}",
+            "msr apiakeyhi_el1, {key_hi}",
+            key_lo = in(reg) 0x0123_4567_89ab_cdefu64,
+            key_hi = in(reg) 0xfedc_ba98_7654_3210u64,
+        );
+        match current_el() {
+            ExceptionLevel::EL1 => asm!(
+                "mrs {tmp}, sctlr_el1",
+                "orr {tmp}, {tmp}, {enia}",
+                "msr sctlr_el1, {tmp}",
+                "isb",
+                tmp = out(reg) _,
+                enia = in(reg) SCTLR_ENIA,
+            ),
+            ExceptionLevel::EL2 => asm!(
+                "mrs {tmp}, sctlr_el2",
+                "orr {tmp}, {tmp}, {enia}",
+                "msr sctlr_el2, {tmp}",
+                "isb",
+                tmp = out(reg) _,
+                enia = in(reg) SCTLR_ENIA,
+            ),
+            _ => unreachable!(),
+        }
+    }
+}
