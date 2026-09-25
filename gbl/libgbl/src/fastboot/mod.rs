@@ -61,6 +61,9 @@ use fastboot::{
 
 const ERR_DEVICE_LOCKED: &str = "Device is locked";
 const ERR_CRITICAL_LOCKED: &str = "Device is critical-locked";
+const ERR_UNLOCK_PROHIBITED: &str = "Flashing unlock is not allowed";
+const ERR_ALREADY_LOCKED: &str = "Already locked";
+const ERR_ALREADY_UNLOCKED: &str = "Already unlocked";
 use gbl_async::{join, join_mut, yield_now};
 use gbl_storage::{BlockIo, Disk, Gpt};
 use liberror::Error;
@@ -1735,11 +1738,29 @@ where
         lock_state: LockState,
         mut responder: impl InfoSender,
     ) -> CommandResult<()> {
+        // Check before the wipe below: user data must not be lost for a request that does not
+        // change the lock state or that the platform will reject.
+        let status = GblAvbOps::new(self.gbl_ops, None, &mut [], false)
+            .avb_read_device_status()
+            .map_err(|e| CommandError::from(format_args!("Failed to read lock state: {e}")))?;
+        let is_unlocked = match lock_type {
+            LockType::Device => status.is_unlocked,
+            LockType::Critical => status.is_unlocked_critical,
+        };
+        match (lock_state, is_unlocked) {
+            (LockState::Locked, false) => return Err(ERR_ALREADY_LOCKED.into()),
+            (LockState::Unlocked, true) => return Err(ERR_ALREADY_UNLOCKED.into()),
+            (LockState::Unlocked, false) if !status.is_unlockable => {
+                return Err(ERR_UNLOCK_PROHIBITED.into())
+            }
+            _ => {}
+        }
+
         // NOTE: This creates a usability edge case: if a user has unlocked both DEVICE and
         // CRITICAL locks, and then locks DEVICE first, they will be unable to lock CRITICAL
-        // because `check_unlocked()` enforces that the DEVICE lock must be unlocked.
-        if lock_type == LockType::Critical {
-            self.check_unlocked()?;
+        // because the DEVICE lock must be unlocked.
+        if lock_type == LockType::Critical && !status.is_unlocked {
+            return Err(ERR_DEVICE_LOCKED.into());
         }
 
         if lock_type == LockType::Device {
@@ -3055,6 +3076,7 @@ pub(crate) mod test {
         storage.add_raw_device(c"critical_b", INITIAL_CONTENTS);
         let mut gbl_ops = FakeGblOps::new(&storage);
         gbl_ops.avb_device_status.is_unlocked = true;
+        gbl_ops.avb_device_status.is_unlockable = true;
         gbl_ops.current_slot = Some(Ok(1));
         // Mark the "critical" partition as critically-locked.
         gbl_ops.avb_partition_attributes = Some(Ok(vec![SpecializedPartition {
@@ -3104,6 +3126,7 @@ pub(crate) mod test {
         storage.add_raw_device(c"critical", INITIAL_CONTENTS);
         let mut gbl_ops = FakeGblOps::new(&storage);
         gbl_ops.avb_device_status.is_unlocked = true;
+        gbl_ops.avb_device_status.is_unlockable = true;
         gbl_ops.current_slot = Some(Ok(1));
         // Mark the "critical" partition as critically-locked.
         gbl_ops.avb_partition_attributes = Some(Ok(vec![SpecializedPartition {
@@ -3168,6 +3191,7 @@ pub(crate) mod test {
         storage.add_raw_device(c"raw", INITIAL_CONTENTS);
         let mut gbl_ops = FakeGblOps::new(&storage);
         gbl_ops.avb_device_status.is_unlocked = true;
+        gbl_ops.avb_device_status.is_unlockable = true;
         gbl_ops.current_slot = Some(Ok(1));
         // If any partition is critically-locked - even partitions that don't currently exist
         // on disk - then raw disk access is critically-locked.
@@ -5689,6 +5713,8 @@ pub(crate) mod test {
         let buffers = vec![Some(vec![0u8; KiB!(1)]); 1];
         let mut gbl_ops = FakeGblOps::new(&storage);
         gbl_ops.avb_device_status.is_unlocked = true;
+        gbl_ops.avb_device_status.is_unlocked_critical = true;
+        gbl_ops.avb_device_status.is_unlockable = true;
         let fdr_counter = CounterCallback::new();
         let mut fdr_handler = fdr_counter.handler();
         gbl_ops.factory_data_reset_handler = Some(&mut fdr_handler);
@@ -5731,6 +5757,110 @@ pub(crate) mod test {
     }
 
     #[test]
+    fn test_fastboot_flashing_lock_unlock_no_wipe_without_change() {
+        const INITIAL_CONTENTS: [u8; KiB!(4)] = [0x11u8; KiB!(4)];
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"userdata", INITIAL_CONTENTS);
+        let buffers = vec![Some(vec![0u8; KiB!(1)]); 1];
+        // Locked and not unlockable.
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        let fdr_counter = CounterCallback::new();
+        let mut fdr_handler = fdr_counter.handler();
+        gbl_ops.factory_data_reset_handler = Some(&mut fdr_handler);
+        gbl_ops.avb_partition_attributes = Some(Ok(vec![SpecializedPartition {
+            name_buffer: cstr_buffer("userdata"),
+            fdr: Fdr::Yes,
+            ..Default::default()
+        }]));
+        let listener: SharedTestListener = Default::default();
+        let (transports, tcp) = (&mut [&listener], &listener);
+        listener.add_transport_input(b"flashing lock");
+        listener.add_transport_input(b"flashing unlock");
+        listener.add_transport_input(b"continue");
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            transports,
+            Some(tcp),
+            Default::default(),
+        ));
+
+        assert_eq!(
+            listener.transport_out_queue(),
+            make_expected_transport_out(&[
+                b"FAILAlready locked",
+                b"FAILFlashing unlock is not allowed",
+                b"OKAY",
+            ]),
+            "\nActual Transport output:\n{}",
+            listener.dump_transport_out_queue()
+        );
+        assert_eq!(
+            storage[0].partition_io(None).unwrap().dev().io().storage.borrow().deref(),
+            &INITIAL_CONTENTS
+        );
+        assert!(gbl_ops.write_lock_state_traces.is_empty());
+        assert_eq!(fdr_counter.count(), 0);
+        assert_eq!(gbl_ops.avb_device_status.is_unlocked, false);
+    }
+
+    #[test]
+    fn test_fastboot_flashing_critical_unchanged_fails() {
+        let storage = FakeGblOpsStorage::default();
+        let buffers = vec![Some(vec![0u8; KiB!(1)]); 1];
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.avb_device_status.is_unlocked = true;
+        gbl_ops.avb_device_status.is_unlocked_critical = true;
+        let listener: SharedTestListener = Default::default();
+        let (transports, tcp) = (&mut [&listener], &listener);
+        listener.add_transport_input(b"flashing unlock_critical");
+        listener.add_transport_input(b"continue");
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            transports,
+            Some(tcp),
+            Default::default(),
+        ));
+
+        assert_eq!(
+            listener.transport_out_queue(),
+            make_expected_transport_out(&[b"FAILAlready unlocked", b"OKAY"]),
+            "\nActual Transport output:\n{}",
+            listener.dump_transport_out_queue()
+        );
+        assert!(gbl_ops.write_lock_state_traces.is_empty());
+    }
+
+    #[test]
+    fn test_fastboot_flashing_unlock_critical_prohibited() {
+        let storage = FakeGblOpsStorage::default();
+        let buffers = vec![Some(vec![0u8; KiB!(1)]); 1];
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        // Device unlocked, critical locked, not unlockable.
+        gbl_ops.avb_device_status.is_unlocked = true;
+        let listener: SharedTestListener = Default::default();
+        let (transports, tcp) = (&mut [&listener], &listener);
+        listener.add_transport_input(b"flashing unlock_critical");
+        listener.add_transport_input(b"continue");
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            transports,
+            Some(tcp),
+            Default::default(),
+        ));
+
+        assert_eq!(
+            listener.transport_out_queue(),
+            make_expected_transport_out(&[b"FAILFlashing unlock is not allowed", b"OKAY"]),
+            "\nActual Transport output:\n{}",
+            listener.dump_transport_out_queue()
+        );
+        assert!(gbl_ops.write_lock_state_traces.is_empty());
+    }
+
+    #[test]
     fn test_fastboot_flashing_lock_unlock_fdr() {
         const INITIAL_CONTENTS: [u8; KiB!(4)] = [0x11u8; KiB!(4)];
         // `RamBlockIo` simulates erase by flipping all bits, !0x11 (initial) = 0xEE.
@@ -5743,6 +5873,7 @@ pub(crate) mod test {
         storage.add_raw_device(c"metadata_a", INITIAL_CONTENTS);
         storage.add_raw_device(c"metadata_b", INITIAL_CONTENTS);
         let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.avb_device_status.is_unlockable = true;
         let fdr_counter = CounterCallback::new();
         let mut fdr_handler = fdr_counter.handler();
         gbl_ops.factory_data_reset_handler = Some(&mut fdr_handler);
@@ -5824,6 +5955,7 @@ pub(crate) mod test {
         }]));
         // Device must be unlocked to change critical lock state.
         gbl_ops.avb_device_status.is_unlocked = true;
+        gbl_ops.avb_device_status.is_unlockable = true;
 
         let tasks = vec![].into();
         let parts = gbl_ops.disks();
@@ -6614,6 +6746,7 @@ pub(crate) mod test {
         let buffers = vec![Some(vec![0u8; KiB!(1)]); 1];
         let mut gbl_ops = FakeGblOps::new(&storage);
         gbl_ops.avb_device_status.is_unlocked = false;
+        gbl_ops.avb_device_status.is_unlockable = true;
         let listener: SharedTestListener = Default::default();
         let (transports, tcp) = (&mut [&listener], &listener);
 
@@ -6662,14 +6795,6 @@ pub(crate) mod test {
     #[test]
     fn test_fastboot_boot_fail_when_locked() {
         check_fastboot_locked(&[b"boot", b"continue"], &[b"FAILDevice is locked", b"OKAY"]);
-    }
-
-    #[test]
-    fn test_fastboot_flashing_lock_critical_fail_when_locked() {
-        check_fastboot_locked(
-            &[b"flashing lock_critical", b"continue"],
-            &[b"FAILDevice is locked", b"OKAY"],
-        );
     }
 
     #[test]
