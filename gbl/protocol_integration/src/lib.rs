@@ -504,6 +504,11 @@ fn test_hash2(entry: &EfiEntry) -> Result<()> {
         res = Err(e);
     }
 
+    if libboringssl::CRYPTO_has_asm() == 0 {
+        efi_println!(entry, "BoringSSL is compiled with OPENSSL_NO_ASM!");
+        res = Err(Error::InvalidInput);
+    }
+
     res
 }
 

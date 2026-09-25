@@ -49,6 +49,10 @@ def main():
       console_log_path,
       [r"^\[\d+\.\d+\] Test passed: test_gbl_fastboot_transport"],
   )
+  wait_for_log_pattern(
+      console_log_path,
+      [r"^\[\d+\.\d+\] Test passed: test_hash2"],
+  )
   client.run_command(b"oem gbl-integration-test-required")
   wait_for_log_pattern(
       console_log_path,

@@ -45,6 +45,7 @@ build_and_run_tests(
         "@gbl//libboot:libboot_test",
         "@gbl//libbootimg:libbootimg_test",
         "@gbl//libbootparams:test",
+        "@gbl//libboringssl:crypto_test",
         "@gbl//libboringssl:sysdeps_test",
         "@gbl//libbuild_number:libbuild_number_test",
         "@gbl//libc:libc_c_test",
