@@ -46,7 +46,10 @@ use avf::{avf_fixup_host_dt, avf_update_bootconfig, inject_vmdtbo};
 pub(crate) mod hasher;
 
 pub mod device_tree;
-use device_tree::{fdt_build_bootargs, fdt_propagate_random, fdt_select, PROP_BOOTARGS};
+use device_tree::{
+    fdt_build_bootargs, fdt_propagate_random, fdt_select, PROP_BOOTARGS, PROP_INITRD_END,
+    PROP_INITRD_START,
+};
 
 pub mod vboot;
 pub use vboot::{avb_verify_slot, PartitionsToVerify};
@@ -308,6 +311,10 @@ pub fn android_load_verify_fixup<'a, 'b>(
 
     fdt_propagate_random(ops, &mut fdt)?;
 
+    // Reserves the ramdisk range properties, so that they can be updated in place after the fixup.
+    fdt.set_property("chosen", PROP_INITRD_START, &0u64.to_be_bytes())?;
+    fdt.set_property("chosen", PROP_INITRD_END, &0u64.to_be_bytes())?;
+
     // Backend FDT fixup.
 
     // Make sure we provide an actual device tree size, so FW can calculate amount of space
@@ -315,8 +322,8 @@ pub fn android_load_verify_fixup<'a, 'b>(
     fdt.shrink_to_fit()?;
     // TODO(b/353272981): Handle buffer too small
     ops.fixup_device_tree(fdt.as_mut())?;
-    fdt.shrink_to_fit()?;
-    let fdt_ptr_range = fdt.as_ref()[..fdt.header_ref()?.actual_size()].as_ptr_range();
+    // The FDT is not resized after the fixup, so that totalsize reported by FW is preserved.
+    let fdt_ptr_range = fdt.as_ref().get(..fdt.size()?).ok_or(Error::BadBufferSize)?.as_ptr_range();
     loader.set_fdt_range(fdt_ptr_range);
 
     // Finalize and fixup bootconfig.
@@ -332,12 +339,9 @@ pub fn android_load_verify_fixup<'a, 'b>(
     let ramdisk_len = ramdisk_len + bootconfig_sz;
 
     // Finalizes FDT with ramdisk address.
-    loader.expand_fdt()?;
-    let [ramdisk, fdt, _, _] = loader.splits();
-    let fdt_sz = finalize_dt(ops, fdt, &ramdisk[..ramdisk_len])?;
-    let fdt_range = fdt[..fdt_sz].as_ptr_range();
-    loader.set_fdt_range(fdt_range);
+    loader.fdt_move_left()?;
     let [ramdisk, fdt, kernel, unused] = loader.into_splits();
+    let fdt_sz = finalize_dt(ops, fdt, &ramdisk[..ramdisk_len])?;
 
     Ok((&ramdisk[..ramdisk_len], &fdt[..fdt_sz], &kernel[..kernel_len], unused))
 }
@@ -408,7 +412,7 @@ fn vbmeta_cmdline_to_bootconfig<'a>(
     Ok(())
 }
 
-/// Sets `linux,initrd-start/end` in FDT.
+/// Sets `linux,initrd-start/end` in FDT without changing its size.
 ///
 /// # Args
 ///
@@ -416,12 +420,12 @@ fn vbmeta_cmdline_to_bootconfig<'a>(
 /// * `fdt`: Target FDT to fixup.
 /// * `ramdisk`: Target ramdisk for setting `linux,initrd-start/end`
 fn finalize_dt<'b>(ops: &mut impl GblOps<'b>, fdt: &mut [u8], ramdisk: &[u8]) -> Result<usize> {
-    let mut fdt = Fdt::new_mut(fdt)?;
+    let mut fdt = Fdt::new(fdt)?;
     let Range { start, end } = ramdisk.as_ptr_range();
     let ramdisk_addr = u64::try_from(start as usize)?;
     let ramdisk_end = u64::try_from(end as usize)?;
-    fdt.set_property("chosen", c"linux,initrd-start", &ramdisk_addr.to_be_bytes())?;
-    fdt.set_property("chosen", c"linux,initrd-end", &ramdisk_end.to_be_bytes())?;
+    fdt.set_property("chosen", PROP_INITRD_START, &ramdisk_addr.to_be_bytes())?;
+    fdt.set_property("chosen", PROP_INITRD_END, &ramdisk_end.to_be_bytes())?;
     gbl_println!(ops, "linux,initrd-start: {:#x}", ramdisk_addr);
     gbl_println!(ops, "linux,initrd-end: {:#x}", ramdisk_end);
     // Print the final commandline. If the bootargs were changed by the firmware during fdt fixup,
@@ -430,8 +434,7 @@ fn finalize_dt<'b>(ops: &mut impl GblOps<'b>, fdt: &mut [u8], ramdisk: &[u8]) ->
         .map_err(Error::from)?;
     gbl_println!(ops, "final cmdline: \"{}\"", final_command_line.to_str().unwrap());
 
-    fdt.shrink_to_fit()?;
-    Ok(fdt.header_ref()?.actual_size())
+    Ok(fdt.size()?)
 }
 
 /// Serializes GBL perf metrics to bootconfig.
@@ -1374,6 +1377,9 @@ pub(crate) mod tests {
         );
 
         let fdt = Fdt::new(fdt).unwrap();
+        // Padding reported by FW fixup is preserved.
+        let header = fdt.header_ref().unwrap();
+        assert_eq!(header.totalsize() - header.actual_size(), FakeGblOps::TEST_FDT_FIXUP_PADDING);
         // "linux,initrd-start/end" are updated.
         assert_eq!(
             fdt.get_property("/chosen", c"linux,initrd-start").unwrap(),
