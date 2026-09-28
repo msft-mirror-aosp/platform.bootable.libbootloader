@@ -241,10 +241,6 @@ pub struct LoadedImages<'a> {
     pub dtbo: &'a [u8],
     /// Kernel commandline.
     pub boot_cmdline: &'a str,
-    /// init_boot image,
-    pub init_boot: &'a [u8],
-    /// Vendor boot image.
-    pub vendor_boot: &'a [u8],
     /// Vendor commandline,
     pub vendor_cmdline: &'a str,
     /// Vendor commandline,
@@ -261,24 +257,6 @@ pub struct LoadedImages<'a> {
     pub kernel: &'a [u8],
     /// ramdisks to be concatenated (vendor_boot+vendor_kernel_boot+init_boot/boot)
     pub ramdisks: arrayvec::ArrayVec<&'a [u8], RAMDISK_MAX_ENTRIES>,
-}
-
-impl LoadedImages<'_> {
-    pub(crate) fn bootconfig_supported(&self) -> bool {
-        // Bootconfig is introduced after Android 12. A tricky issue is that both Android 11 and
-        // 12+ can use boot v3 and vendor boot v3 combination, which makes them indistinguishable.
-        // For now, we conservatively assume that boot v3 + vendor_boot v3 does not support
-        // bootconfig and therefore needs to add bootconfig to FDT cmdline.
-        match BootImage::parse(&self.boot_hdr[..]).unwrap() {
-            BootImage::V0(_) | BootImage::V1(_) | BootImage::V2(_) => return false,
-            BootImage::V3(_) => match VendorImageHeader::parse(self.vendor_boot).unwrap() {
-                // Note: Presence of init_boot implies Android 13.
-                VendorImageHeader::V3(_) if self.init_boot.is_empty() => false,
-                _ => true,
-            },
-            BootImage::V4(_) => return true,
-        }
-    }
 }
 
 /// Helper for getting a successfully verified partition from `SlotVerifyData`
@@ -491,7 +469,6 @@ fn load_v3_and_v4_verified<'a, 'b>(
     // Loads vendor_boot partition, including ramdisk, dtb, commandline etc.
     let vendor_boot =
         get_verified_partition(ops, LoadPartition::VendorBoot, slot, unlocked, false, verify_data)?;
-    images.vendor_boot = &vendor_boot[..];
     let vendor_boot_info = VendorBootImageInfo::new(vendor_boot)?;
     images.vendor_cmdline = VendorBootImageInfo::cmdline(vendor_boot)?;
     images.dtb = get_range(vendor_boot, &vendor_boot_info.dtb_range)?;
@@ -518,17 +495,14 @@ fn load_v3_and_v4_verified<'a, 'b>(
 
     // Loads generic ramdisk, which may come from either boot or init_boot.
     let generic_ramdisk = match boot_info.ramdisk_range.is_empty() {
-        true => {
-            images.init_boot = get_verified_partition(
-                ops,
-                LoadPartition::InitBoot,
-                slot,
-                unlocked,
-                false,
-                verify_data,
-            )?;
-            images.init_boot
-        }
+        true => get_verified_partition(
+            ops,
+            LoadPartition::InitBoot,
+            slot,
+            unlocked,
+            false,
+            verify_data,
+        )?,
         false => boot,
     };
     let generic_ramdisk_range = BootImageV3Info::new(generic_ramdisk)?.ramdisk_range;
