@@ -464,13 +464,11 @@ impl<'a, 'b> GblOps<'b> for Ops<'a, 'b> {
     }
 
     fn avb_read_device_status(&mut self) -> AvbIoResult<AvbDeviceStatus> {
-        match self.open_avb_protocol() {
-            Ok(protocol) => protocol
-                .read_device_status()
-                .map(efi_to_gbl_avb_device_status)
-                .map_err(efi_error_to_avb_error),
-            Err(_) => Err(AvbIoError::NotImplemented),
-        }
+        self.open_avb_protocol()
+            .map_err(|_| AvbIoError::NotImplemented)?
+            .read_device_status()
+            .map(efi_to_gbl_avb_device_status)
+            .map_err(efi_error_to_avb_error)
     }
 
     fn avb_read_rollback_index(&mut self, rollback_index_location: usize) -> AvbIoResult<u64> {

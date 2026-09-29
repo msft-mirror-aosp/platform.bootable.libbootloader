@@ -386,6 +386,7 @@ where
     // Stores the taken trace.
     gbl_trace: Option<(&'static mut [u8], usize)>,
     result: GblFastbootResult,
+    async_info_sent: bool,
     // Introduces marker type so that we can enforce constraint 'd <= min('b, 'c).
     // The constraint is expressed in the implementation block for the `FastbootImplementation`
     // trait.
@@ -446,6 +447,7 @@ where
             stage_data_type: None,
             gbl_trace: None,
             result: Default::default(),
+            async_info_sent: false,
             _tasks_context_lifetime: PhantomData,
         }
     }
@@ -872,8 +874,11 @@ where
                 }
 
                 self.tasks.borrow_mut().poll_all();
-                let info = "Launched async task. Run \"oem gbl-sync-tasks\" to sync.";
-                responder.send_info(info).await?;
+                if !self.async_info_sent {
+                    let info = "Launched async task. Run \"oem gbl-sync-tasks\" to sync.";
+                    responder.send_info(info).await?;
+                    self.async_info_sent = true;
+                }
             }
             _ => task.run_checked().await?,
         })
@@ -1591,8 +1596,12 @@ where
         let cmd = args.next().ok_or("Missing command")?;
         self.stage_data_type = None;
         match cmd {
-            "gbl-sync-tasks" => self.oem_sync_tasks(&mut responder).await,
+            "gbl-sync-tasks" => {
+                self.async_info_sent = false;
+                self.oem_sync_tasks(&mut responder).await
+            }
             "gbl-enable-async-task" => {
+                self.async_info_sent = false;
                 self.enable_async_task = true;
                 Ok(())
             }
@@ -3371,6 +3380,57 @@ pub(crate) mod test {
     }
 
     #[test]
+    fn test_async_info_sent_reset() {
+        let dl_buffers = Shared::from(vec![Some(vec![0u8; KiB!(128)]); 2]);
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"raw_0", [0xaau8; 4096]);
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.avb_device_status.is_unlocked = true;
+        let tasks = vec![].into();
+        let parts = gbl_ops.disks();
+        let boot_buffer = Default::default();
+        let mut gbl_fb =
+            GblFastboot::new(&mut gbl_ops, parts, Task::run, &tasks, &dl_buffers, boot_buffer);
+        let resp: TestResponder = Default::default();
+        let expected_info = "Launched async task. Run \"oem gbl-sync-tasks\" to sync.";
+
+        // Enable async IO.
+        block_on(oem(&mut gbl_fb, "gbl-enable-async-task", &resp)).unwrap();
+
+        // First task sends the info message; second task does not.
+        block_on(gbl_fb.erase("raw_0", &resp)).unwrap();
+        assert_eq!(resp.info_messages.try_lock().unwrap().as_slice(), &[expected_info]);
+        block_on(gbl_fb.erase("raw_0", &resp)).unwrap();
+        assert_eq!(resp.info_messages.try_lock().unwrap().as_slice(), &[expected_info]);
+
+        // "oem gbl-sync-tasks" resets `async_info_sent`.
+        block_on(oem(&mut gbl_fb, "gbl-sync-tasks", &resp)).unwrap();
+        block_on(gbl_fb.erase("raw_0", &resp)).unwrap();
+        assert_eq!(
+            resp.info_messages.try_lock().unwrap().as_slice(),
+            &[expected_info, expected_info]
+        );
+        block_on(gbl_fb.erase("raw_0", &resp)).unwrap();
+        assert_eq!(
+            resp.info_messages.try_lock().unwrap().as_slice(),
+            &[expected_info, expected_info]
+        );
+
+        // "oem gbl-enable-async-task" also resets `async_info_sent`.
+        block_on(oem(&mut gbl_fb, "gbl-enable-async-task", &resp)).unwrap();
+        block_on(gbl_fb.erase("raw_0", &resp)).unwrap();
+        assert_eq!(
+            resp.info_messages.try_lock().unwrap().as_slice(),
+            &[expected_info, expected_info, expected_info]
+        );
+        block_on(gbl_fb.erase("raw_0", &resp)).unwrap();
+        assert_eq!(
+            resp.info_messages.try_lock().unwrap().as_slice(),
+            &[expected_info, expected_info, expected_info]
+        );
+    }
+
+    #[test]
     fn test_async_erase_unsupported_fallback_to_zeroize() {
         let dl_buffers = Shared::from(vec![Some(vec![0u8; KiB!(128)]); 2]);
         let mut storage = FakeGblOpsStorage::default();
@@ -3990,13 +4050,7 @@ pub(crate) mod test {
 
         assert_eq!(
             listener.transport_out_queue(),
-            make_expected_transport_out(&[
-                b"OKAY",
-                b"DATA00001000",
-                b"OKAY",
-                b"INFOLaunched async task. Run \"oem gbl-sync-tasks\" to sync.",
-                b"OKAY",
-            ]),
+            make_expected_transport_out(&[b"OKAY", b"DATA00001000", b"OKAY", b"OKAY",]),
             "\nActual Transport output:\n{}",
             listener.dump_transport_out_queue()
         );
