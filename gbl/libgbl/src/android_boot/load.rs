@@ -229,14 +229,11 @@ impl VendorBootImageInfo {
 pub const RAMDISK_TABLE_MAX_ENTRIES: usize = 8;
 // init_boot/boot + however many ramdisks in vendor_boot
 //                + however many ramdisks in vendor_kernel_boot
-// Contains various loaded image components by `android_load_verify`
 pub const RAMDISK_MAX_ENTRIES: usize = RAMDISK_TABLE_MAX_ENTRIES * 2 + 2;
 
-/// Contains various loaded image components by `android_load_verify`
+/// Contains various loaded image components by `android_load_verified`
 #[derive(Default)]
 pub struct LoadedImages<'a> {
-    /// Boot image header.
-    pub boot_hdr: &'a [u8],
     /// dtbo image.
     pub dtbo: &'a [u8],
     /// Kernel commandline.
@@ -324,7 +321,6 @@ fn log_and_parse_bootimg<'a, 'b>(
 /// * `unlocked`: The unlock state.
 /// * `is_recovery`: Whether we are booting to recovery.
 /// * `verify_data`: `SlotVerifyData` returns from `avb_slot_verify`.
-/// * `load`: The destination image assembly load buffer.
 pub(super) fn android_load_verified<'a, 'b>(
     ops: &mut impl GblOps<'a>,
     slot: Option<Slot>,
@@ -343,7 +339,6 @@ pub(super) fn android_load_verified<'a, 'b>(
     }
     let boot =
         get_verified_partition(ops, LoadPartition::Boot, slot, unlocked, false, verify_data)?;
-    images.boot_hdr = boot;
     match log_and_parse_bootimg(ops, boot)? {
         BootImage::V3(_) | BootImage::V4(_) => load_v3_and_v4_verified(
             ops,
@@ -365,11 +360,8 @@ pub(super) fn android_load_verified<'a, 'b>(
 ///
 /// # Args
 ///
-/// * `ops`: An implementation of `GblOps`.
 /// * `boot`: A buffer containing the boot image loaded by avb.
-/// * `load`: The destination image assembly load buffer.
-/// * `images`: The output `LoadedImages` that stores partitioned image slices loaded to `load` or
-///   `boot` by avb.
+/// * `images`: The output `LoadedImages` that stores image slices from `boot`.
 ///
 /// For v0, v1, v2 images:
 ///
@@ -421,9 +413,7 @@ fn parse_vendor_ramdisks<'a, const CAP: usize>(
 /// * `unlocked`: The unlock state.
 /// * `is_recovery`: Whether we are booting to recovery.
 /// * `verify_data`: `SlotVerifyData` returns from `avb_slot_verify`.
-/// * `load`: The destination image assembly load buffer.
-/// * `images`: The output `LoadedImages` that stores partitioned image slices loaded to `load` or
-///   `verify_data` by avb.
+/// * `images`: The output `LoadedImages` that stores image slices from partitions in `verify_data`.
 ///
 /// V3, V4 images have the following characteristics:
 ///

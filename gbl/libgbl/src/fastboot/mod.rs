@@ -229,9 +229,9 @@ pub enum LoadedImageInfo {
     /// Fuchsia loaded images.
     #[cfg(feature = "fuchsia")]
     Fuchsia {
-        /// Offset and length of ZBI items in `GblFastboot::load_buffer`.
+        /// Address range of ZBI items.
         zbi_items: Range<*const u8>,
-        /// Offset and length of kernel in `GblFastboot::load_buffer`.
+        /// Address range of kernel.
         kernel: Range<*const u8>,
         /// Selected slot,
         slot: SlotIndex,
