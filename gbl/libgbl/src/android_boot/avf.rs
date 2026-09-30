@@ -230,9 +230,8 @@ where
 /// # Returns
 ///
 /// * `Ok(usize)` - on success, the total size of the loaded image.
-/// * `Err(InvalidArgument)` - if the pvmfw partition cannot be parsed
 /// * `Err(InvalidAlignment)` - if `output_buffer` is not aligned to `kernel_attrs.page_size`
-/// * `Err(BadBufferSize)` - if pvmfw binary cannot be extracted or the size data is invalid
+/// * `Err(BadBufferSize)` - if the size data is invalid
 /// * `Err(BufferTooSmall)` - of the pvmfw binary and config data doesn't fit into the target buffer
 /// * `Err(ArithmeticOverflow)` - on overflow when calculating image buffer size
 pub(crate) fn build_pvmfw_data_region<'a, T: AVFVerificationData>(

@@ -725,7 +725,7 @@ impl<'a> BootBuffer<'a> {
         self.boot_items.get_unused()
     }
 
-    /// Takes the boot item container.
+    /// Gets the boot item container.
     pub(crate) fn boot_items(&mut self) -> &mut BootItemContainer<'a> {
         &mut self.boot_items
     }
@@ -764,7 +764,7 @@ fn paused_fastboot_continue_should_reboot() -> bool {
 /// # Args:
 ///
 /// * `ops`: An implementation of `GblOps`.
-/// * `load`: Buffer for loading various Android images.
+/// * `boot_buffer`: Buffers for loading various Android images.
 /// * `run_fastboot`: A closure for running GBL fastboot. The closure is passed a
 ///   `GblFastbootEntry` type which provides methods for running GBL fastboot. The caller is
 ///   responsible for preparing the required inputs and calling the method in the closure. See
