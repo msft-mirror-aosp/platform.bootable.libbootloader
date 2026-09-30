@@ -1453,6 +1453,7 @@ pub(crate) mod test {
         pub const GBL_TEST_VAR_UNSPLIT_VAL: &'static str = "gbl-test-var-val-unsplit";
         pub const GBL_TEST_BOOTCONFIG: &'static str = "arg1=val1\x0aarg2=val2\x0a";
         pub const GBL_TEST_FDT_FIXUP: &'static [u8] = &[1];
+        pub const TEST_FDT_FIXUP_PADDING: usize = 4096;
         pub const GBL_TEST_RANDOM_DATA: &'static [u8] = &[b'7'; RNG_SEED_SIZE_BYTES];
         /// TODO(b/391191885): Generate real dice handover or use prebuilt
         pub const GBL_TEST_AVF_VENDOR_DICE_HANDOVER: &'static [u8] = b"fake_handover_always_fail";
@@ -1773,7 +1774,13 @@ pub(crate) mod test {
             )?;
 
             // Times Self::fixup_bootconfig is called
-            fdt.set_property("", c"fixup_bootconfig_calls", &[self.fixup_bootconfig_calls])
+            fdt.set_property("", c"fixup_bootconfig_calls", &[self.fixup_bootconfig_calls])?;
+
+            // Reports the resulting size with trailing free space for later boot stages.
+            let total = fdt.header_ref()?.actual_size() + Self::TEST_FDT_FIXUP_PADDING;
+            fdt.shrink_to_fit()?;
+            Fdt::new_mut(&mut fdt.as_mut()[..total])?;
+            Ok(())
         }
 
         fn select_device_trees(

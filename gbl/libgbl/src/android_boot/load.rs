@@ -753,25 +753,18 @@ impl<'a> BootBufferLoader<'a> {
         }
     }
 
-    /// Expands FDT buffer to cover the rest of unused space.
-    pub(super) fn expand_fdt(&mut self) -> Result<&mut [u8], Error> {
-        // Computes the values that require borrowing self first.
+    /// Moves FDT to the left most position after bootconfig.
+    pub(super) fn fdt_move_left(&mut self) -> Result<(), Error> {
         let bootconfig_end = self.general_bootconfig_end()?;
         self.check_general_fdt_range();
-        match self.bufs.fdt.as_mut() {
-            // Noop for designated FDT buffer.
-            Some(v) => Ok(&mut v[..]),
-            _ => {
-                // Moves FDT to the left most position.
-                // Starts at PAGE_SIZE aligned address to make sure that the preceding ramdisk
-                // image (if no designated ramdisk buffer is provided), has a page aligned end.
-                let align = self.bufs.ramdisk.as_ref().map_or(PAGE_SIZE, |_| FDT_ALIGNMENT);
-                self.general_fdt =
-                    move_left(self.general, &self.general_fdt, bootconfig_end, align)?;
-                self.general_fdt.end = self.general.len();
-                Ok(&mut self.general[self.general_fdt.start..])
-            }
+        // Noop for designated FDT buffer.
+        if self.bufs.fdt.is_none() {
+            // Starts at PAGE_SIZE aligned address to make sure that the preceding ramdisk
+            // image (if no designated ramdisk buffer is provided), has a page aligned end.
+            let align = self.bufs.ramdisk.as_ref().map_or(PAGE_SIZE, |_| FDT_ALIGNMENT);
+            self.general_fdt = move_left(self.general, &self.general_fdt, bootconfig_end, align)?;
         }
+        Ok(())
     }
 
     /// Checks Self::general_fdt_range is a valid.
@@ -782,20 +775,6 @@ impl<'a> BootBufferLoader<'a> {
                 || self.general_fdt.start >= self.general_bootconfig_end().unwrap()
                     && self.general_fdt.end <= self.general.len()
         );
-    }
-
-    /// Splits out the [ramdisk, fdt, kernel, unused] buffers without consuming the loader.
-    pub(super) fn splits(&mut self) -> [&mut [u8]; 4] {
-        BootBufferLoader {
-            bufs: self.bufs.as_borrowed(),
-            general: self.general,
-            ramdisk_sz: self.ramdisk_sz,
-            bootconfig_sz: self.bootconfig_sz,
-            kernel_sz: self.kernel_sz,
-            general_fdt: self.general_fdt.clone(),
-            general_kernel: self.general_kernel.as_deref_mut(),
-        }
-        .into_splits()
     }
 
     /// Consumes the loader and splits out the [ramdisk, fdt, kernel, unused] buffers.

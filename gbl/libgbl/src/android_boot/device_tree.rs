@@ -149,6 +149,10 @@ pub fn fdt_select_from_boot_partitions<'b, 'a: 'b, 'c: 'b>(
 
 /// Device tree bootargs property to store kernel command line.
 pub const PROP_BOOTARGS: &CStr = c"bootargs";
+/// `linux,initrd-start` property name.
+pub const PROP_INITRD_START: &CStr = c"linux,initrd-start";
+/// `linux,initrd-end` property name.
+pub const PROP_INITRD_END: &CStr = c"linux,initrd-end";
 const PROP_BOOTARGS_EXT: &CStr = c"bootargs_ext";
 const NODE_CHOSEN: &str = "chosen";
 
