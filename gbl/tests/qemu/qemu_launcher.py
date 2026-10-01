@@ -147,7 +147,12 @@ def launch_qemu(args):
       artifacts_dir = test_dir / "artifacts"
       artifacts_dir.mkdir(parents=True, exist_ok=True)
       env["TEST_UNDECLARED_OUTPUTS_DIR"] = str(artifacts_dir)
-    env["TEST_ARTIFACTS_OUT"] = args.artifacts_output
+    env["TEST_ARTIFACTS_OUT"] = str(args.artifacts_output or artifacts_dir)
+    log_output = (
+        pathlib.Path(args.log_output)
+        if args.log_output
+        else artifacts_dir / f"{args.test_name}_log.txt"
+    )
 
     vhost_proc = None
     qemu_proc = None
@@ -296,20 +301,19 @@ def launch_qemu(args):
       if qemu_proc is not None:
         qemu_proc.terminate()
         qemu_proc.wait()
-      if args.log_output:
-        with open(args.log_output, "w") as outfile:
-          outfile.write(f"=== Test Name: {args.test_name} ===\n\n")
-          outfile.write("=== Device Console Log ===\n")
-          outfile.write((test_dir / "console.log").read_text())
-          if script_log_path.exists():
-            outfile.write("\n=== Host Test Script Log ===\n")
-            outfile.write(script_log_path.read_text())
-        if failed:
-          print(f"\nQEMU Test Failed! Output log:\n")
-          log_text = pathlib.Path(args.log_output).read_text()
-          # Strip ANSI escape codes (like clear screen)
-          clean_text = re.sub(r"\x1b\[[0-9;]*[mGHKJ]", "", log_text)
-          print(clean_text)
+      with open(log_output, "w") as outfile:
+        outfile.write(f"=== Test Name: {args.test_name} ===\n\n")
+        outfile.write("=== Device Console Log ===\n")
+        outfile.write((test_dir / "console.log").read_text())
+        if script_log_path.exists():
+          outfile.write("\n=== Host Test Script Log ===\n")
+          outfile.write(script_log_path.read_text())
+      if failed:
+        print("\nQEMU Test Failed! Output log:\n")
+        log_text = log_output.read_text()
+        # Strip ANSI escape codes (like clear screen)
+        clean_text = re.sub(r"\x1b\[[0-9;]*[mGHKJ]", "", log_text)
+        print(clean_text)
       if args.artifacts_output:
         try:
           with tarfile.open(args.artifacts_output, "w") as tar:

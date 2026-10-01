@@ -70,22 +70,9 @@ pub(crate) mod tests {
     pub(crate) const TEST_PERMANENT_ATTRIBUTES_HASH_PATH: &str = "cert_permanent_attributes.hash";
 
     /// Returns the path to the given test file, or `None` if it can't be found.
-    ///
-    /// This handles the different directory structures between `bazel test` and our
-    /// `build_and_run_tests` wrapper.
     fn test_data_path(path: &str) -> Option<PathBuf> {
-        let paths = [
-            // Directory for `build_and_run_tests` workflow (runs in execution root)
-            Path::new("external/gbl+/libgbl/testdata").join(path),
-            // Directory for `bazel test` workflow (runs in runfiles directory)
-            Path::new("../gbl+/libgbl/testdata").join(path),
-        ];
-        for p in paths {
-            if p.exists() {
-                return Some(p);
-            }
-        }
-        None
+        let p = Path::new("../gbl+/libgbl/testdata").join(path);
+        p.exists().then_some(p)
     }
 
     /// Returns the contents of a test data file.
