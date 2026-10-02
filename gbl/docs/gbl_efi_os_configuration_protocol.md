@@ -86,7 +86,8 @@ Selects the FIT configuration corresponding to the platform. See
 
 ### Summary
 
-Provides runtime fixups to the bootconfig.
+Allows the firmware to append device-specific parameters to the bootconfig built
+by GBL.
 
 ### Prototype
 
@@ -104,8 +105,8 @@ EFI_STATUS
 
 ### Parameters
 
-Ownership of all the parameters is loaned only for the duration of the function
-call, and must not be retained by the protocol after returning.
+All parameters are valid only for the duration of the function call and must not
+be retained by the protocol.
 
 #### Self
 
@@ -113,67 +114,57 @@ A pointer to the `GBL_EFI_OS_CONFIGURATION_PROTOCOL` instance.
 
 #### BootConfigSize
 
-Size of the bootconfig built by GBL.
+Specifies the size of the bootconfig provided by `BootConfig`.
 
 #### BootConfig
 
-Pointer to the bootconfig built by GBL. Trailing data isn't provided.
+A pointer to the bootconfig built by GBL so far. Guaranteed to contain
+`BootConfigSize` bytes of bootconfig parameters, without the bootconfig trailer
+or a null terminator.
 
 #### FixupBufferSize
 
-On function call, this points to the fixup buffer size provided by `Fixup`. The
-implementation is free to provide fixup data up to this size.
+On input, points to the size of the provided `Fixup` buffer. The firmware is
+free to provide fixup data up to this size.
 
-If the buffer is not large enough to fit the fixup, implementation must update
-`FixupBufferSize` with the required size and return `EFI_BUFFER_TOO_SMALL`; GBL
-will then allocate a larger buffer, discard all modifications and repeat the
-`FixupBootConfig` call.
+On output, the firmware must update it according to the return code:
 
-`FixupBufferSize` must be updated on success to let GBL determine the provided
-bootconfig fixup size.
+- `EFI_SUCCESS`: the size of the provided fixup data. GBL consumes exactly this
+  number of bytes from `Fixup`.
+- `EFI_BUFFER_TOO_SMALL`: the size required to fit the fixup data. GBL discards
+  any data written to `Fixup` and either repeats the call with a larger buffer
+  or fails to boot.
+- Other: ignored by GBL.
 
 #### Fixup
 
-Pointer to a pre-allocated buffer to store the generated bootconfig fixup. GBL
-verifies and appends provided data into the final bootconfig. FW may either
-return `EFI_UNSUPPORTED`, or leave the buffer unchanged and set
-`FixupBufferSize` to `0` to indicate that no fixup is required.
-
-The FW implementation can generate a fixup with the following restrictions:
-
-- on return, the data must be valid bootconfig (trailer is optional)
-- provided data must never exceed the provided `FixupBufferSize`
-- no libavb arguments may be provided (see Security below)
+A pointer to a pre-allocated buffer of `FixupBufferSize` bytes to be filled by
+the firmware with the bootconfig fixup.
 
 ### Description
 
-[Bootconfig][bootconfig] as a format is similar to the kernel command line, but
-intended for user space consumption rather than kernel.
+This method allows the firmware to append device-specific parameters to the
+[bootconfig][bootconfig] built by GBL.
 
-Implementation should only append the bootconfig parameters, GBL will
-automatically update the bootconfig trailer metadata afterwards. Override
-bootconfig operator `:=` may be used to re-define some of the values provided by
-GBL.
+GBL appends the fixup verbatim, without parsing or validating it, so every byte
+becomes part of the final bootconfig. A trailing newline is added if missing.
+The override operator `:=` may be used to re-define values provided by GBL.
 
-### Security
+The fixup must meet the following criteria:
 
-To ensure the integrity of verified boot data, this protocol will not be allowed
-to append any bootconfig provided by [libavb][libavb]. If any of these
-parameters are provided, GBL will treat this as a failed boot attempt:
+1. Must consist of bootconfig parameters only, without the bootconfig trailer or
+   a null terminator.
+2. Must be derived from trusted data only and must not re-define verified boot
+   parameters, since the OS trusts bootconfig as bootloader-provided data.
 
-- `androidboot.veritymode*`
-- `androidboot.vbmeta*`
-- `:=` may be only used to re-define `androidboot.mode`
-
-Additionally, all data used to apply fixups to the bootconfig must be trusted.
-In particular, if the protocol loads any data from non-secure storage, it must
-verify that data before use.
+If no fixup is needed, `FixupBufferSize` can be set to `0` or `EFI_UNSUPPORTED`
+can be returned - both have the same effect.
 
 ### Status Codes Returned
 
 | Return Code             | Semantics                                                                               |
 | :---------------------- | :-------------------------------------------------------------------------------------- |
-| `EFI_SUCCESS`           | Bootconfig fixup provided.                                                              |
+| `EFI_SUCCESS`           | Fixup was successfully written.                                                         |
 | `EFI_UNSUPPORTED`       | No fixup is provided; the bootconfig generated by GBL will be used as-is.               |
 | `EFI_BUFFER_TOO_SMALL`  | `Fixup` buffer is too small; `FixupBufferSize` has been updated with the required size. |
 | `EFI_INVALID_PARAMETER` | Unexpected input; GBL will refuse to boot.                                              |
@@ -292,8 +283,8 @@ device tree.
 
 ### Parameters
 
-Ownership of all the parameters is loaned only for the duration of the function
-call, and must not be retained by the protocol after returning.
+All parameters are valid only for the duration of the function call and must not
+be retained by the protocol.
 
 #### Self
 
@@ -391,8 +382,8 @@ EFI_STATUS
 
 ### Parameters
 
-Ownership of all the parameters is loaned only for the duration of the function
-call, and must not be retained by the protocol after returning.
+All parameters are valid only for the duration of the function call and must not
+be retained by the protocol.
 
 #### Self
 
@@ -459,4 +450,3 @@ traditional device tree selection and ignore the FIT image entirely.
 [avf]: https://source.android.com/docs/core/virtualization
 [bootconfig]:
   https://source.android.com/docs/core/architecture/bootloader/implementing-bootconfig
-[libavb]: https://source.android.com/docs/security/features/verifiedboot/avb
