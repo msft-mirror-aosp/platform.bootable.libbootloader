@@ -349,6 +349,8 @@ void gbl_printf(const char* fmt, va_list args) {
   gbl_print_string(output_buffer);
 }
 
+#ifdef __GBL_LIBC_STUBS__
+
 int vsnprintf(char* str, size_t size, const char* format, va_list ap) {
   return (int)gbl_printf_buffer(format, ap, str, size);
 }
@@ -361,7 +363,6 @@ int snprintf(char* str, size_t size, const char* format, ...) {
   return ret;
 }
 
-#ifdef __GBL_LIBC_STUBS__
 FILE* stdin = (FILE*)1;
 FILE* stdout = (FILE*)2;
 FILE* stderr = (FILE*)3;
@@ -385,4 +386,5 @@ int ferror(FILE* stream) { return 0; }
 int fflush(FILE* stream) { return -1; }
 char* fgets(char* s, int size, FILE* stream) { return NULL; }
 int fputs(const char* str, FILE* stream) { return -1; }
+
 #endif  // __GBL_LIBC_STUBS__
