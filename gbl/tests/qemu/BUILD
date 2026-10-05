@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@bazel_skylib//lib:selects.bzl", "selects")
 load("@bazel_skylib//rules:write_file.bzl", "write_file")
 load("@gbl_llvm_prebuilts//:info.bzl", "LLVM_PREBUILTS_LIB_DIR")
 load("@rules_python//python:defs.bzl", "py_binary", "py_library")
@@ -22,6 +23,14 @@ load("//tools/gpt_gen:gpt_gen.bzl", "gpt_gen")
 package(
     default_applicable_licenses = ["@gbl//licensing:gbl_license"],
     default_visibility = ["//visibility:public"],
+)
+
+selects.config_setting_group(
+    name = "test_dependencies_exist",
+    match_all = [
+        "@vmm//repo_exists:exists",
+        "@mkbootimg//repo_exists:exists",
+    ],
 )
 
 py_library(
@@ -41,8 +50,8 @@ genrule(
     ],
     outs = ["boot_a.img"],
     cmd = """
-        $(location @mkbootimg//:mkbootimg) \
-        --kernel $(location @gbl//tests/qemu/test_kernel:test_kernel_aarch64) \
+        $(execpath @mkbootimg//:mkbootimg) \
+        --kernel $(execpath @gbl//tests/qemu/test_kernel:test_kernel_aarch64) \
         --header_version 4 \
         -o $@
     """,
@@ -320,4 +329,19 @@ qemu_test(
     },
     gbl = "@gbl//efi:aarch64_dev",
     test_script = ":dice_boot_test",
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":qemu_boot_memory_test",
+        ":qemu_dice_boot_test_ed25519",
+        ":qemu_dice_boot_test_mldsa65",
+        ":qemu_dice_boot_test_mldsa87",
+        ":qemu_dice_boot_test_p256",
+        ":qemu_dice_boot_test_p384",
+        ":qemu_fastboot_misc_test",
+        ":qemu_lldb_debugging_test",
+        ":qemu_trace_test",
+    ],
 )

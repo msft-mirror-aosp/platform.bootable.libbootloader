@@ -12,29 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@bazel_skylib//lib:selects.bzl", "selects")
-load("@gbl//toolchain:build_and_run_tests.bzl", "build_and_run_tests")
+package(
+    default_applicable_licenses = ["@gbl//licensing:gbl_license"],
+    default_visibility = ["//visibility:public"],
+)
 
 test_suite(
     name = "tests",
-    tests = [
-        ":build_and_run_tests",
-        ":build_and_run_qemu_tests",
-        # Doc tests does not work for `build_and_run_tests` because it accesses
-        # `../rules_rust/util/process_wrapper` and its path can't be correctly provided as test
-        # data.
-        "@gbl//libefi_types:libefi_types_doc_test",
-        "@gbl//libstorage:libstorage_doc_test",
-        "@gbl//signtool:gblsigntool_test",
-    ],
-)
-
-# Note: this rule does not work with `test_suite` targets, we must add each test
-# individually.
-build_and_run_tests(
-    name = "build_and_run_tests",
-    # We need to re-specify the runtime data needed by tests.
-    data = ["@gbl//libgbl/testdata"],
     tests = [
         "@gbl//:readme_test",
         "@gbl//efi:test",
@@ -56,6 +40,7 @@ build_and_run_tests(
         "@gbl//libefi:libefi_test_dev",
         "@gbl//libefi:mocks_test",
         "@gbl//libefi_types:gbl_protocols_license_test",
+        "@gbl//libefi_types:libefi_types_doc_test",
         "@gbl//libefi_types:libefi_types_test",
         "@gbl//libelf:relocation_test",
         "@gbl//liberror:liberror_test",
@@ -68,42 +53,11 @@ build_and_run_tests(
         "@gbl//libopendice:libopendice_test",
         "@gbl//libpvmfwconfig:libpvmfwconfig_test",
         "@gbl//libsafemath:libsafemath_test",
+        "@gbl//libstorage:libstorage_doc_test",
         "@gbl//libstorage:libstorage_test",
         "@gbl//libutils:test",
         "@gbl//libutils:testutils_test",
+        "@gbl//signtool:gblsigntool_test",
+        "@gbl//tests/qemu:tests",
     ],
-)
-
-selects.config_setting_group(
-    name = "qemu_test_dependencies_exist",
-    match_all = [
-        "@vmm//repo_exists:exists",
-        "@mkbootimg//repo_exists:exists",
-    ],
-)
-
-build_and_run_tests(
-    name = "build_and_run_qemu_tests",
-    # The vmm repo may not be added in all branches. Only enable the test when
-    # it exists.
-    # Put as data dependency so that this becomes a build-time test. The output produced
-    # is the log file.
-    # Put as a different test target so that it can be parallelized with other tests.
-    data = select(
-        {
-            ":qemu_test_dependencies_exist": [
-                "@gbl//tests/qemu:qemu_boot_memory_test",
-                "@gbl//tests/qemu:qemu_dice_boot_test_ed25519",
-                "@gbl//tests/qemu:qemu_dice_boot_test_mldsa65",
-                "@gbl//tests/qemu:qemu_dice_boot_test_mldsa87",
-                "@gbl//tests/qemu:qemu_dice_boot_test_p256",
-                "@gbl//tests/qemu:qemu_dice_boot_test_p384",
-                "@gbl//tests/qemu:qemu_fastboot_misc_test",
-                "@gbl//tests/qemu:qemu_lldb_debugging_test",
-                "@gbl//tests/qemu:qemu_trace_test",
-            ],
-            "//conditions:default": [],
-        },
-    ),
-    tests = [],
 )

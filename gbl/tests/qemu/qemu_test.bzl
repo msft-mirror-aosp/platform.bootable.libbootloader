@@ -14,6 +14,8 @@
 
 """Macros for instantiating QEMU tests."""
 
+load("@rules_python//python:defs.bzl", "py_test")
+
 def qemu_test(
         name,
         gbl,
@@ -23,13 +25,12 @@ def qemu_test(
         qemu = "@vmm//:qemu/x86_64-linux-gnu/bin/gbl-qemu-system-aarch64",
         bios = "@vmm//:qemu/x86_64-linux-gnu/usr/share/qemu/edk2-aarch64-code.fd",
         vhost_device_vsock = "@vhost_device_vsock",
-        out = None,
         runfiles = [],
         timeout = None,
         env = {},
         gdb = False,
         **kwargs):
-    """Instantiates a QEMU test genrule.
+    """Instantiates a QEMU test target.
 
     Args:
         name: The name of the test target.
@@ -40,8 +41,6 @@ def qemu_test(
         qemu: Target label for the QEMU binary.
         bios: Target label for the BIOS/UEFI firmware.
         vhost_device_vsock: Target label for vhost_device_vsock. Can be None.
-        out: Name of the serial log output file. If None, defaults to
-             `"{name}_log.txt"`.
         runfiles: Optional list of labels or [label, mapped_name] lists to
              include as runfiles.
         timeout: Optional Starlark integer timeout in seconds.
@@ -49,17 +48,11 @@ def qemu_test(
              names to their values.
         gdb: Whether to enable GDB debugging. When true, QEMU will wait for
              GDB to connect before starting GBL.
-        **kwargs: General rule arguments passed to the underlying genrule.
+        **kwargs: General rule arguments passed to the underlying py_test.
     """
 
-    # Determine the default output result filename.
-    if out == None:
-        out = "{name}_log.txt".format(name = name)
-    artifacts_out = "{name}_artifacts.tar".format(name = name)
-
     # Collect input files required by the test launcher.
-    srcs = [
-        "@gbl//tests/qemu:qemu_launcher.py",
+    data = [
         gbl_launcher,
         gbl,
         qemu,
@@ -73,33 +66,29 @@ def qemu_test(
             disks = [disk]
         elif type(disk) == "list" or type(disk) == "tuple":
             disks = list(disk)
-    srcs.extend(disks)
+    data.extend(disks)
 
     # Gather executable host tool dependencies.
-    tools = []
     if test_script != None:
-        tools.append(test_script)
+        data.append(test_script)
     if vhost_device_vsock != None:
-        tools.append(vhost_device_vsock)
+        data.append(vhost_device_vsock)
 
-    # Assemble the base Python test launcher command.
-    cmd = [
-        "python3 $(location @gbl//tests/qemu:qemu_launcher.py)",
-        "$(location " + gbl_launcher + ")",
-        "$(location " + gbl + ")",
-        "--test_name " + name,
-        "--qemu $(location " + qemu + ")",
-        "--bios $(location " + bios + ")",
-        "--log_output $(location :" + out + ")",
-        "--artifacts_output $(location :" + artifacts_out + ")",
+    # Assemble the base Python test launcher command arguments.
+    args = [
+        "$(rootpath " + gbl_launcher + ")",
+        "$(rootpath " + gbl + ")",
+        "--test_name=" + name,
+        "--qemu=$(rootpath " + qemu + ")",
+        "--bios=$(rootpath " + bios + ")",
     ]
 
-    # Add runfiles targets to srcs and format command args
+    # Add runfiles targets to data and format command args
     for item in runfiles:
         if type(item) == "string":
             target = item
-            srcs.append(target)
-            cmd.append("--runfile $(location {})".format(target))
+            data.append(target)
+            args.append("--runfile=$(rootpath {})".format(target))
         elif type(item) == "list" or type(item) == "tuple":
             if len(item) != 2:
                 fail(
@@ -108,43 +97,47 @@ def qemu_test(
                 )
             target = item[0]
             dest = item[1]
-            srcs.append(target)
-            cmd.append("--runfile {},$(location {})".format(dest, target))
+            data.append(target)
+            args.append("--runfile={},$(rootpath {})".format(dest, target))
         else:
             fail("runfiles items must be strings or lists/tuples of strings")
 
     # Append disks
     for d in disks:
-        cmd.append("--disk $(location " + d + ")")
+        args.append("--disk=$(rootpath " + d + ")")
 
     # If userspace vsock is enabled, add vsock device.
     if vhost_device_vsock != None:
-        cmd.append("--vhost_device_vsock $(location " + vhost_device_vsock + ")")
+        args.append("--vhost_device_vsock=$(rootpath " + vhost_device_vsock + ")")
 
     # If userspace test script is enabled, add test script.
     if test_script != None:
-        cmd.append("--test_script $(location " + test_script + ")")
+        args.append("--test_script=$(rootpath " + test_script + ")")
 
     # If timeout is set, add timeout.
     if timeout != None:
-        cmd.append("--timeout " + str(timeout))
+        args.append("--timeout=" + str(timeout))
 
     # If GDB debugging is enabled, configure QEMU to wait for GDB.
     if gdb:
-        cmd.append("--gdb")
+        args.append("--gdb")
 
-    # Add custom environment variables as inline shell assignments.
-    env_prefix = []
-    if env != None:
-        for k, v in env.items():
-            env_prefix.append('{}="{}"'.format(k, str(v).replace('"', '\\"')))
-
-    # Instantiate the underlying Bazel genrule.
-    native.genrule(
+    py_test(
         name = name,
-        srcs = srcs,
-        outs = [out, artifacts_out],
-        cmd = " ".join(env_prefix + cmd),
-        tools = tools,
+        srcs = ["@gbl//tests/qemu:qemu_launcher.py"],
+        main = "@gbl//tests/qemu:qemu_launcher.py",
+        args = select({
+            "@gbl//tests/qemu:test_dependencies_exist": args,
+            "//conditions:default": [],
+        }),
+        data = select({
+            "@gbl//tests/qemu:test_dependencies_exist": data,
+            "//conditions:default": [],
+        }),
+        env = env,
+        target_compatible_with = select({
+            "@gbl//tests/qemu:test_dependencies_exist": [],
+            "//conditions:default": ["@platforms//:incompatible"],
+        }),
         **kwargs
     )
