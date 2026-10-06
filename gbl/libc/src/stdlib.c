@@ -18,9 +18,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-int errno = 0;
-
 #ifdef __GBL_LIBC_STUBS__
+
+int errno = 0;
 
 extern void* bsearch_rust(const void* key, const void* base, size_t nmemb,
                           size_t size, int (*compar)(const void*, const void*));
