@@ -369,6 +369,7 @@ cc_flags_common = [
     # context. This leads to -Winvalid-constexpr errors when building targets
     # (such as BoringSSL) that include these headers. Disable it.
     "-Wno-invalid-constexpr",
+    "-ffile-prefix-map=/proc/self/cwd=.",
 ]
 
 # Linux host LLVM toolchain.
@@ -697,6 +698,8 @@ uefi_rustc_flags = [
     # since Rust 1.95.0 (https://github.com/rust-lang/rust/pull/151534).
     "-Z",
     "unstable-options",
+    "-Z",
+    "remap-cwd-prefix=.",
     # Always stores frame pointers.
     "-C",
     "force-frame-pointers=yes",
