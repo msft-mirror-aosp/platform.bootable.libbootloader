@@ -631,12 +631,7 @@ rust_toolchain(
     default_edition = "2021",
     dylib_ext = ".so",
     exec_triple = "x86_64-unknown-linux-musl",
-    extra_rustc_flags = select(rustc_dev_prod_flags_select) + [
-        # Allow multiple definitions so that custom C implementations in @gbl//libc (such as
-        # strtoul) can override matching symbols in musl's static libc.a without linker collision.
-        "-C",
-        "link-arg=-Wl,--allow-multiple-definition",
-    ],
+    extra_rustc_flags = select(rustc_dev_prod_flags_select),
     extra_rustc_flags_for_crate_types = {
         # The x86_64-unknown-linux-musl target defaults to static CRT (+crt-static). For proc-macros
         # (dynamically loaded .so plugins), static CRT linking embeds an uninitialized musl allocator

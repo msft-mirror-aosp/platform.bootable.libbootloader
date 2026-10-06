@@ -23,7 +23,7 @@ use core::ffi::{c_char, c_int, CStr};
 /// # Safety
 ///
 /// * `s1` and `s2` must be valid pointers to null terminated C strings.
-#[no_mangle]
+#[cfg_attr(not(target_os = "linux"), no_mangle)]
 pub unsafe extern "C" fn strcmp(s1: *const c_char, s2: *const c_char) -> c_int {
     // SAFETY: `s1` and `s2` are valid null-terminated strings. References are only used
     // within function.
@@ -36,7 +36,7 @@ pub unsafe extern "C" fn strcmp(s1: *const c_char, s2: *const c_char) -> c_int {
 /// # Safety
 ///
 /// * `s1` and `s2` must be at least nth sized or null terminated arrays.
-#[no_mangle]
+#[cfg_attr(not(target_os = "linux"), no_mangle)]
 pub unsafe extern "C" fn strncmp(s1: *const c_char, s2: *const c_char, n: usize) -> c_int {
     for i in 0..n {
         // SAFETY: `i` is always within the bounds of `s1` and `s2` because it is limited by `n`,

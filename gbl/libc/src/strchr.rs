@@ -23,7 +23,7 @@ use core::ptr::null_mut;
 /// # Safety
 ///
 /// * `str` must be a valid null-terminated C string.
-#[no_mangle]
+#[cfg_attr(not(target_os = "linux"), no_mangle)]
 pub unsafe extern "C" fn strchr(ptr: *const c_char, ch: c_int) -> *mut c_char {
     assert!(!ptr.is_null());
     // SAFETY: `str` is a valid null terminated string.
@@ -42,7 +42,7 @@ pub unsafe extern "C" fn strchr(ptr: *const c_char, ch: c_int) -> *mut c_char {
 /// # Safety
 ///
 /// * `str` must be a valid null-terminated C string.
-#[no_mangle]
+#[cfg_attr(not(target_os = "linux"), no_mangle)]
 pub unsafe extern "C" fn strrchr(ptr: *const c_char, ch: c_int) -> *mut c_char {
     assert!(!ptr.is_null());
     // SAFETY: `str` is a null terminated string.

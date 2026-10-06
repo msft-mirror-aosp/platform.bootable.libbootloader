@@ -268,7 +268,7 @@ pub unsafe extern "C" fn gbl_realloc(
 ///
 /// * `ptr` needs to be a buffer with at least `count` bytes.
 /// * Returns the pointer within `ptr` buffer, or null if not found.
-#[no_mangle]
+#[cfg_attr(not(target_os = "linux"), no_mangle)]
 pub unsafe extern "C" fn memchr(ptr: *const c_void, ch: c_int, count: c_ulong) -> *mut c_void {
     assert!(!ptr.is_null());
     let start = ptr as *const u8;
@@ -289,7 +289,7 @@ pub unsafe extern "C" fn memchr(ptr: *const c_void, ch: c_int, count: c_ulong) -
 /// # Safety
 ///
 /// * `s` must be a valid pointer to a null terminated C string.
-#[no_mangle]
+#[cfg_attr(not(target_os = "linux"), no_mangle)]
 pub unsafe extern "C" fn strnlen(s: *const c_char, maxlen: usize) -> usize {
     // SAFETY: `s` is a valid pointer to a null terminated string.
     match unsafe { memchr(s as *const _, 0, maxlen.try_into().unwrap()) } {
@@ -299,7 +299,7 @@ pub unsafe extern "C" fn strnlen(s: *const c_char, maxlen: usize) -> usize {
 }
 
 /// void *abort();
-#[no_mangle]
+#[cfg_attr(not(target_os = "linux"), no_mangle)]
 pub extern "C" fn abort() -> ! {
     panic!("aborted by 3d party code")
 }

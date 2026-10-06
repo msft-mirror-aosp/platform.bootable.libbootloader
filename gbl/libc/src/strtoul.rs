@@ -106,7 +106,7 @@ unsafe fn strtou_helper(
 // SAFETY: This is the only function named `strtoul` in the binary and must be exported unmangled
 // to satisfy standard C library linkage requirements in freestanding/baremetal UEFI environments
 // (used by C dependencies such as libfdt).
-#[unsafe(no_mangle)]
+#[cfg_attr(not(target_os = "linux"), unsafe(no_mangle))]
 pub unsafe extern "C" fn strtoul(
     s: *const c_char,
     endptr: *mut *const c_char,
@@ -130,7 +130,7 @@ pub unsafe extern "C" fn strtoul(
 // SAFETY: This is the only function named `strtoull` in the binary and must be exported unmangled
 // to satisfy standard C library linkage requirements in freestanding/baremetal UEFI environments
 // (specifically required by BoringSSL in `src/crypto/cpu_intel.cc` for CPU capability flag parsing).
-#[unsafe(no_mangle)]
+#[cfg_attr(not(target_os = "linux"), unsafe(no_mangle))]
 pub unsafe extern "C" fn strtoull(
     s: *const c_char,
     endptr: *mut *const c_char,
