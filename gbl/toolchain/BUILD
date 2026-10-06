@@ -611,10 +611,10 @@ rust_stdlib_filegroup(
 common_lint_opts = [
     "-A",
     "deprecated",
-    # external/rust/crates/spin doesn't pass this lint check and there is not a way to make an
-    # exemption. Disable it until upstream is fixed or we figure out a workaround.
-    #"-D",
-    #"unsafe_op_in_unsafe_fn",
+    # Lints such as `unsafe_op_in_unsafe_fn` and `missing-docs` are enabled for first-party GBL
+    # crates via `ANDROID_RUST_LINTS` in `gbl_workspace_util.bzl` rather than here, because
+    # `extra_rustc_flags` are appended after per-target `rustc_flags` and cannot be overridden by
+    # third-party crates.
     "-D",
     "warnings",
     "-D",

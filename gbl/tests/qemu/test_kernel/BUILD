@@ -13,6 +13,7 @@
 # limitations under the License.
 
 load("@gbl//toolchain:gbl_toolchain.bzl", "build_with_platform")
+load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@gbl_llvm_prebuilts//:info.bzl", "gbl_llvm_tool_path")
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("@rules_rust//rust:defs.bzl", "rust_binary")
@@ -32,7 +33,7 @@ rust_binary(
     name = "test_kernel_elf",
     srcs = ["main.rs"],
     linker_script = ":kernel.ld",
-    rustc_flags = [
+    rustc_flags = ANDROID_RUST_LINTS + [
         "-C",
         "panic=abort",
     ],

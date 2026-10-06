@@ -43,15 +43,18 @@ unsafe impl GlobalAlloc for StubAllocator {
 #[global_allocator]
 static ALLOCATOR: StubAllocator = StubAllocator;
 
+/// Stack canary guard value for ELF stack protector.
 #[no_mangle]
 pub static __stack_chk_guard: usize = 0xffffffff;
 
+/// Stack protector failure handler for ELF objects.
 #[no_mangle]
 pub extern "C" fn __stack_chk_fail() -> ! {
     semihosting::println!("ERROR: Stack protection check failed inside custom test_kernel!");
     semihosting::shutdown(1);
 }
 
+/// Rust exception handling personality stub.
 #[no_mangle]
 pub extern "C" fn rust_eh_personality() {}
 
@@ -178,7 +181,7 @@ fn panic(p_info: &core::panic::PanicInfo) -> ! {
     semihosting::shutdown(1);
 }
 
-// ELF requires the following symbol.
+/// Unwind resume stub required for ELF linking.
 #[no_mangle]
 pub extern "C" fn _Unwind_Resume(_: *mut core::ffi::c_void) {
     panic!();
