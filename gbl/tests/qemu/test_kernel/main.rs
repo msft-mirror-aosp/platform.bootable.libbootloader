@@ -55,6 +55,13 @@ pub extern "C" fn __stack_chk_fail() -> ! {
 #[no_mangle]
 pub extern "C" fn rust_eh_personality() {}
 
+/// Trap handler for trap-mode UBSan.
+#[no_mangle]
+pub extern "C" fn gbl_ubsan_trap() -> ! {
+    semihosting::println!("ERROR: UBSan trap triggered inside custom test_kernel!");
+    semihosting::shutdown(1);
+}
+
 /// Linux like kernel main entry
 ///
 /// # Safety

@@ -27,9 +27,10 @@ cc_library(
         ["src/*.c"],
     ),
     copts = [
-        # This *is* the stack protector;
-        # if the functions provided get stack-checked, it causes infinite recursion.
+        # This *is* the stack protector and UBSan trap handler;
+        # if the functions provided get instrumented, it causes infinite recursion.
         "-fno-stack-protector",
+        "-fno-sanitize=all",
     ],
     deps = [
         "@gbl//libefi_types:efi_c_headers",

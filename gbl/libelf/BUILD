@@ -33,8 +33,10 @@ cc_library(
         # print and panics as exit().
         "//conditions:default": ["-DHOST_TOOLING"],
     }) + [
-        # Before relocation is complete, it may not be possible to access stack canary.
+        # Before relocation is complete, it may not be possible to access stack canary
+        # or trap handlers.
         "-fno-stack-protector",
+        "-fno-sanitize=all",
     ],
     includes = [
         "include",
