@@ -46,7 +46,6 @@ cc_library(
     name = "libopen_dice_cbor_baremetal_multialg",
     srcs = cbor_baremetal_multialg_srcs,
     hdrs = cbor_baremetal_hdrs,
-    copts = ["-fno-lto"],
     includes = [
         "include",
         "include/dice/config/android",
@@ -76,7 +75,6 @@ cc_library(
     name = "libopen_dice_android_baremetal_multialg",
     srcs = android_srcs,
     hdrs = android_hdrs,
-    copts = ["-fno-lto"],
     includes = ["include"],
     deps = [
         ":libopen_dice_cbor_baremetal_multialg",
