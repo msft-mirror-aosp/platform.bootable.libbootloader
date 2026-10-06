@@ -48,7 +48,7 @@
 /* #undef _LIBCPP_PSTL_BACKEND_LIBDISPATCH */
 
 // Hardening.
-#define _LIBCPP_HARDENING_MODE_DEFAULT 2
+#define _LIBCPP_HARDENING_MODE_DEFAULT _LIBCPP_HARDENING_MODE_FAST
 
 // __USE_MINGW_ANSI_STDIO gets redefined on MinGW
 #ifdef __clang__
