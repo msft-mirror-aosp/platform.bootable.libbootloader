@@ -15,10 +15,10 @@
 //! This file provides some utilities built on EFI APIs.
 
 use crate::{EfiEntry, Event, EventType};
-use core::{future::Future, str::from_utf8, time::Duration};
-use efi_types::{EfiGuid, EFI_TIMER_DELAY_TIMER_PERIODIC, EFI_TIMER_DELAY_TIMER_RELATIVE};
+use core::{str::from_utf8, time::Duration};
+use efi_types::{EfiGuid, EFI_TIMER_DELAY_TIMER_RELATIVE};
 use fdt::FdtHeader;
-use gbl_async::{select, yield_now};
+use gbl_async::yield_now;
 use liberror::Result;
 
 /// `Timeout` provide APIs for checking timeout.
@@ -57,54 +57,6 @@ pub async fn wait(efi_entry: &EfiEntry, duration: Duration) -> Result<()> {
         yield_now().await;
     }
     Ok(())
-}
-
-/// Runs a future with timeout.
-///
-/// # Returns
-///
-/// * Returns Ok(Some(R)) if the future finishes before timeout.
-/// * Returns Ok(None) if the future didn't finish before timeout.
-/// * Returns Err if internal error occurs while handling EFI timer event.
-pub async fn with_timeout<F: Future<Output = R>, R>(
-    efi_entry: &EfiEntry,
-    fut: F,
-    timeout: Duration,
-) -> Result<Option<R>> {
-    let (timeout_res, res) = select(wait(efi_entry, timeout), fut).await;
-    match timeout_res {
-        Some(Err(e)) => return Err(e),
-        _ => Ok(res),
-    }
-}
-
-/// Wrapper helping for a periodic timer.
-pub struct RecurringTimer<'a> {
-    efi_entry: &'a EfiEntry,
-    timer: Event<'a, 'static>,
-}
-
-impl<'a> RecurringTimer<'a> {
-    /// Constructs and starts a new periodic timer.
-    pub fn new(efi_entry: &'a EfiEntry, timeout: Duration) -> Result<Self> {
-        let bs = efi_entry.system_table().boot_services();
-        let timer = bs.create_event(EventType::Timer)?;
-        bs.set_timer(&timer, EFI_TIMER_DELAY_TIMER_PERIODIC, timeout)?;
-        Ok(Self { efi_entry, timer })
-    }
-
-    /// Checks whether the timer has expried.
-    pub fn check(&self) -> Result<bool> {
-        Ok(self.efi_entry.system_table().boot_services().check_event(&self.timer)?)
-    }
-
-    /// Waits asynchronously until the next tick.
-    pub async fn wait(&self) -> Result<()> {
-        while !self.check()? {
-            yield_now().await;
-        }
-        Ok(())
-    }
 }
 
 /// Parses the firmware API level from a byte slice.

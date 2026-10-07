@@ -453,11 +453,6 @@ pub fn gbl_vsock_session_status(sid: u64) -> Result<SessionStatus, Error> {
     Ok(GBL_VSOCK_MANAGER.try_lock().ok_or(Error::NotReady)?.get()?.session_status(sid))
 }
 
-/// Polls the driver and processes events
-pub fn gbl_vsock_poll() -> Result<(), Error> {
-    Ok(GBL_VSOCK_MANAGER.try_lock().ok_or(Error::NotReady)?.get()?.poll())
-}
-
 /// Reads data from the vsock.
 pub fn gbl_vsock_read(sid: u64, buffer: &mut [u8]) -> Result<usize, Error> {
     GBL_VSOCK_MANAGER.try_lock().ok_or(Error::NotReady)?.get()?.read(sid, buffer)
