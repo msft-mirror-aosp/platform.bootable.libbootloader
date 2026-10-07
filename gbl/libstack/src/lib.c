@@ -16,7 +16,6 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-
 #include <uefi/efi.h>
 
 /*
@@ -48,14 +47,22 @@
 
 static EfiSystemTable* system_table = NULL;
 
-static void libstack_debug_print(uint16_t* str) {
-  system_table->con_out->output_string(system_table->con_out, str);
+__attribute__((no_stack_protector, no_instrument_function)) static void
+libstack_debug_print(uint16_t* str) {
+  if (system_table && system_table->con_out &&
+      system_table->con_out->output_string) {
+    system_table->con_out->output_string(system_table->con_out, str);
+  }
 }
 
-static void libstack_system_reset() {
-  system_table->runtime_services->reset_system(
-      EFI_RESET_TYPE_COLD, EFI_STATUS_ACCESS_DENIED, 0, NULL);
-  libstack_debug_print(u"Failed to reset system\n");
+__attribute__((no_stack_protector, no_instrument_function)) static void
+libstack_system_reset(void) {
+  if (system_table && system_table->runtime_services &&
+      system_table->runtime_services->reset_system) {
+    system_table->runtime_services->reset_system(
+        EFI_RESET_TYPE_COLD, EFI_STATUS_ACCESS_DENIED, 0, NULL);
+    libstack_debug_print(u"Failed to reset system\n");
+  }
   for (;;) {
   }
 }
@@ -63,8 +70,8 @@ static void libstack_system_reset() {
 // The stack canary and canary check function for PE/COFF
 // (i.e. "real" UEFI apps).
 size_t __security_cookie = 0;
-__attribute__((no_instrument_function)) void __security_check_cookie(
-    size_t cookie) {
+__attribute__((no_stack_protector, no_instrument_function, noinline)) void
+__security_check_cookie(size_t cookie) {
   if (cookie != __security_cookie) {
     libstack_debug_print(u"Stack check failure\n");
     libstack_system_reset();
@@ -73,12 +80,21 @@ __attribute__((no_instrument_function)) void __security_check_cookie(
 
 // The stack canary and canary failure handler for ELF objects.
 size_t __stack_chk_guard = 0;
-void __stack_chk_fail() {
+__attribute__((no_stack_protector, no_instrument_function, noinline)) void
+__stack_chk_fail(void) {
   libstack_debug_print(u"Stack check failure\n");
   libstack_system_reset();
 }
 
-void initialize_canary(EfiSystemTable* systab, size_t canary) {
+// Trap handler for trap-mode UBSan.
+__attribute__((no_stack_protector, no_instrument_function, noinline)) void
+gbl_ubsan_trap(void) {
+  libstack_debug_print(u"Undefined behavior trap\n");
+  libstack_system_reset();
+}
+
+__attribute__((no_stack_protector, no_instrument_function, noinline)) void
+initialize_canary(EfiSystemTable* systab, size_t canary) {
   if (!system_table) {
     system_table = systab;
     __security_cookie = canary;

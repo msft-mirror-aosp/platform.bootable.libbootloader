@@ -357,6 +357,7 @@ cc_flags_common = [
     "-femit-dwarf-unwind=always",
     "-ffunction-sections",
     "-fdata-sections",
+    "-ftrivial-auto-var-init=zero",
     # Enable optimization otherwise software AVB hash will be too slow.
     "-O3",
     # The llvm version we use errors out for every goto statement that bypasses variable
@@ -415,6 +416,11 @@ cc_flags_uefi_common = cc_flags_common + [
     # This prevents clang C++ header from defining _LIBCPP_MSVCRT which requires MSVC runtime.
     "-U_MSC_VER",
     "-fstack-protector-all",
+    "-fno-delete-null-pointer-checks",
+    "-fno-strict-aliasing",
+    "-fsanitize=signed-integer-overflow,shift-exponent,bounds,unreachable,null",
+    "-fsanitize-trap=all",
+    "-ftrap-function=gbl_ubsan_trap",
     # Always stores frame pointers.
     "-fno-omit-frame-pointer",
     # Supports unwind table. (On arm, this makes sure x29 is stored on stack first).

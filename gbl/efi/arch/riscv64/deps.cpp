@@ -20,11 +20,11 @@
 
 extern "C" {
 
-void ApplyRelocationHangIfFail(uintptr_t program_base, uintptr_t dynamic_section) {
+__attribute__((no_stack_protector, no_sanitize("all"), noinline)) void
+ApplyRelocationHangIfFail(uintptr_t program_base, uintptr_t dynamic_section) {
   if (!ApplyRelocation(program_base, dynamic_section)) {
     while (true) {
     };
   }
 }
-
 }

@@ -32,8 +32,9 @@ cc_library(
         "//conditions:default": [],
     }),
     copts = [
-        # Stack protector must not call mcount again.
+        # Stack protector and sanitizers must not call mcount again.
         "-fno-stack-protector",
+        "-fno-sanitize=all",
         # Always optimize tracing code.
         "-O3",
     ],

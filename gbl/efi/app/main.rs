@@ -66,9 +66,9 @@ fn generate_canary(entry: &EfiEntry) -> usize {
     cfg_if! {
         if #[cfg(feature = "gbl_dev")] {
             let canary_default;
-            cfg_if!{
+            cfg_if! {
                 if #[cfg(target_pointer_width = "64")] {
-                    canary_default = 0x27085dc5dd4d6b7d;
+                    canary_default = 0x27085dc5dd4d6b7dusize ^ (entry as *const _ as usize);
                 } else {
                     compile_error!("Only 64 bit targets are supported");
                 }
@@ -76,7 +76,7 @@ fn generate_canary(entry: &EfiEntry) -> usize {
             canary
                 .unwrap_or_else(|e| {
                     efi_println!(entry,
-                                 "SECURITY WARNING: Failed to generate stack canary, using static default: {:?}", e);
+                                 "SECURITY WARNING: Failed to generate stack canary, using fallback: {:?}", e);
                     canary_default}
                 )
         } else {

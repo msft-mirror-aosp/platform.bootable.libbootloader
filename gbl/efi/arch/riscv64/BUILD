@@ -23,6 +23,12 @@ cc_library(
         "deps.cpp",
         "riscv64_efi_header.S",
     ],
+    copts = [
+        # ApplyRelocationHangIfFail runs before ELF dynamic relocation is complete,
+        # when stack canary and trap handlers may not be accessible.
+        "-fno-stack-protector",
+        "-fno-sanitize=all",
+    ],
     visibility = ["//visibility:public"],
     deps = ["@gbl//libelf:relocation"],
 )
