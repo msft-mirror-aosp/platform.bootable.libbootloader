@@ -56,7 +56,6 @@ rust_library(
         "@bytes",
         "@cfg_if",
         "@gbl//libasync",
-        "@gbl//libasync:cyclic_executor",
         "@gbl//libboot",
         "@gbl//libbuild_number",
         "@gbl//libefi",

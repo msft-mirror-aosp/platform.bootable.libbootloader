@@ -114,7 +114,6 @@ rust_test(
         "@avb//:avb_test",
         "@avb//:libavb_c_bindgen",
         "@cfg_if",
-        "@gbl//libasync:cyclic_executor",
         "@gbl//libavb:sysdeps",
         "@gbl//libboringssl:sysdeps",
         "@gbl//libc:libc_deps_posix",

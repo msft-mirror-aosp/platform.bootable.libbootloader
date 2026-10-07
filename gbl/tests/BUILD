@@ -24,7 +24,6 @@ test_suite(
         "@gbl//efi:test",
         "@gbl//efi:test_dev",
         "@gbl//libabr:libabr_test",
-        "@gbl//libasync:cyclic_executor_test",
         "@gbl//libasync:libasync_test",
         "@gbl//libboot:libboot_test",
         "@gbl//libbootimg:libbootimg_test",
