@@ -25,7 +25,6 @@ rust_binary(
     edition = "2021",
     deps = [
         "@arrayvec",
-        "@bytes",
         "@clap",
         "@gbl//libasync",
         "@gbl//libstorage",

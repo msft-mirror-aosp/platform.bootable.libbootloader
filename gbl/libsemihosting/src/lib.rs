@@ -269,11 +269,6 @@ impl Drop for File {
     }
 }
 
-/// Write the given data to a file
-pub fn save_to_file(path: &CStr, data: &[u8]) -> Result<(), Error> {
-    File::open(path, OpenMode::WriteCreate)?.write(data)
-}
-
 /// Deletes a file on the host.
 pub fn remove(path: &CStr) -> Result<(), Error> {
     match semihosting_call_with_args(OpCode::Remove, [path.as_ptr() as _, path.count_bytes()])? {

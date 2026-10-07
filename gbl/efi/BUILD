@@ -52,7 +52,6 @@ rust_library(
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@arrayvec",
-        "@avb",
         "@bytes",
         "@cfg_if",
         "@gbl//libasync",
@@ -71,11 +70,9 @@ rust_library(
         "@gbl//libutils",
         "@spin",
         "@static_assertions",
-        "@uuid",
         "@zerocopy",
     ] + select({
         "@gbl//toolchain:dev": [
-            "@gbl//libboringssl:sysdeps",
             "@gbl//protocol_integration:libprotocol_test",
             "@smoltcp",
             "@zbi",

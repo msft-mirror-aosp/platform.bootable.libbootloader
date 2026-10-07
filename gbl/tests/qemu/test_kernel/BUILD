@@ -47,7 +47,6 @@ rust_binary(
         "@gbl//libsemihosting",
         "@gbl//libtrace",
         "@gbl//libutils",
-        "@zerocopy",
     ],
 )
 

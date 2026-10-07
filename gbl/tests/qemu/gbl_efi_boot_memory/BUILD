@@ -29,6 +29,5 @@ rust_library(
         "@gbl//libgbl",
         "@gbl//libsemihosting",
         "@gbl//libutils",
-        "@spin",
     ],
 )

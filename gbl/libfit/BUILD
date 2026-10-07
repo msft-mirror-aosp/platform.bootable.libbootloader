@@ -41,7 +41,4 @@ rust_test(
     ],
     crate = ":libfit",
     rustc_flags = ANDROID_RUST_LINTS,
-    deps = [
-        "@gbl//libutils:libtestutils",
-    ],
 )

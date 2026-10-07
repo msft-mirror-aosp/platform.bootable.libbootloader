@@ -39,10 +39,3 @@ impl<T> DerefMut for Shared<T> {
         &mut self.0
     }
 }
-
-impl<T> Shared<T> {
-    /// Take self by value and return the underlying value.
-    pub fn into_value(self) -> T {
-        self.0.into_inner()
-    }
-}

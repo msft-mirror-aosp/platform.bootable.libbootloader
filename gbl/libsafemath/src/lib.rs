@@ -29,7 +29,7 @@
 //! let safe_chain = (SafeNum::from(BIG_NUMBER) * HUGE_NUMBER) / MAYBE_ZERO;
 //! // If any operation would have caused an overflow or division by zero,
 //! // the number is flagged and the lexical location is specified for logging.
-//! if safe_chain.has_error() {
+//! if u64::try_from(safe_chain).is_err() {
 //!     eprintln!("safe_chain error = {:#?}", safe_chain);
 //! }
 //! ```
@@ -109,9 +109,7 @@
 //!
 //! ### Miscellaneous
 //! SafeNums also provide helper methods to round up or down
-//! to the nearest multiple of another number
-//! and helper predicate methods that indicate whether the SafeNum
-//! is valid or is tracking an error.
+//! to the nearest multiple of another number.
 //!
 //! Also provided are constants `SafeNum::MAX`, `SafeNum::MIN`, and `SafeNum::ZERO`.
 //!
@@ -124,14 +122,14 @@
 //! let a = SafeNum::MAX - 1 + 1;
 //! let b = SafeNum::MAX + 1 - 1;
 //! assert_ne!(a, b);
-//! assert!(a.is_valid());
-//! assert!(b.has_error());
+//! assert!(u64::try_from(a).is_ok());
+//! assert!(u64::try_from(b).is_err());
 //!
 //! let c = (SafeNum::MAX + 31) / 31;
 //! let d = SafeNum::MAX / 31 + 31 / 31;
 //! assert_ne!(c, d);
-//! assert!(c.has_error());
-//! assert!(d.is_valid());
+//! assert!(u64::try_from(c).is_err());
+//! assert!(u64::try_from(d).is_ok());
 //! ```
 //!
 //! Note:    SafeNum arithmetic is much slower than arithmetic on integer primitives.
@@ -213,16 +211,6 @@ impl SafeNum {
         T: Copy + Into<Self>,
     {
         ((self + rhs) - 1).round_down(rhs)
-    }
-
-    /// Returns whether self is the result of an operation that has errored.
-    pub const fn has_error(&self) -> bool {
-        self.0.is_err()
-    }
-
-    /// Returns whether self represents a valid, non-overflowed integer.
-    pub const fn is_valid(&self) -> bool {
-        self.0.is_ok()
     }
 }
 
@@ -313,6 +301,13 @@ arithmetic_impl!(Rem, rem, RemAssign, rem_assign, checked_rem);
 #[cfg(test)]
 mod test {
     use super::*;
+
+    impl SafeNum {
+        /// Returns whether self is the result of an operation that has errored.
+        const fn has_error(&self) -> bool {
+            self.0.is_err()
+        }
+    }
 
     #[test]
     fn test_addition() {

@@ -95,7 +95,6 @@ rust_test(
         ":liblp",
         "@avb//:avb_bindgen",
         "@avb//:avb_crypto_ops_for_test",
-        "@avb//:libavb_c_bindgen",
         "@gbl//libavb:sysdeps",
         "@gbl//libboringssl:sysdeps",
         "@zerocopy",
