@@ -450,7 +450,7 @@ impl<'a> BootServices<'a> {
     const LOCATE_HANDLE_BUFFER_SIZE: usize = 8;
 
     /// Wrapper of `EFI_BOOT_SERVICES.AllocatePool()`.
-    #[allow(dead_code)]
+    #[cfg(not(test))]
     fn allocate_pool(
         &self,
         pool_type: EfiMemoryType,
@@ -633,21 +633,6 @@ impl<'a> BootServices<'a> {
             descriptor_size,
             descriptor_version,
         ))
-    }
-
-    /// Returns the buffer size `EFI_BOOT_SERVICES.GetMemoryMap()` currently requires.
-    ///
-    /// Use this rather than measuring a successful call. A successful call reports the map as
-    /// written, and firmware that compacts its OS-facing map writes fewer bytes than the next
-    /// call will demand. A subsequent allocation can increase this size, so callers must add
-    /// headroom.
-    pub fn memory_map_size(&self) -> Result<usize> {
-        match self.get_memory_map(&mut []) {
-            Err(Error::BufferTooSmall(Some(size))) => Ok(size),
-            // No conforming implementation claims a map fits in nothing.
-            Ok(_) => Err(Error::InvalidState),
-            Err(e) => Err(e),
-        }
     }
 
     /// Wrapper of `EFI_BOOT_SERVICES.InstallConfigurationTable()`.
@@ -1152,13 +1137,6 @@ impl<'a, 'n> Event<'a, 'n> {
     ) -> Self {
         Self { efi_entry: Some(efi_entry), efi_event, cb: PhantomData }
     }
-
-    /// Creates an  unowned `Event`. The `Event` is not closed when going out of scope.
-    // TODO allow unused?
-    #[allow(dead_code)]
-    fn new_unowned(efi_event: EfiEvent) -> Self {
-        Self { efi_entry: None, efi_event: efi_event, cb: PhantomData }
-    }
 }
 
 impl Drop for Event<'_, '_> {
@@ -1578,8 +1556,7 @@ mod test {
         EfiTpl, GblEfiDebugErrorTag, GblEfiDebugProtocol, EFI_MEMORY_TYPE_LOADER_CODE,
         EFI_MEMORY_TYPE_LOADER_DATA, EFI_STATUS_BUFFER_TOO_SMALL, EFI_STATUS_DEVICE_ERROR,
         EFI_STATUS_INVALID_PARAMETER, EFI_STATUS_NOT_FOUND, EFI_STATUS_NOT_READY,
-        EFI_STATUS_SUCCESS, EFI_STATUS_UNSUPPORTED, EFI_TIMER_DELAY_TIMER_PERIODIC,
-        GBL_EFI_DEBUG_ERROR_TAG_ASSERTION_ERROR,
+        EFI_STATUS_SUCCESS, EFI_STATUS_UNSUPPORTED, GBL_EFI_DEBUG_ERROR_TAG_ASSERTION_ERROR,
     };
     use std::{
         cell::RefCell,
@@ -1589,7 +1566,6 @@ mod test {
         slice::from_raw_parts_mut,
         sync::{Arc, Mutex},
     };
-    use utils::RecurringTimer;
     use zerocopy::IntoBytes;
 
     /// Helper function to generate a Protocol from an interface type.
@@ -1623,7 +1599,6 @@ mod test {
         pub locate_handle_trace: LocateHandleTrace,
         pub open_protocol_trace: OpenProtocolTrace,
         pub reset_trace: ResetTrace,
-        pub set_timer_trace: SetTimerTrace,
         pub set_watchdog_timer_trace: SetWatchdogTimerTrace,
     }
 
@@ -1960,28 +1935,6 @@ mod test {
         pub inputs: VecDeque<(EfiResetType, EfiStatus)>,
     }
 
-    /// EFI_BOOT_SERVICE.SetTimer.
-    #[derive(Default)]
-    pub struct SetTimerTrace {
-        // Capture call params
-        pub inputs: VecDeque<(EfiEvent, EfiTimerDelay, u64)>,
-        // EfiStatus for return
-        pub outputs: VecDeque<EfiStatus>,
-    }
-
-    /// Mock of the `EFI_BOOT_SERVICE.SetTimer` C API in test environment.
-    extern "efiapi" fn set_timer(
-        event: EfiEvent,
-        delay_type: EfiTimerDelay,
-        duration: u64,
-    ) -> EfiStatus {
-        EFI_CALL_TRACES.with(|trace| {
-            let trace = &mut trace.borrow_mut().set_timer_trace;
-            trace.inputs.push_back((event, delay_type, duration));
-            trace.outputs.pop_front().unwrap()
-        })
-    }
-
     /// EFI_BOOT_SERVICE.SetWatchdogTimer.
     #[derive(Default)]
     pub struct SetWatchdogTimerTrace {
@@ -2083,7 +2036,6 @@ mod test {
         boot_services.create_event = Some(create_event);
         boot_services.close_event = Some(close_event);
         boot_services.check_event = Some(check_event);
-        boot_services.set_timer = Some(set_timer);
         boot_services.set_watchdog_timer = Some(set_watchdog_timer);
         systab.boot_services = &mut boot_services as *mut _;
         let image_handle: usize = 1234; // Don't care.
@@ -2449,26 +2401,6 @@ mod test {
     }
 
     #[test]
-    fn test_memory_map_size_reports_firmware_capacity() {
-        run_test(|image_handle, systab_ptr| {
-            let efi_entry = EfiEntry { image_handle, systab_ptr };
-            const REQUIRED: usize = 7 * size_of::<EfiMemoryDescriptor>();
-            EFI_CALL_TRACES.with(|traces| {
-                let mut t = traces.borrow_mut();
-                t.get_memory_map_trace.statuses = VecDeque::from([EFI_STATUS_BUFFER_TOO_SMALL]);
-                t.get_memory_map_trace.outputs = VecDeque::from([(0, REQUIRED)]);
-            });
-
-            let bs = efi_entry.system_table().boot_services();
-            assert_eq!(bs.memory_map_size(), Ok(REQUIRED));
-            EFI_CALL_TRACES.with(|traces| {
-                assert_eq!(traces.borrow().get_memory_map_trace.inputs.len(), 1);
-                assert_eq!(traces.borrow().get_memory_map_trace.inputs[0].0, 0);
-            });
-        })
-    }
-
-    #[test]
     fn test_exit_boot_services_not_called_without_fresh_map() {
         run_test(|image_handle, systab_ptr| {
             let efi_entry = EfiEntry { image_handle, systab_ptr };
@@ -2617,40 +2549,6 @@ mod test {
             assert_eq!(efi_entry.system_table().boot_services().check_event(&res), Ok(true));
             assert_eq!(efi_entry.system_table().boot_services().check_event(&res), Ok(false));
             assert!(efi_entry.system_table().boot_services().check_event(&res).is_err());
-        });
-    }
-
-    #[test]
-    fn test_check_recurring_timer() {
-        run_test(|image_handle, systab_ptr| {
-            let efi_entry = EfiEntry { image_handle, systab_ptr };
-            let event: EfiEvent = 666usize as _;
-
-            EFI_CALL_TRACES.with(|traces| {
-                let mut t = traces.borrow_mut();
-                t.create_event_trace.outputs.push_back(event);
-                t.set_timer_trace.outputs.push_back(EFI_STATUS_SUCCESS);
-                t.check_event_trace.outputs.push_back(EFI_STATUS_SUCCESS);
-            });
-
-            let recurring_timer =
-                RecurringTimer::new(&efi_entry, Duration::from_nanos(2112)).unwrap();
-
-            EFI_CALL_TRACES.with(|traces| {
-                let traces = traces.borrow();
-                assert_eq!(
-                    traces.create_event_trace.inputs,
-                    [(EventType::Timer as _, 0, None, null_mut())]
-                );
-                assert_eq!(
-                    traces.set_timer_trace.inputs,
-                    [(event, EFI_TIMER_DELAY_TIMER_PERIODIC, 21u64)]
-                );
-                // Make sure timer doesn't check itself automatically during construction.
-                assert_eq!(traces.check_event_trace.outputs, [EFI_STATUS_SUCCESS]);
-            });
-
-            assert_eq!(recurring_timer.check(), Ok(true));
         });
     }
 

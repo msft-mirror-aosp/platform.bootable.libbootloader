@@ -124,28 +124,6 @@ pub struct TplScope<T: TplControl> {
     restore_tpl: EfiTpl,
 }
 
-/// Allows [TplScope] objects to stack on top of each other.
-///
-/// This holds a mutable borrow of the underlying [TplScope], which ensures that
-/// they will be dropped in LIFO order and that each [TplScope] can only have a
-/// single child.
-pub struct ScopeStack<'a, T: TplControl> {
-    previous_scope: &'a mut TplScope<T>,
-}
-
-/// Forwards [TplControl] calls into the underlying borrowed [TplScope].
-impl<'a, T: TplControl> TplControl for ScopeStack<'a, T> {
-    unsafe fn raise_tpl(&self, tpl: EfiTpl) -> EfiTpl {
-        // SAFETY: forwarding to underlying object with the same safety properties.
-        unsafe { self.previous_scope.tpl_control.raise_tpl(tpl) }
-    }
-
-    unsafe fn restore_tpl(&self, tpl: EfiTpl) {
-        // SAFETY: forwarding to underlying object with the same safety properties.
-        unsafe { self.previous_scope.tpl_control.restore_tpl(tpl) }
-    }
-}
-
 impl<T: TplControl> TplScope<T> {
     /// Creates a new [TplScope].
     ///
@@ -160,37 +138,10 @@ impl<T: TplControl> TplScope<T> {
     /// it is undefined behavior to attempt to lower the TPL with this function.
     ///
     /// Additionally, no other [TplScope] may exist in the caller's execution.
-    /// See [TplScope::new_stacked()] for a version of this function that can be
-    /// used with multiple [TplScopes].
-    /// ```
     pub unsafe fn new(tpl_control: T, tpl: EfiTpl) -> Self {
         // SAFETY: function safety requires `tpl` >= the current TPL.
         let restore_tpl = unsafe { tpl_control.raise_tpl(tpl) };
         Self { tpl_control, restore_tpl }
-    }
-
-    /// Creates a new [TplScope] on top of an existing one.
-    ///
-    /// This uses Rust's lifetime and ownership enforcement to ensure proper
-    /// LIFO ordering of multiple [TplScope] objects.
-    ///
-    /// If you only need one [TplScope], use [TplScope::new()] instead.
-    ///
-    /// # Arguments
-    ///
-    /// * `tpl_scope`: the [TplScope] to stack on top of
-    /// * `tpl`: desired TPL
-    ///
-    /// # Safety
-    ///
-    /// `tpl` must be a valid TPL level >= the current TPL, the UEFI spec states
-    /// it is undefined behavior to attempt to lower the TPL with this function.
-    pub unsafe fn new_stacked<'a>(
-        tpl_scope: &'a mut Self,
-        tpl: EfiTpl,
-    ) -> TplScope<ScopeStack<'a, T>> {
-        // SAFETY: function safety requires `tpl` >= the current TPL.
-        unsafe { TplScope::<ScopeStack<'a, T>>::new(ScopeStack { previous_scope: tpl_scope }, tpl) }
     }
 }
 
@@ -198,10 +149,7 @@ impl<T: TplControl> Drop for TplScope<T> {
     fn drop(&mut self) {
         // SAFETY:
         // * `self.restore_tpl` is the value returned from `raise_tpl()`
-        // * we know we're restoring the TPL in LIFO ordering because either:
-        //   a) created via `new()`, so this is the last `TplScope` to drop
-        //   b) created via `new_stacked()`, so the next `TplScope` on the stack
-        //      still exists because we're borrowing it
+        // * created via `new()`, so no other `TplScope` is active
         unsafe { self.tpl_control.restore_tpl(self.restore_tpl) };
     }
 }
@@ -425,46 +373,6 @@ mod test {
             // * there is no other `TplScope` active
             let _scope = unsafe { TplScope::new(mock, EFI_TPL_NOTIFY) };
             assert_eq!(stack.borrow().get_tpl(), EFI_TPL_NOTIFY);
-        }
-        assert_eq!(stack.borrow().get_tpl(), EFI_TPL_APPLICATION);
-    }
-
-    #[test]
-    fn tpl_scope_stack_borrows_control() {
-        let (stack, mock) = create_tpl_stack_and_mock();
-        {
-            // SAFETY:
-            // * `mock` is backed by `TplStack` which always safe
-            // * there is no other `TplScope` active
-            let mut scope = unsafe { TplScope::new(&mock, EFI_TPL_CALLBACK) };
-            assert_eq!(stack.borrow().get_tpl(), EFI_TPL_CALLBACK);
-            {
-                // SAFETY: `scope` is backed by `TplStack` which always safe.
-                let _scope = unsafe { TplScope::new_stacked(&mut scope, EFI_TPL_NOTIFY) };
-                assert_eq!(stack.borrow().get_tpl(), EFI_TPL_NOTIFY);
-            }
-            assert_eq!(stack.borrow().get_tpl(), EFI_TPL_CALLBACK);
-        }
-        assert_eq!(stack.borrow().get_tpl(), EFI_TPL_APPLICATION);
-    }
-
-    #[test]
-    fn tpl_scope_stack_owns_control() {
-        let (stack, mock) = create_tpl_stack_and_mock();
-        {
-            // SAFETY:
-            // * `mock` is backed by `TplStack` which always safe
-            // * there is no other `TplScope` active
-            let mut scope = unsafe { TplScope::new(mock, EFI_TPL_CALLBACK) };
-            assert_eq!(stack.borrow().get_tpl(), EFI_TPL_CALLBACK);
-            {
-                // The stacked scope never owns anything, it always borrows
-                // the underlying [TplScope] and calls into its [TplControl].
-                // SAFETY: `scope` is backed by `TplStack` which always safe.
-                let _scope = unsafe { TplScope::new_stacked(&mut scope, EFI_TPL_NOTIFY) };
-                assert_eq!(stack.borrow().get_tpl(), EFI_TPL_NOTIFY);
-            }
-            assert_eq!(stack.borrow().get_tpl(), EFI_TPL_CALLBACK);
         }
         assert_eq!(stack.borrow().get_tpl(), EFI_TPL_APPLICATION);
     }
