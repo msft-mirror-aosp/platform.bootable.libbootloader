@@ -16,12 +16,9 @@
 
 use crate::GblOps;
 use liberror::{Error, Result};
-use misc::{MISC_MEMTAG_MESSAGE_OFFSET_IN_SYSTEM_SPACE, SYSTEM_SPACE_OFFSET_IN_MISC};
 use zerocopy::{error::SizeError, FromBytes, FromZeros, IntoBytes};
 
-pub use misc::{
-    AndroidBootMode, BootloaderMessage, MiscMemtagMessage, MiscMemtagMode, MiscMemtagModeSet,
-};
+pub use misc::{AndroidBootMode, BootloaderMessage};
 
 /// The partition that contains the bootloader_message (BCB).
 pub(crate) const MISC_PARTITION: &str = "misc";
@@ -50,32 +47,6 @@ pub fn write_bootloader_message<'a>(
     bcb: &mut BootloaderMessage,
 ) -> Result<()> {
     ops.write_to_partition_sync(MISC_PARTITION, 0, bcb.as_mut_bytes())
-}
-
-const MISC_MEMTAG_MESSAGE_OFFSET_IN_MISC: u64 =
-    SYSTEM_SPACE_OFFSET_IN_MISC + MISC_MEMTAG_MESSAGE_OFFSET_IN_SYSTEM_SPACE;
-
-/// Reads the misc_memtag_message from `misc` partition.
-pub fn read_misc_memtag_message<'a>(ops: &mut impl GblOps<'a>) -> Result<MiscMemtagMessage> {
-    let mut mmm = MiscMemtagMessage::new_zeroed();
-    ops.read_from_partition_sync(
-        MISC_PARTITION,
-        MISC_MEMTAG_MESSAGE_OFFSET_IN_MISC,
-        mmm.as_mut_bytes(),
-    )?;
-    MiscMemtagMessage::parse_from_prefix(mmm.as_bytes())
-}
-
-/// Writes the misc_memtag_message to `misc` partition.
-pub fn write_misc_memtag_message<'a>(
-    ops: &mut impl GblOps<'a>,
-    mut mmm: MiscMemtagMessage,
-) -> Result<()> {
-    ops.write_to_partition_sync(
-        MISC_PARTITION,
-        MISC_MEMTAG_MESSAGE_OFFSET_IN_MISC,
-        mmm.as_mut_bytes(),
-    )
 }
 
 #[cfg(test)]
@@ -120,28 +91,5 @@ pub(crate) mod test {
 
         let bcb = read_bootloader_message(&mut ops).unwrap();
         assert_eq!(bcb.boot_mode(), Ok(AndroidBootMode::BootloaderBootOnce));
-    }
-
-    #[test]
-    fn test_read_misc_memtag_message_misc_wiped() {
-        let mut storage = FakeGblOpsStorage::default();
-        storage.add_raw_device(c"misc", [0u8; KiB!(64)]);
-        let mut ops = FakeGblOps::new(&storage);
-
-        assert_eq!(read_misc_memtag_message(&mut ops), Err(Error::NotFound));
-    }
-
-    #[test]
-    fn test_write_misc_memtag_message() {
-        let mut storage = FakeGblOpsStorage::default();
-        storage.add_raw_device(c"misc", [0u8; KiB!(64)]);
-        let mut ops = FakeGblOps::new(&storage);
-
-        let mut mmm = MiscMemtagMessage::default();
-        mmm.set_memtag_mode(MiscMemtagMode::Memtag);
-        write_misc_memtag_message(&mut ops, mmm).unwrap();
-
-        assert_eq!(read_misc_memtag_message(&mut ops), Ok(mmm));
-        assert!(!mmm.get_memtag_mode().is_empty());
     }
 }
