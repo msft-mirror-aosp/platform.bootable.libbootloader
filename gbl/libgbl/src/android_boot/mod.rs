@@ -891,7 +891,7 @@ pub(crate) mod tests {
         android_boot::device_tree::{
             KASLR_SEED_PROP, KASLR_SEED_SIZE_BYTES, RNG_SEED_PROP, RNG_SEED_SIZE_BYTES,
         },
-        constants::{KERNEL_ALIGNMENT, PAGE_SIZE, PVMFW_DATA_ALIGNMENT},
+        constants::{KERNEL_ALIGNMENT, PAGE_SIZE},
         fastboot::test::{make_expected_transport_out, SharedTestListener},
         gbl_avb::{
             state::{BootStateColor, KeyValidationStatus},
@@ -903,7 +903,7 @@ pub(crate) mod tests {
             test::{into_refmut_bytes, slot, FakeGblOps, FakeGblOpsStorage, FakeGblTime},
             PartitionBuffer,
         },
-        tests::{read_test_data, read_test_data_as_str, test_data_exists},
+        tests::{read_test_data, read_test_data_as_str, test_data_exists, PVMFW_DATA_ALIGNMENT},
     };
     use avf::{
         test::{dummy_pvmfw_partition, DUMMY_VENDOR_HANDOVER},

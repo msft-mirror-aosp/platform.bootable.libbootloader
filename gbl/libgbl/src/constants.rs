@@ -54,14 +54,8 @@ pub const ZIRCON_KERNEL_ALIGNMENT: usize = KiB!(64);
 /// FDT image alignment requirement.
 pub const FDT_ALIGNMENT: usize = 8;
 
-/// Expected max size for BootCmd zbi item.
-pub const BOOTCMD_SIZE: usize = KiB!(16);
-
 /// Page size
 pub const PAGE_SIZE: usize = KiB!(4);
-
-/// Pvmfw image alignment requirement.
-pub const PVMFW_DATA_ALIGNMENT: usize = PAGE_SIZE;
 
 /// This should be more than enough (Linux kernel MODULE_NAME_LEN is also 56).
 /// Keep in sync with the constant defined in gbl_efi_fastboot_protocol.h

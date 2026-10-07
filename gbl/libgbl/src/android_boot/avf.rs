@@ -675,9 +675,10 @@ fn pvmfw_build_dice_handover<'a, 'b, T: AVFVerificationData>(
 pub(crate) mod test {
     use super::*;
     use crate::{
-        constants::{PAGE_SIZE, PVMFW_DATA_ALIGNMENT},
+        constants::PAGE_SIZE,
         device_tree::DtComponentSource,
         ops::test::{FakeGblOps, FakeGblOpsStorage},
+        tests::PVMFW_DATA_ALIGNMENT,
         KiB,
     };
     use fdt::{DEFAULT_ADDRESS_CELLS, DEFAULT_SIZE_CELLS};

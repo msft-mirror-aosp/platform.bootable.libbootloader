@@ -61,10 +61,14 @@ pub(crate) mod tests {
     extern crate boringssl_sysdeps;
     extern crate libc_deps_posix;
 
+    use crate::constants::PAGE_SIZE;
     use std::{
         fs,
         path::{Path, PathBuf},
     };
+
+    /// Pvmfw image alignment requirement.
+    pub(crate) const PVMFW_DATA_ALIGNMENT: usize = PAGE_SIZE;
 
     pub(crate) const TEST_PERMANENT_ATTRIBUTES_PATH: &str = "cert_permanent_attributes.bin";
     pub(crate) const TEST_PERMANENT_ATTRIBUTES_HASH_PATH: &str = "cert_permanent_attributes.hash";
