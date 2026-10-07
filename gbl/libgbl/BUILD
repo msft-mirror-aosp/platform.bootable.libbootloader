@@ -112,7 +112,6 @@ rust_test(
     deps = [
         "@avb//:avb_crypto_ops_for_test",
         "@avb//:avb_test",
-        "@avb//:libavb_c_bindgen",
         "@cfg_if",
         "@gbl//libasync:cyclic_executor",
         "@gbl//libavb:sysdeps",
@@ -120,8 +119,6 @@ rust_test(
         "@gbl//libc:libc_deps_posix",
         "@gbl//libutils:libtestutils",
         "@spin",
-        "@static_assertions",
-        "@uuid",
     ],
 )
 

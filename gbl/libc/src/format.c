@@ -72,9 +72,6 @@
 
 #define ULL_MAX_DIGITS 20
 
-// Expected by IA32 MSVC compiler
-uint64_t _aulldiv(uint64_t a, uint64_t b) { return a / b; }
-
 // Formats unsigned `value` in base `base` into `buffer`.
 //
 // Returns number of characters written to the result buffer.

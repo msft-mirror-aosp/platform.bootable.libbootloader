@@ -16,7 +16,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
-use core::{arch::asm, cmp::min, ffi::CStr, str::from_utf8};
+use core::{arch::asm, cmp::min, str::from_utf8};
 use liberror::{Error, Result};
 use safemath::SafeNum;
 
@@ -85,13 +85,12 @@ where
 pub struct FormattedBytes<T> {
     buffer: T,
     len: usize,
-    total_attempted: Option<usize>,
 }
 
 impl<T: AsMut<[u8]> + AsRef<[u8]>> FormattedBytes<T> {
     /// Create an instance.
     pub fn new(buf: T) -> Self {
-        Self { buffer: buf, len: 0, total_attempted: Some(0) }
+        Self { buffer: buf, len: 0 }
     }
 
     /// Get the size of content.
@@ -111,32 +110,12 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> FormattedBytes<T> {
         let to_write = min(buf.len(), bytes.len());
         buf[..to_write].clone_from_slice(&bytes[..to_write]);
         self.len += to_write;
-        self.total_attempted = self.total_attempted.and_then(|v| v.checked_add(bytes.len()));
         &mut self.buffer.as_mut()[..self.len]
     }
 
     /// Gets the buffer
     pub fn buffer(&mut self) -> &mut [u8] {
         self.buffer.as_mut()
-    }
-
-    /// Treats the buffer containing a CStr and updates string length.
-    pub fn update_as_c_str(&mut self) -> Result<()> {
-        self.len = CStr::from_bytes_until_nul(self.buffer.as_ref())?.count_bytes();
-        Ok(())
-    }
-
-    /// Returns the total number bytes attempted to be written.
-    pub fn total_attempted(&self) -> Option<usize> {
-        self.total_attempted
-    }
-
-    /// Checks whether overflow has occurred.
-    pub fn check_overflow(&self) -> Result<()> {
-        match self.total_attempted() {
-            Some(v) if v <= self.size() => Ok(()),
-            v => Err(Error::BufferTooSmall(v)),
-        }
     }
 
     /// Parses self as a string or returns the empty string on error.

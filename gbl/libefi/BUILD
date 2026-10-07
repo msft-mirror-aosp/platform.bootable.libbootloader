@@ -42,12 +42,10 @@ rust_library(
         "@gbl//libasync",
         "@gbl//libefi_types",
         "@gbl//liberror",
-        "@gbl//libfastboot",
         "@gbl//libfdt",
         "@gbl//libgbl",
         "@gbl//libprofile",
         "@gbl//libsafemath",
-        "@gbl//libstorage",
         "@gbl//libtrace",
         "@gbl//libutils",
         "@spin",
@@ -63,8 +61,6 @@ rust_library(
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         ":libefi",
-        "@gbl//libefi_types",
-        "@gbl//liberror",
     ],
 )
 
@@ -125,16 +121,9 @@ rust_test(
     proc_macro_deps = ["@gbl//libprofile:libprofile_macros"],
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
-        "@avb//:avb_bindgen",
         "@avb//:libavb_c_sha_staticlib",
         "@gbl//libavb:sysdeps",
-        "@gbl//libboringssl:sysdeps",
-    ] + select({
-        "@gbl//toolchain:dev": [
-            "@zbi",
-        ],
-        "@gbl//toolchain:prod": [],
-    }),
+    ],
 )
 
 dev_test(
