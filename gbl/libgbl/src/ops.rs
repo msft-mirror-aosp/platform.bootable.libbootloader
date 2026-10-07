@@ -25,7 +25,7 @@ use crate::{
     metrics::{FirmwareVersionMetrics, GblMetrics, GblTime},
     partition::{
         check_part_unique, read_unique_partition, read_unique_partition_sync,
-        write_unique_partition, write_unique_partition_sync, GblDisk,
+        write_unique_partition_sync, GblDisk,
     },
 };
 pub use abr::{set_one_shot_bootloader, set_one_shot_recovery, Ops as AbrOps, SlotIndex};
@@ -203,16 +203,6 @@ pub trait GblOps<'a> {
         out: impl Into<&'b mut UninitSlice>,
     ) -> Result<(), Error> {
         read_unique_partition_sync(self.disks(), part, off, out)
-    }
-
-    /// Writes data to a partition.
-    async fn write_to_partition(
-        &mut self,
-        part: &str,
-        off: u64,
-        data: &mut [u8],
-    ) -> Result<(), Error> {
-        write_unique_partition(self.disks(), part, off, data).await
     }
 
     /// Writes data to a partition synchronously.
@@ -887,11 +877,6 @@ impl<'r, 'a: 'r, T: GblOps<'a>> GblOps<'a> for RambootOps<'r, T> {
             Err(Error::NotFound) => self.ops.read_from_partition_sync(part, off, out),
             v => v,
         }
-    }
-
-    /// Writes data to a partition.
-    async fn write_to_partition(&mut self, _: &str, _: u64, _: &mut [u8]) -> Result<(), Error> {
-        Ok(())
     }
 
     fn partition_size(&mut self, part: &str) -> Result<Option<u64>, Error> {
@@ -2117,11 +2102,6 @@ pub(crate) mod test {
             _: u64,
             _: impl Into<&'b mut UninitSlice>,
         ) -> Result<(), Error> {
-            Err(Error::Unsupported)
-        }
-
-        /// Writes data to a partition.
-        async fn write_to_partition(&mut self, _: &str, _: u64, _: &mut [u8]) -> Result<(), Error> {
             Err(Error::Unsupported)
         }
 
