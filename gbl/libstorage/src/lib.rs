@@ -658,30 +658,6 @@ impl<T: BlockIo, P: BufferPool> Disk<T, P> {
         gpt::erase_gpt(self, gpt).await
     }
 
-    /// Reads a GPT partition on a block device
-    ///
-    /// # Args
-    ///
-    /// * `gpt`: A `GptCache` initialized with `Self::sync_gpt()`.
-    /// * `part_name`: Name of the partition.
-    /// * `offset`: Offset in number of bytes into the partition.
-    /// * `out`: Buffer to store the read data.
-    ///
-    /// # Returns
-    ///
-    /// Returns success when exactly `out.len()` of bytes are read successfully.
-    pub async fn read_gpt_partition<'a>(
-        &self,
-        gpt: &mut Gpt<impl DerefMut<Target = [u8]>>,
-        part_name: &str,
-        offset: u64,
-        out: impl Into<&'a mut UninitSlice>,
-    ) -> Result<()> {
-        let out = out.into();
-        let offset = gpt.check_range(part_name, offset, out.len())?;
-        self.read(offset, out).await
-    }
-
     /// Writes a GPT partition on a block device.
     ///
     ///

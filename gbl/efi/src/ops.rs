@@ -72,8 +72,7 @@ use libgbl::{
         RngAlgorithm as GblRngAlgorithm, Slot, SHA256_DIGEST_SIZE,
     },
     partition::{GblDisk, RawName},
-    slots::{BootToken, Cursor},
-    GblOps, Os, Result as GblResult,
+    GblOps, Os,
 };
 use libprofile::ProfileBackend;
 use libutils::buffer_pool::BufferPool;
@@ -443,14 +442,6 @@ impl<'a, 'b> GblOps<'b> for Ops<'a, 'b> {
             self.zbi_bootloader_files_buffer.resize(DEFAULT_SIZE, 0);
         }
         Some(self.zbi_bootloader_files_buffer.as_mut_slice())
-    }
-
-    fn load_slot_interface<'c>(
-        &'c mut self,
-        _: &'c mut dyn FnMut(&mut [u8]) -> Result<()>,
-        _: BootToken,
-    ) -> GblResult<Cursor<'c>> {
-        unimplemented!();
     }
 
     fn avb_read_partition_attributes_raw(

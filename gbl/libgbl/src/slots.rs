@@ -14,18 +14,8 @@
 
 //! Containing types and traits for querying and modifying slotted boot behavior.
 
-/// Export the default implementation
-pub mod fuchsia;
-
-/// Reference Android implementation
-pub mod android;
-
-/// Generic functionality for partition backed ABR schemes
-pub mod partition;
-
 use arrayvec::ArrayString;
 use core::fmt::Write;
-use core::mem::size_of;
 use liberror::Error;
 
 /// A type safe container for describing the number of retries a slot has left
@@ -80,13 +70,6 @@ impl Suffix {
     pub fn as_char(&self) -> char {
         self.0
     }
-
-    // We want lexicographically lower suffixes to have higher priority. A cheater way to do
-    // this is to compare their negative values. A char is 4 bytes, and a signed 64 bit int
-    // can comfortably contain the negative of a number represented by an unsigned 32 bit int.
-    fn rank(&self) -> i64 {
-        -i64::from(u32::from(self.0))
-    }
 }
 
 impl Default for Suffix {
@@ -100,25 +83,6 @@ impl TryFrom<char> for Suffix {
 
     fn try_from(suffix: char) -> Result<Self, Self::Error> {
         Self::from_char(suffix)
-    }
-}
-
-// Includes a null terminator
-const SUFFIX_CSTR_MAX_BYTES: usize = size_of::<Suffix>() + 1;
-
-/// A buffer large enough to contain the serialized representation of a Suffix.
-/// Can be turned into a &Cstr like so:
-///
-/// let suffix: Suffix = 'a'.into();
-/// let buffer: SuffixBytes = suffix.into();
-/// let cstr = CStr::from_bytes_until_nul(&buffer)?;
-pub type SuffixBytes = [u8; SUFFIX_CSTR_MAX_BYTES];
-
-impl From<Suffix> for SuffixBytes {
-    fn from(val: Suffix) -> Self {
-        let mut buffer: Self = Default::default();
-        let _ = val.0.encode_utf8(&mut buffer);
-        buffer
     }
 }
 
@@ -144,30 +108,6 @@ pub enum UnbootableReason {
 impl Default for UnbootableReason {
     fn default() -> Self {
         Self::Unknown
-    }
-}
-
-impl From<u8> for UnbootableReason {
-    fn from(val: u8) -> Self {
-        match val {
-            1 => Self::NoMoreTries,
-            2 => Self::SystemUpdate,
-            3 => Self::UserRequested,
-            4 => Self::VerificationFailure,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-impl From<UnbootableReason> for u8 {
-    fn from(reason: UnbootableReason) -> Self {
-        match reason {
-            UnbootableReason::Unknown => 0,
-            UnbootableReason::NoMoreTries => 1,
-            UnbootableReason::SystemUpdate => 2,
-            UnbootableReason::UserRequested => 3,
-            UnbootableReason::VerificationFailure => 4,
-        }
     }
 }
 
@@ -197,10 +137,6 @@ impl Default for Bootability {
 /// Describes the slot's moniker (i.e. the suffix),
 /// its priority,
 /// and information about its bootability.
-///
-/// Note: structures that implement Manager will probably have a different
-/// internal representation for slots and will convert and return Slot structures
-/// on the fly as part of iteration.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Slot {
     /// The partition suffix for the slot.
@@ -209,223 +145,6 @@ pub struct Slot {
     pub priority: Priority,
     /// Information about a slot's boot eligibility and history.
     pub bootability: Bootability,
-}
-
-impl Slot {
-    /// Returns whether a slot is a valid boot target,
-    /// i.e. return true if its bootability is not Unbootable.
-    pub fn is_bootable(&self) -> bool {
-        !matches!(self.bootability, Bootability::Unbootable(_))
-    }
-}
-
-/// Describes the platform recovery mode boot target.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum RecoveryTarget {
-    /// The platform uses a dedicated recovery slot with special semantics.
-    /// It can't be marked unbootable, has unlimited retries,
-    /// and often doesn't have an explicit metadata entry.
-    Dedicated,
-    /// The platform enters recovery mode by booting to a regular slot
-    /// but with a special commandline and ramdisk.
-    Slotted(Slot),
-}
-
-/// Describes a system's boot target, which can be a regular boot to a slot
-/// or a recovery boot.
-/// Whether the recovery boot target is a dedicated slot or a regular slot
-/// with a special command line is platform specific.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum BootTarget {
-    /// The system will attempt a normal boot to the given slot.
-    NormalBoot(Slot),
-    /// The system will attempt a recovery boot.
-    ///
-    /// Some platforms, such as Fuchsia, have dedicated recovery partitions with
-    /// special semantics. On these platforms, Recovery contains None.
-    ///
-    /// Other platforms, such as Android, do not have dedicated recovery partitions.
-    /// They enter recovery mode by attempting to boot a regular slot with a special
-    /// kernel command line and ramdisk.
-    /// Under these circomstances, Recovery contains the slot that will be used for recovery.
-    Recovery(RecoveryTarget),
-}
-
-impl BootTarget {
-    /// Gets the suffix for a particular boot target.
-    /// Implemented for BootTarget instead of slot in order to handle
-    /// Fuchsia's recovery partition.
-    pub fn suffix(&self) -> Suffix {
-        match self {
-            Self::NormalBoot(slot) | Self::Recovery(RecoveryTarget::Slotted(slot)) => slot.suffix,
-            Self::Recovery(RecoveryTarget::Dedicated) => Suffix('r'),
-        }
-    }
-}
-
-#[doc(hidden)]
-pub mod private {
-    use super::*;
-
-    #[doc(hidden)]
-    pub trait SlotGet {
-        /// Given an index, returns the Slot that corresponds to that index,
-        /// or Error if the index is out of bounds.
-        /// This is intended to abstract storage details for structs that impl Manager.
-        /// Most implementors will use some other, internal representation for slots,
-        /// and will dynamically create and return Slots on the fly.
-        ///
-        /// This method is a helper, implementation detail for SlotIterator.
-        /// It is not intended to be called by other parts of GBL or other users.
-        fn get_slot_by_number(&self, number: usize) -> Result<Slot, Error>;
-    }
-}
-
-/// A helper structure for iterating over slots.
-pub struct SlotIterator<'a> {
-    count: usize,
-    slot_getter: &'a dyn private::SlotGet,
-}
-
-impl<'a> SlotIterator<'a> {
-    /// Constructor for SlotIterator
-    pub fn new(intf: &'a dyn private::SlotGet) -> Self {
-        Self { count: 0, slot_getter: intf }
-    }
-}
-
-impl<'a> Iterator for SlotIterator<'a> {
-    type Item = Slot;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let maybe_slot = self.slot_getter.get_slot_by_number(self.count).ok();
-        if maybe_slot.is_some() {
-            self.count += 1;
-        }
-        maybe_slot
-    }
-}
-
-/// Describes a oneshot boot target.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum OneShot {
-    /// The bootloader will stop in some kind of interactive mode.
-    /// This can be Fastboot, a TUI boot menu, or something similar.
-    Bootloader,
-    /// The system will continue to the specified recovery target.
-    Continue(RecoveryTarget),
-}
-
-/// Opaque boot token generated by `mark_boot_attempt` and consumed by `kernel_jump`.
-/// Used to mandate that `mark_boot_attempt` is called **exactly** once continuing boot.
-///
-/// Custom structs that implement Manager should take a BootToken as an injected parameter
-/// on construction and return it on the first successful call to mark_boot_attempt.
-#[derive(Debug, PartialEq, Eq)]
-pub struct BootToken(pub(crate) ());
-
-/// The boot slot manager trait.
-/// Responsible for setting boot slot policy and abstracting over on-disk/in-memory
-/// representation of slot metadata.
-pub trait Manager: private::SlotGet {
-    /// Returns an iterator over all regular slots on the system.
-    fn slots_iter(&self) -> SlotIterator<'_>;
-
-    /// Returns the current active slot,
-    /// or Recovery if the system will try to boot to recovery.
-    fn get_boot_target(&self) -> Result<BootTarget, Error>;
-
-    /// Returns the slot last set active.
-    /// Note that this is different from get_boot_target in that
-    /// the slot last set active cannot be Recovery.
-    fn get_slot_last_set_active(&self) -> Result<Slot, Error> {
-        self.slots_iter()
-            .max_by_key(|slot| (slot.priority, slot.suffix.rank()))
-            .ok_or(Error::Other(Some("Couldn't get slot last set active")))
-    }
-
-    /// Updates internal metadata (usually the retry count)
-    /// indicating that the system will have tried to boot the current active slot.
-    /// Returns Ok(BootToken) on success to verify that boot attempt metadata has been updated.
-    /// The token must be consumed by `kernel_jump`.
-    ///
-    /// If the current boot target is a recovery target,
-    /// or if the oneshot target is a recovery target,
-    /// no metadata is updated but the boot token is still returned.
-    ///
-    /// Returns Err if `mark_boot_attempt` has already been called.
-    ///
-    /// Note: mark_boot_attempt is NOT idempotent.
-    /// It is intended to be called EXACTLY once,
-    /// right before jumping into the kernel.
-    fn mark_boot_attempt(&mut self) -> Result<BootToken, Error>;
-
-    /// Attempts to set the active slot.
-    ///
-    /// Can return Err if the designated slot does not exist,
-    /// if the bootloader does not have permission to set slots active,
-    /// or for other, backend policy reasons.
-    fn set_active_slot(&mut self, slot_suffix: Suffix) -> Result<(), Error>;
-
-    /// Attempts to mark a slot as unbootable.
-    fn set_slot_unbootable(
-        &mut self,
-        slot_suffix: Suffix,
-        reason: UnbootableReason,
-    ) -> Result<(), Error>;
-
-    /// Default for initial tries
-    fn get_max_retries(&self) -> Result<Tries, Error> {
-        Ok(7u8.into())
-    }
-
-    /// Optional oneshot boot support
-
-    /// Gets the current oneshot boot status,
-    /// or None if the system will try to boot normally.
-    ///
-    /// Oneshots are a special feature for temporarily bypassing
-    /// normal boot flow logic.
-    /// This can be used as part of device flashing, for tests, or interactive development.
-    fn get_oneshot_status(&self) -> Option<OneShot> {
-        None
-    }
-
-    /// Attempts to set the oneshot boot status.
-    ///
-    /// Returns Err if the system does not support oneshot boot,
-    /// if the designated slot does not exist,
-    /// or for other, backend reasons.
-    fn set_oneshot_status(&mut self, _: OneShot) -> Result<(), Error> {
-        Err(Error::OperationProhibited)
-    }
-
-    /// Clears the oneshot status.
-    fn clear_oneshot_status(&mut self);
-
-    /// If the slot manager caches changes before writing to a backing store,
-    /// writes back and sets the cache status to clean.
-    /// The implementation is responsible for handling any errors,
-    /// e.g. ignoring, logging, or aborting.
-    ///
-    /// This is useful for partition based slot setups,
-    /// where we do not write back every interaction in order to coalesce writes
-    /// and preserve disk lifetime.
-    fn write_back(&mut self, _: &mut dyn FnMut(&mut [u8]) -> Result<(), Error>) {}
-}
-
-/// RAII helper object for coalescing changes.
-pub struct Cursor<'a> {
-    /// The backing manager for slot metadata.
-    pub ctx: &'a mut dyn Manager,
-    /// User provided closure for persisting slot metadata bytes.
-    pub persist: &'a mut dyn FnMut(&mut [u8]) -> Result<(), Error>,
-}
-
-impl Drop for Cursor<'_> {
-    fn drop(&mut self) {
-        self.ctx.write_back(&mut self.persist);
-    }
 }
 
 /// Returns a slotted partition name.
@@ -444,7 +163,7 @@ pub(crate) fn slotted_part(
 #[cfg(test)]
 mod test {
     use super::*;
-    use core::ffi::CStr;
+    use crate::ops::test::slot;
 
     #[test]
     fn test_suffix_from_char() {
@@ -455,15 +174,6 @@ mod test {
         assert!(Suffix::from_char('🦑').is_err(), "UTF-8 emoji");
     }
 
-    #[test]
-    fn test_suffix_to_cstr() {
-        let normal = Suffix('a');
-        let normal_buffer: SuffixBytes = normal.into();
-        let normal_cstr = CStr::from_bytes_until_nul(&normal_buffer);
-        assert_eq!(normal_cstr, Ok(c"a"));
-    }
-
-    use crate::ops::test::slot;
     #[test]
     fn test_slotted_part() {
         assert_eq!(slotted_part("boot", Some(slot('a').suffix)).as_ref(), "boot_a");

@@ -14,10 +14,8 @@
 
 //! GblOps trait that defines GBL callbacks.
 
-pub use crate::slots::BootToken;
 use crate::{
     constants::FASTBOOT_PARTITION_TYPE_LEN,
-    error::Result as GblResult,
     gbl_avb::{
         state::{KeyValidationStatus, VerificationStatus},
         ArrayMaxSpecializedParts, AvbDeviceStatus, AvbPartition, AvbProperty, Fdr, LoadPartition,
@@ -287,18 +285,6 @@ pub trait GblOps<'a> {
     // However this would mean that [Context] must be a standalone object and cannot hold a
     // reference to [GblOps], which may restrict implementations.
     // fn new_digest(&self) -> Option<Self::Context>;
-
-    /// Load and initialize a slot manager and return a cursor over the manager on success.
-    ///
-    /// # Args
-    ///
-    /// * `persist`: A user provided closure for persisting a given slot metadata bytes to storage.
-    /// * `boot_token`: A [slots::BootToken].
-    fn load_slot_interface<'b>(
-        &'b mut self,
-        persist: &'b mut dyn FnMut(&mut [u8]) -> Result<(), Error>,
-        boot_token: slots::BootToken,
-    ) -> GblResult<slots::Cursor<'b>>;
 
     // The following is a selective subset of the interfaces in `avb::Ops` and `avb::CertOps` needed
     // by GBL's usage of AVB. The rest of the APIs are either not relevant to or are implemented and
@@ -793,14 +779,6 @@ impl<'r, 'a: 'r, T: GblOps<'a>> GblOps<'a> for RambootOps<'r, T> {
     #[cfg(feature = "fuchsia")]
     fn get_zbi_bootloader_files_buffer(&mut self) -> Option<&mut [u8]> {
         self.ops.get_zbi_bootloader_files_buffer()
-    }
-
-    fn load_slot_interface<'c>(
-        &'c mut self,
-        _fnmut: &'c mut dyn FnMut(&mut [u8]) -> Result<(), Error>,
-        _boot_token: BootToken,
-    ) -> GblResult<slots::Cursor<'c>> {
-        self.ops.load_slot_interface(_fnmut, _boot_token)
     }
 
     fn avb_read_partition_attributes_raw(
@@ -1577,14 +1555,6 @@ pub(crate) mod test {
             Some(self.zbi_bootloader_files_buffer.as_mut_slice())
         }
 
-        fn load_slot_interface<'b>(
-            &'b mut self,
-            _: &'b mut dyn FnMut(&mut [u8]) -> Result<(), Error>,
-            _: slots::BootToken,
-        ) -> GblResult<slots::Cursor<'b>> {
-            unimplemented!();
-        }
-
         fn avb_read_partition_attributes_raw(
             &mut self,
         ) -> AvbIoResult<ArrayMaxSpecializedParts<SpecializedPartition>> {
@@ -2061,14 +2031,6 @@ pub(crate) mod test {
         #[cfg(feature = "fuchsia")]
         fn get_zbi_bootloader_files_buffer(&mut self) -> Option<&mut [u8]> {
             None
-        }
-
-        fn load_slot_interface<'c>(
-            &'c mut self,
-            _: &'c mut dyn FnMut(&mut [u8]) -> Result<(), Error>,
-            _: BootToken,
-        ) -> GblResult<slots::Cursor<'c>> {
-            Err(Error::Unsupported.into())
         }
 
         fn avb_read_partition_attributes_raw(

@@ -60,7 +60,6 @@ rust_library(
         "@avb",
         "@avb//:avb_bindgen",
         "@base64",
-        "@bitflags",
         "@bytes",
         "@cfg_if",
         "@crc32fast",
