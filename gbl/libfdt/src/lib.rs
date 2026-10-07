@@ -25,7 +25,7 @@ use core::mem::size_of;
 use core::slice::{from_raw_parts, from_raw_parts_mut};
 use liberror::{Error, Result};
 use libfdt_bindgen::{
-    fdt_add_subnode_namelen, fdt_create_empty_tree, fdt_del_node, fdt_delprop, fdt_first_subnode,
+    fdt_add_subnode_namelen, fdt_create_empty_tree, fdt_delprop, fdt_first_subnode,
     fdt_get_property, fdt_header, fdt_move, fdt_setprop, fdt_setprop_placeholder, fdt_strerror,
     fdt_subnode_offset_namelen,
 };
@@ -506,16 +506,6 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
         self.set_property(path, name, fallback_value)
     }
 
-    /// Delete node by `path`. Fail if node doesn't exist.
-    pub fn delete_node(&mut self, path: &str) -> Result<()> {
-        let node = self.find_node_offset_ffi(path)?;
-        // SAFETY:
-        // * `self.0` is guaranteed to be a proper fdt header reference
-        // * `node` is offset of the node to delete within `self.0` fdt buffer
-        map_result(unsafe { fdt_del_node(self.0.as_mut().as_mut_ptr() as *mut _, node) })?;
-        Ok(())
-    }
-
     /// Set the value of a node's property. Create the node and property if it doesn't exist.
     pub fn set_property(&mut self, path: &str, name: &CStr, val: &[u8]) -> Result<()> {
         // When FDT is large and complicated, fdt_setprop can generate a lots of noisy traces
@@ -822,42 +812,6 @@ mod test {
         let data = vec![0x11u8, 0x22u8, 0x33u8];
         fdt.set_property("/new-node", c"custom", &data).unwrap();
         assert_eq!(fdt.get_property("/new-node", c"custom").unwrap().to_vec(), data);
-    }
-
-    #[test]
-    fn test_delete_node() {
-        let init = include_bytes!("../test/data/base.dtb").to_vec();
-        let mut fdt_buf = vec![0u8; init.len()];
-        let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
-
-        assert_eq!(
-            CStr::from_bytes_with_nul(
-                fdt.get_property("/dev-2/dev-2.2/dev-2.2.1", c"property-1").unwrap()
-            )
-            .unwrap()
-            .to_str()
-            .unwrap(),
-            "dev-2.2.1-property-1"
-        );
-
-        fdt.delete_node("dev-2").unwrap();
-
-        assert!(
-            fdt.get_property("/dev-2/dev-2.2/dev-2.2.1", c"property-1").is_err(),
-            "dev-2.2.1-property-1 expected to be deleted"
-        );
-    }
-
-    #[test]
-    fn test_delete_not_existed_node_is_failed() {
-        let init = include_bytes!("../test/data/base.dtb").to_vec();
-        let mut fdt_buf = vec![0u8; init.len()];
-        let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
-
-        assert!(
-            fdt.delete_node("/non-existent").is_err(),
-            "expected failed to delete non existent node"
-        );
     }
 
     #[test]
@@ -1270,14 +1224,13 @@ mod test {
     fn test_get_first_subnode_offset() {
         let init = include_bytes!("../test/data/base.dtb").to_vec();
         let mut fdt_buf = vec![0u8; init.len()];
-        let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
+        let fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
 
-        let mut node_offset = fdt.find_node_offset("/dev-2/dev-2.2").unwrap();
+        let node_offset = fdt.find_node_offset("/dev-2/dev-2.2").unwrap();
         assert!(fdt.get_first_subnode_offset(node_offset.try_into().unwrap()).is_ok());
 
-        fdt.delete_node("/dev-2/dev-2.2/dev-2.2.1").unwrap();
-        node_offset = fdt.find_node_offset("/dev-2/dev-2.2").unwrap();
-        assert!(fdt.get_first_subnode_offset(node_offset.try_into().unwrap()).is_err());
+        let leaf_offset = fdt.find_node_offset("/dev-2/dev-2.2/dev-2.2.1").unwrap();
+        assert!(fdt.get_first_subnode_offset(leaf_offset.try_into().unwrap()).is_err());
     }
 
     #[test]

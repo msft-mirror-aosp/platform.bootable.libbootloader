@@ -305,16 +305,6 @@ pub enum LockState {
     Unlocked,
 }
 
-impl LockState {
-    /// Helper function indicating whether a lock is locked or unlocked.
-    pub const fn as_unlocked_str(&self) -> &'static str {
-        match self {
-            Self::Locked => "no",
-            Self::Unlocked => "yes",
-        }
-    }
-}
-
 /// Specifies whether the device can be unlocked.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Unlockability {
@@ -760,17 +750,6 @@ pub trait Downloader {
     ///
     /// On success, returns the actual received size.
     async fn download(&mut self, out: &mut [u8]) -> Result<usize>;
-
-    /// Download all remaining data to the given output in one go.
-    async fn download_all(&mut self, out: &mut [u8]) -> Result<()> {
-        let mut curr =
-            out.get_mut(..self.remaining()).ok_or(Error::BufferTooSmall(Some(self.remaining())))?;
-        while !curr.is_empty() {
-            let sz = self.download(curr).await?;
-            curr = &mut curr[sz..];
-        }
-        Ok(())
-    }
 
     /// Returns the remaining size of the downloaded data
     fn remaining(&self) -> usize;
@@ -1644,7 +1623,14 @@ mod test {
         }
 
         fn download_all(&mut self, out: &mut [u8]) -> Result<()> {
-            block_on(Downloader::download_all(self, out))
+            let mut curr = out
+                .get_mut(..self.remaining())
+                .ok_or(Error::BufferTooSmall(Some(self.remaining())))?;
+            while !curr.is_empty() {
+                let sz = block_on(Downloader::download(self, curr))?;
+                curr = &mut curr[sz..];
+            }
+            Ok(())
         }
     }
 
