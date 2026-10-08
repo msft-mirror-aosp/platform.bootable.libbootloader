@@ -59,10 +59,20 @@ impl<'a> LoadFile2 for InitrdLoadFile2Protocol<'a> {
                 efi_try_print!("InitrdLoadFile2: successfully copied {len} bytes\r\n");
                 Ok(len)
             }
-            _ => {
-                let provided = buffer.map(|b| b.len());
+            // A null buffer is the caller asking how large the initrd is, not a
+            // failure. The Linux stub issues exactly this call first and treats
+            // any status other than EFI_BUFFER_TOO_SMALL as EFI_LOAD_ERROR
+            // (efi_load_initrd_dev_path in
+            // drivers/firmware/efi/libstub/efi-stub-helper.c), so this branch
+            // is the contract rather than a fault.
+            None => {
+                efi_try_print!("InitrdLoadFile2: reporting initrd size {len}\r\n");
+                Err(EfiError::BufferTooSmall(len))
+            }
+            Some(buf) => {
                 efi_try_print!(
-                    "InitrdLoadFile2: buffer too small (required: {len}, provided: {provided:?})\r\n"
+                    "InitrdLoadFile2: buffer too small (required: {len}, provided: {})\r\n",
+                    buf.len()
                 );
                 Err(EfiError::BufferTooSmall(len))
             }
@@ -77,19 +87,32 @@ mod tests {
 
     const TEST_RAMDISK: &[u8] = b"mock_initrd_ramdisk_payload_for_testing";
 
+    /// Drops any console output from an earlier test on this thread.
+    fn reset_console_out() {
+        crate::test::efi_call_traces().with(|t| *t.borrow_mut() = Default::default());
+    }
+
+    /// Returns what has been written to the console since the last reset.
+    fn console_out() -> String {
+        crate::test::efi_call_traces().with(|t| t.borrow().console_out_trace.as_single_string())
+    }
+
     #[test]
     fn test_initrd_load_file2_null_buffer_returns_buffer_too_small() {
         let loader = InitrdLoadFile2Protocol(TEST_RAMDISK);
+        reset_console_out();
 
         let res = loader.load_file(None, None);
 
         assert_eq!(res, Err(EfiError::BufferTooSmall(TEST_RAMDISK.len())));
+        assert!(console_out().contains("reporting initrd size"));
     }
 
     #[test]
     fn test_initrd_load_file2_insufficient_buffer_returns_buffer_too_small() {
         let loader = InitrdLoadFile2Protocol(TEST_RAMDISK);
         let mut buffer = vec![0u8; TEST_RAMDISK.len() - 1];
+        reset_console_out();
 
         // SAFETY: `MaybeUninit<u8>` has the same size as `u8` and can contain any value.
         let res = loader.load_file(
@@ -98,6 +121,7 @@ mod tests {
         );
 
         assert_eq!(res, Err(EfiError::BufferTooSmall(TEST_RAMDISK.len())));
+        assert!(console_out().contains("buffer too small"));
     }
 
     #[test]
