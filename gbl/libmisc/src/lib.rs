@@ -23,16 +23,9 @@
 #![cfg_attr(not(test), no_std)]
 
 use core::{ffi::CStr, mem::size_of};
-use flagset::{flags, FlagSet};
 use liberror::{Error, Result};
 use static_assertions::const_assert;
-use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout, Ref, Unaligned};
-
-/// Offset of system space with respect to the misc partition.
-pub const SYSTEM_SPACE_OFFSET_IN_MISC: u64 = 32 * 1024;
-
-/// Offset of misc_memtag_message with respect to the system space.
-pub const MISC_MEMTAG_MESSAGE_OFFSET_IN_SYSTEM_SPACE: u64 = 64;
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned};
 
 /// Android boot modes type
 /// Usually obtained from BCB block of misc partition
@@ -149,77 +142,6 @@ impl BootloaderMessage {
 
 const_assert!(BootloaderMessage::SIZE_BYTES == size_of::<BootloaderMessage>());
 
-/// Message structure for communicating the MTE status.
-#[repr(C, packed)]
-#[derive(
-    Copy, Clone, Debug, PartialEq, Eq, Immutable, FromBytes, IntoBytes, KnownLayout, Unaligned,
-)]
-pub struct MiscMemtagMessage {
-    version: u8,
-    magic: u32,
-    memtag_mode: u32,
-    reserved: [u8; 55],
-}
-
-flags! {
-    /// Memtag mode flags.
-    #[allow(missing_docs)]
-    pub enum MiscMemtagMode: u32 {
-        Memtag = 0x1,
-        MemtagOnce = 0x2,
-        MemtagKernel = 0x4,
-        MemtagKernelOnce = 0x8,
-        MemtagOff = 0x10,
-        Forced = 0x20,
-    }
-}
-
-/// Flag set of MiscMemtagMode.
-pub type MiscMemtagModeSet = FlagSet<MiscMemtagMode>;
-
-impl MiscMemtagMessage {
-    /// Message size in bytes.
-    pub const SIZE_BYTES: usize = 64;
-
-    const VERSION: u8 = 1;
-    const MAGIC: u32 = 0x5afefe5a;
-
-    /// Read and validate a copy of `Self` from prefix of bytes.
-    ///
-    /// # Returns
-    /// * `Ok(Self)` if a valid misc_memtag_message is parsed.
-    /// * `Err(Error::NotFound)` if buffer contains wiped data (zeroes).
-    /// * `Err(Error::BadMagic)` if parsed version or magic number is unsupported.
-    pub fn parse_from_prefix(bytes: &[u8]) -> Result<Self> {
-        let mmm = Self::read_from_prefix(bytes)
-            .map_err(|_| Error::BufferTooSmall(Some(Self::SIZE_BYTES)))?
-            .0;
-        match mmm {
-            MiscMemtagMessage { version: Self::VERSION, magic: Self::MAGIC, .. } => Ok(mmm),
-            MiscMemtagMessage { version: 0, magic: 0, .. } => Err(Error::NotFound),
-            _ => Err(Error::BadMagic),
-        }
-    }
-
-    /// Get the memtag mode flags.
-    pub fn get_memtag_mode(&self) -> MiscMemtagModeSet {
-        MiscMemtagModeSet::new_truncated(self.memtag_mode)
-    }
-
-    /// Set the memtag mode flags.
-    pub fn set_memtag_mode(&mut self, mode: impl Into<MiscMemtagModeSet>) {
-        self.memtag_mode = mode.into().bits();
-    }
-}
-
-impl Default for MiscMemtagMessage {
-    fn default() -> Self {
-        Self { version: Self::VERSION, magic: Self::MAGIC, ..Self::new_zeroed() }
-    }
-}
-
-const_assert!(MiscMemtagMessage::SIZE_BYTES == size_of::<MiscMemtagMessage>());
-
 #[cfg(test)]
 mod test {
     use super::*;
@@ -291,26 +213,5 @@ mod test {
         assert_android_boot_mode!(AndroidBootMode::Recovery);
         assert_android_boot_mode!(AndroidBootMode::Fastboot);
         assert_android_boot_mode!(AndroidBootMode::Normal);
-    }
-
-    #[test]
-    fn test_misc_memtag_message_parse_from_zeroes() {
-        let mmm = MiscMemtagMessage::new_zeroed();
-
-        assert_eq!(MiscMemtagMessage::parse_from_prefix(mmm.as_bytes()), Err(Error::NotFound));
-    }
-
-    #[test]
-    fn test_misc_memtag_message_parse_from_invalid_magic() {
-        let mmm = MiscMemtagMessage { magic: !MiscMemtagMessage::MAGIC, ..Default::default() };
-
-        assert_eq!(MiscMemtagMessage::parse_from_prefix(mmm.as_bytes()), Err(Error::BadMagic));
-    }
-
-    #[test]
-    fn test_misc_memtag_message_parse_from_valid_magic() {
-        let mmm = MiscMemtagMessage::default();
-
-        assert_eq!(MiscMemtagMessage::parse_from_prefix(mmm.as_bytes()), Ok(mmm));
     }
 }
