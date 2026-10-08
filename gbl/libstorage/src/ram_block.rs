@@ -17,7 +17,7 @@
 use crate::{is_aligned, is_buffer_aligned, BlockInfo, BlockIo};
 use bytes::buf::UninitSlice;
 use core::{
-    cell::{Ref, RefCell, RefMut},
+    cell::{Ref, RefCell},
     ops::DerefMut,
 };
 use gbl_async::yield_now;
@@ -101,27 +101,12 @@ impl<T: DerefMut<Target = [u8]>> RamBlockIo<T> {
         Ref::map(self.storage.borrow(), |s| s.deref())
     }
 
-    /// Gets the underlying ramdisk storage mutably.
-    pub fn storage_mut(&self) -> RefMut<'_, [u8]> {
-        RefMut::map(self.storage.borrow_mut(), |s| s.deref_mut())
-    }
-
     /// Helper for checking custom injected errors
     fn check_custom_error(&self) -> Result<(), Error> {
         match self.error.borrow_mut().take() {
             Some(e) => Err(e),
             _ => Ok(()),
         }
-    }
-
-    /// Gets the number of successful read operations
-    pub fn num_reads(&self) -> usize {
-        self.num_accesses.borrow().0
-    }
-
-    /// Gets the number of successful read operations
-    pub fn num_writes(&self) -> usize {
-        self.num_accesses.borrow().1
     }
 
     /// Checks injected error, simulates async waiting, checks read/write parameters and returns the
@@ -185,5 +170,28 @@ unsafe impl<T: DerefMut<Target = [u8]>> BlockIo for RamBlockIo<T> {
 
         // Erases by flipping the bits.
         Ok(self.storage.borrow_mut()[off..][..sz].iter_mut().for_each(|v| *v = !*v))
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test {
+    use super::*;
+    use core::cell::RefMut;
+
+    impl<T: DerefMut<Target = [u8]>> RamBlockIo<T> {
+        /// Gets the underlying ramdisk storage mutably.
+        pub(crate) fn storage_mut(&self) -> RefMut<'_, [u8]> {
+            RefMut::map(self.storage.borrow_mut(), |s| s.deref_mut())
+        }
+
+        /// Gets the number of successful read operations
+        pub(crate) fn num_reads(&self) -> usize {
+            self.num_accesses.borrow().0
+        }
+
+        /// Gets the number of successful write operations
+        pub(crate) fn num_writes(&self) -> usize {
+            self.num_accesses.borrow().1
+        }
     }
 }

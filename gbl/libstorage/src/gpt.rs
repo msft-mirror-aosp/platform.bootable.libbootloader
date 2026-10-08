@@ -697,11 +697,6 @@ impl<B: DerefMut<Target = [u8]>> Gpt<B> {
         Ok(Self { buffer })
     }
 
-    /// Returns the maximum allowed entries.
-    pub fn max_entries(&self) -> usize {
-        max_supported_entries(&self.buffer[..]).unwrap()
-    }
-
     /// Creates an instance of `Gpt<&mut [u8]>` that borrows the internal GPT buffer.
     pub fn as_borrowed(&mut self) -> Gpt<&mut [u8]> {
         Gpt { buffer: &mut self.buffer[..] }
@@ -1263,6 +1258,13 @@ pub(crate) mod test {
     use crate::{gpt::GptError::NumberOfEntriesOverflow, test::TestDisk};
     use gbl_async::block_on;
     use libtestutils::AlignedBuffer;
+
+    impl<B: DerefMut<Target = [u8]>> Gpt<B> {
+        /// Returns the maximum allowed entries.
+        pub(crate) fn max_entries(&self) -> usize {
+            max_supported_entries(&self.buffer[..]).unwrap()
+        }
+    }
 
     const BLOCK_SIZE: usize = 512;
     const MBR_BLKS: usize = 1;

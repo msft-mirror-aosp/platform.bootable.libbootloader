@@ -378,29 +378,6 @@ where
     }
 }
 
-/// An implementation of `BlockIo` of where all required methods are `unimplemented!()`
-pub struct BlockIoNull {}
-
-// SAFETY:
-// `read_blocks` never succeeds since it is not implemented and will panic.
-unsafe impl BlockIo for BlockIoNull {
-    fn info(&self) -> BlockInfo {
-        unimplemented!();
-    }
-
-    async fn read_blocks<'a>(&self, _: u64, _: impl Into<&'a mut UninitSlice>) -> Result<()> {
-        unimplemented!();
-    }
-
-    async fn write_blocks(&self, _: u64, _: &mut [u8]) -> Result<()> {
-        unimplemented!();
-    }
-
-    async fn erase_blocks(&self, _: u64, _: u64) -> Result<()> {
-        unimplemented!();
-    }
-}
-
 /// Check if `value` is aligned to (multiples of) `alignment`
 /// It can fail if the remainider calculation fails overflow check.
 fn is_aligned(value: impl Into<SafeNum>, alignment: impl Into<SafeNum>) -> Result<bool> {
