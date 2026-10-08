@@ -20,6 +20,7 @@ load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
 load(
     "@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl",
     "action_config",
+    "feature",
     "flag_group",
     "flag_set",
     "tool",
@@ -52,7 +53,7 @@ def _gbl_clang_cc_toolchain_config_impl(ctx):
             "-no-canonical-prefixes",
             "-Werror",
             "-Wall",
-        ] + ["-I{}".format(inc) for inc in builtin_includes] + ctx.attr.cc_flags),
+        ] + ["-isystem{}".format(inc) for inc in builtin_includes] + ctx.attr.cc_flags),
     ]
     return cc_common.create_cc_toolchain_config_info(
         ctx = ctx,
@@ -65,6 +66,12 @@ def _gbl_clang_cc_toolchain_config_impl(ctx):
         compiler = "clang",
         abi_version = "unknown",
         abi_libc_version = "unknown",
+        features = [
+            feature(
+                name = "system_include_paths",
+                enabled = True,
+            ),
+        ],
         action_configs = [
             action_config(
                 action_name = action_name,

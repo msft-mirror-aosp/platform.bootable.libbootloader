@@ -1216,3 +1216,13 @@ toolchain(
     toolchain = "bindgen_toolchain_impl",
     toolchain_type = "@rules_rust_bindgen//:toolchain_type",
 )
+
+# Register a test toolchain for `host_x86_64_dev` so tests transitioned to the dev platform
+# can run on the default host execution platform (which defaults to `:prod` via `board_class`).
+toolchain(
+    name = "host_dev_test_toolchain",
+    exec_compatible_with = host_x86_64_constraint_values,
+    target_compatible_with = host_x86_64_constraint_values + [":dev"],
+    toolchain = "@bazel_tools//tools/test:empty_toolchain",
+    toolchain_type = "@bazel_tools//tools/test:default_test_toolchain_type",
+)
