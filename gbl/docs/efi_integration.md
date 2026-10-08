@@ -286,8 +286,9 @@ This can be enabled by itself, or in addition to fastboot over TCP.
 - [`GBL_EFI_OS_CONFIGURATION_PROTOCOL`](./gbl_efi_os_configuration_protocol.md)
 - optional: enables runtime fixups of OS data
 
-Used for device tree selection and bootconfig fixup. If not provided, the data
-from boot partitions will be used without FW-specific modifications.
+Used for device tree and FIT configuration selection, bootconfig and kernel
+command line fixups. If not provided, the data from boot partitions will be used
+without FW-specific modifications.
 
 ### GblBootControlProtocol
 

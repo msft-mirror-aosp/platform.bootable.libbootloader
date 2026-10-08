@@ -257,6 +257,35 @@ fn fdt_bootargs_reserve_space(fdt: &mut Fdt<&mut [u8]>, reserved: usize) -> Resu
     Ok(())
 }
 
+/// Appends the platform-specific kernel command line fixup to the FDT bootargs property.
+///
+/// The bootargs property must already be built by `fdt_build_bootargs()`. The fixup is written
+/// in place into the free space of the property, which is extended if the platform requests a
+/// larger buffer.
+pub(crate) fn fdt_fixup_bootargs<'a>(
+    ops: &mut impl GblOps<'a>,
+    fdt: &mut Fdt<&mut [u8]>,
+) -> Result<()> {
+    let mut fixup = |fdt: &mut Fdt<&mut [u8]>| -> Result<()> {
+        let (current_used_prefix, current_buffer_len) = fdt_get_bootargs_len(fdt);
+        let buffer =
+            fdt.set_property_placeholder(NODE_CHOSEN, PROP_BOOTARGS, current_buffer_len)?;
+        let mut builder =
+            CommandlineBuilder::from_prefix_with_len(&mut buffer[..], current_used_prefix)?;
+        builder.add_raw_with(|current, out| ops.fixup_kernel_commandline(current, out))?;
+        builder.zeroize_remains();
+        Ok(())
+    };
+
+    match fixup(fdt) {
+        Err(Error::BufferTooSmall(Some(requested))) => {
+            fdt_bootargs_reserve_space(fdt, requested)?;
+            fixup(fdt)
+        }
+        v => v,
+    }
+}
+
 /// Appends bootargs properties within the single FDT node.
 ///
 /// This implementation performs the concatenation within the FDT buffer without
@@ -384,7 +413,53 @@ fn fdt_propagate_random_seed<'a>(
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::ops::test::FakeGblOps;
     use libtestutils::AlignedBuffer;
+
+    #[test]
+    fn test_fdt_fixup_bootargs_extends_property() {
+        let mut buffer = AlignedBuffer::new(16 * 1024, 8);
+        let mut fdt = Fdt::new_empty(&mut buffer[..]).unwrap();
+        // No free space: FW returns BufferTooSmall, GBL extends bootargs and retries.
+        fdt.set_property(NODE_CHOSEN, PROP_BOOTARGS, b"a=b\0").unwrap();
+        let fixup = format!("c={}", "d".repeat(4096));
+        let mut ops = FakeGblOps::new(&[]);
+        ops.test_custom_cmdline_fixup = Some(fixup.clone());
+
+        fdt_fixup_bootargs(&mut ops, &mut fdt).unwrap();
+
+        let bootargs = fdt.get_property(NODE_CHOSEN, PROP_BOOTARGS).unwrap();
+        assert_eq!(
+            CStr::from_bytes_until_nul(bootargs).unwrap().to_str(),
+            Ok(&*format!("a=b {fixup}"))
+        );
+    }
+
+    #[test]
+    fn test_fdt_fixup_bootargs_in_place() {
+        let mut buffer = AlignedBuffer::new(16 * 1024, 8);
+        let mut fdt = Fdt::new_empty(&mut buffer[..]).unwrap();
+        // Free space is filled with garbage to check that it is zeroized after the fixup.
+        fdt.set_property(NODE_CHOSEN, PROP_BOOTARGS, b"a=b\0xxxx").unwrap();
+        let mut ops = FakeGblOps::new(&[]);
+        ops.test_custom_cmdline_fixup = Some("c".into());
+
+        fdt_fixup_bootargs(&mut ops, &mut fdt).unwrap();
+
+        // Property isn't extended since the fixup fits into the free space.
+        assert_eq!(fdt.get_property(NODE_CHOSEN, PROP_BOOTARGS).unwrap(), b"a=b c\0\0\0");
+    }
+
+    #[test]
+    fn test_fdt_fixup_bootargs_invalid_fixup() {
+        let mut buffer = AlignedBuffer::new(16 * 1024, 8);
+        let mut fdt = Fdt::new_empty(&mut buffer[..]).unwrap();
+        fdt.set_property(NODE_CHOSEN, PROP_BOOTARGS, b"a=b\0").unwrap();
+        let mut ops = FakeGblOps::new(&[]);
+        ops.test_custom_cmdline_fixup = Some("c=\0".into());
+
+        assert_eq!(fdt_fixup_bootargs(&mut ops, &mut fdt), Err(Error::InvalidInput));
+    }
 
     enum BootargsConcatResult<'a> {
         Ok(&'a [u8]),

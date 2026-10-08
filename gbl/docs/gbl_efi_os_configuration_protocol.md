@@ -16,11 +16,12 @@ configuration data:
 - device tree (select components with which to build the final one)
 - bootconfig (append fixups)
 - FIT configuration (select the configuration corresponding to the platform)
+- kernel command line (append fixups)
 
 GBL will load and verify the data provided by boot partitions, and then call
 these protocol functions to give the firmware a chance to construct and adjust
-the data as needed for the particular device. Device tree fixups (including
-kernel command line) are handled by the `EFI_DT_FIXUP` protocol.
+the data as needed for the particular device. Device tree fixups are handled by
+the `EFI_DT_FIXUP` protocol.
 
 If no runtime modifications are necessary, this protocol may be left
 unimplemented, in which case GBL autoselection logic will be used. Refer to
@@ -41,7 +42,7 @@ unimplemented, in which case GBL autoselection logic will be used. Refer to
 ### Revision Number
 
 ```c
-#define GBL_EFI_OS_CONFIGURATION_PROTOCOL_REVISION GBL_PROTOCOL_REVISION(1, 0)
+#define GBL_EFI_OS_CONFIGURATION_PROTOCOL_REVISION GBL_PROTOCOL_REVISION(1, 1)
 ```
 
 See [GBL Custom Protocol Revisions][custom_protocol_revisions] for details about
@@ -51,10 +52,11 @@ protocol revisions.
 
 ```c
 typedef struct _GBL_EFI_OS_CONFIGURATION_PROTOCOL {
-  UINT64                           Revision;
-  GBL_EFI_FIXUP_BOOTCONFIG         FixupBootConfig;
-  GBL_EFI_SELECT_DEVICE_TREES      SelectDeviceTrees;
-  GBL_EFI_SELECT_FIT_CONFIGURATION SelectFitConfiguration;
+  UINT64                            Revision;
+  GBL_EFI_FIXUP_BOOTCONFIG          FixupBootConfig;
+  GBL_EFI_SELECT_DEVICE_TREES       SelectDeviceTrees;
+  GBL_EFI_SELECT_FIT_CONFIGURATION  SelectFitConfiguration;
+  GBL_EFI_FIXUP_KERNEL_COMMAND_LINE FixupKernelCommandLine;
 } GBL_EFI_OS_CONFIGURATION_PROTOCOL;
 ```
 
@@ -81,6 +83,11 @@ information.
 
 Selects the FIT configuration corresponding to the platform. See
 [`SelectFitConfiguration()`][select_fit_configuration] for more information.
+
+#### FixupKernelCommandLine
+
+Applies kernel command line fixups. Added in revision 1.1. See
+[`FixupKernelCommandLine()`][fixup_kernel_commandline] for more information.
 
 ## GBL_EFI_OS_CONFIGURATION_PROTOCOL.FixupBootConfig()
 
@@ -442,10 +449,98 @@ traditional device tree selection and ignore the FIT image entirely.
 | `EFI_UNSUPPORTED`       | No configuration selected; GBL will continue to boot. |
 | `EFI_INVALID_PARAMETER` | Unexpected input; GBL will refuse to boot.            |
 
+## GBL_EFI_OS_CONFIGURATION_PROTOCOL.FixupKernelCommandLine()
+
+### Summary
+
+Allows the firmware to append device-specific parameters to the kernel command
+line built by GBL.
+
+### Prototype
+
+```c
+typedef
+EFI_STATUS
+(EFIAPI *GBL_EFI_FIXUP_KERNEL_COMMAND_LINE)(
+  IN GBL_EFI_OS_CONFIGURATION_PROTOCOL *Self,
+  IN UINTN                             CommandLineSize,
+  IN CONST CHAR8                       *CommandLine,
+  IN OUT UINTN                         *FixupBufferSize,
+  OUT CHAR8                            *Fixup
+  );
+```
+
+### Parameters
+
+All parameters are valid only for the duration of the function call and must not
+be retained by the protocol.
+
+#### Self
+
+A pointer to the `GBL_EFI_OS_CONFIGURATION_PROTOCOL` instance.
+
+#### CommandLineSize
+
+Specifies the size of the kernel command line provided by `CommandLine`,
+excluding the null terminator.
+
+#### CommandLine
+
+A pointer to the null-terminated kernel command line built by GBL so far.
+
+#### FixupBufferSize
+
+On input, points to the size of the provided `Fixup` buffer. The firmware is
+free to provide fixup data up to this size.
+
+On output, the firmware must update it according to the return code:
+
+- `EFI_SUCCESS`: the size of the provided fixup data, which must not be
+  null-terminated. GBL consumes exactly this number of bytes from `Fixup`.
+- `EFI_BUFFER_TOO_SMALL`: the size required to fit the fixup data. GBL discards
+  any data written to `Fixup` and either repeats the call with a larger buffer
+  or fails to boot.
+- Other: ignored by GBL.
+
+#### Fixup
+
+A pointer to a pre-allocated buffer of `FixupBufferSize` bytes to be filled by
+the firmware with the kernel command line fixup.
+
+### Description
+
+This method allows the firmware to append device-specific parameters to the
+kernel command line built by GBL.
+
+GBL appends the fixup verbatim, separated by a space, so every byte becomes part
+of the final kernel command line.
+
+The fixup must meet the following criteria:
+
+1. Must consist of UTF-8 encoded kernel command line parameters only, without a
+   null terminator or any other null characters.
+2. Must be derived from trusted data only and must not re-define verified boot
+   parameters, since the OS trusts the kernel command line as
+   bootloader-provided data.
+
+If no fixup is needed, `FixupBufferSize` can be set to `0` or `EFI_UNSUPPORTED`
+can be returned - both have the same effect.
+
+### Status Codes Returned
+
+| Return Code             | Semantics                                                                               |
+| :---------------------- | :-------------------------------------------------------------------------------------- |
+| `EFI_SUCCESS`           | Fixup was successfully written.                                                         |
+| `EFI_UNSUPPORTED`       | No fixup is provided; the kernel command line built by GBL will be used as-is.          |
+| `EFI_BUFFER_TOO_SMALL`  | `Fixup` buffer is too small; `FixupBufferSize` has been updated with the required size. |
+| `EFI_INVALID_PARAMETER` | Unexpected input; GBL will refuse to boot.                                              |
+
 [fixup_bootconfig]: #gbl_efi_os_configuration_protocol_fixupbootconfig
 [select_device_trees]: #gbl_efi_os_configuration_protocol_selectdevicetrees
 [select_fit_configuration]:
   #gbl_efi_os_configuration_protocol_selectfitconfiguration
+[fixup_kernel_commandline]:
+  #gbl_efi_os_configuration_protocol_fixupkernelcommandline
 [custom_protocol_revisions]: efi_integration.md#gbl-custom-protocol-revisions
 [avf]: https://source.android.com/docs/core/virtualization
 [bootconfig]:

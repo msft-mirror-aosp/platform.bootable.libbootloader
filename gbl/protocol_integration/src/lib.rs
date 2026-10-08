@@ -44,14 +44,14 @@ use efi::{
         gbl_efi_debug::GblDebugProtocol,
         gbl_efi_fastboot::GblFastbootProtocol,
         gbl_efi_fastboot_transport::GblFastbootTransportProtocol,
-        gbl_efi_os_configuration::GblOsConfigurationProtocol,
+        gbl_efi_os_configuration::{GblOsConfigurationProtocol, FIXUP_KERNEL_COMMANDLINE_REVISION},
         loaded_image::LoadedImageProtocol,
         random_number_generator::RandomNumberGeneratorProtocol,
         random_number_generator::RngAlgorithm,
         simple_text_input::SimpleTextInputProtocol,
         simple_text_output::SimpleTextOutputProtocol,
         timestamp::TimestampProtocol,
-        Protocol, ProtocolImpl,
+        Protocol, ProtocolImpl, Versioned,
     },
     utils::parse_fw_api_level,
     EfiEntry, GBL_EFI_FW_API_LEVEL, GBL_EFI_VENDOR_GUID,
@@ -448,7 +448,16 @@ fn test_gbl_fastboot_transport(entry: &EfiEntry) -> Result<()> {
 fn test_gbl_os_configuration(entry: &EfiEntry) -> Result<()> {
     let protocol = expect_one_handle_for_protocol::<GblOsConfigurationProtocol>(entry)?;
 
-    field_check!(protocol, fixup_bootconfig, select_device_trees, select_fit_configuration)
+    let mut res =
+        field_check!(protocol, fixup_bootconfig, select_device_trees, select_fit_configuration);
+
+    if protocol.revision() >= FIXUP_KERNEL_COMMANDLINE_REVISION {
+        if let Err(e) = field_check!(protocol, fixup_kernel_commandline) {
+            res = Err(e);
+        }
+    }
+
+    res
 }
 
 fn test_dt_fixup(entry: &EfiEntry) -> Result<()> {
