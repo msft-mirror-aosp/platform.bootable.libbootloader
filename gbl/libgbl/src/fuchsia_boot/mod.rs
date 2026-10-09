@@ -148,16 +148,16 @@ pub(crate) fn fixup_zbi_items<'a>(
     Ok(())
 }
 
-/// Checks whether platform or A/B/R metadata instructs GBL to boot into fastboot mode.
+/// Checks whether platform or A/B/R metadata instructs GBL to boot into fastboot or recovery mode.
 ///
 /// # Returns
 ///
-/// Returns true if fastboot mode is enabled, false if not.
-pub fn zircon_check_enter_fastboot<'a>(ops: &mut impl GblOps<'a>) -> bool {
+/// Returns `(enter_fastboot, oneshot_recovery)`.
+pub(crate) fn zircon_check_boot_mode<'a>(ops: &mut impl GblOps<'a>) -> (bool, bool) {
     match get_and_clear_one_shot_bootloader(&mut GblAbrOps(ops)) {
         Ok(true) => {
             gbl_println!(ops, "A/B/R one-shot-bootloader is set");
-            return true;
+            return (true, false);
         }
         Err(e) => {
             gbl_println!(ops, "Warning: error while checking A/B/R one-shot-bootloader ({:?})", e);
@@ -175,12 +175,26 @@ pub fn zircon_check_enter_fastboot<'a>(ops: &mut impl GblOps<'a>) -> bool {
         .unwrap_or(None);
     gbl_println!(ops, "Hardware triggered boot mode override: {one_shot_boot_mode:?}");
 
-    if matches!(one_shot_boot_mode, Some(OneShotBootMode::Bootloader)) {
-        gbl_println!(ops, "Hardware trigger instructs GBL to enter fastboot mode");
-        true
-    } else {
-        false
+    match one_shot_boot_mode {
+        Some(OneShotBootMode::Bootloader) => {
+            gbl_println!(ops, "Hardware trigger instructs GBL to enter fastboot mode");
+            (true, false)
+        }
+        Some(OneShotBootMode::Recovery) => {
+            gbl_println!(ops, "Hardware trigger instructs GBL to enter recovery mode");
+            (false, true)
+        }
+        None => (false, false),
     }
+}
+
+/// Checks whether platform or A/B/R metadata instructs GBL to boot into fastboot mode.
+///
+/// # Returns
+///
+/// Returns true if fastboot mode is enabled, false if not.
+pub fn zircon_check_enter_fastboot<'a>(ops: &mut impl GblOps<'a>) -> bool {
+    zircon_check_boot_mode(ops).0
 }
 
 #[cfg(test)]
@@ -193,7 +207,7 @@ pub(crate) mod test {
         },
         tests::read_test_data,
     };
-    use abr::set_one_shot_bootloader;
+    use abr::{get_and_clear_one_shot_flag, set_one_shot_bootloader};
     use avb_bindgen::{AVB_CERT_PIK_VERSION_LOCATION, AVB_CERT_PSK_VERSION_LOCATION};
     use std::collections::{BTreeSet, HashMap};
     use zerocopy::FromBytes;
@@ -317,6 +331,10 @@ pub(crate) mod test {
         assert!(!zircon_check_enter_fastboot(&mut ops));
         ops.one_shot_boot_mode = Some(OneShotBootMode::Bootloader);
         assert!(zircon_check_enter_fastboot(&mut ops));
+        ops.one_shot_boot_mode = Some(OneShotBootMode::Recovery);
+        assert!(!zircon_check_enter_fastboot(&mut ops));
+        // The hardware-triggered recovery mode is not persisted to A/B/R metadata.
+        assert_eq!(get_and_clear_one_shot_flag(&mut GblAbrOps(&mut ops)), Ok(0));
     }
 
     #[test]

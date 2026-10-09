@@ -1915,7 +1915,7 @@ pub(crate) mod test {
         }
 
         fn get_one_shot_boot_mode(&mut self) -> Result<Option<OneShotBootMode>, Error> {
-            Ok(self.one_shot_boot_mode)
+            Ok(self.one_shot_boot_mode.take())
         }
 
         fn handle_loaded_os(

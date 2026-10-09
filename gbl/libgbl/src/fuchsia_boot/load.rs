@@ -18,7 +18,7 @@ use crate::{
     fastboot::LoadedImageInfo,
     fuchsia_boot::{
         fixup_zbi_items, read_zircon_image, vboot::zircon_verify_kernel_in_place,
-        zbi_split_unused_buffer_mut, zircon_check_enter_fastboot, zircon_part_name, GblAbrOps,
+        zbi_split_unused_buffer_mut, zircon_check_boot_mode, zircon_part_name, GblAbrOps,
     },
     gbl_println, GblOps, Result as GblResult,
 };
@@ -123,7 +123,19 @@ pub fn zircon_load_verify_abr_with_buffer<'a, 'b>(
     ops: &mut impl GblOps<'a>,
     load_buffer: &'b mut [u8],
 ) -> GblResult<LoadedVerifiedZircon<'b>> {
-    let (slot, successful) = get_boot_slot(&mut GblAbrOps(ops), true);
+    zircon_load_verify_abr_with_mode(ops, load_buffer, false)
+}
+
+fn zircon_load_verify_abr_with_mode<'a, 'b>(
+    ops: &mut impl GblOps<'a>,
+    load_buffer: &'b mut [u8],
+    oneshot_recovery: bool,
+) -> GblResult<LoadedVerifiedZircon<'b>> {
+    let (slot, successful) = if oneshot_recovery {
+        (SlotIndex::R, false)
+    } else {
+        get_boot_slot(&mut GblAbrOps(ops), true)
+    };
     gbl_println!(ops, "Loading kernel from {}...", zircon_part_name(Some(slot)));
     let (zbi_items, kernel) = zircon_load_verify_fixup(ops, Some(slot), successful, load_buffer)?;
     gbl_println!(ops, "Successfully loaded slot: {}", zircon_part_name(Some(slot)));
@@ -157,7 +169,8 @@ pub fn zircon_main<'a, 'b, G: GblOps<'a>>(
     // TODO(b/445679472): Revisit this after Fuchsia adopts BCB or its own boot mode standard.
     // Checks and enters fastboot.
     let result = &mut Default::default();
-    if zircon_check_enter_fastboot(ops) {
+    let (enter_fastboot, oneshot_recovery) = zircon_check_boot_mode(ops);
+    if enter_fastboot {
         gbl_println!(ops, "Entering fastboot mode...");
         run_fastboot(GblFastbootEntry {
             ops,
@@ -175,7 +188,7 @@ pub fn zircon_main<'a, 'b, G: GblOps<'a>>(
         return Ok(LoadedVerifiedZircon { zbi_items, kernel, slot });
     }
 
-    zircon_load_verify_abr_with_buffer(ops, load)
+    zircon_load_verify_abr_with_mode(ops, load, oneshot_recovery)
 }
 
 #[cfg(test)]
@@ -189,12 +202,15 @@ mod test {
             TEST_CERT_PSK_VERSION, TEST_KERNEL_RESERVED_MEMORY_SIZE, TEST_ROLLBACK_INDEX_LOCATION,
             TEST_ROLLBACK_INDEX_VALUE, ZIRCON_A_ZBI_FILE, ZIRCON_SLOTLESS_ZBI_FILE,
         },
-        ops::test::{DefaultOk, FakeGblOps},
+        ops::{
+            test::{DefaultOk, FakeGblOps},
+            OneShotBootMode,
+        },
         tests::read_test_data,
     };
     use abr::{
-        mark_slot_active, mark_slot_successful, mark_slot_unbootable, set_one_shot_bootloader,
-        ABR_MAX_TRIES_REMAINING,
+        get_and_clear_one_shot_flag, mark_slot_active, mark_slot_successful, mark_slot_unbootable,
+        set_one_shot_bootloader, ABR_MAX_TRIES_REMAINING,
     };
     use avb::IoError as AvbIoError;
     use avb_bindgen::{AVB_CERT_PIK_VERSION_LOCATION, AVB_CERT_PSK_VERSION_LOCATION};
@@ -375,6 +391,35 @@ mod test {
     #[test]
     fn test_zircon_main_successful_slot_b() {
         test_zircon_main_successful_slot(SlotIndex::B);
+    }
+
+    #[test]
+    fn test_zircon_main_one_shot_recovery() {
+        let storage = create_storage();
+        let mut ops = create_gbl_ops(&storage);
+        let mut load_buffer = AlignedBuffer::new(256 * 1024, ZIRCON_KERNEL_ALIGNMENT);
+        mark_slot_active(&mut GblAbrOps(&mut ops), SlotIndex::A).unwrap();
+        mark_slot_successful(&mut GblAbrOps(&mut ops), SlotIndex::A).unwrap();
+        ops.one_shot_boot_mode = Some(OneShotBootMode::Recovery);
+        let LoadedVerifiedZircon { zbi_items, kernel, slot: booted_slot } =
+            zircon_main(&mut ops, &mut load_buffer[..], |_| {
+                panic!("Should not enter fastboot on OneShotBootMode::Recovery")
+            })
+            .unwrap();
+        assert_eq!(booted_slot, SlotIndex::R);
+        check_fixedup(SlotIndex::R, zbi_items, kernel, LockState::Locked);
+        check_rollback_not_updated(&mut ops);
+        // The hardware-triggered recovery request must not leave a persistent one-shot flag in
+        // A/B/R metadata.
+        assert_eq!(get_and_clear_one_shot_flag(&mut GblAbrOps(&mut ops)), Ok(0));
+
+        // One-shot recovery is cleared after one boot; subsequent boot selects active slot A.
+        let LoadedVerifiedZircon { zbi_items, kernel, slot: booted_slot } =
+            zircon_main(&mut ops, &mut load_buffer[..], |_| panic!("Should not enter fastboot"))
+                .unwrap();
+        assert_eq!(booted_slot, SlotIndex::A);
+        check_fixedup(SlotIndex::A, zbi_items, kernel, LockState::Locked);
+        check_rollback_updated(&mut ops);
     }
 
     fn test_zircon_main_fails_on_corrupted_slot(slot: SlotIndex) {
