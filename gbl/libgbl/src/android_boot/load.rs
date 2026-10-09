@@ -573,7 +573,7 @@ pub(super) struct BootBufferLoader<'a> {
 
     pub(super) ramdisk_sz: usize,
     pub(super) bootconfig_sz: usize,
-    /// Reserved kernel region size, including headroom for BSS and other post-image segments.
+    /// Size of the decompressed kernel image.
     pub(super) kernel_sz: usize,
 
     general_fdt: Range<usize>,
@@ -675,10 +675,7 @@ impl<'a> BootBufferLoader<'a> {
                 (attrs, sz)
             }
         };
-        // `reserved_size` is how much memory the kernel needs at runtime, which is what the
-        // buffer above is carved to. The slice handed on is the image itself, so it must stay
-        // at the decompressed length: anything past it was never written by
-        // `decompress_kernel` and is not part of the kernel.
+        // Buffer spans `reserved_size`. Only the decompressed image is handed on.
         self.kernel_sz = image_sz;
         Ok(attrs)
     }
