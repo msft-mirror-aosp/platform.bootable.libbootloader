@@ -15,9 +15,14 @@
 // Network is only allowed on dev boards.
 #![cfg(feature = "gbl_dev")]
 
-use crate::utils::{get_device_path, loop_with_timeout};
+use crate::{
+    efi,
+    utils::{get_device_path, loop_with_timeout},
+};
 use alloc::{boxed::Box, vec::Vec};
 use core::{
+    ffi::c_void,
+    ptr::null_mut,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
@@ -205,13 +210,13 @@ pub struct TxToken<'a: 'b, 'b> {
     tx_frames: &'b mut [*mut [u8; ETHERNET_FRAME_SIZE]],
     curr: &'b mut usize,
     protocol: &'b Protocol<'a, SimpleNetworkProtocol>,
-    efi_entry: &'b EfiEntry,
+    efi_entry: &'a EfiEntry,
 }
 
 impl TxToken<'_, '_> {
     /// Tries to allocate a send buffer.
     fn try_get_buffer(&mut self) -> Option<*mut [u8; ETHERNET_FRAME_SIZE]> {
-        let mut ptr: *mut core::ffi::c_void = core::ptr::null_mut();
+        let mut ptr: *mut c_void = null_mut();
         let mut interrupt_status = 0u32;
         // Recyle a buffer or take one from `tx_frames`.
         match self.protocol.get_status(Some(&mut interrupt_status), Some(&mut ptr)) {
@@ -290,26 +295,53 @@ impl phy::TxToken for TxToken<'_, '_> {
     }
 }
 
-/// Find the first available network device.
+/// Find the first available network device with an active link, falling back to the first root
+/// network device if no link is detected.
 fn find_net_device(efi_entry: &EfiEntry) -> Result<DeviceHandle> {
-    // Find the device whose path is the "smallest" lexicographically, this ensures that it's not
-    // any child network device of some other node. e1000 tends to add a child network device for
-    // ipv4 and ipv6 configuration information.
-    efi_entry
-        .system_table()
-        .boot_services()
+    let bs = efi_entry.system_table().boot_services();
+    let mut candidates: Vec<_> = bs
         .locate_handle_buffer_by_protocol::<SimpleNetworkProtocol>()?
         .handles()
         .iter()
-        .map(|handle| (*handle, get_device_path(efi_entry, *handle)))
-        // Ignore devices that fail to get device path.
-        .filter_map(|(handle, path)| path.ok().map(|v| (handle, v)))
-        // Ignore devices that have NULL path.
-        .filter_map(|(handle, path)| path.text().is_some().then(|| (handle, path)))
-        // Finds the minimum path lexicographically.
-        .min_by(|lhs, rhs| Ord::cmp(lhs.1.text().unwrap(), rhs.1.text().unwrap()))
-        .map(|(h, _)| h)
-        .ok_or(Error::NotFound.into())
+        .filter_map(|handle| {
+            let path = get_device_path(efi_entry, *handle).ok()?;
+            path.text().is_some().then_some((*handle, path))
+        })
+        .collect();
+
+    // Sort by device path text lexicographically so parent device paths precede any child virtual
+    // network device nodes (e.g., e1000 adds child nodes for IPv4 and IPv6 configuration).
+    candidates.sort_by(|(_, a), (_, b)| a.text().cmp(&b.text()));
+
+    // Deduplicate child network device handles whose path starts with the preceding root parent
+    // device path. Note that `dedup_by` passes `(child, root)` in reverse slice order.
+    candidates.dedup_by(|(_, child), (_, root)| {
+        if let (Some(child_text), Some(root_text)) = (child.text(), root.text()) {
+            !root_text.is_empty() && child_text.starts_with(root_text)
+        } else {
+            false
+        }
+    });
+
+    let first_handle = candidates.first().ok_or(Error::NotFound)?.0;
+
+    // Find the first root NIC handle with an active link, falling back to the first root handle.
+    let has_active_link = |&handle: &DeviceHandle| {
+        bs.open_protocol::<SimpleNetworkProtocol>(handle)
+            .and_then(|snp| {
+                reset_simple_network(&snp)?;
+                // Prod the driver to refresh its cached status (including Mode->MediaPresent).
+                // Some UEFI drivers require non-null status/buffer pointers even though they
+                // are optional in the spec.
+                let mut interrupt_status = 0u32;
+                let mut recycle_buffer = null_mut();
+                snp.get_status(Some(&mut interrupt_status), Some(&mut recycle_buffer))?;
+                let mode = snp.mode()?;
+                Ok(!mode.media_present_supported || mode.media_present)
+            })
+            .unwrap_or(false)
+    };
+    Ok(candidates.into_iter().map(|(h, _)| h).find(has_active_link).unwrap_or(first_handle))
 }
 
 /// Derives a link local ethernet mac address and IPv6 address from `EfiMacAddress`.
@@ -680,5 +712,216 @@ impl<'a, 'b, 'c: 'b> EfiGblNetwork<'a, 'b, 'c> {
         self.0 = None;
         self.0 = Some(EfiGblNetworkInternal::new(efi_entry, timestamp)?);
         self.0.as_mut().unwrap().create_socket()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use efi_mocks::{
+        protocol::device_path::{DevicePathProtocol, DevicePathText, DevicePathToTextProtocol},
+        MockEfi, MockLocatedHandles,
+    };
+    use efi_types::EfiSimpleNetworkMode;
+
+    fn make_handle(id: usize) -> DeviceHandle {
+        DeviceHandle::new(id as _)
+    }
+
+    fn make_snp(media_present_supported: bool, media_present: bool) -> SimpleNetworkProtocol {
+        let mut snp = SimpleNetworkProtocol::default();
+        snp.expect_shutdown().returning(|| Ok(()));
+        snp.expect_start().returning(|| Ok(()));
+        snp.expect_initialize().returning(|_, _| Ok(()));
+        snp.expect_reset().returning(|_| Ok(()));
+        snp.expect_get_status_raw().returning(|int_sts, tx_buf| {
+            assert!(!int_sts.is_null());
+            assert!(!tx_buf.is_null());
+            Ok(())
+        });
+        snp.expect_mode().returning(move || {
+            Ok(EfiSimpleNetworkMode {
+                media_present_supported,
+                media_present,
+                ..Default::default()
+            })
+        });
+        snp
+    }
+
+    fn setup_device_paths(mock_efi: &mut MockEfi, devices: &[(usize, &'static [u16])]) {
+        let ids: Vec<usize> = devices.iter().map(|(id, _)| *id).collect();
+        mock_efi
+            .boot_services
+            .expect_locate_handle_buffer_by_protocol::<SimpleNetworkProtocol>()
+            .times(1)
+            .return_once(move || {
+                Ok(MockLocatedHandles(ids.into_iter().map(make_handle).collect()))
+            });
+
+        for &(id, path_u16) in devices {
+            mock_efi
+                .boot_services
+                .expect_open_protocol::<DevicePathProtocol>()
+                .times(1)
+                .return_once(move |h| {
+                    assert_eq!(h, make_handle(id));
+                    Ok(DevicePathProtocol::default())
+                });
+            mock_efi
+                .boot_services
+                .expect_find_first_and_open::<DevicePathToTextProtocol>()
+                .times(1)
+                .return_once(move || {
+                    let mut path_to_text = DevicePathToTextProtocol::default();
+                    path_to_text.expect_convert_device_path_to_text().times(1).return_once(
+                        move |_, _, _| {
+                            let mut text = DevicePathText::default();
+                            text.expect_text().return_const(Some(path_u16));
+                            Ok(text)
+                        },
+                    );
+                    Ok(path_to_text)
+                });
+        }
+    }
+
+    const NIC1_PATH: &[u16] = &[b'P' as u16, b'c' as u16, b'i' as u16, b'1' as u16];
+    const NIC1_IPV4_PATH: &[u16] = &[
+        b'P' as u16,
+        b'c' as u16,
+        b'i' as u16,
+        b'1' as u16,
+        b'/' as u16,
+        b'I' as u16,
+        b'P' as u16,
+        b'v' as u16,
+        b'4' as u16,
+    ];
+    const NIC1_IPV6_PATH: &[u16] = &[
+        b'P' as u16,
+        b'c' as u16,
+        b'i' as u16,
+        b'1' as u16,
+        b'/' as u16,
+        b'I' as u16,
+        b'P' as u16,
+        b'v' as u16,
+        b'6' as u16,
+    ];
+    const NIC2_PATH: &[u16] = &[b'P' as u16, b'c' as u16, b'i' as u16, b'2' as u16];
+    const NIC2_IPV4_PATH: &[u16] = &[
+        b'P' as u16,
+        b'c' as u16,
+        b'i' as u16,
+        b'2' as u16,
+        b'/' as u16,
+        b'I' as u16,
+        b'P' as u16,
+        b'v' as u16,
+        b'4' as u16,
+    ];
+
+    #[test]
+    fn test_find_net_device_ignores_child_paths() {
+        let mut mock_efi = MockEfi::new();
+        let nic1_ipv6_id = 1;
+        let nic1_id = 2;
+        let nic1_ipv4_id = 3;
+
+        // Provide handles out of order; child IPv4/IPv6 handles must be deduplicated and never
+        // opened for SimpleNetworkProtocol.
+        setup_device_paths(
+            &mut mock_efi,
+            &[(nic1_ipv6_id, NIC1_IPV6_PATH), (nic1_id, NIC1_PATH), (nic1_ipv4_id, NIC1_IPV4_PATH)],
+        );
+
+        mock_efi
+            .boot_services
+            .expect_open_protocol::<SimpleNetworkProtocol>()
+            .times(1)
+            .return_once(move |h| {
+                assert_eq!(h, make_handle(nic1_id));
+                Ok(make_snp(true, true))
+            });
+
+        let installed = mock_efi.install();
+        assert_eq!(find_net_device(installed.entry()), Ok(make_handle(nic1_id)));
+    }
+
+    #[test]
+    fn test_find_net_device_selects_second_nic_with_media_present() {
+        let mut mock_efi = MockEfi::new();
+        let nic1_id = 1;
+        let nic1_ipv4_id = 2;
+        let nic2_id = 3;
+        let nic2_ipv4_id = 4;
+
+        setup_device_paths(
+            &mut mock_efi,
+            &[
+                (nic1_ipv4_id, NIC1_IPV4_PATH),
+                (nic2_id, NIC2_PATH),
+                (nic1_id, NIC1_PATH),
+                (nic2_ipv4_id, NIC2_IPV4_PATH),
+            ],
+        );
+
+        // First root NIC has no link (media_present == false).
+        mock_efi
+            .boot_services
+            .expect_open_protocol::<SimpleNetworkProtocol>()
+            .times(1)
+            .return_once(move |h| {
+                assert_eq!(h, make_handle(nic1_id));
+                Ok(make_snp(true, false))
+            });
+
+        // Second root NIC has link (media_present == true).
+        mock_efi
+            .boot_services
+            .expect_open_protocol::<SimpleNetworkProtocol>()
+            .times(1)
+            .return_once(move |h| {
+                assert_eq!(h, make_handle(nic2_id));
+                Ok(make_snp(true, true))
+            });
+
+        let installed = mock_efi.install();
+        assert_eq!(find_net_device(installed.entry()), Ok(make_handle(nic2_id)));
+    }
+
+    #[test]
+    fn test_find_net_device_fallback_to_first_root_nic() {
+        let mut mock_efi = MockEfi::new();
+        let nic1_id = 1;
+        let nic1_ipv6_id = 2;
+        let nic2_id = 3;
+
+        setup_device_paths(
+            &mut mock_efi,
+            &[(nic2_id, NIC2_PATH), (nic1_ipv6_id, NIC1_IPV6_PATH), (nic1_id, NIC1_PATH)],
+        );
+
+        // Neither root NIC reports media_present == true.
+        mock_efi
+            .boot_services
+            .expect_open_protocol::<SimpleNetworkProtocol>()
+            .times(1)
+            .return_once(move |h| {
+                assert_eq!(h, make_handle(nic1_id));
+                Ok(make_snp(true, false))
+            });
+        mock_efi
+            .boot_services
+            .expect_open_protocol::<SimpleNetworkProtocol>()
+            .times(1)
+            .return_once(move |h| {
+                assert_eq!(h, make_handle(nic2_id));
+                Ok(make_snp(true, false))
+            });
+
+        let installed = mock_efi.install();
+        assert_eq!(find_net_device(installed.entry()), Ok(make_handle(nic1_id)));
     }
 }

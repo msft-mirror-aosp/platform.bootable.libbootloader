@@ -20,12 +20,17 @@
 use crate::{DeviceHandle, MOCK_EFI};
 use alloc::vec::Vec;
 use arrayvec::ArrayVec;
-use core::{ffi::CStr, fmt::Write};
+use core::{
+    ffi::{c_void, CStr},
+    fmt::Write,
+    ptr::null_mut,
+};
 pub use efi::protocol::{Revision, Versioned};
 use efi_types::{
-    EfiInputKey, EfiTimestampProperties, GblEfiAvbDeviceStatus, GblEfiAvbKeyValidationStatus,
-    GblEfiAvbLockState, GblEfiAvbLockType, GblEfiAvbVerificationResult,
-    GblEfiFastbootCommandExecResult, GblEfiFastbootMessageType, GblEfiVerifiedDeviceTree,
+    EfiInputKey, EfiMacAddress, EfiSimpleNetworkMode, EfiTimestampProperties,
+    GblEfiAvbDeviceStatus, GblEfiAvbKeyValidationStatus, GblEfiAvbLockState, GblEfiAvbLockType,
+    GblEfiAvbVerificationResult, GblEfiFastbootCommandExecResult, GblEfiFastbootMessageType,
+    GblEfiVerifiedDeviceTree,
 };
 use liberror::{Error, Result};
 use libgbl::gbl_avb::SpecializedPartition;
@@ -588,4 +593,118 @@ pub mod gbl_efi_avf {
 
     /// Map to the libefi name so code under test can just use one name.
     pub type GblAvfProtocol = VersionedMock<MockGblAvfProtocol>;
+}
+
+/// Mock simple_network protocol.
+pub mod simple_network {
+    use super::*;
+
+    mock! {
+        /// Mock [efi::SimpleNetworkProtocol].
+        pub SimpleNetworkProtocol {
+            /// Wraps `EFI_SIMPLE_NETWORK.Start()`.
+            pub fn start(&self) -> Result<()>;
+
+            /// Wraps `EFI_SIMPLE_NETWORK.Stop()`.
+            pub fn stop(&self) -> Result<()>;
+
+            /// Wraps `EFI_SIMPLE_NETWORK.Initialize()`.
+            pub fn initialize(
+                &self,
+                extra_rx_buf_size: usize,
+                extra_tx_buf_size: usize,
+            ) -> Result<()>;
+
+            /// Wraps `EFI_SIMPLE_NETWORK.Reset()`.
+            pub fn reset(&self, extended_verification: bool) -> Result<()>;
+
+            /// Wraps `EFI_SIMPLE_NETWORK.Shutdown()`.
+            pub fn shutdown(&self) -> Result<()>;
+
+            /// Wraps `EFI_SIMPLE_NETWORK.ReceiveFilters()`.
+            pub fn receive_filters(
+                &self,
+                enable: u32,
+                disable: u32,
+                reset_mcast_filter: bool,
+                mcast_filter: &mut [EfiMacAddress],
+            ) -> Result<()>;
+
+            /// Wraps `EFI_SIMPLE_NETWORK.GetStatus()` with raw pointers for mockall compatibility.
+            pub fn get_status_raw(
+                &self,
+                interrupt_status: *mut u32,
+                recycle_buffer: *mut *mut c_void,
+            ) -> Result<()>;
+
+            /// Wraps `EFI_SIMPLE_NETWORK.Transmit()`.
+            ///
+            /// # Safety
+            ///
+            /// `buf` must be valid until the frame is transmitted or the network interface is
+            /// stopped.
+            pub unsafe fn transmit(
+                &self,
+                header_size: usize,
+                buf: *mut [u8],
+                src: EfiMacAddress,
+                dest: EfiMacAddress,
+                protocol: u16,
+            ) -> Result<()>;
+
+            /// Wraps `EFI_SIMPLE_NETWORK.Receive()` with raw pointers for mockall compatibility.
+            pub fn receive_raw(
+                &self,
+                header_size: *mut usize,
+                buf_size: *mut usize,
+                buf: &mut [u8],
+                src: *mut EfiMacAddress,
+                dest: *mut EfiMacAddress,
+                protocol: *mut u16,
+            ) -> Result<()>;
+
+            /// Returns `EFI_SIMPLE_NETWORK.Mode` structure.
+            pub fn mode(&self) -> Result<EfiSimpleNetworkMode>;
+
+            /// Sets to promiscuous mode to receive all packets over the network.
+            pub fn set_promiscuous_mode(&self) -> Result<()>;
+        }
+    }
+
+    impl MockSimpleNetworkProtocol {
+        /// Wrapper of `EFI_SIMPLE_NETWORK.GetStatus()`.
+        pub fn get_status(
+            &self,
+            interrupt_status: Option<&mut u32>,
+            recycle_buffer: Option<&mut *mut c_void>,
+        ) -> Result<()> {
+            self.get_status_raw(
+                interrupt_status.map_or(null_mut(), |p| p as *mut _),
+                recycle_buffer.map_or(null_mut(), |p| p as *mut _),
+            )
+        }
+
+        /// Wrapper of `EFI_SIMPLE_NETWORK.Receive()`.
+        pub fn receive(
+            &self,
+            header_size: Option<&mut usize>,
+            buf_size: Option<&mut usize>,
+            buf: &mut [u8],
+            src: Option<&mut EfiMacAddress>,
+            dest: Option<&mut EfiMacAddress>,
+            protocol: Option<&mut u16>,
+        ) -> Result<()> {
+            self.receive_raw(
+                header_size.map_or(null_mut(), |p| p as *mut _),
+                buf_size.map_or(null_mut(), |p| p as *mut _),
+                buf,
+                src.map_or(null_mut(), |p| p as *mut _),
+                dest.map_or(null_mut(), |p| p as *mut _),
+                protocol.map_or(null_mut(), |p| p as *mut _),
+            )
+        }
+    }
+
+    /// Map to the libefi name so code under test can just use one name.
+    pub type SimpleNetworkProtocol = MockSimpleNetworkProtocol;
 }
