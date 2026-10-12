@@ -210,7 +210,7 @@ mod test {
     };
     use abr::{
         get_and_clear_one_shot_flag, mark_slot_active, mark_slot_successful, mark_slot_unbootable,
-        set_one_shot_bootloader, ABR_MAX_TRIES_REMAINING,
+        set_one_shot_bootloader, UnbootableReason, ABR_MAX_TRIES_REMAINING,
     };
     use avb::IoError as AvbIoError;
     use avb_bindgen::{AVB_CERT_PIK_VERSION_LOCATION, AVB_CERT_PSK_VERSION_LOCATION};
@@ -311,8 +311,10 @@ mod test {
     fn set_next_boot_slot(ops: &mut FakeGblOps, slot: SlotIndex) {
         match slot {
             SlotIndex::R => {
-                mark_slot_unbootable(&mut GblAbrOps(ops), SlotIndex::A).unwrap();
-                mark_slot_unbootable(&mut GblAbrOps(ops), SlotIndex::B).unwrap()
+                mark_slot_unbootable(&mut GblAbrOps(ops), SlotIndex::A, UnbootableReason::None)
+                    .unwrap();
+                mark_slot_unbootable(&mut GblAbrOps(ops), SlotIndex::B, UnbootableReason::None)
+                    .unwrap()
             }
             _ => mark_slot_active(&mut GblAbrOps(ops), slot).unwrap(),
         }
@@ -373,7 +375,7 @@ mod test {
         let mut ops = create_gbl_ops(&storage);
         let mut load_buffer = AlignedBuffer::new(256 * 1024, ZIRCON_KERNEL_ALIGNMENT);
         mark_slot_active(&mut GblAbrOps(&mut ops), slot).unwrap();
-        mark_slot_successful(&mut GblAbrOps(&mut ops), slot).unwrap();
+        mark_slot_successful(&mut GblAbrOps(&mut ops), slot, false).unwrap();
         let LoadedVerifiedZircon { zbi_items, kernel, slot: booted_slot } =
             zircon_main(&mut ops, &mut load_buffer[..], |_| {}).unwrap();
         assert_eq!(booted_slot, slot);
@@ -399,7 +401,7 @@ mod test {
         let mut ops = create_gbl_ops(&storage);
         let mut load_buffer = AlignedBuffer::new(256 * 1024, ZIRCON_KERNEL_ALIGNMENT);
         mark_slot_active(&mut GblAbrOps(&mut ops), SlotIndex::A).unwrap();
-        mark_slot_successful(&mut GblAbrOps(&mut ops), SlotIndex::A).unwrap();
+        mark_slot_successful(&mut GblAbrOps(&mut ops), SlotIndex::A, false).unwrap();
         ops.one_shot_boot_mode = Some(OneShotBootMode::Recovery);
         let LoadedVerifiedZircon { zbi_items, kernel, slot: booted_slot } =
             zircon_main(&mut ops, &mut load_buffer[..], |_| {
@@ -430,7 +432,7 @@ mod test {
         ops.flip_partition_bytes(&part, 64, 1);
         let mut load_buffer = AlignedBuffer::new(256 * 1024, ZIRCON_KERNEL_ALIGNMENT);
         set_next_boot_slot(&mut ops, slot);
-        let _ = mark_slot_successful(&mut GblAbrOps(&mut ops), slot);
+        let _ = mark_slot_successful(&mut GblAbrOps(&mut ops), slot, false);
         assert!(zircon_main(&mut ops, &mut load_buffer[..], |_| {}).is_err());
         check_rollback_not_updated(&mut ops);
     }
@@ -459,7 +461,7 @@ mod test {
             .insert(TEST_ROLLBACK_INDEX_LOCATION, Ok(TEST_ROLLBACK_INDEX_VALUE + 1));
         let mut load_buffer = AlignedBuffer::new(256 * 1024, ZIRCON_KERNEL_ALIGNMENT);
         set_next_boot_slot(&mut ops, slot);
-        let _ = mark_slot_successful(&mut GblAbrOps(&mut ops), slot);
+        let _ = mark_slot_successful(&mut GblAbrOps(&mut ops), slot, false);
         assert!(zircon_main(&mut ops, &mut load_buffer[..], |_| {}).is_err());
         assert_eq!(
             ops.avb_ops.rollbacks,

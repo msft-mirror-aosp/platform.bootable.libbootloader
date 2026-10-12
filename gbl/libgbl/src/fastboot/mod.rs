@@ -2124,7 +2124,8 @@ pub(crate) mod test {
     };
     #[cfg(feature = "fuchsia")]
     use abr::{
-        get_and_clear_one_shot_bootloader, get_boot_slot, mark_slot_unbootable, ABR_DATA_SIZE,
+        get_and_clear_one_shot_bootloader, get_boot_slot, mark_slot_unbootable, UnbootableReason,
+        ABR_DATA_SIZE,
     };
     use core::{
         ops::Deref,
@@ -5024,8 +5025,10 @@ pub(crate) mod test {
         let listener: SharedTestListener = Default::default();
         let (transports, tcp) = (&mut [&listener], &listener);
 
-        mark_slot_unbootable(&mut GblAbrOps(&mut gbl_ops), SlotIndex::A).unwrap();
-        mark_slot_unbootable(&mut GblAbrOps(&mut gbl_ops), SlotIndex::B).unwrap();
+        mark_slot_unbootable(&mut GblAbrOps(&mut gbl_ops), SlotIndex::A, UnbootableReason::None)
+            .unwrap();
+        mark_slot_unbootable(&mut GblAbrOps(&mut gbl_ops), SlotIndex::B, UnbootableReason::None)
+            .unwrap();
 
         // Flash some data to `durable_boot` after A/B/R metadata. This is for testing that sync
         // storage is done first.
