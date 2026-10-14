@@ -21,7 +21,7 @@ use liberror::{Error, Result};
 
 const ABR_MAGIC: &[u8; 4] = b"\0AB0";
 const ABR_MAJOR_VERSION: u8 = 2;
-const ABR_MINOR_VERSION: u8 = 2;
+const ABR_MINOR_VERSION: u8 = 3;
 
 // The following flags are harcoded as u8 instead of using the bitflag crate to avoid additional
 // crate dependency and improve portability.
@@ -161,18 +161,67 @@ impl TryFrom<c_uint> for SlotIndex {
     }
 }
 
+/// `UnbootableReason` represents the reason why a slot became unbootable.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum UnbootableReason {
+    /// Slot is not unbootable, or unbootable reason is unknown.
+    None,
+    /// Slot ran out of attempts before being marked successful.
+    NoMoreTries,
+    /// The OS requested the slot be marked unbootable.
+    OsRequested,
+    /// The bootloader failed to load and/or verify this slot.
+    VerificationFailure,
+    /// Unknown reason code from a newer metadata version.
+    Unknown(u8),
+}
+
+impl From<u8> for UnbootableReason {
+    fn from(val: u8) -> Self {
+        match val {
+            0 => Self::None,
+            1 => Self::NoMoreTries,
+            2 => Self::OsRequested,
+            3 => Self::VerificationFailure,
+            v => Self::Unknown(v),
+        }
+    }
+}
+
+impl From<UnbootableReason> for u8 {
+    fn from(val: UnbootableReason) -> Self {
+        match val {
+            UnbootableReason::None => 0,
+            UnbootableReason::NoMoreTries => 1,
+            UnbootableReason::OsRequested => 2,
+            UnbootableReason::VerificationFailure => 3,
+            UnbootableReason::Unknown(v) => v,
+        }
+    }
+}
+
+impl TryFrom<c_uint> for UnbootableReason {
+    type Error = Error;
+
+    fn try_from(val: c_uint) -> Result<Self> {
+        Ok(u8::try_from(val).map_err(|_| Error::InvalidInput)?.into())
+    }
+}
+
 /// `SlotState` represents the current state of an A/B/R slot.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum SlotState {
     /// Slot has successfully booted.
     Successful,
     /// Slot can be attempted but is not known to be successful. Contained value is the number
     /// of boot attempts remaining before being marked as `Unbootable`.
     Bootable(u8),
-    /// Slot is unbootable.
-    Unbootable,
+    /// Slot is unbootable. Contained value is the reason the slot became unbootable.
+    Unbootable(UnbootableReason),
 }
 
 /// `SlotInfo` contains the current state and active status of an A/B/R slot.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct SlotInfo {
     /// The [SlotState] describing the bootability.
     pub state: SlotState,
@@ -190,8 +239,8 @@ pub struct AbrSlotData {
     pub tries_remaining: u8,
     /// Whether this slot is known successful.
     pub successful_boot: u8,
-    /// Reserved for future use; must be set to 0.
-    pub reserved: u8,
+    /// Unbootable reason.
+    pub unbootable_reason: u8,
 }
 
 const ABR_SLOT_DATA_SIZE: usize = size_of::<AbrSlotData>();
@@ -203,13 +252,13 @@ impl AbrSlotData {
             priority: bytes[0],
             tries_remaining: bytes[1],
             successful_boot: bytes[2],
-            reserved: bytes[3],
+            unbootable_reason: bytes[3],
         }
     }
 
     /// Serializes to bytes.
     pub fn serialize(&self) -> [u8; ABR_SLOT_DATA_SIZE] {
-        [self.priority, self.tries_remaining, self.successful_boot, self.reserved]
+        [self.priority, self.tries_remaining, self.successful_boot, self.unbootable_reason]
     }
 
     /// Returns if slot is bootable
@@ -217,13 +266,14 @@ impl AbrSlotData {
         self.priority > 0 && (self.successful_boot == 1 || self.tries_remaining > 0)
     }
 
-    fn set_slot_unbootable(&mut self) {
+    fn set_slot_unbootable(&mut self, reason: UnbootableReason) {
         self.tries_remaining = 0;
         self.successful_boot = 0;
+        self.unbootable_reason = reason.into();
     }
 
     /// Gets normalized priority.
-    fn get_normalized_priority(&self) -> u8 {
+    pub fn get_normalized_priority(&self) -> u8 {
         match self.is_slot_bootable() {
             true => self.priority,
             _ => 0,
@@ -234,10 +284,6 @@ impl AbrSlotData {
     /// That is priority=0, tries_remaining=0, and successful_boot=0.
     fn slot_normalize(&mut self) {
         if self.priority > 0 {
-            if self.tries_remaining == 0 && self.successful_boot == 0 {
-                // All tries exhausted
-                self.set_slot_unbootable();
-            }
             if self.tries_remaining > 0 && self.successful_boot == 1 {
                 // Illegal state. Reset to not successful state
                 self.tries_remaining = ABR_MAX_TRIES_REMAINING;
@@ -246,7 +292,7 @@ impl AbrSlotData {
             self.priority = min(self.priority, ABR_MAX_PRIORITY);
             self.tries_remaining = min(self.tries_remaining, ABR_MAX_TRIES_REMAINING);
         } else {
-            self.set_slot_unbootable();
+            self.set_slot_unbootable(self.unbootable_reason.into());
         }
     }
 }
@@ -359,14 +405,7 @@ impl AbrData {
 
     /// Gets the active slot
     fn get_active_slot(&self) -> SlotIndex {
-        let priority_a = self.slot_data(SlotIndex::A).get_normalized_priority();
-        let priority_b = self.slot_data(SlotIndex::B).get_normalized_priority();
-        if priority_b > priority_a {
-            return SlotIndex::B;
-        } else if priority_a > 0 {
-            return SlotIndex::A;
-        }
-        return SlotIndex::R;
+        get_active_slot_from_data(self.slot_data(SlotIndex::A), self.slot_data(SlotIndex::B))
     }
 
     /// Is the given slot active.
@@ -396,6 +435,18 @@ impl AbrData {
     }
 }
 
+/// Equivalent to C API `AbrGetActiveSlotFromData()`.
+pub fn get_active_slot_from_data(data_a: &AbrSlotData, data_b: &AbrSlotData) -> SlotIndex {
+    let priority_a = data_a.get_normalized_priority();
+    let priority_b = data_b.get_normalized_priority();
+    if priority_b > priority_a {
+        return SlotIndex::B;
+    } else if priority_a > 0 {
+        return SlotIndex::A;
+    }
+    return SlotIndex::R;
+}
+
 impl Default for AbrData {
     fn default() -> Self {
         Self {
@@ -408,13 +459,13 @@ impl Default for AbrData {
                     priority: ABR_MAX_PRIORITY,
                     tries_remaining: ABR_MAX_TRIES_REMAINING,
                     successful_boot: 0,
-                    reserved: 0,
+                    unbootable_reason: UnbootableReason::None.into(),
                 },
                 AbrSlotData {
                     priority: ABR_MAX_PRIORITY - 1,
                     tries_remaining: ABR_MAX_TRIES_REMAINING,
                     successful_boot: 0,
-                    reserved: 0,
+                    unbootable_reason: UnbootableReason::None.into(),
                 },
             ],
             one_shot_flags: 0,
@@ -437,16 +488,16 @@ fn load_metadata(abr_ops: &mut dyn Ops) -> Result<(AbrData, AbrData)> {
             abr_data_orig = v;
             v
         }
-        Err(Error::Other(e)) => {
-            avb_print!(abr_ops, "read_abr_metadata error: {:?}\n", e);
-            return Err(e.into());
-        }
+        Err(Error::BadMagic) | Err(Error::BadChecksum) => Default::default(),
         Err(Error::UnsupportedVersion) => {
             // We don't want to clobber valid data in persistent storage, but we can't use this
             // data, so bail out.
             return Err(Error::UnsupportedVersion);
         }
-        _ => Default::default(),
+        Err(e) => {
+            avb_print!(abr_ops, "read_abr_metadata error: {:?}\n", e);
+            return Err(e);
+        }
     };
     abr_data.slot_data_mut(SlotIndex::A).slot_normalize();
     abr_data.slot_data_mut(SlotIndex::B).slot_normalize();
@@ -522,6 +573,9 @@ pub fn get_boot_slot(abr_ops: &mut dyn Ops, update_metadata: bool) -> (SlotIndex
         if slot_to_boot != SlotIndex::R && !is_slot_marked_successful {
             let slot_data = abr_data.slot_data_mut(slot_to_boot);
             slot_data.tries_remaining = slot_data.tries_remaining.checked_sub(1).unwrap();
+            if slot_data.tries_remaining == 0 {
+                slot_data.unbootable_reason = UnbootableReason::NoMoreTries.into();
+            }
         }
         // Second is to clear the successful_boot bit from any successfully-marked slots that
         // aren't the slot we're booting. It's possible that booting from one slot will render the
@@ -557,6 +611,7 @@ pub fn mark_slot_active(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> Result<
     abr_data.slot_data_mut(slot_index).priority = ABR_MAX_PRIORITY;
     abr_data.slot_data_mut(slot_index).tries_remaining = ABR_MAX_TRIES_REMAINING;
     abr_data.slot_data_mut(slot_index).successful_boot = 0;
+    abr_data.slot_data_mut(slot_index).unbootable_reason = UnbootableReason::None.into();
 
     // Ensure other slot doesn't have as high a priority
     let other = slot_index.other();
@@ -585,13 +640,17 @@ pub fn get_slot_last_marked_active(abr_ops: &mut dyn Ops) -> Result<SlotIndex> {
 ///
 /// TODO(b/338243123): Detailed documentation is available in Fuchsia upstream header
 /// "src/firmware/lib/abr/include/lib/abr/abr.h", which will migrate to the GBL repo.
-pub fn mark_slot_unbootable(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> Result<()> {
+pub fn mark_slot_unbootable(
+    abr_ops: &mut dyn Ops,
+    slot_index: SlotIndex,
+    reason: UnbootableReason,
+) -> Result<()> {
     if slot_index == SlotIndex::R {
         avb_print!(abr_ops, "Invalid argument: Cannot mark slot R as unbootable.\n");
         return Err(Error::InvalidInput);
     }
     let (mut abr_data, abr_data_orig) = load_metadata(abr_ops)?;
-    abr_data.slot_data_mut(slot_index).set_slot_unbootable();
+    abr_data.slot_data_mut(slot_index).set_slot_unbootable(reason);
     save_metadata_if_changed(abr_ops, &mut abr_data, &abr_data_orig)
 }
 
@@ -599,20 +658,25 @@ pub fn mark_slot_unbootable(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> Res
 ///
 /// TODO(b/338243123): Detailed documentation is available in Fuchsia upstream header
 /// "src/firmware/lib/abr/include/lib/abr/abr.h", which will migrate to the GBL repo.
-pub fn mark_slot_successful(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> Result<()> {
+pub fn mark_slot_successful(
+    abr_ops: &mut dyn Ops,
+    slot_index: SlotIndex,
+    from_unbootable_ok: bool,
+) -> Result<()> {
     if slot_index == SlotIndex::R {
         avb_print!(abr_ops, "Invalid argument: Cannot mark slot R as successful.\n");
         return Err(Error::InvalidInput);
     }
     let (mut abr_data, abr_data_orig) = load_metadata(abr_ops)?;
 
-    if !abr_data.slot_data(slot_index).is_slot_bootable() {
+    if !(abr_data.slot_data(slot_index).is_slot_bootable() || from_unbootable_ok) {
         avb_print!(abr_ops, "Invalid argument: Cannot mark unbootable slot as successful.\n");
         return Err(Error::InvalidInput);
     }
 
     abr_data.slot_data_mut(slot_index).tries_remaining = 0;
     abr_data.slot_data_mut(slot_index).successful_boot = 1;
+    abr_data.slot_data_mut(slot_index).unbootable_reason = UnbootableReason::None.into();
 
     // Proactively remove any success mark on the other slot
     //
@@ -646,7 +710,7 @@ pub fn get_slot_info(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> Result<Slo
             let state = match slot_data.successful_boot == 1 {
                 true => SlotState::Successful,
                 _ if slot_data.is_slot_bootable() => SlotState::Bootable(slot_data.tries_remaining),
-                _ => SlotState::Unbootable,
+                _ => SlotState::Unbootable(slot_data.unbootable_reason.into()),
             };
             SlotInfo { state, is_active: abr_data.is_slot_active(slot_index) }
         }
