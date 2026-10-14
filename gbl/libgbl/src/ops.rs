@@ -453,26 +453,38 @@ pub trait GblOps<'a> {
     ///
     /// The returned bootconfig will be verified and appended on top of the bootconfig
     /// built by GBL. Refer to the behavior specified for the corresponding UEFI interface:
-    /// https://cs.android.com/android/kernel/superproject/+/common-android-mainline:bootable/libbootloader/gbl/docs/gbl_os_configuration_protocol.md
+    /// https://cs.android.com/android/kernel/superproject/+/common-android-mainline:bootable/libbootloader/gbl/docs/gbl_efi_os_configuration_protocol.md
     fn fixup_bootconfig<'c>(
         &mut self,
         bootconfig: &[u8],
         fixup_buffer: &'c mut [u8],
     ) -> Result<Option<&'c [u8]>, Error>;
 
+    /// Requests a fixup to append to the kernel command line built by GBL.
+    ///
+    /// Returns the number of bytes written to the beginning of `fixup_buffer`, 0 if no fixup is
+    /// provided. The data is validated by GBL. Refer to the behavior specified for the
+    /// corresponding UEFI interface:
+    /// https://cs.android.com/android/kernel/superproject/+/common-android-mainline:bootable/libbootloader/gbl/docs/gbl_efi_os_configuration_protocol.md
+    fn fixup_kernel_commandline(
+        &mut self,
+        commandline: &CStr,
+        fixup_buffer: &mut [u8],
+    ) -> Result<usize, Error>;
+
     /// Selects from device tree components to build the final one.
     ///
     /// Provided components registry must be used to select one device tree (none is not allowed),
     /// and any number of overlays. Refer to the behavior specified for the corresponding UEFI
     /// interface:
-    /// https://cs.android.com/android/kernel/superproject/+/common-android-mainline:bootable/libbootloader/gbl/docs/gbl_os_configuration_protocol.md
+    /// https://cs.android.com/android/kernel/superproject/+/common-android-mainline:bootable/libbootloader/gbl/docs/gbl_efi_os_configuration_protocol.md
     fn select_device_trees(&mut self, components: &mut DtComponentsRegistry) -> Result<(), Error>;
 
     /// Selects FIT configuration from FIT FDT.
     ///
     /// Refer to the behavior specified for the corresponding UEFI
     /// interface:
-    /// https://cs.android.com/android/kernel/superproject/+/common-android-mainline:bootable/libbootloader/gbl/docs/gbl_os_configuration_protocol.md
+    /// https://cs.android.com/android/kernel/superproject/+/common-android-mainline:bootable/libbootloader/gbl/docs/gbl_efi_os_configuration_protocol.md
     fn select_fit_configuration(
         &mut self,
         fit: &[u8],
@@ -832,6 +844,14 @@ impl<'r, 'a: 'r, T: GblOps<'a>> GblOps<'a> for RambootOps<'r, T> {
         fixup_buffer: &'c mut [u8],
     ) -> Result<Option<&'c [u8]>, Error> {
         self.ops.fixup_bootconfig(bootconfig, fixup_buffer)
+    }
+
+    fn fixup_kernel_commandline(
+        &mut self,
+        commandline: &CStr,
+        fixup_buffer: &mut [u8],
+    ) -> Result<usize, Error> {
+        self.ops.fixup_kernel_commandline(commandline, fixup_buffer)
     }
 
     fn fixup_device_tree(&mut self, device_tree: &mut [u8]) -> Result<(), Error> {
@@ -1375,6 +1395,9 @@ pub(crate) mod test {
         /// Number of times `Self::fixup_bootconfig()` is called.
         fixup_bootconfig_calls: u8,
 
+        /// Custom kernel command line fixup value set by unittest.
+        pub test_custom_cmdline_fixup: Option<String>,
+
         /// Handler for `Self::fastboot_command_exec`.
         pub fastboot_command_exec_handler: Option<
             &'a mut dyn FnMut(Vec<String>, &mut [u8], usize) -> Result<CommandExecType, Error>,
@@ -1415,6 +1438,8 @@ pub(crate) mod test {
         pub const GBL_TEST_VAR_UNSPLIT: &'static str = "gbl:test:var:unsplit";
         pub const GBL_TEST_VAR_UNSPLIT_VAL: &'static str = "gbl-test-var-val-unsplit";
         pub const GBL_TEST_BOOTCONFIG: &'static str = "arg1=val1\x0aarg2=val2\x0a";
+        pub const GBL_TEST_CMDLINE_FIXUP: &'static str = "os_config_fixup";
+        pub const GBL_TEST_FDT_CMDLINE_FIXUP: &'static str = "dt_fixup";
         pub const GBL_TEST_FDT_FIXUP: &'static [u8] = &[1];
         pub const TEST_FDT_FIXUP_PADDING: usize = 4096;
         pub const GBL_TEST_RANDOM_DATA: &'static [u8] = &[b'7'; RNG_SEED_SIZE_BYTES];
@@ -1706,6 +1731,22 @@ pub(crate) mod test {
             Ok(Some(out))
         }
 
+        fn fixup_kernel_commandline(
+            &mut self,
+            _commandline: &CStr,
+            fixup_buffer: &mut [u8],
+        ) -> Result<usize, Error> {
+            let fixup = self
+                .test_custom_cmdline_fixup
+                .clone()
+                .unwrap_or(Self::GBL_TEST_CMDLINE_FIXUP.into());
+            fixup_buffer
+                .get_mut(..fixup.len())
+                .ok_or(Error::BufferTooSmall(Some(fixup.len())))?
+                .copy_from_slice(fixup.as_bytes());
+            Ok(fixup.len())
+        }
+
         fn fixup_device_tree(&mut self, fdt: &mut [u8]) -> Result<(), Error> {
             let mut fdt = Fdt::new_mut(fdt).unwrap();
 
@@ -1716,7 +1757,7 @@ pub(crate) mod test {
             let cmd_prop_buffer =
                 fdt.set_property_placeholder("chosen", PROP_BOOTARGS, cmd_prop_len)?;
             let mut commandline = CommandlineBuilder::from_prefix(cmd_prop_buffer)?;
-            commandline.add_raw("fixup")?;
+            commandline.add_raw(Self::GBL_TEST_FDT_CMDLINE_FIXUP)?;
 
             // Test custom fixup.
             fdt.set_property(
@@ -2077,6 +2118,10 @@ pub(crate) mod test {
             _: &[u8],
             _: &'c mut [u8],
         ) -> Result<Option<&'c [u8]>, Error> {
+            Err(Error::Unsupported)
+        }
+
+        fn fixup_kernel_commandline(&mut self, _: &CStr, _: &mut [u8]) -> Result<usize, Error> {
             Err(Error::Unsupported)
         }
 

@@ -707,6 +707,22 @@ impl<'a, 'b> GblOps<'b> for Ops<'a, 'b> {
         }
     }
 
+    fn fixup_kernel_commandline(
+        &mut self,
+        commandline: &CStr,
+        fixup_buffer: &mut [u8],
+    ) -> Result<usize> {
+        match self.open_os_configuration_protocol() {
+            Ok(protocol) => match protocol.fixup_kernel_commandline(commandline, fixup_buffer) {
+                Err(Error::Unsupported) => Ok(0),
+                v => v,
+            },
+            // Protocol is optional.
+            Err(Error::NotFound) => Ok(0),
+            Err(e) => Err(e),
+        }
+    }
+
     fn fixup_device_tree(&mut self, device_tree: &mut [u8]) -> Result<()> {
         match self.efi_entry.system_table().boot_services().find_first_and_open::<DtFixupProtocol>()
         {
@@ -2133,6 +2149,153 @@ mod test {
                 None,
             ),
             // Error catched.
+            Err(Error::AccessDenied),
+        );
+    }
+
+    /// Helper for testing `GblOsConfigurationProtocol.fixup_kernel_commandline`
+    fn test_fixup_kernel_commandline(
+        expected_base: &'static CStr,
+        fixup_buffer: &mut [u8],
+        fixup_to_apply: &'static [u8],
+        protocol_lookup_error: Option<Error>,
+        protocol_result_error: Option<Error>,
+    ) -> Result<usize> {
+        let mut mock_efi = MockEfi::new();
+        mock_efi
+            .boot_services
+            .expect_find_first_and_open::<GblOsConfigurationProtocol>()
+            .return_once(move || {
+                if let Some(error) = protocol_lookup_error {
+                    return Err(error);
+                }
+
+                let mut os_configuration = GblOsConfigurationProtocol::default();
+
+                os_configuration.expect_fixup_kernel_commandline().return_once(
+                    move |base, buffer| {
+                        assert_eq!(base, expected_base);
+                        buffer[..fixup_to_apply.len()].copy_from_slice(fixup_to_apply);
+
+                        if let Some(protocol_result_error) = protocol_result_error {
+                            return Err(protocol_result_error);
+                        }
+
+                        Ok(fixup_to_apply.len())
+                    },
+                );
+
+                Ok(os_configuration)
+            });
+
+        let installed = mock_efi.install();
+        let mut ops = Ops::new(installed.entry(), &[], None, 0);
+
+        ops.fixup_kernel_commandline(expected_base, fixup_buffer)
+    }
+
+    #[test]
+    fn test_fixup_kernel_commandline_success() {
+        const BASE: &CStr = c"key1=value1 key2=value2";
+        const FIXUP: &[u8] = b"fixup1=value1 fixup2=value2";
+
+        let mut fixup_buffer = [0x0; FIXUP.len()];
+        assert_eq!(
+            test_fixup_kernel_commandline(
+                BASE,
+                &mut fixup_buffer,
+                FIXUP,
+                // Protocol is provided.
+                None,
+                // No protocol call error.
+                None,
+            ),
+            // Expects fixup applied.
+            Ok(FIXUP.len()),
+        );
+        assert_eq!(&fixup_buffer[..], FIXUP);
+    }
+
+    #[test]
+    fn test_fixup_kernel_commandline_protocol_error() {
+        const BASE: &CStr = c"key1=value1 key2=value2";
+        const FIXUP: &[u8] = b"fixup1=value1 fixup2=value2";
+
+        let mut fixup_buffer = [0x0; FIXUP.len()];
+        assert_eq!(
+            test_fixup_kernel_commandline(
+                BASE,
+                &mut fixup_buffer,
+                FIXUP,
+                // Protocol is provided.
+                None,
+                // Protocol returns error.
+                Some(Error::BufferTooSmall(Some(100))),
+            ),
+            // Expected to be caught.
+            Err(Error::BufferTooSmall(Some(100))),
+        );
+    }
+
+    #[test]
+    fn test_fixup_kernel_commandline_not_implemented() {
+        const BASE: &CStr = c"key1=value1 key2=value2";
+        const FIXUP: &[u8] = b"fixup1=value1 fixup2=value2";
+
+        let mut fixup_buffer = [0x0; FIXUP.len()];
+        assert_eq!(
+            test_fixup_kernel_commandline(
+                BASE,
+                &mut fixup_buffer,
+                FIXUP,
+                // Protocol is provided.
+                None,
+                // Implementation isn't provided.
+                Some(Error::Unsupported),
+            ),
+            // Treated as no fixup is provided.
+            Ok(0),
+        );
+    }
+
+    #[test]
+    fn test_fixup_kernel_commandline_protocol_not_found() {
+        const BASE: &CStr = c"key1=value1 key2=value2";
+        const FIXUP: &[u8] = b"fixup1=value1 fixup2=value2";
+
+        let mut fixup_buffer = [0x0; FIXUP.len()];
+        assert_eq!(
+            test_fixup_kernel_commandline(
+                BASE,
+                &mut fixup_buffer,
+                FIXUP,
+                // Protocol not found.
+                Some(Error::NotFound),
+                // No protocol call error.
+                None,
+            ),
+            // No fixup in case protocol not found.
+            Ok(0),
+        );
+    }
+
+    #[test]
+    fn test_fixup_kernel_commandline_protocol_lookup_failed() {
+        const BASE: &CStr = c"key1=value1 key2=value2";
+        const FIXUP: &[u8] = b"fixup1=value1 fixup2=value2";
+
+        let mut fixup_buffer = [0x0; FIXUP.len()];
+        assert_eq!(
+            test_fixup_kernel_commandline(
+                BASE,
+                &mut fixup_buffer,
+                FIXUP,
+                // Protocol lookup failed.
+                Some(Error::AccessDenied),
+                // No protocol call error.
+                None,
+            ),
+            // Error caught.
             Err(Error::AccessDenied),
         );
     }

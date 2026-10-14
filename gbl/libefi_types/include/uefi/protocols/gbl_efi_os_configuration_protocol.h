@@ -70,7 +70,7 @@ typedef struct {
 } GblEfiVerifiedDeviceTree;
 
 static const uint64_t GBL_EFI_OS_CONFIGURATION_PROTOCOL_REVISION =
-    GBL_PROTOCOL_REVISION(1, 0);
+    GBL_PROTOCOL_REVISION(1, 1);
 
 EFI_GUID(GBL_EFI_OS_CONFIGURATION_PROTOCOL_GUID, 0xdda0d135, 0xaa5b, 0x42ff,
          0x85, 0xac, 0xe3, 0xad, 0x6e, 0xfb, 0x46, 0x19);
@@ -97,6 +97,15 @@ typedef struct GblEfiOsConfigurationProtocol {
       /* in */ const uint8_t* fit, /* in */ size_t metadata_size,
       /* in */ const uint8_t* metadata,
       /* out */ size_t* selected_configuration_offset);
+
+  // Generates fixups for the kernel command line built by GBL.
+  // Added in revision 1.1.
+  EfiStatus (*fixup_kernel_commandline)(
+      struct GblEfiOsConfigurationProtocol* self,
+      /* in */ size_t commandline_size,
+      /* in */ const EfiChar8* commandline,
+      /* in-out */ size_t* fixup_buffer_size,
+      /* out */ EfiChar8* fixup);
 
 } GblEfiOsConfigurationProtocol;
 

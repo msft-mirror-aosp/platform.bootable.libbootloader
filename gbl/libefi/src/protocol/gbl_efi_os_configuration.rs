@@ -19,7 +19,7 @@ use crate::{
     protocol::{Protocol, ProtocolInfo, Requirement},
     versioned_protocol,
 };
-use core::ptr::null;
+use core::{ffi::CStr, ptr::null};
 use efi_types::{
     EfiGuid, GblEfiOsConfigurationProtocol, GblEfiVerifiedDeviceTree,
     GBL_EFI_OS_CONFIGURATION_PROTOCOL_GUID_U64_0, GBL_EFI_OS_CONFIGURATION_PROTOCOL_GUID_U64_1,
@@ -31,6 +31,9 @@ use liberror::{Error, Result};
 pub struct GblOsConfigurationProtocol;
 
 versioned_protocol!(GblOsConfigurationProtocol, GBL_EFI_OS_CONFIGURATION_PROTOCOL_REVISION);
+
+/// The first protocol revision providing `fixup_kernel_commandline()`.
+pub const FIXUP_KERNEL_COMMANDLINE_REVISION: Revision = Revision { major: 1, minor: 1 };
 
 impl ProtocolInfo for GblOsConfigurationProtocol {
     type InterfaceType = GblEfiOsConfigurationProtocol;
@@ -120,6 +123,36 @@ impl Protocol<'_, GblOsConfigurationProtocol> {
         }
 
         Ok(selected_configuration)
+    }
+
+    /// Wraps `GBL_EFI_OS_CONFIGURATION_PROTOCOL.fixup_kernel_commandline()`.
+    ///
+    /// Returns `Error::Unsupported` if the protocol revision predates the method.
+    pub fn fixup_kernel_commandline(&self, commandline: &CStr, fixup: &mut [u8]) -> Result<usize> {
+        if self.revision() < FIXUP_KERNEL_COMMANDLINE_REVISION {
+            return Err(Error::Unsupported);
+        }
+
+        let mut fixup_size = fixup.len();
+        // SAFETY:
+        // * `self.interface_ptr()` points to a valid object established by `Protocol::new()`.
+        // * `fixup_kernel_commandline` is guaranteed to exist as the revision is checked above.
+        // * `commandline` is a valid null-terminated string used only within the call.
+        // * `fixup_size` is non-null usize buffer available for write, used only within the call.
+        // * `fixup` is non-null buffer available for write, used only within the call.
+        unsafe {
+            efi_call!(
+                @bufsize fixup_size,
+                self.interface().fixup_kernel_commandline,
+                self.interface_ptr(),
+                commandline.count_bytes(),
+                commandline.as_ptr() as _,
+                &mut fixup_size,
+                fixup.as_mut_ptr(),
+            )?;
+        }
+
+        Ok(fixup_size)
     }
 }
 
@@ -273,6 +306,148 @@ mod test {
             assert_eq!(
                 os_config_protocol.fixup_bootconfig(&bootconfig[..], &mut fixup_buffer),
                 Err(Error::BufferTooSmall(Some(EXPECTED_REQUESTED_FIXUP_SIZE))),
+            );
+        });
+    }
+
+    #[test]
+    fn fixup_kernel_commandline_provided() {
+        const EXPECTED_COMMANDLINE: &CStr = c"a=b c";
+        const EXPECTED_FIXUP: &[u8] = b"d=e";
+
+        // C callback implementation to add "d=e" to the given command line.
+        unsafe extern "efiapi" fn c_add_de(
+            _: *mut GblEfiOsConfigurationProtocol,
+            commandline_size: usize,
+            commandline: *const u8,
+            fixup_size: *mut usize,
+            fixup: *mut u8,
+        ) -> EfiStatus {
+            // SAFETY:
+            // * `commandline` is a valid pointer to a null-terminated string.
+            let commandline = unsafe { CStr::from_ptr(commandline as _) };
+            assert_eq!(commandline, EXPECTED_COMMANDLINE);
+            assert_eq!(commandline_size, EXPECTED_COMMANDLINE.count_bytes());
+
+            // SAFETY:
+            // * `fixup` is a valid writable buffer with enough space for test data.
+            // * `fixup_size` is a valid pointer to writable usize buffer.
+            let fixup_buffer = unsafe {
+                *fixup_size = EXPECTED_FIXUP.len();
+                slice::from_raw_parts_mut(fixup, *fixup_size)
+            };
+            fixup_buffer.copy_from_slice(EXPECTED_FIXUP);
+
+            EFI_STATUS_SUCCESS
+        }
+
+        let c_interface = GblEfiOsConfigurationProtocol {
+            revision: GBL_EFI_OS_CONFIGURATION_PROTOCOL_REVISION,
+            fixup_kernel_commandline: Some(c_add_de),
+            ..Default::default()
+        };
+
+        run_test_with_mock_protocol(c_interface, |os_config_protocol| {
+            let mut fixup_buffer = [0x0; 128];
+
+            assert_eq!(
+                os_config_protocol
+                    .fixup_kernel_commandline(EXPECTED_COMMANDLINE, &mut fixup_buffer),
+                Ok(EXPECTED_FIXUP.len()),
+            );
+            assert_eq!(&fixup_buffer[..EXPECTED_FIXUP.len()], EXPECTED_FIXUP);
+        });
+    }
+
+    #[test]
+    fn fixup_kernel_commandline_error() {
+        // C callback implementation to return an error.
+        unsafe extern "efiapi" fn c_error(
+            _: *mut GblEfiOsConfigurationProtocol,
+            _: usize,
+            _: *const u8,
+            _: *mut usize,
+            _: *mut u8,
+        ) -> EfiStatus {
+            EFI_STATUS_INVALID_PARAMETER
+        }
+
+        let c_interface = GblEfiOsConfigurationProtocol {
+            revision: GBL_EFI_OS_CONFIGURATION_PROTOCOL_REVISION,
+            fixup_kernel_commandline: Some(c_error),
+            ..Default::default()
+        };
+
+        run_test_with_mock_protocol(c_interface, |os_config_protocol| {
+            let mut fixup_buffer = [0x0; 128];
+
+            assert_eq!(
+                os_config_protocol.fixup_kernel_commandline(c"foo=bar baz", &mut fixup_buffer),
+                Err(Error::InvalidInput)
+            );
+        });
+    }
+
+    #[test]
+    fn fixup_kernel_commandline_fixup_buffer_too_small() {
+        const EXPECTED_REQUESTED_FIXUP_SIZE: usize = 256;
+        // C callback implementation to return an error.
+        unsafe extern "efiapi" fn c_error(
+            _: *mut GblEfiOsConfigurationProtocol,
+            _: usize,
+            _: *const u8,
+            fixup_size: *mut usize,
+            _: *mut u8,
+        ) -> EfiStatus {
+            // SAFETY:
+            // * `fixup_size` is a valid pointer to writable usize buffer.
+            unsafe {
+                *fixup_size = EXPECTED_REQUESTED_FIXUP_SIZE;
+            }
+            EFI_STATUS_BUFFER_TOO_SMALL
+        }
+
+        let c_interface = GblEfiOsConfigurationProtocol {
+            revision: GBL_EFI_OS_CONFIGURATION_PROTOCOL_REVISION,
+            fixup_kernel_commandline: Some(c_error),
+            ..Default::default()
+        };
+
+        run_test_with_mock_protocol(c_interface, |os_config_protocol| {
+            let mut fixup_buffer = [0x0; 128];
+
+            assert_eq!(
+                os_config_protocol.fixup_kernel_commandline(c"foo=bar baz", &mut fixup_buffer),
+                Err(Error::BufferTooSmall(Some(EXPECTED_REQUESTED_FIXUP_SIZE))),
+            );
+        });
+    }
+
+    #[test]
+    fn fixup_kernel_commandline_revision_1_0() {
+        // C callback implementation that must not be called.
+        unsafe extern "efiapi" fn c_unreachable(
+            _: *mut GblEfiOsConfigurationProtocol,
+            _: usize,
+            _: *const u8,
+            _: *mut usize,
+            _: *mut u8,
+        ) -> EfiStatus {
+            unreachable!()
+        }
+
+        let c_interface = GblEfiOsConfigurationProtocol {
+            revision: 0x0001_0000,
+            fixup_kernel_commandline: Some(c_unreachable),
+            ..Default::default()
+        };
+
+        run_test_with_mock_protocol(c_interface, |os_config_protocol| {
+            let mut fixup_buffer = [0x0; 128];
+
+            assert_eq!(
+                os_config_protocol.fixup_kernel_commandline(c"foo=bar baz", &mut fixup_buffer),
+                Err(Error::Unsupported),
             );
         });
     }

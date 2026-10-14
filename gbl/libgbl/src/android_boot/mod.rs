@@ -47,8 +47,8 @@ pub(crate) mod hasher;
 
 pub mod device_tree;
 use device_tree::{
-    fdt_build_bootargs, fdt_propagate_random, fdt_select, PROP_BOOTARGS, PROP_INITRD_END,
-    PROP_INITRD_START,
+    fdt_build_bootargs, fdt_fixup_bootargs, fdt_propagate_random, fdt_select, PROP_BOOTARGS,
+    PROP_INITRD_END, PROP_INITRD_START,
 };
 
 pub mod vboot;
@@ -278,7 +278,8 @@ pub fn android_load_verify_fixup<'a, 'b>(
     let overlays = selected.as_ref().map_or(&[][..], |v| &v.overlays[..]);
     let vmdtbo = selected.as_ref().and_then(|v| v.vmdtbo);
 
-    // Builds the FDT commandline. Reserves 1024 bytes for separators and fixup.
+    // Builds the FDT commandline. Reserves 1024 bytes for separators, kernel command line fixup
+    // and FDT fixup.
     fdt_build_bootargs(
         ops,
         &mut fdt,
@@ -298,8 +299,8 @@ pub fn android_load_verify_fixup<'a, 'b>(
 
     let selected_metadata = selected.map(|v| v.into_metadata());
 
-    // Notifies platform to process loaded partitions before final bootconfig and FDT fixup, so
-    // that backend can add fixup items that depend on certain partition data.
+    // Notifies platform to process loaded partitions before final bootconfig, kernel command line
+    // and FDT fixup, so that backend can add fixup items that depend on certain partition data.
     //
     // Need to explicitly releases the partition buffers for the backend to safely inspect, update
     // or release them.
@@ -315,7 +316,7 @@ pub fn android_load_verify_fixup<'a, 'b>(
     fdt.set_property("chosen", PROP_INITRD_START, &0u64.to_be_bytes())?;
     fdt.set_property("chosen", PROP_INITRD_END, &0u64.to_be_bytes())?;
 
-    // Backend FDT fixup.
+    fdt_fixup_bootargs(ops, &mut fdt)?;
 
     // Make sure we provide an actual device tree size, so FW can calculate amount of space
     // available for fixup.
@@ -1508,8 +1509,12 @@ pub(crate) mod tests {
                 expected_bootargs
                     .push_str(" top_level_overlay_bootargs_ext fragment_overlay_bootargs_ext");
             }
-            // Appended via fixup.
-            expected_bootargs.push_str(" fixup");
+            // Appended via kernel command line and FDT fixups.
+            expected_bootargs.push_str(&format!(
+                " {} {}",
+                FakeGblOps::GBL_TEST_CMDLINE_FIXUP,
+                FakeGblOps::GBL_TEST_FDT_CMDLINE_FIXUP
+            ));
 
             test_android_load_verify_fixup(
                 slot(slot_name),
@@ -2151,7 +2156,11 @@ pub(crate) mod tests {
                 FakeGblOps::GBL_TEST_BOOTCONFIG,
                 TestVbmetaKey::Rsa4096,
             ),
-            &format!("{EXPECTED_V3_V4_CMDLINE} fixup"),
+            &format!(
+                "{EXPECTED_V3_V4_CMDLINE} {} {}",
+                FakeGblOps::GBL_TEST_CMDLINE_FIXUP,
+                FakeGblOps::GBL_TEST_FDT_CMDLINE_FIXUP
+            ),
             &[],
         )
     }
@@ -2278,6 +2287,7 @@ pub(crate) mod tests {
         const TEST_FDT_FIXUP: &str = "fixup-by-sync-partition-buffer";
         // Not newline-terminated: `finalize_bootconfig` must add the newline itself.
         const TEST_BOOTCONFIG_FIXUP: &str = "fixup-by-sync-partition-buffer=1";
+        const TEST_CMDLINE_FIXUP: &str = "fixup-by-sync-partition-buffer=1";
         let mut sync_partition_buffer_handler = |ops: &mut FakeGblOps, sync_preloaded: bool| {
             assert!(!sync_preloaded);
             // Checks that this is called after images are loaded.
@@ -2290,10 +2300,11 @@ pub(crate) mod tests {
             assert_eq!(*image_buffers[3].1.borrow_mut(), read_test_data("android/init_boot_a.img"));
             assert_eq!(init_boot_addr, image_buffers[3].1.borrow_mut().as_ptr_range());
 
-            // Override test custom FDT/bootconifg fixup. Checks that this is called before final
-            // FDT/bootconfig fixup.
+            // Override test custom FDT/bootconfig/command line fixup. Checks that this is called
+            // before final FDT/bootconfig/command line fixup.
             ops.test_custom_fdt_fixup = Some(TEST_FDT_FIXUP.into());
             ops.test_custom_bootconfig_fixup = Some(TEST_BOOTCONFIG_FIXUP.into());
+            ops.test_custom_cmdline_fixup = Some(TEST_CMDLINE_FIXUP.into());
 
             sync_partition_called = true;
             Ok(())
@@ -2333,10 +2344,19 @@ pub(crate) mod tests {
         assert_eq!(kernel, read_test_data("android/kernel_a.img"));
 
         // sync_partition_buffer is called and can affect fixup.
+        let fdt = Fdt::new(fdt).unwrap();
         assert_eq!(
-            Fdt::new(fdt).unwrap().get_property("/chosen", FakeGblOps::TEST_CUSTOM_FDT_FIXUP_PROP),
+            fdt.get_property("/chosen", FakeGblOps::TEST_CUSTOM_FDT_FIXUP_PROP),
             Ok(TEST_FDT_FIXUP.as_bytes())
         );
+        assert!(CStr::from_bytes_until_nul(fdt.get_property("/chosen", c"bootargs").unwrap())
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .ends_with(&format!(
+                " {TEST_CMDLINE_FIXUP} {}",
+                FakeGblOps::GBL_TEST_FDT_CMDLINE_FIXUP
+            )));
         assert!(sync_partition_called);
     }
 

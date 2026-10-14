@@ -17,8 +17,9 @@
 //! https://www.kernel.org/doc/html/v4.14/admin-guide/kernel-parameters.html
 
 use crate::entry::{CommandlineParser, Entry};
-use core::ffi::CStr;
+use core::{ffi::CStr, str::from_utf8};
 use liberror::{Error, Error::BufferTooSmall, Error::InvalidInput, Result};
+use safemath::SafeNum;
 
 /// A class for constructing commandline section.
 pub struct CommandlineBuilder<'a> {
@@ -86,8 +87,8 @@ impl<'a> CommandlineBuilder<'a> {
     ///
     /// Callback return value:
     /// It must return the total size written or error. Null terminator must not be included in
-    /// the written buffer. Attempting to return a size greater than the input buffer will cause
-    /// it to panic. Empty read is allowed.
+    /// the written buffer. Written data must be valid UTF-8. Attempting to return a size greater
+    /// than the input buffer will cause it to panic. Empty read is allowed.
     ///
     /// It's up to the caller to make sure the read content will eventually form a valid
     /// command line (space separation is handled by the call). The API is for situations where
@@ -113,7 +114,9 @@ impl<'a> CommandlineBuilder<'a> {
         let size = match reader(current_commandline, &mut remains_buffer[..]) {
             // Handle buffer too small to make sure we request additional space for null
             // terminator.
-            Err(BufferTooSmall(Some(requested))) => Err(BufferTooSmall(Some(requested + 1))),
+            Err(BufferTooSmall(Some(requested))) => {
+                Err(BufferTooSmall(Some((SafeNum::from(requested) + 1).try_into()?)))
+            }
             other => other,
         }?;
         // Empty write, do nothing.
@@ -124,6 +127,8 @@ impl<'a> CommandlineBuilder<'a> {
         if remains_buffer[..size].contains(&0u8) {
             return Err(InvalidInput);
         }
+        // Appended command line data must be valid UTF-8.
+        from_utf8(&remains_buffer[..size])?;
 
         assert!(size <= remains_buffer.len());
 
@@ -402,6 +407,17 @@ mod test {
     }
 
     #[test]
+    fn test_add_with_requested_space_overflow() {
+        let mut buffer = [0u8; COMMANDLINE_TRAILING_SIZE];
+        let mut builder = CommandlineBuilder::new(&mut buffer[..]).unwrap();
+
+        assert!(matches!(
+            builder.add_raw_with(|_, _| { Err(Error::BufferTooSmall(Some(usize::MAX))) }),
+            Err(Error::ArithmeticOverflow(_))
+        ));
+    }
+
+    #[test]
     fn test_empty_add_with_to_empty_succeed() {
         let mut buffer = [0u8; COMMANDLINE_TRAILING_SIZE];
         let mut builder = CommandlineBuilder::new(&mut buffer[..]).unwrap();
@@ -419,6 +435,21 @@ mod test {
                 let with_null_terminator = b"null\0terminator";
                 out[..with_null_terminator.len()].copy_from_slice(&with_null_terminator[..]);
                 Ok(with_null_terminator.len())
+            }),
+            Err(Error::InvalidInput)
+        );
+    }
+
+    #[test]
+    fn test_add_with_invalid_utf8_invalid_input() {
+        let mut buffer = TEST_COMMANDLINE.to_vec();
+        let mut builder = CommandlineBuilder::new(&mut buffer[..]).unwrap();
+
+        assert_eq!(
+            builder.add_raw_with(|_, out| {
+                let invalid_utf8 = b"invalid\xffutf8";
+                out[..invalid_utf8.len()].copy_from_slice(&invalid_utf8[..]);
+                Ok(invalid_utf8.len())
             }),
             Err(Error::InvalidInput)
         );
