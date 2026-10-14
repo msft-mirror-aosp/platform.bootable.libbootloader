@@ -50,14 +50,20 @@ fn find_part_aliases<'a, 'b>(
 pub(crate) struct GblAbrOps<'a, T: ?Sized>(pub &'a mut T);
 
 impl<'b, T: GblOps<'b> + ?Sized> AbrOps for GblAbrOps<'_, T> {
-    fn read_abr_metadata(&mut self, out: &mut [u8]) -> Result<()> {
-        let part = find_part_aliases(self.0, &ABR_PARTITION_ALIASES)?;
-        self.0.read_from_partition_sync(part, 0, out)
+    fn read_abr_metadata(&mut self, out: &mut [u8]) -> abr::Result<()> {
+        let part = find_part_aliases(self.0, &ABR_PARTITION_ALIASES)
+            .map_err(|_| "Failed to find A/B/R metadata partition")?;
+        self.0
+            .read_from_partition_sync(part, 0, out)
+            .map_err(|_| "Failed to read A/B/R metadata".into())
     }
 
-    fn write_abr_metadata(&mut self, data: &mut [u8]) -> Result<()> {
-        let part = find_part_aliases(self.0, &ABR_PARTITION_ALIASES)?;
-        self.0.write_to_partition_sync(part, 0, data)
+    fn write_abr_metadata(&mut self, data: &mut [u8]) -> abr::Result<()> {
+        let part = find_part_aliases(self.0, &ABR_PARTITION_ALIASES)
+            .map_err(|_| "Failed to find A/B/R metadata partition")?;
+        self.0
+            .write_to_partition_sync(part, 0, data)
+            .map_err(|_| "Failed to write A/B/R metadata".into())
     }
 
     fn console(&mut self) -> Option<&mut dyn Write> {

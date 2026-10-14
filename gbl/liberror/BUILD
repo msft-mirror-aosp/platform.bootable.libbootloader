@@ -29,6 +29,7 @@ rust_library(
     visibility = ["//visibility:public"],
     deps = [
         "@avb",
+        "@gbl//libabr",
         "@gbl//libefi_types",
         "@gbl//libopendice",
         "@gbl//libsafemath",

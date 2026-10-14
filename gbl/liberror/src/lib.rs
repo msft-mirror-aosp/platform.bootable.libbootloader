@@ -141,6 +141,8 @@ pub enum GptError {
 pub enum Error {
     /// An operation has been aborted. Useful for async or IO operations.
     Aborted,
+    /// A/B/R error.
+    AbrError(abr::Error),
     /// Access was denied.
     AccessDenied,
     /// The protocol has already been started.
@@ -288,6 +290,12 @@ impl From<safemath::Error> for Error {
 impl From<opendice::error::DiceError> for Error {
     fn from(err: opendice::error::DiceError) -> Self {
         Self::DiceError(err)
+    }
+}
+
+impl From<abr::Error> for Error {
+    fn from(err: abr::Error) -> Self {
+        Self::AbrError(err)
     }
 }
 
