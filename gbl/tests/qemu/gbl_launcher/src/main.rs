@@ -67,10 +67,14 @@ pub unsafe extern "C" fn efi_main(image_handle: EfiHandle, systab_ptr: *mut EfiS
     efi_println!(entry, "Launcher started");
     semihosting::println!("Semihosting enabled.");
 
-    let mut file = semihosting::File::open(c"fdt.dtb", semihosting::OpenMode::ReadBinary).unwrap();
-    let mut fdt_buffer = alloc::vec![0u8; file.len().unwrap()];
-    let read_size = file.read(&mut fdt_buffer).unwrap();
-    efi_println!(entry, "Loaded FDT with {} bytes", read_size);
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mut file =
+            semihosting::File::open(c"fdt.dtb", semihosting::OpenMode::ReadBinary).unwrap();
+        let mut fdt_buffer = alloc::vec![0u8; file.len().unwrap()];
+        let read_size = file.read(&mut fdt_buffer).unwrap();
+        efi_println!(entry, "Loaded FDT with {} bytes", read_size);
+    }
 
     let bs = entry.system_table().boot_services();
 

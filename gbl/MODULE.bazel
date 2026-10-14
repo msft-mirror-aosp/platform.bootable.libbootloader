@@ -246,6 +246,13 @@ gbl_rust_crate_repository(
 )
 
 gbl_rust_crate_repository(
+    name = "const_fn",
+    edition = "2018",
+    path = "external/rust/android-crates-io/crates/const_fn",
+    rule = "rust_proc_macro",
+)
+
+gbl_rust_crate_repository(
     name = "crc32fast",
     # Current version of the crate doesn't compile with newer editions.
     edition = "2015",
@@ -1336,6 +1343,11 @@ gbl_rust_crate_repository(
 )
 
 gbl_rust_crate_repository(
+    name = "volatile",
+    path = "external/rust/android-crates-io/crates/volatile",
+)
+
+gbl_rust_crate_repository(
     name = "winnow",
     crate_features = [
         "alloc",
@@ -1346,6 +1358,31 @@ gbl_rust_crate_repository(
         "std",
     ],
     path = "external/rust/android-crates-io/crates/winnow",
+)
+
+gbl_rust_crate_repository(
+    name = "x86_64",
+    aliases = {
+        "@const_fn": "dep_const_fn",
+    },
+    crate_features = [
+        "abi_x86_interrupt",
+        "asm_const",
+        "const_fn",
+        "instructions",
+    ],
+    edition = "2018",
+    path = "external/rust/android-crates-io/crates/x86_64",
+    proc_macro_deps = [
+        "@const_fn",
+        "@rustversion",
+    ],
+    rustc_flags = ["--cap-lints=allow"],
+    deps = [
+        "@bit_field",
+        "@bitflags",
+        "@volatile",
+    ],
 )
 
 gbl_rust_crate_repository(

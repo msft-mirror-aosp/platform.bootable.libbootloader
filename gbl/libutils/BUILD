@@ -37,6 +37,9 @@ rust_library(
         "@gbl//toolchain:gbl_rust_aarch64": [
             "@gbl//libboot/aarch64_cache_helper:aarch64_cache_helper_staticlib",
         ],
+        "@platforms//cpu:x86_64": [
+            "@x86_64",
+        ],
         "//conditions:default": [],
     }),
 )

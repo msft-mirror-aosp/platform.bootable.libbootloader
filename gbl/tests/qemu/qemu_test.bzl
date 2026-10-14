@@ -20,10 +20,11 @@ def qemu_test(
         name,
         gbl,
         disk,
+        arch = "aarch64",
         test_script = None,
-        gbl_launcher = "@gbl//tests/qemu/gbl_launcher:gbl_launcher_aarch64",
-        qemu = "@vmm//:qemu/x86_64-linux-gnu/bin/gbl-qemu-system-aarch64",
-        bios = "@vmm//:qemu/x86_64-linux-gnu/usr/share/qemu/edk2-aarch64-code.fd",
+        gbl_launcher = None,
+        qemu = None,
+        bios = None,
         vhost_device_vsock = "@vhost_device_vsock",
         runfiles = [],
         timeout = None,
@@ -36,6 +37,7 @@ def qemu_test(
         name: The name of the test target.
         gbl: Target label for the GBL binary.
         disk: Target label (or list of target labels) for disk images to attach.
+        arch: Target architecture ("aarch64" or "x86_64").
         test_script: Target label for the test Python script.
         gbl_launcher: Target label for the GBL launcher application.
         qemu: Target label for the QEMU binary.
@@ -50,6 +52,16 @@ def qemu_test(
              GDB to connect before starting GBL.
         **kwargs: General rule arguments passed to the underlying py_test.
     """
+    if arch == "aarch64":
+        gbl_launcher = gbl_launcher or "@gbl//tests/qemu/gbl_launcher:gbl_launcher_aarch64"
+        qemu = qemu or "@vmm//:qemu/x86_64-linux-gnu/bin/gbl-qemu-system-aarch64"
+        bios = bios or "@vmm//:qemu/x86_64-linux-gnu/usr/share/qemu/edk2-aarch64-code.fd"
+    elif arch == "x86_64":
+        gbl_launcher = gbl_launcher or "@gbl//tests/qemu/gbl_launcher:gbl_launcher_x86_64"
+        qemu = qemu or "@vmm//:qemu/x86_64-linux-gnu/bin/gbl-qemu-system-x86_64"
+        bios = bios or "@vmm//:qemu/x86_64-linux-gnu/usr/share/qemu/edk2-x86_64-code.fd"
+    else:
+        fail("Unsupported QEMU test architecture: " + arch)
 
     # Collect input files required by the test launcher.
     data = [
@@ -78,6 +90,7 @@ def qemu_test(
     args = [
         "$(rootpath " + gbl_launcher + ")",
         "$(rootpath " + gbl + ")",
+        "--arch=" + arch,
         "--test_name=" + name,
         "--qemu=$(rootpath " + qemu + ")",
         "--bios=$(rootpath " + bios + ")",

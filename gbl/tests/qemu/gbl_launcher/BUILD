@@ -56,3 +56,9 @@ build_with_platform(
     platform = "@gbl//toolchain:gbl_uefi_aarch64_dev",
     deps = [":gbl_launcher_bin"],
 )
+
+build_with_platform(
+    name = "gbl_launcher_x86_64",
+    platform = "@gbl//toolchain:gbl_uefi_x86_64_dev",
+    deps = [":gbl_launcher_bin"],
+)

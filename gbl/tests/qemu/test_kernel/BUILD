@@ -25,7 +25,10 @@ package(
 
 cc_library(
     name = "kernel_start",
-    srcs = ["start.S"],
+    srcs = select({
+        "@gbl//toolchain:gbl_rust_elf_aarch64": ["start_aarch64.S"],
+        "@gbl//toolchain:gbl_rust_elf_x86_64": ["start_x86_64.S"],
+    }),
     deps = ["@gbl//libelf:relocation"],
 )
 
@@ -61,5 +64,11 @@ genrule(
 build_with_platform(
     name = "test_kernel_aarch64",
     platform = "@gbl//toolchain:gbl_elf_aarch64_dev",
+    deps = [":test_kernel_gen"],
+)
+
+build_with_platform(
+    name = "test_kernel_x86_64",
+    platform = "@gbl//toolchain:gbl_elf_x86_64_dev",
     deps = [":test_kernel_gen"],
 )

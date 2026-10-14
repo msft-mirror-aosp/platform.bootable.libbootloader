@@ -22,11 +22,17 @@ use core::{
     alloc::{GlobalAlloc, Layout},
     slice::from_raw_parts,
 };
+#[cfg(not(target_arch = "x86_64"))]
 use fdt::Fdt;
+#[cfg(not(target_arch = "x86_64"))]
 use libutils::FromHexStr;
+#[cfg(not(target_arch = "x86_64"))]
 use opendice::{dice::bcc_handover_parse, extract_subject_algorithm_from_dice_chain};
+#[cfg(not(target_arch = "x86_64"))]
 use pvmfwconfig::{PvmfwConfig, PvmfwConfigEntryType};
+#[cfg(not(target_arch = "x86_64"))]
 use semihosting::{File, OpenMode};
+#[cfg(not(target_arch = "x86_64"))]
 use trace::trace_total_size;
 // Noop allocator to meet dependency requirement.
 struct StubAllocator;
@@ -69,79 +75,107 @@ pub extern "C" fn gbl_ubsan_trap() -> ! {
 ///
 /// # Safety
 ///
-/// * Caller must guarantee that `fdt_addr` points to a valid device tree blob.
-/// * Caller must guarantee that `linux,initrd-start` and `linux,initrd-end` mark a valid ramdisk
-///   address range if specified
+/// * On aarch64, caller must guarantee that `boot_arg` points to a valid device tree blob.
+/// * On aarch64, caller must guarantee that `linux,initrd-start` and `linux,initrd-end` mark a
+///   valid ramdisk address range if specified.
+/// * On x86_64, caller must guarantee that `boot_arg` is properly aligned and points to a valid
+///   `BootParams` structure whose `ramdisk_image` and `ramdisk_size` mark a valid ramdisk address
+///   range, and that there are no mutable Rust references to data pointed to by `boot_arg` and
+///   `(ramdisk_image, ramdisk_image + ramdisk_size)`.
 /// * Caller must guarantee that `androidboot.gbl.trace_addr` and `androidboot.gbl.trace_size`
 ///   mark a valid GBL trace address range if specified.
 /// * Caller must guarantee that the `reg` property of `/reserved-memory/pkvm_guest_firmware`
 ///   marks a valid pvmfw address range if the node is present.
 #[no_mangle]
-pub unsafe extern "C" fn kernel_main(fdt_addr: *const u8) -> ! {
+pub unsafe extern "C" fn kernel_main(boot_arg: *const u8) -> ! {
     semihosting::println!("GBL Custom Kernel loaded and self-relocated successfully from Rust!");
 
-    // For now we don't expect fdt to be null.
-    assert!(!fdt_addr.is_null());
+    // For now we don't expect boot_arg to be null.
+    assert!(!boot_arg.is_null());
 
-    // Parses FDT
-    // SAFETY: By safety contract, if fdt_addr is not null, it points to a valid dtb.
-    let (_, slice) = unsafe { fdt::FdtHeader::from_raw(fdt_addr) }
-        .inspect_err(|e| semihosting::println!("Failed to parse fdt {e}"))
-        .unwrap();
-    let fdt = Fdt::new(slice).unwrap();
-    // Extract ramdisk range
-    let initrd_start_prop = fdt.get_property("chosen", c"linux,initrd-start").unwrap();
-    let initrd_end_prop = fdt.get_property("chosen", c"linux,initrd-end").unwrap();
-    let initrd_start = u64::from_be_bytes(initrd_start_prop.try_into().unwrap());
-    let initrd_end = u64::from_be_bytes(initrd_end_prop.try_into().unwrap());
-    let ramdisk_len = usize::try_from(initrd_end - initrd_start).unwrap();
+    #[cfg(target_arch = "x86_64")]
+    {
+        let bp_ptr = boot_arg.cast::<boot::x86::BootParams>();
+        assert!(bp_ptr.is_aligned());
+        // SAFETY: By safety contract, on x86_64 `boot_arg` is non-null, properly aligned, and
+        // points to a valid `BootParams` structure whose `ramdisk_image` and `ramdisk_size` mark a
+        // valid ramdisk address range, with no mutable Rust references to data pointed to by
+        // `boot_arg` or `(ramdisk_image, ramdisk_image + ramdisk_size)`.
+        let ramdisk_slice = unsafe {
+            let hdr = (*bp_ptr).setup_header_ref();
+            from_raw_parts(hdr.ramdisk_image as *const u8, hdr.ramdisk_size as usize)
+        };
+        let bootconfig = extract_bootconfig(ramdisk_slice).unwrap();
+        let is_normal = find_bootconfig(bootconfig, "androidboot.force_normal_boot") == Some("1");
+        semihosting::println!("Normal Mode: {is_normal:?}");
+        semihosting::println!("Exiting QEMU test via semihosting.");
+        semihosting::shutdown(0);
+    }
 
-    // SAFETY: By safety contract, `linux,initrd-start` and `linux,initrd-end` marks a valid
-    // ramdisk address range.
-    let ramdisk_slice = unsafe { from_raw_parts(initrd_start as *const u8, ramdisk_len) };
-    let bootconfig = extract_bootconfig(ramdisk_slice)
-        .inspect_err(|e| semihosting::println!("Failed to extract bootconfig: {:?}", e))
-        .unwrap();
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        // Parses FDT
+        // SAFETY: By safety contract, if boot_arg is not null, it points to a valid dtb.
+        let (_, slice) = unsafe { fdt::FdtHeader::from_raw(boot_arg) }
+            .inspect_err(|e| semihosting::println!("Failed to parse fdt {e}"))
+            .unwrap();
+        let fdt = Fdt::new(slice).unwrap();
+        // Extract ramdisk range
+        let initrd_start_prop = fdt.get_property("chosen", c"linux,initrd-start").unwrap();
+        let initrd_end_prop = fdt.get_property("chosen", c"linux,initrd-end").unwrap();
+        let initrd_start = u64::from_be_bytes(initrd_start_prop.try_into().unwrap());
+        let initrd_end = u64::from_be_bytes(initrd_end_prop.try_into().unwrap());
+        let ramdisk_len = usize::try_from(initrd_end - initrd_start).unwrap();
 
-    let trace_addr: Option<usize> = find_bootconfig(bootconfig, "androidboot.gbl.trace_addr")
-        .and_then(|v| FromHexStr::try_from_hex_str(v).ok());
-    let trace_size: Option<usize> = find_bootconfig(bootconfig, "androidboot.gbl.trace_size")
-        .and_then(|v| FromHexStr::try_from_hex_str(v).ok());
-    if let Some((addr, sz)) = trace_addr.zip(trace_size) {
-        semihosting::println!("Found trace buffer at {addr:#x}, sz: {sz:#x}");
-        // SAFETY: By safety contract, `trace_addr` and `trace_size` marks a valid
-        // trace address range.
-        let trace = unsafe { from_raw_parts(addr as *const u8, sz) };
-        // Make sure D-cache is flushed for the trace data.
-        boot::aarch64::flush_dcache_buffer(trace);
-        if let Some(v) = trace_total_size(trace).ok().filter(|v| *v != 0) {
-            semihosting::println!("trace data size: {v}");
-            let mut f = File::open(c"trace.bin", OpenMode::WriteBinary).unwrap();
-            f.write(&trace[..v]).unwrap();
+        // SAFETY: By safety contract, `linux,initrd-start` and `linux,initrd-end` marks a valid
+        // ramdisk address range.
+        let ramdisk_slice = unsafe { from_raw_parts(initrd_start as *const u8, ramdisk_len) };
+        let bootconfig = extract_bootconfig(ramdisk_slice)
+            .inspect_err(|e| semihosting::println!("Failed to extract bootconfig: {:?}", e))
+            .unwrap();
+
+        let trace_addr: Option<usize> = find_bootconfig(bootconfig, "androidboot.gbl.trace_addr")
+            .and_then(|v| FromHexStr::try_from_hex_str(v).ok());
+        let trace_size: Option<usize> = find_bootconfig(bootconfig, "androidboot.gbl.trace_size")
+            .and_then(|v| FromHexStr::try_from_hex_str(v).ok());
+        if let Some((addr, sz)) = trace_addr.zip(trace_size) {
+            semihosting::println!("Found trace buffer at {addr:#x}, sz: {sz:#x}");
+            // SAFETY: By safety contract, `trace_addr` and `trace_size` marks a valid
+            // trace address range.
+            let trace = unsafe { from_raw_parts(addr as *const u8, sz) };
+            // Make sure D-cache is flushed for the trace data.
+            #[cfg(target_arch = "aarch64")]
+            boot::aarch64::flush_dcache_buffer(trace);
+            if let Some(v) = trace_total_size(trace).ok().filter(|v| *v != 0) {
+                semihosting::println!("trace data size: {v}");
+                let mut f = File::open(c"trace.bin", OpenMode::WriteBinary).unwrap();
+                f.write(&trace[..v]).unwrap();
+            }
         }
+
+        let is_normal = find_bootconfig(bootconfig, "androidboot.force_normal_boot") == Some("1");
+        semihosting::println!("Normal Mode: {is_normal:?}",);
+
+        // SAFETY: By safety contract, the `reg` property of `/reserved-memory/pkvm_guest_firmware`
+        // marks a valid pvmfw address range.
+        if let Some(config_data) = unsafe { pvmfw_config_data(&fdt) } {
+            let config =
+                PvmfwConfig::from_bytes(config_data).expect("Failed to parse pvmfw config");
+            let dice_handover = config
+                .entry(PvmfwConfigEntryType::DiceHandover)
+                .expect("Failed to read DICE handover entry");
+            assert!(!dice_handover.is_empty());
+            let parsed = bcc_handover_parse(dice_handover).expect("Failed to parse DICE handover");
+            let bcc = parsed.bcc.expect("Missing BCC in DICE handover");
+            let extracted_alg = extract_subject_algorithm_from_dice_chain(bcc)
+                .expect("Failed to extract subject alg");
+            semihosting::println!("[DICE-TEST] Extracted algorithm: {:?}", extracted_alg);
+        }
+
+        semihosting::println!("Exiting QEMU test via semihosting.");
+        // Terminate QEMU cleanly via libsemihosting
+        semihosting::shutdown(0);
     }
-
-    let is_normal = find_bootconfig(bootconfig, "androidboot.force_normal_boot") == Some("1");
-    semihosting::println!("Normal Mode: {is_normal:?}",);
-
-    // SAFETY: By safety contract, the `reg` property of `/reserved-memory/pkvm_guest_firmware`
-    // marks a valid pvmfw address range.
-    if let Some(config_data) = unsafe { pvmfw_config_data(&fdt) } {
-        let config = PvmfwConfig::from_bytes(config_data).expect("Failed to parse pvmfw config");
-        let dice_handover = config
-            .entry(PvmfwConfigEntryType::DiceHandover)
-            .expect("Failed to read DICE handover entry");
-        assert!(!dice_handover.is_empty());
-        let parsed = bcc_handover_parse(dice_handover).expect("Failed to parse DICE handover");
-        let bcc = parsed.bcc.expect("Missing BCC in DICE handover");
-        let extracted_alg =
-            extract_subject_algorithm_from_dice_chain(bcc).expect("Failed to extract subject alg");
-        semihosting::println!("[DICE-TEST] Extracted algorithm: {:?}", extracted_alg);
-    }
-
-    semihosting::println!("Exiting QEMU test via semihosting.");
-    // Terminate QEMU cleanly via libsemihosting
-    semihosting::shutdown(0);
 }
 
 /// Returns the pvmfw configuration data from the region described by
@@ -151,6 +185,7 @@ pub unsafe extern "C" fn kernel_main(fdt_addr: *const u8) -> ! {
 ///
 /// Caller must guarantee that the `reg` property of `/reserved-memory/pkvm_guest_firmware`, if
 /// present, marks a valid pvmfw address range.
+#[cfg(not(target_arch = "x86_64"))]
 unsafe fn pvmfw_config_data(fdt: &Fdt<&[u8]>) -> Option<&'static [u8]> {
     const PVMFW_NODE_PATH: &str = "/reserved-memory/pkvm_guest_firmware";
     let reg_prop = fdt.get_property(PVMFW_NODE_PATH, c"reg").ok()?;
@@ -170,6 +205,7 @@ unsafe fn pvmfw_config_data(fdt: &Fdt<&[u8]>) -> Option<&'static [u8]> {
 }
 
 /// Decodes a big-endian device tree cell sequence of up to 64 bits.
+#[cfg(not(target_arch = "x86_64"))]
 fn read_cells(bytes: &[u8]) -> usize {
     let mut buf = [0u8; 8];
     buf[8 - bytes.len()..].copy_from_slice(bytes);

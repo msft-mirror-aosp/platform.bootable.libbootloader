@@ -86,6 +86,7 @@ rust_library(
         ],
         "@gbl//toolchain:gbl_rust_uefi_x86_64": [":x86_bootparam_defs"],
         "@gbl//toolchain:gbl_rust_uefi_x86_64_debug": [":x86_bootparam_defs"],
+        "@gbl//toolchain:gbl_rust_elf_x86_64": [":x86_bootparam_defs"],
         "@gbl//toolchain:gbl_rust_host_x86_64": [":x86_bootparam_defs"],
         "//conditions:default": [],
     }) + select({
