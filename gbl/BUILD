@@ -49,6 +49,7 @@ readme_test(
         "@gbl//libfdt",
         "@gbl//libfit",
         "@gbl//libgbl",
+        "@gbl//libgblutils",
         "@gbl//libmisc",
         "@gbl//libsafemath",
         "@gbl//libstorage",

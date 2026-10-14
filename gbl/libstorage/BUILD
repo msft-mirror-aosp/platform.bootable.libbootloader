@@ -37,8 +37,8 @@ rust_library(
         "@crc32fast",
         "@gbl//libasync",
         "@gbl//liberror",
+        "@gbl//libgblutils",
         "@gbl//libsafemath",
-        "@gbl//libutils",
         "@static_assertions",
         "@zerocopy",
     ],
@@ -50,7 +50,8 @@ rust_test(
     crate = ":libstorage",
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
-        "@gbl//libutils:libtestutils",
+        "@gbl//libgblutils:libtestutils",
+        "@gbl//libutils",
     ],
 )
 

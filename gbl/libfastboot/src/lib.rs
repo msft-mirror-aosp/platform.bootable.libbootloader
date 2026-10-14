@@ -75,9 +75,47 @@ use core::{
     mem::size_of,
     str::{from_utf8, Split},
 };
-use gbl_async::block_on;
-use liberror::{Error, Result};
 use libutils::{next_arg, FormattedBytes, FromHexStr};
+
+/// Error types for fastboot operations.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    /// Operation has been aborted.
+    Aborted,
+    /// The provided buffer is too small, optionally containing the required size.
+    BufferTooSmall(Option<usize>),
+    /// Underlying transport disconnected.
+    Disconnected,
+    /// Failed to initialize communication with the host.
+    InvalidHandshake,
+    /// Provided input was invalid.
+    InvalidInput,
+    /// Internal error; library got into an unexpected state.
+    InvalidState,
+    /// Other error with optional diagnostic message.
+    Other(Option<&'static str>),
+}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+impl From<core::num::TryFromIntError> for Error {
+    fn from(_: core::num::TryFromIntError) -> Self {
+        Self::InvalidInput
+    }
+}
+
+impl From<core::str::Utf8Error> for Error {
+    fn from(_: core::str::Utf8Error) -> Self {
+        Self::InvalidInput
+    }
+}
+
+/// Result type for fastboot operations.
+pub type Result<T> = core::result::Result<T, Error>;
 
 /// Maximum packet size that can be accepted from the host.
 ///
@@ -186,10 +224,10 @@ pub struct TcpTransport<'a, T: TcpStream> {
 
 impl<'a, T: TcpStream> TcpTransport<'a, T> {
     /// Creates an instance from a newly connected TcpStream and performs handshake.
-    pub fn new_and_handshake(tcp_stream: &'a mut T) -> Result<Self> {
+    pub async fn new_and_handshake(tcp_stream: &'a mut T) -> Result<Self> {
         let mut handshake = [0u8; 4];
-        block_on(tcp_stream.write_exact(TCP_HANDSHAKE_MESSAGE))?;
-        block_on(tcp_stream.read_exact(&mut handshake[..]))?;
+        tcp_stream.write_exact(TCP_HANDSHAKE_MESSAGE).await?;
+        tcp_stream.read_exact(&mut handshake[..]).await?;
         match handshake == *TCP_HANDSHAKE_MESSAGE {
             true => Ok(Self { tcp: tcp_stream, remaining_packet: 0 }),
             _ => Err(Error::InvalidHandshake),
@@ -965,7 +1003,7 @@ impl<'a, T: Transport> Uploader for &mut Responder<'a, T> {
         }
         self.remaining_upload = self
             .remaining_upload
-            .checked_sub(data.len().try_into().map_err(|_| "")?)
+            .checked_sub(data.len().try_into()?)
             .ok_or(Error::Other(Some("Invalid size of upload data")))?;
         self.transport_error = self.transport.send_packet(data).await;
         Ok(())
@@ -975,9 +1013,8 @@ impl<'a, T: Transport> Uploader for &mut Responder<'a, T> {
 pub mod test_utils {
     //! Test utilities to help users of this library write unit tests.
 
-    use crate::{InfoSender, UploadBuilder, Uploader};
+    use crate::{Error, InfoSender, UploadBuilder, Uploader};
     use core::fmt::Write;
-    use liberror::Error;
 
     /// A test implementation of `UploadBuilder` for unittesting
     /// `FastbootImplementation::upload()`.
@@ -1420,26 +1457,25 @@ impl<'a, P: From<&'a str> + AsRef<str>> TryFrom<&'a str> for StreamCommand<P> {
         let args = &mut cmd_str.split(':');
         let command = next_arg(args).ok_or(Error::InvalidInput)?;
         let partition = next_arg(args).ok_or(Error::InvalidInput)?.into();
-        let offset = FromHexStr::try_parse_next(args)?;
+        let offset = FromHexStr::try_parse_next(args).map_err(|_| Error::InvalidInput)?;
         let command = match command {
             "stream-flash" => Self {
                 partition,
                 offset,
-                operation: StreamOperation::Flash { checksum: FromHexStr::try_parse_next(args)? },
+                operation: StreamOperation::Flash {
+                    checksum: FromHexStr::try_parse_next(args).map_err(|_| Error::InvalidInput)?,
+                },
             },
             "stream-fill" => Self {
                 partition,
                 offset,
                 operation: StreamOperation::Fill {
                     // Attempting to write a partial fill value is an error.
-                    size: FromHexStr::try_parse_next(args).and_then(|s| {
-                        if s % (size_of::<u32>() as u64) == 0 {
-                            Ok(s)
-                        } else {
-                            Err(Error::InvalidInput)
-                        }
-                    })?,
-                    payload: FromHexStr::try_parse_next(args)?,
+                    size: FromHexStr::try_parse_next(args)
+                        .ok()
+                        .filter(|s| s % (size_of::<u32>() as u64) == 0)
+                        .ok_or(Error::InvalidInput)?,
+                    payload: FromHexStr::try_parse_next(args).map_err(|_| Error::InvalidInput)?,
                 },
             },
             _ => Err(Error::InvalidInput)?,
@@ -1544,12 +1580,13 @@ pub async fn run_tcp_session(
     tcp_stream: &mut impl TcpStream,
     fb_impl: &mut impl FastbootImplementation,
 ) -> Result<()> {
-    run(&mut TcpTransport::new_and_handshake(tcp_stream)?, fb_impl).await
+    run(&mut TcpTransport::new_and_handshake(tcp_stream).await?, fb_impl).await
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
+    use gbl_async::block_on;
     use std::{
         collections::{BTreeMap, VecDeque},
         io::Read,
@@ -1838,7 +1875,7 @@ mod test {
     impl TcpStream for TestTcpStream {
         async fn read(&mut self, out: &mut [u8]) -> Result<usize> {
             match self.in_queue.read(out).unwrap() {
-                0 => Err(Error::OperationProhibited),
+                0 => Err(Error::Disconnected),
                 v => Ok(v),
             }
         }

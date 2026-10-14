@@ -29,7 +29,7 @@ use core::{
 use crc32fast::Hasher;
 use gbl_async::block_on;
 use liberror::{Error, GptError};
-use libutils::buffer_pool::BufferPool;
+use libgblutils::buffer_pool::BufferPool;
 use safemath::SafeNum;
 use static_assertions::const_assert_eq;
 use zerocopy::{

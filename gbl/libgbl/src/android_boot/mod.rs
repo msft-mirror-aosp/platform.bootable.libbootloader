@@ -37,7 +37,7 @@ use fdt::Fdt;
 use gbl_async::block_on;
 use libbuild_number::{format_build_fingerprint, format_build_vcs_info, BUILD_NUMBER, VERSION};
 use liberror::Error;
-use libutils::{aligned_subslice, buffer_pool::BufferPool, shared::Shared};
+use libgblutils::{aligned_subslice, buffer_pool::BufferPool, shared::Shared};
 use misc::AndroidBootMode;
 
 mod avf;

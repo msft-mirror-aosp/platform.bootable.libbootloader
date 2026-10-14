@@ -31,7 +31,7 @@ use dttable::DtTableImage;
 use fdt::{fdt_encode_cell_sized_property, fdt_ensure_reserved_memory_initialized, std_props, Fdt};
 use fit::Fit;
 use liberror::{Error, Result};
-use libutils::ZeroizeGuard;
+use libgblutils::ZeroizeGuard;
 use opendice::{
     dice::{Config, DiceMode, InputValues, HASH_SIZE, HIDDEN_SIZE},
     dice_android_format_config_descriptor, dice_android_handover_main_flow, DiceAndroidConfig,

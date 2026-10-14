@@ -16,7 +16,7 @@ use crate::{check_range, is_aligned, is_buffer_aligned, BlockInfo, BlockIo, Chec
 use bytes::buf::UninitSlice;
 use core::cmp::{max, min};
 use liberror::{Error, Result};
-use libutils::aligned_subslice;
+use libgblutils::aligned_subslice;
 use safemath::SafeNum;
 
 /// Reads from a range at block boundary to an aligned buffer.

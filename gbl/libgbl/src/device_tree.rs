@@ -22,7 +22,7 @@ use arrayvec::ArrayVec;
 use dttable::{DtTableEntry, DtTableImage, DtTableMetadata};
 use fdt::{Fdt, FdtHeader, FDT_HEADER_SIZE, MAXIMUM_OVERLAYS_TO_APPLY};
 use liberror::{Error, Result};
-use libutils::aligned_subslice;
+use libgblutils::aligned_subslice;
 
 /// Maximum number of device tree components GBL can handle to select from.
 pub const MAXIMUM_DT_COMPONENTS: usize = 512;

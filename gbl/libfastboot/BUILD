@@ -27,8 +27,6 @@ rust_library(
     edition = "2021",
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
-        "@gbl//libasync",
-        "@gbl//liberror",
         "@gbl//libutils",
     ],
 )
@@ -37,4 +35,7 @@ rust_test(
     name = "libfastboot_test",
     crate = ":libfastboot",
     rustc_flags = ANDROID_RUST_LINTS,
+    deps = [
+        "@gbl//libasync",
+    ],
 )

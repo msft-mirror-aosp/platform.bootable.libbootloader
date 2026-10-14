@@ -82,6 +82,6 @@ rust_test(
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@gbl//libfdt",
-        "@gbl//libutils:libtestutils",
+        "@gbl//libgblutils:libtestutils",
     ],
 )

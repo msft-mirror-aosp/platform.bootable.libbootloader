@@ -21,7 +21,7 @@ extern "C" {
     fn flush_dcache_range(addr: usize, len: usize);
 }
 
-// TODO: Deduplicate `flush_dcache_buffer` across libboot, libopendice, and libutils.
+// TODO(b/336318818): Deduplicate `flush_dcache_buffer` across libboot, libopendice, and libgblutils.
 /// Flush all data cache for the given buffer.
 #[inline]
 pub fn flush_dcache_buffer(buf: &[u8]) {

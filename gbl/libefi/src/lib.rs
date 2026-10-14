@@ -59,7 +59,7 @@ use efi_types::{
     protocol::{BridgeToRust, Provider},
     Identified,
 };
-pub use libutils::arch_timestamp;
+pub use libgblutils::arch_timestamp;
 
 /// Address parameter for UEFI page allocation.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -146,7 +146,8 @@ use efi_types::{
     tpl::TplControl,
 };
 use liberror::{Error, Result};
-use libutils::{aligned_subslice, base_type_name};
+use libgblutils::aligned_subslice;
+use libutils::base_type_name;
 use protocol::{
     loaded_image::LoadedImageProtocol, simple_text_output::SimpleTextOutputProtocol, Protocol,
     ProtocolImpl, ProtocolInfo, Revision,

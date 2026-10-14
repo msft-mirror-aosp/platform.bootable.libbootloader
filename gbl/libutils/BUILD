@@ -27,50 +27,11 @@ rust_library(
     edition = "2021",
     rustc_flags = ANDROID_RUST_LINTS,
     visibility = ["//visibility:public"],
-    deps = [
-        "@gbl//libasync",
-        "@gbl//liberror",
-        "@gbl//libsafemath",
-        "@static_assertions",
-        "@zeroize",
-    ] + select({
-        "@gbl//toolchain:gbl_rust_aarch64": [
-            "@gbl//libboot/aarch64_cache_helper:aarch64_cache_helper_staticlib",
-        ],
-        "@platforms//cpu:x86_64": [
-            "@x86_64",
-        ],
-        "//conditions:default": [],
-    }),
-)
-
-rust_library(
-    name = "libtestutils",
-    testonly = True,
-    srcs = [
-        "test/lib.rs",
-    ],
-    edition = "2021",
-    rustc_flags = ANDROID_RUST_LINTS,
-    visibility = ["//visibility:public"],
-    deps = [
-        "@gbl//libsafemath",
-    ],
 )
 
 rust_test(
     name = "test",
     crate = ":libutils",
-    rustc_flags = ANDROID_RUST_LINTS,
-    visibility = ["//visibility:public"],
-    deps = [
-        ":libtestutils",
-    ],
-)
-
-rust_test(
-    name = "testutils_test",
-    crate = ":libtestutils",
     rustc_flags = ANDROID_RUST_LINTS,
     visibility = ["//visibility:public"],
 )
