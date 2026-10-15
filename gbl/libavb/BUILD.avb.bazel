@@ -35,30 +35,18 @@ generate_license(
 
 exports_files(glob(["**/*"]))
 
-avb_headers = [
-    "libavb_cert/avb_cert_ops.h",
-    "libavb_cert/avb_cert_types.h",
-    "libavb_cert/avb_cert_validate.h",
-    "libavb_cert/libavb_cert.h",
-    "libavb/avb_chain_partition_descriptor.h",
-    "libavb/avb_cmdline.h",
-    "libavb/avb_crypto.h",
-    "libavb/avb_descriptor.h",
-    "libavb/avb_footer.h",
-    "libavb/avb_hash_descriptor.h",
-    "libavb/avb_hashtree_descriptor.h",
-    "libavb/avb_kernel_cmdline_descriptor.h",
-    "libavb/avb_mldsa.h",
-    "libavb/avb_ops.h",
-    "libavb/avb_property_descriptor.h",
-    "libavb/avb_rsa.h",
-    "libavb/avb_sha.h",
-    "libavb/avb_slot_verify.h",
-    "libavb/avb_sysdeps.h",
-    "libavb/avb_util.h",
-    "libavb/avb_vbmeta_image.h",
-    "libavb/avb_version.h",
-    "libavb/libavb.h",
+avb_headers = glob(
+    [
+        "libavb/**/*.h",
+        "libavb_cert/**/*.h",
+    ],
+    exclude = [
+        # GBL uses BoringSSL crypto (libavb/boringssl/) rather than the standalone
+        # fallback implementations in libavb/crypto/.
+        "libavb/crypto/**",
+    ],
+) + [
+    "rust/bindgen/avb.h",
 ]
 
 # The rust_bindgen rule only accepts a single header for definitions,
@@ -90,13 +78,11 @@ cat << EOF > $(OUTS)
 #ifndef __BINDGEN_UNIFIED_HEADER_H__
 #define __BINDGEN_UNIFIED_HEADER_H__
 
-#include "libavb_cert/libavb_cert.h"
+#include "rust/bindgen/avb.h"
 #include "libavb/avb_cmdline.h"
 #include "libavb/avb_crypto_ops_impl.h"
 #include "libavb/avb_rsa.h"
 #include "libavb/avb_sha.h"
-#include "libavb/avb_sysdeps.h"
-#include "libavb/libavb.h"
 
 #endif // __BINDGEN_UNIFIED_HEADER_H__
 EOF
@@ -160,7 +146,6 @@ cc_library(
     ],
     includes = [
         ".",
-        "libavb/boringssl/",
     ],
     deps = [
         "@boringssl//:crypto_baremetal",
@@ -171,27 +156,19 @@ cc_library(
 
 cc_library(
     name = "libavb_c",
-    srcs = [
+    srcs = glob(
+        [
+            "libavb/**/*.c",
+            "libavb_cert/**/*.c",
+        ],
+        exclude = [
+            # GBL uses BoringSSL crypto (libavb/boringssl/) rather than the standalone
+            # fallback implementations in libavb/crypto/.
+            "libavb/crypto/**",
+        ],
+    ) + [
         # C implementations for sysdeps which cannot be implemented using Rust
         "@gbl//libavb:deps.c",
-        "libavb_cert/avb_cert_validate.c",
-        "libavb/avb_chain_partition_descriptor.c",
-        "libavb/avb_cmdline.c",
-        "libavb/avb_crc32.c",
-        "libavb/avb_crypto.c",
-        "libavb/avb_descriptor.c",
-        "libavb/avb_footer.c",
-        "libavb/avb_hash_descriptor.c",
-        "libavb/avb_hashtree_descriptor.c",
-        "libavb/avb_kernel_cmdline_descriptor.c",
-        "libavb/avb_mldsa.c",
-        "libavb/avb_property_descriptor.c",
-        "libavb/avb_rsa.c",
-        "libavb/avb_slot_verify.c",
-        "libavb/avb_util.c",
-        "libavb/avb_vbmeta_image.c",
-        "libavb/avb_version.c",
-        "libavb/boringssl/mldsa.c",
     ],
     copts = [
         "-D_FILE_OFFSET_BITS=64",

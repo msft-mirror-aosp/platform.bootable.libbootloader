@@ -109,6 +109,15 @@ gbl_rust_crate_repository(
 gbl_new_local_repository(
     name = "avb",
     build_file = "@gbl//libavb:BUILD.avb.bazel",
+    exclude_files = [
+        # GBL provides its own sysdeps (@gbl//libavb:deps.c and @gbl//libavb:sysdeps).
+        "libavb/avb_sysdeps_posix.c",
+        # GBL provides its own avb_crypto_ops_impl.h (@gbl//libavb:avb_crypto_ops_impl).
+        "libavb/boringssl/avb_crypto_ops_impl.h",
+        # GBL provides its own SHA implementation (@gbl//libavb:avb_sha.c).
+        "libavb/boringssl/sha.c",
+        "libavb/crypto/avb_crypto_ops_impl.h",
+    ],
     path = "external/avb",
 )
 
