@@ -50,6 +50,15 @@ extraction commands are only available when the device is **unlocked**:
 
 Attempts to run these commands on a locked device will result in a Fastboot failure.
 
+## Fastboot Variables
+
+GBL implements the Fastboot variables tied to functionality it owns, such as
+`max-download-size`, `current-slot`, `partition-size` or `unlocked`. Common
+variables whose values are vendor-specific, such as `product`, `serialno`,
+`secure` or `version-baseband`, are not implemented by GBL. Firmware should
+report them via [`GBL_EFI_FASTBOOT_PROTOCOL`][gbl_efi_fastboot_protocol]
+`GetVar()` and `GetVarAll()`.
+
 ## The Partition Argument
 
 Fastboot commands such as `fastboot flash`, `fastboot fetch` and
@@ -345,4 +354,5 @@ to complete. The UI should wait until all messages have been displayed.
     screen. (may be defered to main loop)
 10. GBL calls `Stop` to de-initialize the UI.
 
+[gbl_efi_fastboot_protocol]: ./gbl_efi_fastboot_protocol.md
 [gbl_efi_fastboot_transport_protocol]: ./gbl_efi_fastboot_transport_protocol.md
