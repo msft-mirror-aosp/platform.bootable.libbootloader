@@ -26,9 +26,6 @@ rust_library(
     crate_name = "abr",
     edition = "2021",
     rustc_flags = ANDROID_RUST_LINTS,
-    deps = [
-        "@gbl//liberror",
-    ],
 )
 
 rust_test(
@@ -48,10 +45,7 @@ rust_static_library(
     crate_root = "src/c_staticlib.rs",
     edition = "2021",
     rustc_flags = ANDROID_RUST_LINTS,
-    deps = [
-        ":libabr",
-        "@gbl//liberror",
-    ],
+    deps = [":libabr"],
 )
 
 rust_test(

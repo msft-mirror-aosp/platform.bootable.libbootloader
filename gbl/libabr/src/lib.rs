@@ -16,8 +16,12 @@
 
 #![cfg_attr(not(test), no_std)]
 
-use core::{cmp::min, ffi::c_uint, ffi::CStr, fmt::Write, mem::size_of};
-use liberror::{Error, Result};
+use core::{
+    cmp::min,
+    ffi::{c_uint, CStr},
+    fmt::{Display, Formatter, Write},
+    mem::size_of,
+};
 
 const ABR_MAGIC: &[u8; 4] = b"\0AB0";
 const ABR_MAJOR_VERSION: u8 = 2;
@@ -35,6 +39,42 @@ const ABR_MAX_PRIORITY: u8 = 15;
 /// Maximum number of retries.
 pub const ABR_MAX_TRIES_REMAINING: u8 = 7;
 
+/// Error type for this library.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    /// Metadata checksum didn't match contents.
+    BadChecksum,
+    /// Failed to find the magic bytes indicating A/B/R metadata.
+    BadMagic,
+    /// Input parameter or data is in an invalid state, e.g. trying to mark R as active.
+    InvalidInput,
+    /// Error occurred in the [Ops] callbacks; optional error message can be provided.
+    OpsError(Option<&'static str>),
+    /// Metadata version is not supported by this library.
+    UnsupportedVersion,
+}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl From<Option<&'static str>> for Error {
+    fn from(val: Option<&'static str>) -> Self {
+        Error::OpsError(val)
+    }
+}
+
+impl From<&'static str> for Error {
+    fn from(val: &'static str) -> Self {
+        Error::OpsError(Some(val))
+    }
+}
+
+/// Helper `Result` type for this library.
+pub type Result<T> = core::result::Result<T, Error>;
+
 /// `Ops` provides the backend interfaces needed by A/B/R APIs.
 pub trait Ops {
     /// Reads exactly `out.len()` bytes into `out` from the persistent storage hosting the A/B/R
@@ -51,15 +91,11 @@ pub trait Ops {
 
 impl Ops for [u8; ABR_DATA_SIZE] {
     fn read_abr_metadata(&mut self, out: &mut [u8]) -> Result<()> {
-        Ok(out
-            .clone_from_slice(self.get(..out.len()).ok_or(Error::BufferTooSmall(Some(out.len())))?))
+        Ok(out.clone_from_slice(self.get(..out.len()).ok_or("Out of range")?))
     }
 
     fn write_abr_metadata(&mut self, data: &mut [u8]) -> Result<()> {
-        Ok(self
-            .get_mut(..data.len())
-            .ok_or(Error::BufferTooSmall(Some(data.len())))?
-            .clone_from_slice(data))
+        Ok(self.get_mut(..data.len()).ok_or("Out of range")?.clone_from_slice(data))
     }
 
     fn console(&mut self) -> Option<&mut dyn Write> {
