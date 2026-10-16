@@ -246,6 +246,23 @@ fn unpack_result<T: Into<O>, O>(res: Result<T>, val: &mut O) -> c_uint {
     }
 }
 
+/// Same as [unpack_result], but writes the return value to a C output parameter.
+///
+/// `out` is only written on success and is never read, so it may point to uninitialized memory.
+///
+/// # Safety
+///
+/// `out` must be non-null, aligned, and valid for writing a value of type `O`.
+unsafe fn unpack_result_to_ptr<T: Into<O>, O>(res: Result<T>, out: *mut O) -> c_uint {
+    let mut val = None;
+    let ret = unpack_result(res.map(|v| Some(v.into())), &mut val);
+    if let Some(v) = val {
+        // SAFETY: The caller guarantees `out` is non-null, aligned, and valid for writes.
+        unsafe { out.write(v) };
+    }
+    ret
+}
+
 /// C interface wrapper of `abr::get_boot_slot()`
 ///
 /// # Safety
@@ -266,10 +283,11 @@ pub unsafe extern "C" fn AbrGetBootSlot(
     // SAFETY: The caller guarantees `abr_ops` is a valid, aligned pointer. We check for
     // non-nullness here and safely default to the Recovery slot if NULL.
     let Some(abr_ops) = (unsafe { abr_ops.as_ref() }) else {
-        // SAFETY: The caller guarantees `is_slot_marked_successful` is a valid, aligned pointer or
-        // NULL.
-        if let Some(v) = unsafe { is_slot_marked_successful.as_mut() } {
-            *v = false;
+        if !is_slot_marked_successful.is_null() {
+            // SAFETY: The caller guarantees `is_slot_marked_successful` is a valid, aligned
+            // pointer for writing a `bool`. Using `write` avoids creating `&mut bool` over
+            // uninitialized memory.
+            unsafe { is_slot_marked_successful.write(false) };
         }
         return SlotIndex::R.into();
     };
@@ -277,10 +295,10 @@ pub unsafe extern "C" fn AbrGetBootSlot(
     let mut abr_ops = unsafe { AbrOpsSafe::new(abr_ops) };
 
     let (slot_index, successful) = get_boot_slot(&mut abr_ops, update_metadata);
-    // SAFETY: The caller guarantees `is_slot_marked_successful` is a valid, aligned pointer or
-    // NULL.
-    if let Some(v) = unsafe { is_slot_marked_successful.as_mut() } {
-        *v = successful;
+    if !is_slot_marked_successful.is_null() {
+        // SAFETY: The caller guarantees `is_slot_marked_successful` is a valid, aligned pointer
+        // for writing a `bool`.
+        unsafe { is_slot_marked_successful.write(successful) };
     }
     slot_index.into()
 }
@@ -349,14 +367,18 @@ pub unsafe extern "C" fn AbrGetSlotLastMarkedActive(
     out_slot: *mut AbrSlotIndex,
 ) -> c_uint {
     // SAFETY: The caller guarantees `abr_ops` and `out_slot` are valid, aligned pointers. We check
-    // for non-nullness here.
-    let (Some(abr_ops), Some(out_slot)) = (unsafe { (abr_ops.as_ref(), out_slot.as_mut()) }) else {
+    // for non-nullness here without creating `&mut` over uninitialized `out_slot`.
+    let Some(abr_ops) = (unsafe { abr_ops.as_ref() }) else {
         return ABR_RESULT_ERR_INVALID_DATA;
     };
+    if out_slot.is_null() {
+        return ABR_RESULT_ERR_INVALID_DATA;
+    }
     // SAFETY: The caller guarantees `abr_ops.context` is valid for `AbrOpsSafe::new`.
     let mut abr_ops = unsafe { AbrOpsSafe::new(abr_ops) };
 
-    unpack_result(get_slot_last_marked_active(&mut abr_ops), out_slot)
+    // SAFETY: `out_slot` is non-null, and the caller guarantees it is aligned and valid for writes.
+    unsafe { unpack_result_to_ptr(get_slot_last_marked_active(&mut abr_ops), out_slot) }
 }
 
 /// C interface wrapper of `abr::mark_slot_unbootable()`
@@ -481,14 +503,20 @@ pub unsafe extern "C" fn AbrGetSlotInfo(
     };
 
     // SAFETY: The caller guarantees `abr_ops` and `info` are valid, aligned pointers. We check for
-    // non-nullness here.
-    let (Some(abr_ops), Some(info)) = (unsafe { (abr_ops.as_ref(), info.as_mut()) }) else {
+    // non-nullness here without creating `&mut SlotInfo` over uninitialized `info`.
+    let Some(abr_ops) = (unsafe { abr_ops.as_ref() }) else {
         return ABR_RESULT_ERR_INVALID_DATA;
     };
+    if info.is_null() {
+        return ABR_RESULT_ERR_INVALID_DATA;
+    }
     // SAFETY: The caller guarantees `abr_ops.context` is valid for `AbrOpsSafe::new`.
     let mut abr_ops = unsafe { AbrOpsSafe::new(abr_ops) };
 
-    unpack_result(get_slot_info(&mut abr_ops, slot_index).map(|v| SlotInfo::from(v)), info)
+    // SAFETY: `info` is non-null, and the caller guarantees it is aligned and valid for writes.
+    unsafe {
+        unpack_result_to_ptr(get_slot_info(&mut abr_ops, slot_index).map(SlotInfo::from), info)
+    }
 }
 
 /// C interface wrapper of `abr::set_one_shot_recovery()`
@@ -550,14 +578,18 @@ pub unsafe extern "C" fn AbrGetAndClearOneShotFlags(
     flags: *mut c_uint,
 ) -> c_uint {
     // SAFETY: The caller guarantees `abr_ops` and `flags` are valid, aligned pointers. We check for
-    // non-nullness here.
-    let (Some(abr_ops), Some(flags)) = (unsafe { (abr_ops.as_ref(), flags.as_mut()) }) else {
+    // non-nullness here without creating `&mut` over uninitialized `flags`.
+    let Some(abr_ops) = (unsafe { abr_ops.as_ref() }) else {
         return ABR_RESULT_ERR_INVALID_DATA;
     };
+    if flags.is_null() {
+        return ABR_RESULT_ERR_INVALID_DATA;
+    }
     // SAFETY: The caller guarantees `abr_ops.context` is valid for `AbrOpsSafe::new`.
     let mut abr_ops = unsafe { AbrOpsSafe::new(abr_ops) };
 
-    unpack_result(get_and_clear_one_shot_flag(&mut abr_ops), flags)
+    // SAFETY: `flags` is non-null, and the caller guarantees it is aligned and valid for writes.
+    unsafe { unpack_result_to_ptr(get_and_clear_one_shot_flag(&mut abr_ops), flags) }
 }
 
 /// C interface wrapper of `AbrSlotData::get_normalized_priority()`.
