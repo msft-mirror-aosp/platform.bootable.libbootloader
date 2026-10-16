@@ -83,7 +83,6 @@ impl<'a> LoadFile2 for InitrdLoadFile2Protocol<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::mem::transmute;
 
     const TEST_RAMDISK: &[u8] = b"mock_initrd_ramdisk_payload_for_testing";
 
@@ -111,14 +110,10 @@ mod tests {
     #[test]
     fn test_initrd_load_file2_insufficient_buffer_returns_buffer_too_small() {
         let loader = InitrdLoadFile2Protocol(TEST_RAMDISK);
-        let mut buffer = vec![0u8; TEST_RAMDISK.len() - 1];
+        let mut buffer = vec![MaybeUninit::<u8>::uninit(); TEST_RAMDISK.len() - 1];
         reset_console_out();
 
-        // SAFETY: `MaybeUninit<u8>` has the same size as `u8` and can contain any value.
-        let res = loader.load_file(
-            None,
-            Some(unsafe { transmute::<&mut [u8], &mut [MaybeUninit<u8>]>(&mut buffer) }),
-        );
+        let res = loader.load_file(None, Some(&mut buffer));
 
         assert_eq!(res, Err(EfiError::BufferTooSmall(TEST_RAMDISK.len())));
         assert!(console_out().contains("buffer too small"));
@@ -129,10 +124,16 @@ mod tests {
         let loader = InitrdLoadFile2Protocol(TEST_RAMDISK);
         let mut buffer = vec![0u8; TEST_RAMDISK.len()];
 
-        // SAFETY: `MaybeUninit<u8>` has the same size as `u8` and can contain any value.
+        // SAFETY: `InitrdLoadFile2Protocol::load_file` only writes initialized bytes into the
+        // slice and never writes `MaybeUninit::uninit()`.
         let res = loader.load_file(
             None,
-            Some(unsafe { transmute::<&mut [u8], &mut [MaybeUninit<u8>]>(&mut buffer) }),
+            Some(unsafe {
+                core::slice::from_raw_parts_mut(
+                    buffer.as_mut_ptr() as *mut MaybeUninit<u8>,
+                    buffer.len(),
+                )
+            }),
         );
 
         assert_eq!(res, Ok(TEST_RAMDISK.len()));
@@ -144,10 +145,16 @@ mod tests {
         let loader = InitrdLoadFile2Protocol(TEST_RAMDISK);
         let mut buffer = vec![0u8; TEST_RAMDISK.len() + 16];
 
-        // SAFETY: `MaybeUninit<u8>` has the same size as `u8` and can contain any value.
+        // SAFETY: `InitrdLoadFile2Protocol::load_file` only writes initialized bytes into the
+        // slice and never writes `MaybeUninit::uninit()`.
         let res = loader.load_file(
             None,
-            Some(unsafe { transmute::<&mut [u8], &mut [MaybeUninit<u8>]>(&mut buffer) }),
+            Some(unsafe {
+                core::slice::from_raw_parts_mut(
+                    buffer.as_mut_ptr() as *mut MaybeUninit<u8>,
+                    buffer.len(),
+                )
+            }),
         );
 
         assert_eq!(res, Ok(TEST_RAMDISK.len()));

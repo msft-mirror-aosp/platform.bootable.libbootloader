@@ -33,9 +33,16 @@ pub unsafe extern "C" fn getentropy(buffer: *mut u8, length: usize) -> core::ffi
     if buffer.is_null() {
         return -1;
     }
+    if length == 0 {
+        return 0;
+    }
 
-    // Safety: buffer is valid for length bytes per function safety contract.
-    let mut buf = unsafe { from_raw_parts_mut(buffer, length) };
+    // Safety: `buffer` is valid for `length` bytes per function safety contract. Zero-initialize
+    // first so `from_raw_parts_mut` never materializes `&mut [u8]` over uninitialized C memory.
+    let mut buf = unsafe {
+        core::ptr::write_bytes(buffer, 0, length);
+        from_raw_parts_mut(buffer, length)
+    };
     // Safety:
     // * It is the responsibility of initialization code to guarantee that the
     //   global efi entry is valid.
@@ -48,7 +55,7 @@ pub unsafe extern "C" fn getentropy(buffer: *mut u8, length: usize) -> core::ffi
         })
     };
 
-    if res.is_ok() {
+    if matches!(res, Ok(Ok(()))) {
         0
     } else {
         -1

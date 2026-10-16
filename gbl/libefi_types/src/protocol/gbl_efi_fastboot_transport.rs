@@ -15,14 +15,11 @@
 //! Rust trait for
 //! [`GBL_EFI_FASTBOOT_TRANSPORT_PROTOCOL`](https://android.googlesource.com/platform/bootable/libbootloader/+/refs/heads/gbl-mainline/gbl/docs/gbl_efi_fastboot_transport_protocol.md).
 
-use core::{
-    ffi::{c_void, CStr},
-    slice,
-};
+use core::ffi::{c_void, CStr};
 
 use crate::{
     defs::{EfiGuid, EfiStatus, GblEfiFastbootRxMode, GblEfiFastbootTransportProtocol},
-    protocol::{BridgeToRust, Provider},
+    protocol::{slice_from_raw_parts, slice_from_raw_parts_mut, BridgeToRust, Provider},
     status::{EfiError, EfiResult},
     Identified,
 };
@@ -122,11 +119,13 @@ impl<R: GblEfiFastbootTransport> Provider<'_, GblEfiFastbootTransportProtocol, R
         // first field, `interface` is also a valid pointer to the `Self` struct.
         let rust_impl = unsafe { Self::to_rust(interface) };
         (|| {
-            // SAFETY: By safety contract, buffer and `buffer_size` point to valid parameters.
+            // SAFETY: By safety contract, `buffer_size` points to a valid `usize`, and `buffer` is
+            // valid for reads and writes of `*buffer_size` bytes that nothing else accesses for the
+            // duration of this call. Neither reference outlives the call. Casting `buffer` rather
+            // than going through `&mut c_void` keeps provenance over the whole buffer.
             let (buffer, buffer_size) = unsafe {
                 let buffer_size = buffer_size.as_mut().ok_or(EfiError::InvalidParameter)?;
-                let buffer = buffer.as_mut().ok_or(EfiError::InvalidParameter)?;
-                (slice::from_raw_parts_mut(buffer as *mut _ as _, *buffer_size), buffer_size)
+                (slice_from_raw_parts_mut(buffer.cast::<u8>(), *buffer_size)?, buffer_size)
             };
             match rust_impl.receive(buffer, mode) {
                 rep @ Ok(v) | rep @ Err(EfiError::BufferTooSmall(v)) => {
@@ -157,11 +156,13 @@ impl<R: GblEfiFastbootTransport> Provider<'_, GblEfiFastbootTransportProtocol, R
         // first field, `interface` is also a valid pointer to the `Self` struct.
         let rust_impl = unsafe { Self::to_rust(interface) };
         (|| {
-            // SAFETY: By safety contract, buffer and `buffer_size` point to valid parameters.
+            // SAFETY: By safety contract, `buffer_size` points to a valid `usize`, and `buffer` is
+            // valid for reads of `*buffer_size` initialized bytes that are not modified for the
+            // duration of this call. Neither reference outlives the call. Casting `buffer` rather
+            // than going through `&c_void` keeps provenance over the whole buffer.
             let (buffer, buffer_size) = unsafe {
                 let buffer_size = buffer_size.as_mut().ok_or(EfiError::InvalidParameter)?;
-                let buffer = buffer.as_ref().ok_or(EfiError::InvalidParameter)?;
-                (slice::from_raw_parts(buffer as *const _ as _, *buffer_size), buffer_size)
+                (slice_from_raw_parts(buffer.cast::<u8>(), *buffer_size)?, buffer_size)
             };
             rust_impl.send(buffer).inspect(|size| *buffer_size = *size)
         })()

@@ -49,7 +49,7 @@ impl ProtocolInfo for BlockIo2Protocol {
 pub(crate) async fn wait_completion(entry: &EfiEntry, complete: &AtomicBool) {
     // Disable tracing when waiting for IO.
     let _guard = trace::TraceGuard::new(false);
-    while !complete.load(Ordering::Relaxed) {
+    while !complete.load(Ordering::Acquire) {
         let bs = entry.system_table().boot_services();
         // UEFI implementation such as that of u-boot has no real interrupt. It relies on UEFI
         // app regularly calling into UEFI API to have a chance to process timer and other
@@ -75,7 +75,7 @@ impl Protocol<'_, BlockIo2Protocol> {
     ) -> Result<()> {
         let bs = self.efi_entry().system_table().boot_services();
         let complete = AtomicBool::new(false);
-        let mut notify_fn = &mut |_| complete.store(true, Ordering::Relaxed);
+        let mut notify_fn = &mut |_| complete.store(true, Ordering::Release);
         let mut notify = EventNotify::new(Tpl::Callback, &mut notify_fn);
         // SAFETY: the notification callback never allocates, deallocates, or panics.
         let event =
@@ -113,7 +113,7 @@ impl Protocol<'_, BlockIo2Protocol> {
     pub async fn write_blocks_ex(&self, lba: u64, buffer: &mut [u8]) -> Result<()> {
         let bs = self.efi_entry().system_table().boot_services();
         let complete = AtomicBool::new(false);
-        let mut notify_fn = &mut |_| complete.store(true, Ordering::Relaxed);
+        let mut notify_fn = &mut |_| complete.store(true, Ordering::Release);
         let mut notify = EventNotify::new(Tpl::Callback, &mut notify_fn);
         // SAFETY: the notification callback never allocates, deallocates, or panics.
         let event =
@@ -140,7 +140,7 @@ impl Protocol<'_, BlockIo2Protocol> {
     pub async fn flush_blocks_ex(&self) -> Result<()> {
         let bs = self.efi_entry().system_table().boot_services();
         let complete = AtomicBool::new(false);
-        let mut notify_fn = &mut |_| complete.store(true, Ordering::Relaxed);
+        let mut notify_fn = &mut |_| complete.store(true, Ordering::Release);
         let mut notify = EventNotify::new(Tpl::Callback, &mut notify_fn);
         // SAFETY: the notification callback never allocates, deallocates, or panics.
         let event =
