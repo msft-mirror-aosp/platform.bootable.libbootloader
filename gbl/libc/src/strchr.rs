@@ -26,15 +26,21 @@ use core::ptr::null_mut;
 #[cfg_attr(not(target_os = "linux"), no_mangle)]
 pub unsafe extern "C" fn strchr(ptr: *const c_char, ch: c_int) -> *mut c_char {
     assert!(!ptr.is_null());
-    // SAFETY: `str` is a valid null terminated string.
-    let bytes = unsafe { CStr::from_ptr(ptr) }.to_bytes_with_nul();
     let target = (ch & 0xff) as u8;
-    for c in bytes.iter() {
-        if *c == target {
-            return c as *const _ as *mut _;
+    let mut cur = ptr;
+    loop {
+        // SAFETY: `ptr` is a valid null-terminated string, and `cur` has not moved past its NUL
+        // terminator, so `cur` is in bounds and readable.
+        let c = unsafe { *cur } as u8;
+        if c == target {
+            return cur as *mut c_char;
         }
+        if c == 0 {
+            return null_mut();
+        }
+        // SAFETY: `c` is not the NUL terminator, so `cur + 1` is still within the string.
+        cur = unsafe { cur.add(1) };
     }
-    null_mut()
 }
 
 /// char *strrchr(const char *str, int c);
@@ -48,9 +54,11 @@ pub unsafe extern "C" fn strrchr(ptr: *const c_char, ch: c_int) -> *mut c_char {
     // SAFETY: `str` is a null terminated string.
     let bytes = unsafe { CStr::from_ptr(ptr) }.to_bytes_with_nul();
     let target = (ch & 0xff) as u8;
-    for c in bytes.iter().rev() {
+    for (i, c) in bytes.iter().enumerate().rev() {
         if *c == target {
-            return c as *const _ as *mut _;
+            // SAFETY: `i < bytes.len()`, so `ptr.add(i)` is within the `ptr` allocation and
+            // preserves the original provenance of `ptr`.
+            return unsafe { ptr.add(i) as *mut c_char };
         }
     }
     null_mut()

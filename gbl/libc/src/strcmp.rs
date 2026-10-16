@@ -41,8 +41,8 @@ pub unsafe extern "C" fn strncmp(s1: *const c_char, s2: *const c_char, n: usize)
     for i in 0..n {
         // SAFETY: `i` is always within the bounds of `s1` and `s2` because it is limited by `n`,
         // and this statement is unreachable if a null character is already encountered in `s1`
-        // or `s2`.
-        let (l, r) = unsafe { (*s1.add(i), *s2.add(i)) };
+        // or `s2`. Per C99 7.21.4p1, characters are interpreted as `unsigned char`.
+        let (l, r) = unsafe { (*(s1.add(i) as *const u8), *(s2.add(i) as *const u8)) };
 
         let cmp = l.cmp(&r);
         if cmp != Ordering::Equal || l == 0 {
@@ -202,5 +202,11 @@ mod test {
     #[test]
     fn strncmp_bytes_array_left_terminated() {
         assert_eq!(do_strncmp_bytes(b"hel\0", b"hello", 5), -1);
+    }
+
+    #[test]
+    fn strncmp_unsigned_char_comparison() {
+        assert_eq!(do_strncmp_bytes(b"\x80", b"\x7f", 1), 1);
+        assert_eq!(do_strncmp_bytes(b"\x7f", b"\x80", 1), -1);
     }
 }
