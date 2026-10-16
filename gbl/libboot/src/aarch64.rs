@@ -101,9 +101,9 @@ unsafe fn jump_kernel(addr: usize, arg0: usize, arg1: usize, arg2: usize, arg3: 
             in("x2") arg2,
             in("x3") arg3,
             in("x4") addr,
+            options(noreturn),
         )
     };
-    unreachable!();
 }
 
 /// Boots a Linux kernel in mode EL2 or lower with the given FDT blob.

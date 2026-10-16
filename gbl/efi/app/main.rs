@@ -115,17 +115,15 @@ fn wait_gdb(entry: &EfiEntry) -> libgbl::Result<()> {
             // symbols. Loops until $rax is set 0 either by the
             // debug script or manually from gdb.
 
-            // SAFETY: The assembly code only sets $rax and $rcx reigster.
-            // It explicitly marks them as clobbered and does not modify
-            // any memory.
+            // SAFETY: The assembly code only sets $rax and $rcx registers.
+            // $rax is marked `inout` because the attached debugger overwrites it with 0.
             unsafe {
                 core::arch::asm!(
                     "2:",
                     "cmp rax, 0",
                     "jne 2b",
-                    in("rax") GDB_MAGIC,
+                    inout("rax") GDB_MAGIC => _,
                     in("rcx") image_base,
-                    clobber_abi("C"),
                 );
             }
             efi_println!(entry, "gdb connected!");
@@ -138,17 +136,15 @@ fn wait_gdb(entry: &EfiEntry) -> libgbl::Result<()> {
             // symbols. Loops until $x0 is set 0 either by the
             // debug script or manually from gdb.
 
-            // SAFETY: The assembly code only sets $x0 and $x2 reigster.
-            // It explicitly marks them as clobbered and does not modify
-            // any memory.
+            // SAFETY: The assembly code only sets $x0 and $x2 registers.
+            // $x0 is marked `inout` because the attached debugger overwrites it with 0.
             unsafe {
                 core::arch::asm!(
                     "2:",
                     "cmp x0, 0",
                     "b.ne 2b",
-                    in("x0") GDB_MAGIC,
+                    inout("x0") GDB_MAGIC => _,
                     in("x2") image_base,
-                    clobber_abi("C"),
                 );
             }
         }

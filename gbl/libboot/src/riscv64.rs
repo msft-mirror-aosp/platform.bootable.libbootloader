@@ -32,8 +32,7 @@ pub unsafe fn jump_linux(kernel: &[u8], boot_hart_id: usize, fdt: &[u8]) -> ! {
             in("a0") boot_hart_id,
             in("a1") fdt.as_ptr() as usize,
             ep = in(reg) kernel.as_ptr() as usize,
+            options(noreturn),
         );
     }
-
-    unreachable!();
 }
