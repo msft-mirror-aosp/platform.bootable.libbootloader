@@ -35,6 +35,12 @@ def parse_args() -> argparse.Namespace:
 
   parser.add_argument("efi", help="Path to the GBL launcher EFI application")
   parser.add_argument("gbl", help="Path to the GBL binary")
+  parser.add_argument(
+      "--arch",
+      choices=["aarch64", "x86_64"],
+      default="aarch64",
+      help="Target architecture",
+  )
   parser.add_argument("--bios", help="Path to the BIOS (UEFI firmware)")
   parser.add_argument("--qemu", help="Path to the QEMU binary")
   parser.add_argument(
@@ -110,7 +116,8 @@ def launch_qemu(args):
     # Create a FAT filesystem image for the EFI System Partition (ESP)
     esp_part_dir = test_dir / "esp" / "EFI" / "BOOT"
     esp_part_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(args.efi, esp_part_dir / "bootaa64.efi")
+    efi_boot_name = "bootx64.efi" if args.arch == "x86_64" else "bootaa64.efi"
+    shutil.copyfile(args.efi, esp_part_dir / efi_boot_name)
     # Make sure a log file always eixsts
     (test_dir / "console.log").write_text("")
 
@@ -119,6 +126,7 @@ def launch_qemu(args):
     os.symlink(gbl_path, test_dir / "gbl.bin")
 
     # Symlinks all additional runfiles to the current work directory.
+    mapped_runfiles = []
     for runfile_str in args.runfile:
       parts = runfile_str.split(",", 1)
       if len(parts) == 2:
@@ -129,6 +137,7 @@ def launch_qemu(args):
       dest_path = test_dir / mapped_name
       dest_path.parent.mkdir(parents=True, exist_ok=True)
       os.symlink(os.path.abspath(src_path), dest_path)
+      mapped_runfiles.append((mapped_name, dest_path))
 
     socket_path = test_dir / "vsock-guest.sock"
     uds_path = test_dir / "vsock-host.sock"
@@ -168,11 +177,26 @@ def launch_qemu(args):
       # Skips the 5 seconds delay spent waiting for user input in the boot menu
       cmd_args += ["-boot", "menu=on,splash-time=0"]
       # EDK2 firmware
-      cmd_args += ["-bios", bios]
+      if args.arch == "x86_64":
+        cmd_args += [
+            "-vga",
+            "none",
+            "-nic",
+            "none",
+            "-drive",
+            f"if=pflash,format=raw,readonly=on,file={bios}",
+            "-device",
+            "isa-debug-exit,iobase=0xf4,iosize=0x04",
+        ]
+      else:
+        cmd_args += ["-bios", bios]
       # ESP partition
       cmd_args += ["-drive", "format=raw,file=fat:rw:esp"]
       # Add extra disks
       disks = args.disk or []
+      blk_dev = (
+          "virtio-blk-pci" if args.arch == "x86_64" else "virtio-blk-device"
+      )
       for i, disk in enumerate(disks):
         # GBL needs read/write access to the disk image.
         # Bazel output artifacts are read-only, so create a copy of the disk
@@ -185,14 +209,24 @@ def launch_qemu(args):
             "-drive",
             f"file={disk_path},format=raw,if=none,id={drive_id}",
         ]
-        cmd_args += ["-device", f"virtio-blk-device,drive={drive_id}"]
+        cmd_args += ["-device", f"{blk_dev},drive={drive_id}"]
 
       con_in_sock_path = test_dir / "con_in.sock"
       # Re-direct all sources of serial log to a log file
       cmd_args += ["-serial", "chardev:console"]
       cmd_args += ["-monitor", "chardev:console"]
-      cmd_args += ["-semihosting"]
-      cmd_args += ["-semihosting-config", "chardev=console"]
+      if args.arch == "x86_64":
+        cmd_args += ["-fw_cfg", "name=opt/gbl.bin,file=gbl.bin"]
+        for k, v in env.items():
+          if k.startswith(("GBL_", "PART_", "LAUNCHER_")):
+            env_path = test_dir / f"env_{k}"
+            env_path.write_text(v)
+            cmd_args += ["-fw_cfg", f"name=opt/{k},file={env_path}"]
+        for mapped_name, dest_path in mapped_runfiles:
+          cmd_args += ["-fw_cfg", f"name=opt/{mapped_name},file={dest_path}"]
+      else:
+        cmd_args += ["-semihosting"]
+        cmd_args += ["-semihosting-config", "chardev=console"]
       cmd_args += [
           "-chardev",
           f"socket,id=console,path={con_in_sock_path},server=on,wait=off,mux=on,logfile=console.log",
@@ -230,33 +264,39 @@ def launch_qemu(args):
         wait_for_file(uds_path, proc)
         return proc
 
+      if args.arch == "aarch64":
+        if args.vhost_device_vsock:
+          vhost_proc = start_vhost()
+
+        # Generate FDT with the full QEMU arguments.
+        subprocess.run(
+            cmd_args + ["-machine", "virt,dumpdtb=fdt.dtb,memory-backend=mem"],
+            check=True,
+            stderr=subprocess.STDOUT,
+            cwd=test_dir,
+            env=env,
+        )
+
+        # Restart vhost-device-vsock and clean up any sockets created during
+        # dumpdtb so that the real QEMU run starts with a clean, ready socket set.
+        if vhost_proc is not None:
+          vhost_proc.terminate()
+          vhost_proc.wait()
+          vhost_proc = None
+        for sock in (socket_path, uds_path, con_in_sock_path, gdb_sock_path):
+          sock.unlink(missing_ok=True)
       if args.vhost_device_vsock:
         vhost_proc = start_vhost()
 
-      # Generate FDT with the full QEMU arguments.
-      subprocess.run(
-          cmd_args + ["-machine", "virt,dumpdtb=fdt.dtb,memory-backend=mem"],
-          check=True,
-          stderr=subprocess.STDOUT,
-          cwd=test_dir,
-          env=env,
+      machine_arg = (
+          "q35,memory-backend=mem"
+          if args.arch == "x86_64"
+          else "virt,memory-backend=mem"
       )
-
-      # Restart vhost-device-vsock and clean up any sockets created during
-      # dumpdtb so that the real QEMU run starts with a clean, ready socket set.
-      if vhost_proc is not None:
-        vhost_proc.terminate()
-        vhost_proc.wait()
-        vhost_proc = None
-      for sock in (socket_path, uds_path, con_in_sock_path, gdb_sock_path):
-        sock.unlink(missing_ok=True)
-      if args.vhost_device_vsock:
-        vhost_proc = start_vhost()
-
       qemu_end_time = time.time() + args.timeout
       # Launch QEMU
       qemu_proc = subprocess.Popen(
-          cmd_args + ["-machine", "virt,memory-backend=mem"],
+          cmd_args + ["-machine", machine_arg],
           stderr=subprocess.STDOUT,
           cwd=test_dir,
           env=env,

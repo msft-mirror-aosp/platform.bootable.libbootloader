@@ -58,6 +58,21 @@ genrule(
     tools = ["@mkbootimg"],
 )
 
+genrule(
+    name = "test_boot_img_x86_64",
+    srcs = [
+        "@gbl//tests/qemu/test_kernel:test_kernel_x86_64",
+    ],
+    outs = ["boot_x86_64_a.img"],
+    cmd = """
+        $(execpath @mkbootimg//:mkbootimg) \
+        --kernel $(execpath @gbl//tests/qemu/test_kernel:test_kernel_x86_64) \
+        --header_version 4 \
+        -o $@
+    """,
+    tools = ["@mkbootimg"],
+)
+
 gpt_gen(
     name = "test_gpt_boot",
     disk_size = "10M",
@@ -65,6 +80,28 @@ gpt_gen(
         "boot_a": {
             "size": "1M",
             "file": ":test_boot_img",
+        },
+        "boot_b": {"size": "1M"},
+        "vendor_boot_a": {
+            "size": "1M",
+            "file": "@gbl//libgbl/testdata:android/vendor_boot_v4_a.img",
+        },
+        "vendor_boot_b": {"size": "1M"},
+        "init_boot_a": {
+            "size": "1M",
+            "file": "@gbl//libgbl/testdata:android/init_boot_a.img",
+        },
+        "init_boot_b": {"size": "1M"},
+    },
+)
+
+gpt_gen(
+    name = "test_gpt_boot_x86_64",
+    disk_size = "10M",
+    partitions = {
+        "boot_a": {
+            "size": "1M",
+            "file": ":test_boot_img_x86_64",
         },
         "boot_b": {"size": "1M"},
         "vendor_boot_a": {
@@ -117,6 +154,17 @@ qemu_test(
         ":test_gpt_misc_fastboot_mode",
     ],
     gbl = "@gbl//efi:aarch64_dev",
+    test_script = ":fastboot_misc_test",
+)
+
+qemu_test(
+    name = "qemu_fastboot_misc_test_x86_64",
+    arch = "x86_64",
+    disk = [
+        ":test_gpt_boot_x86_64",
+        ":test_gpt_misc_fastboot_mode",
+    ],
+    gbl = "@gbl//efi:x86_64_dev",
     test_script = ":fastboot_misc_test",
 )
 
@@ -341,6 +389,7 @@ test_suite(
         ":qemu_dice_boot_test_p256",
         ":qemu_dice_boot_test_p384",
         ":qemu_fastboot_misc_test",
+        ":qemu_fastboot_misc_test_x86_64",
         ":qemu_lldb_debugging_test",
         ":qemu_trace_test",
     ],

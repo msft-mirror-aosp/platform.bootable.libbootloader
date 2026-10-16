@@ -96,6 +96,7 @@ rust_library(
             # This is needed otherwise x64 can't find __gnu_h2f_ieee/__gnu_f2h_ieee symbols.
             "@gbl//toolchain:gbl_rust_uefi_x86_64": ["--cfg=f16_enabled"],
             "@gbl//toolchain:gbl_rust_uefi_x86_64_debug": ["--cfg=f16_enabled"],
+            "@gbl//toolchain:gbl_rust_elf_x86_64": ["--cfg=f16_enabled"],
             "//conditions:default": [],
         },
     ),

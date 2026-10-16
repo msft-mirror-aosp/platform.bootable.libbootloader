@@ -163,8 +163,8 @@ typedef struct {
 // From https://lists.riscv.org/g/tech-psabi/attachment/61/0/riscv-abi.pdf
 
 // This is part of enum from Table 9. Relocation types.
-// But only 1 value is need
 #define R_RISCV_RELATIVE 3
+#define R_X86_64_RELATIVE 8
 #define R_AARCH64_RELATIVE 1027
 
 #endif  // __ELF_H__

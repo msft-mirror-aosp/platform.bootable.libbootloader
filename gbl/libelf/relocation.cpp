@@ -94,7 +94,8 @@ bool FixUpRelxTable(uintptr_t program_base, [[maybe_unused]] const Elf64_Sym* sy
     // https://github.com/riscv-non-isa/riscv-elf-psabi-doc/blob/master/riscv-elf.adoc#relocations
     //
     // GBL's usage of ELF is restricted. We only implement relocations that we expect to see.
-    if (reloc_type == R_RISCV_RELATIVE || reloc_type == R_AARCH64_RELATIVE) {
+    if (reloc_type == R_RISCV_RELATIVE || reloc_type == R_AARCH64_RELATIVE ||
+        reloc_type == R_X86_64_RELATIVE) {
       // This is the most common type of relocation. For position independent executable,
       // symbol address is typically the relative offset to program start. Relocated absolute
       // address is obtained by adding the address the program is loaded to.

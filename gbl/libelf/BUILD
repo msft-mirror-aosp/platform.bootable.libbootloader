@@ -29,6 +29,7 @@ cc_library(
     copts = select({
         "@gbl//toolchain:gbl_rust_elf_riscv64": [],
         "@gbl//toolchain:gbl_rust_elf_aarch64": [],
+        "@gbl//toolchain:gbl_rust_elf_x86_64": [],
         # For the `elf_static_relocation_checker` host tool, enable
         # print and panics as exit().
         "//conditions:default": ["-DHOST_TOOLING"],

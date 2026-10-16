@@ -28,5 +28,8 @@ rust_library(
     deps = [
         "@gbl//liberror",
         "@gbl//libutils",
-    ],
+    ] + select({
+        "@platforms//cpu:x86_64": ["@x86_64"],
+        "//conditions:default": [],
+    }),
 )
