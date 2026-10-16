@@ -26,16 +26,19 @@ pub mod profiling;
 pub mod protocol;
 pub mod utils;
 
+use core::time::Duration;
 use efi_types::{EfiConfigurationTable, EfiGuid, EfiTimerDelay};
 use liberror::Result;
 use mockall::mock;
 use protocol::{
+    device_path::{DevicePathProtocol, DevicePathToTextProtocol},
     dt_fixup::DtFixupProtocol,
     gbl_efi_avb::GblAvbProtocol,
     gbl_efi_avf::GblAvfProtocol,
     gbl_efi_boot_control::GblBootControlProtocol,
     gbl_efi_fastboot::GblFastbootProtocol,
     gbl_efi_os_configuration::GblOsConfigurationProtocol,
+    simple_network::SimpleNetworkProtocol,
     simple_text_output::{passthrough_con_out, MockSimpleTextOutputProtocol},
     timestamp::TimestampProtocol,
 };
@@ -43,7 +46,7 @@ use std::cell::RefCell;
 
 /// libefi types that can be used in tests as-is.
 pub use efi::{
-    efi_print, efi_println, opened_protocols, DeviceHandle, EventNotify, EventType,
+    efi_print, efi_println, opened_protocols, DeviceHandle, EventNotify, EventType, Tpl,
     GBL_EFI_FW_API_LEVEL, GBL_EFI_VENDOR_GUID,
 };
 
@@ -226,11 +229,13 @@ mock! {
         /// Similar to [open_protocol], returns the type `T`.
         pub fn find_first_and_open<T: 'static>(&self) -> Result<T>;
 
+        /// Returns a [MockLocatedHandles] for protocol `T`.
+        pub fn locate_handle_buffer_by_protocol<T: 'static>(&self) -> Result<MockLocatedHandles>;
+
         /// Returns a [MockEvent].
         pub fn create_event(
             &self,
             event_type: EventType,
-            mut cb: Option<&'static mut EventNotify<'static>>,
         ) -> Result<MockEvent>;
 
         /// Sets a [MockEvent] timer.
@@ -238,10 +243,26 @@ mock! {
             &self,
             event: &MockEvent,
             delay_type: EfiTimerDelay,
-            trigger_time: u64,
+            trigger_time: Duration,
         ) -> Result<()>;
     }
 }
+
+impl MockBootServices {
+    /// Returns a [MockEvent] with notification callback.
+    ///
+    /// # Safety
+    ///
+    /// `_notify` must outlive the returned [MockEvent].
+    pub unsafe fn create_event_with_notification(
+        &self,
+        event_type: EventType,
+        _notify: &mut EventNotify<'_>,
+    ) -> Result<MockEvent> {
+        self.create_event(event_type)
+    }
+}
+
 /// Map to the libefi name so code under test can just use one name.
 pub type BootServices = MockBootServices;
 
@@ -283,13 +304,42 @@ fn passthrough_boot_services() -> MockBootServices {
             efi.as_mut().unwrap().boot_services.find_first_and_open::<TimestampProtocol>()
         })
     });
+    services.expect_find_first_and_open::<DevicePathToTextProtocol>().returning(|| {
+        MOCK_EFI.with_borrow_mut(|efi| {
+            efi.as_mut().unwrap().boot_services.find_first_and_open::<DevicePathToTextProtocol>()
+        })
+    });
+    services.expect_open_protocol::<DevicePathProtocol>().returning(|handle| {
+        MOCK_EFI.with_borrow_mut(|efi| {
+            efi.as_mut().unwrap().boot_services.open_protocol::<DevicePathProtocol>(handle)
+        })
+    });
+    services.expect_open_protocol::<SimpleNetworkProtocol>().returning(|handle| {
+        MOCK_EFI.with_borrow_mut(|efi| {
+            efi.as_mut().unwrap().boot_services.open_protocol::<SimpleNetworkProtocol>(handle)
+        })
+    });
+    services.expect_locate_handle_buffer_by_protocol::<SimpleNetworkProtocol>().returning(|| {
+        MOCK_EFI.with_borrow_mut(|efi| {
+            efi.as_mut()
+                .unwrap()
+                .boot_services
+                .locate_handle_buffer_by_protocol::<SimpleNetworkProtocol>()
+        })
+    });
 
     services
 }
 
-mock! {
-    /// Mock [efi::LocatedHandles].
-    pub LocatedHandles {}
+/// Mock [efi::LocatedHandles].
+#[derive(Clone, Default)]
+pub struct MockLocatedHandles(pub Vec<DeviceHandle>);
+
+impl MockLocatedHandles {
+    /// Get the list of handles as a slice.
+    pub fn handles(&self) -> &[DeviceHandle] {
+        &self.0
+    }
 }
 /// Map to the libefi name so code under test can just use one name.
 pub type LocatedHandles = MockLocatedHandles;
@@ -299,7 +349,8 @@ mock! {
     pub Event {}
 }
 /// Map to the libefi name so code under test can just use one name.
-pub type Event = MockEvent;
+#[allow(unused)]
+pub type Event<'a, 'b> = MockEvent;
 
 mock! {
     /// Mock [efi::RuntimeServices].

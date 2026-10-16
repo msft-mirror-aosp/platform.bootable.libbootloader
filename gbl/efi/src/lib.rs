@@ -25,6 +25,7 @@
 extern crate alloc;
 
 mod efi_blocks;
+mod net;
 mod ops;
 #[macro_use]
 pub mod utils;
@@ -39,8 +40,6 @@ mod android_boot;
 mod fastboot;
 #[cfg(all(not(test), feature = "fuchsia"))]
 mod fuchsia_boot;
-#[cfg(not(test))]
-mod net;
 
 // In tests, map the `efi_mocks` module as `efi`. This allows other modules to `use crate::efi`
 // and automatically pick up the correct one.
