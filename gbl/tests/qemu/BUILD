@@ -159,6 +159,9 @@ qemu_test(
 
 qemu_test(
     name = "qemu_fastboot_misc_test_x86_64",
+    # The test boots three times and each x86_64 boot takes ~4s on CI hosts,
+    # which doesn't fit in qemu_launcher.py's default 10s timeout.
+    timeout = 30,
     arch = "x86_64",
     disk = [
         ":test_gpt_boot_x86_64",
