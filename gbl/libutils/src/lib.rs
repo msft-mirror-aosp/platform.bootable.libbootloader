@@ -157,21 +157,6 @@ pub fn method_basename(method_str: &str) -> &str {
     method_str.rsplit(".").next().unwrap_or(method_str)
 }
 
-/// Simple macro to emulate C's __func__ macro.
-/// Includes full module path.
-#[macro_export]
-macro_rules! func_name {
-    () => {{
-        fn thunk() {}
-        let mut full_path = core::any::type_name_of_val(&thunk);
-        let suffixes = [stringify!(thunk), "{{closure}}::", "::"];
-        for s in suffixes {
-            full_path = full_path.strip_suffix(s).unwrap_or(full_path);
-        }
-        full_path
-    }};
-}
-
 /// A helper to check and fetch the next non-empty argument.
 ///
 /// # Args

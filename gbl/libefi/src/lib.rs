@@ -2174,7 +2174,12 @@ mod test {
 
             efi_call_traces().with(|traces| {
                 let actual = traces.borrow().console_out_trace.as_single_string();
-                assert_eq!(actual, "Protocol method not found in caller 'efi::BootServices<'_>::open_protocol': open_protocol\r\n");
+                // Reports the location of the `efi_call!` in `BootServices::open_protocol()`.
+                let prefix = format!("Protocol method not found at {}:", file!());
+                assert!(
+                    actual.starts_with(&prefix) && actual.ends_with(": open_protocol\r\n"),
+                    "{actual}"
+                );
             });
         })
     }
