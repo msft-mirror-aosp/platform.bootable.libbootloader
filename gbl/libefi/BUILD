@@ -145,6 +145,7 @@ rust_library(
         "@gbl//liberror",
         "@gbl//libfdt",
         "@gbl//libgbl",
+        "@gbl//libgblutils",
         "@gbl//libprofile",
         "@mockall",
     ],

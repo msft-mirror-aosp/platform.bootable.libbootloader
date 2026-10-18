@@ -223,6 +223,19 @@ impl EfiEntry {
     pub fn image_handle(&self) -> DeviceHandle {
         DeviceHandle(self.image_handle)
     }
+
+    /// Implementation of [efi_println!]: prints `args` to `ConOut` with a timestamp prefix and the
+    /// UEFI newline sequence. Kept out of line so that call sites stay small.
+    #[doc(hidden)]
+    #[inline(never)]
+    pub fn println_fmt(&self, args: core::fmt::Arguments) {
+        // Can also use EFI_TIMESTAMP_PROTOCOL if provided.
+        libgblutils::writeln_with_timestamp(
+            &mut self.system_table().con_out().unwrap(),
+            "\r\n",
+            args,
+        )
+    }
 }
 
 /// Implement `TplControl` here for convenience so callers don't have to
@@ -1415,16 +1428,14 @@ macro_rules! efi_print {
 }
 
 /// Similar to [efi_print!], but automatically adds the UEFI newline sequence (`\r\n`).
+///
+/// This macro is expanded at 100+ call sites, so any code added to it is duplicated at each of
+/// them. Keep it minimal and put new logic in `EfiEntry::println_fmt()`.
 #[macro_export]
 macro_rules! efi_println {
     ( $efi_entry:expr, $( $x:expr ),* $(,)? ) => {
         {
-            // Can also use EFI_TIMESTAMP_PROTOCOL if provided.
-            let _ = $crate::arch_timestamp().inspect(|v| {
-                $crate::efi_print!($efi_entry, "[{:.4}] ", v.as_secs_f32());
-            });
-            $crate::efi_print!($efi_entry, $($x,)*);
-            $crate::efi_print!($efi_entry, "\r\n");
+            $efi_entry.println_fmt(format_args!($($x,)*));
         }
     };
 }

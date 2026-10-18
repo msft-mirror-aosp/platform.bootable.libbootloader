@@ -164,6 +164,19 @@ mock! {
 /// Map to the libefi name so code under test can just use one name.
 pub type EfiEntry = MockEfiEntry;
 
+impl MockEfiEntry {
+    /// Mock counterpart of `efi::EfiEntry::println_fmt()`, used by [efi_println!].
+    ///
+    /// Writes the same output as the real implementation, through the mocked `ConOut`.
+    pub fn println_fmt(&self, args: core::fmt::Arguments) {
+        libgblutils::writeln_with_timestamp(
+            &mut self.system_table().con_out().unwrap(),
+            "\r\n",
+            args,
+        )
+    }
+}
+
 /// While this mock itself isn't necessarily thread-local, passing through to the thread-local state
 /// is our primary use case, so we just disallow [Send] entirely.
 impl !Send for MockEfiEntry {}
