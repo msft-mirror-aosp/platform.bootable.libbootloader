@@ -116,6 +116,22 @@ TEST(PrintfTest, FormatULLongMax) {
   ASSERT_STREQ(expected, print_buffer);
 }
 
+TEST(PrintfTest, FormatULLongMaxOctal) {
+  unsigned long long val = ULLONG_MAX;
+  char expected[64];
+  snprintf(expected, sizeof(expected), "ULLONG_MAX octal: %llo", val);
+  test_gbl_printf("ULLONG_MAX octal: %llo", val);
+  ASSERT_STREQ(expected, print_buffer);
+}
+
+TEST(PrintfTest, TrailingPercentWithFlagsDoesNotOverread) {
+  test_gbl_printf("trailing %-+");
+  ASSERT_STREQ(
+      "trailing GBL print implementation cannot handle format string at "
+      "symbol: ",
+      print_buffer);
+}
+
 TEST(PrintfTest, FormatUnknownSpecifierErrorAppended) {
   test_gbl_printf("Unknown specifier: %q");
   ASSERT_STREQ(

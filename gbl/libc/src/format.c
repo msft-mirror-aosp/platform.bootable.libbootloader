@@ -70,7 +70,9 @@
 #define FLAGS_CHAR (1U << 2U)
 #define FLAGS_SHORT (1U << 3U)
 
-#define ULL_MAX_DIGITS 20
+// Maximum octal digits for 64-bit unsigned long long (ULLONG_MAX = 2^64 - 1 is
+// 22 octal digits: 01777777777777777777777).
+#define ULL_MAX_DIGITS 22
 
 // Formats unsigned `value` in base `base` into `buffer`.
 //
@@ -183,7 +185,7 @@ static size_t skip_precision(const char* fmt) {
 // Returns number of processed symbols in the format string.
 static size_t skip_flags(const char* fmt) {
   size_t used = 0;
-  while (strchr("-+ #0", *fmt) != NULL) {
+  while (*fmt != '\0' && strchr("-+ #0", *fmt) != NULL) {
     fmt++;
     used++;
   }
@@ -253,6 +255,8 @@ static size_t append_cannot_handle_error(char* buffer, size_t buffer_len,
 // provided `args` will be ignored.
 static size_t gbl_printf_buffer(const char* fmt, va_list args, char* buffer,
                                 size_t buffer_len) {
+  if (buffer_len == 0 || buffer == NULL) return 0;
+
   // Ensure can nul terminate.
   const size_t buffer_available = buffer_len - 1;
 

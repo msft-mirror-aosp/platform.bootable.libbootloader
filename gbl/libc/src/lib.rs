@@ -25,7 +25,7 @@ extern crate libc_deps_posix;
 use alloc::alloc::{alloc, dealloc};
 use core::{
     alloc::Layout,
-    ffi::{c_char, c_int, c_ulong, c_void, CStr},
+    ffi::{c_char, c_int, c_void, CStr},
     mem::size_of_val,
     ptr::{null_mut, NonNull},
 };
@@ -79,6 +79,14 @@ impl PrefixData {
     /// Determine prefix size necessary to store data required for [gbl_free]: size, offset
     pub fn required_size(&self) -> usize {
         size_of_val(&self.size) + size_of_val(&self.offset)
+    }
+
+    /// Returns the [`Layout`] used for the underlying allocation of `self.size` bytes.
+    ///
+    /// Centralizing layout construction in [`PrefixData`] guarantees that [`gbl_malloc`] and
+    /// [`gbl_free`] always pass identical [`Layout`] parameters to [`alloc`] and [`dealloc`].
+    pub fn layout(&self) -> Option<Layout> {
+        Layout::from_size_align(self.size, 1).ok()
     }
 
     /// Reads prefix data based on ptr
@@ -144,7 +152,7 @@ pub unsafe extern "C" fn gbl_malloc(request_size: usize, alignment: usize) -> *m
         // *  On success, `alloc` guarantees to allocate enough memory.
         let ptr = unsafe {
             // Due to manual aligning, there is no need for specific layout alignment.
-            NonNull::new(alloc(Layout::from_size_align(prefix.size, 1).ok()?))?.as_ptr()
+            NonNull::new(alloc(prefix.layout()?))?.as_ptr()
         };
 
         // Calculate the aligned address to return the caller.
@@ -184,9 +192,8 @@ pub unsafe extern "C" fn gbl_malloc(request_size: usize, alignment: usize) -> *m
 ///
 /// * `ptr` must be allocated by `gbl_malloc` and guarantee enough memory for a preceding
 ///   `usize` value and payload or null.
-/// * `gbl_free` must be called with the same `alignment` as the corresponding `gbl_malloc` call.
 #[no_mangle]
-pub unsafe extern "C" fn gbl_free(ptr: *mut c_void, alignment: usize) {
+pub unsafe extern "C" fn gbl_free(ptr: *mut c_void, _alignment: usize) {
     if ptr.is_null() {
         // follow libc free behavior
         return;
@@ -203,8 +210,8 @@ pub unsafe extern "C" fn gbl_free(ptr: *mut c_void, alignment: usize) {
         // Calculate unaligned pointer returned by [alloc], which must be used in [dealloc]
         ptr = ptr.sub(prefix.offset);
 
-        // Call to global allocator.
-        dealloc(ptr, Layout::from_size_align(prefix.size, alignment).unwrap());
+        // Call to global allocator using the exact Layout constructed by PrefixData.
+        dealloc(ptr, prefix.layout().unwrap());
     };
 }
 
@@ -269,13 +276,16 @@ pub unsafe extern "C" fn gbl_realloc(
 /// * `ptr` needs to be a buffer with at least `count` bytes.
 /// * Returns the pointer within `ptr` buffer, or null if not found.
 #[cfg_attr(not(target_os = "linux"), no_mangle)]
-pub unsafe extern "C" fn memchr(ptr: *const c_void, ch: c_int, count: c_ulong) -> *mut c_void {
+pub unsafe extern "C" fn memchr(ptr: *const c_void, ch: c_int, count: usize) -> *mut c_void {
+    if count == 0 {
+        return null_mut();
+    }
     assert!(!ptr.is_null());
     let start = ptr as *const u8;
     let target = (ch & 0xff) as u8;
     for i in 0..count {
         // SAFETY: `ptr` buffer is assumed valid and bounded by count.
-        let curr = unsafe { start.add(i.try_into().unwrap()) };
+        let curr = unsafe { start.add(i) };
         // SAFETY: `ptr` buffer is assumed valid and bounded by count.
         if *unsafe { curr.as_ref().unwrap() } == target {
             return curr as *mut _;

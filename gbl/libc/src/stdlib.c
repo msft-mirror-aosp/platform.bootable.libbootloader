@@ -34,10 +34,12 @@ extern void* gbl_malloc(size_t request_size, size_t alignment);
 extern void gbl_free(void* ptr, size_t alignment);
 extern void* gbl_realloc(void* ptr, size_t new_size, size_t alignment);
 
-void* malloc(size_t size) { return gbl_malloc(size, 8); }
-void free(void* ptr) { gbl_free(ptr, 8); }
+void* malloc(size_t size) { return gbl_malloc(size, _Alignof(max_align_t)); }
+void free(void* ptr) { gbl_free(ptr, _Alignof(max_align_t)); }
 
-void* realloc(void* ptr, size_t size) { return gbl_realloc(ptr, size, 8); }
+void* realloc(void* ptr, size_t size) {
+  return gbl_realloc(ptr, size, _Alignof(max_align_t));
+}
 
 char* getenv(const char* name) { return NULL; }
 

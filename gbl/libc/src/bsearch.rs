@@ -12,9 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::ffi::{c_int, c_void};
+use core::{
+    cmp::Ordering,
+    ffi::{c_int, c_void},
+};
 
-/// C-compatible binary search using Rust's `core::slice::binary_search_by`.
+/// C-compatible binary search.
 ///
 /// # Safety
 ///
@@ -30,52 +33,31 @@ pub unsafe extern "C" fn bsearch_rust(
     size: usize,
     cmp: unsafe extern "C" fn(*const c_void, *const c_void) -> c_int,
 ) -> *mut c_void {
-    if nmemb == 0 || size == 0 {
+    if nmemb == 0 || size == 0 || base.is_null() || key.is_null() {
         return core::ptr::null_mut();
     }
     let base = base as *const u8;
+    let mut low = 0usize;
+    let mut high = nmemb;
 
-    // Create a dummy slice of length `nmemb` starting at `base`.
-    // We only use the references passed to the closure to calculate indices,
-    // we never actually dereference them to read byte values.
-    // SAFETY: Since it covers the first `nmemb` bytes, and the actual data covers
-    // `nmemb * size` bytes, this slice is entirely within the valid memory region
-    // (since `size >= 1`).
-    let dummy_slice: &[u8] = unsafe { core::slice::from_raw_parts(base, nmemb) };
+    while low < high {
+        let mid = low + (high - low) / 2;
+        // SAFETY: `base` is guaranteed to point to a valid array of `nmemb * size` bytes per
+        // function safety preconditions, and `mid < high <= nmemb`.
+        let element_ptr = unsafe { base.add(mid * size) };
 
-    let result = dummy_slice.binary_search_by(|probe| {
-        // Calculate the index by finding the offset of the probed reference from the base.
-        // SAFETY: `probe` is a reference within `dummy_slice`, which is derived from `base`.
-        // Both pointers are within the same allocated object.
-        let idx = unsafe { (probe as *const u8).offset_from(base) } as usize;
-
-        // Calculate the actual pointer to the element of size `size`.
-        // SAFETY: `base` is guarantied to point to valid array of size nmemb*size, per function
-        // safety. `idx` is calculated as valid offset less than nmemb, as probe is index within
-        // dummy_slice.
-        let element_ptr = unsafe { base.add(idx * size) };
-
-        // Call the C comparator.
-        // SAFETY: `cmp` is assumed to be a valid function pointer.
-        // `key` is pointing to valid object as per function safety.
-        // `element_ptr` is guarantied to point to valid array element as per safety requirements.
+        // SAFETY: `cmp` is a valid comparator function pointer, `key` points to a valid object,
+        // and `element_ptr` points to a valid array element.
         let result = unsafe { cmp(key, element_ptr as *const c_void) };
 
-        if result < 0 {
-            core::cmp::Ordering::Greater
-        } else if result > 0 {
-            core::cmp::Ordering::Less
-        } else {
-            core::cmp::Ordering::Equal
+        match result.cmp(&0) {
+            Ordering::Less => high = mid,
+            Ordering::Greater => low = mid + 1,
+            Ordering::Equal => return element_ptr as *mut c_void,
         }
-    });
-
-    match result {
-        // SAFETY: `idx` is offset within base limits derived from `binary_search_by()` argument.
-        // And idx*size is `nmemb * size` as per assignment in `binary_search_by()`
-        Ok(idx) => unsafe { base.add(idx * size) as *mut c_void },
-        Err(_) => core::ptr::null_mut(),
     }
+
+    core::ptr::null_mut()
 }
 
 #[cfg(test)]

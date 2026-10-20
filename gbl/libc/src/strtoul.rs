@@ -59,7 +59,7 @@ unsafe fn strtou_helper(
 
     // Handle base prefixes
     if (base == 16 || base == 0)
-        && pos < bytes.len() - 1
+        && pos + 1 < bytes.len()
         && bytes[pos] == b'0'
         && (bytes[pos + 1] == b'x' || bytes[pos + 1] == b'X')
     {
@@ -212,6 +212,16 @@ mod test {
     fn strtoul_empty_no_endptr() {
         let r = do_strtoul_no_endptr("", 10);
         assert_eq!(r, 0);
+    }
+
+    #[test]
+    fn strtoul_empty_base_0_and_16() {
+        let (r0, end0) = do_strtoul("", 0);
+        assert_eq!(r0, 0);
+        assert_eq!(end0, Some(0));
+        let (r16, end16) = do_strtoul("", 16);
+        assert_eq!(r16, 0);
+        assert_eq!(end16, Some(0));
     }
 
     #[test]
