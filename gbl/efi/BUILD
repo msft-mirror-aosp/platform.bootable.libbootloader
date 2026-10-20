@@ -63,6 +63,7 @@ rust_library(
         "@gbl//libfastboot",
         "@gbl//libfdt",
         "@gbl//libgbl",
+        "@gbl//libgblutils",
         "@gbl//libprofile",
         "@gbl//libsafemath",
         "@gbl//libstorage",

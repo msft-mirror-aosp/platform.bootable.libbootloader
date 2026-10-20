@@ -27,6 +27,7 @@ rust_library(
     rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@gbl//liberror",
+        "@gbl//libgblutils",
         "@gbl//libutils",
     ] + select({
         "@platforms//cpu:x86_64": ["@x86_64"],

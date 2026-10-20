@@ -25,7 +25,7 @@ use efi::{
     EfiEntry,
 };
 use liberror::Error;
-use libutils::arch_timestamp;
+use libgblutils::arch_timestamp;
 use spin::Mutex;
 pub use virtio_drivers::device::socket::VsockAddr;
 use virtio_drivers::{

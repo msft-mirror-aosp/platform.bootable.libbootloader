@@ -74,8 +74,8 @@ use libgbl::{
     partition::{GblDisk, RawName},
     GblOps, Os,
 };
+use libgblutils::buffer_pool::BufferPool;
 use libprofile::ProfileBackend;
-use libutils::buffer_pool::BufferPool;
 use spin::Mutex;
 use static_assertions::{const_assert, const_assert_eq};
 #[cfg(feature = "fuchsia")]
@@ -298,9 +298,9 @@ impl<'a, 'b> Ops<'a, 'b> {
             res: Result<()>,
         ) -> Result<()> {
             if res.is_ok() {
-                block_on(message_sender.send_okay(msg))
+                Ok(block_on(message_sender.send_okay(msg))?)
             } else {
-                block_on(message_sender.send_fail(msg))
+                Ok(block_on(message_sender.send_fail(msg))?)
             }
         }
 
@@ -368,13 +368,13 @@ fn command_exec_message_sender(
 ) -> Result<()> {
     match msg_type {
         GBL_EFI_FASTBOOT_MESSAGE_TYPE_INFO => {
-            block_on(sender.as_mut().ok_or(Error::ProtocolError)?.send_info(msg))
+            Ok(block_on(sender.as_mut().ok_or(Error::ProtocolError)?.send_info(msg))?)
         }
         GBL_EFI_FASTBOOT_MESSAGE_TYPE_OKAY => {
-            block_on(sender.take().ok_or(Error::ProtocolError)?.send_okay(msg))
+            Ok(block_on(sender.take().ok_or(Error::ProtocolError)?.send_okay(msg))?)
         }
         GBL_EFI_FASTBOOT_MESSAGE_TYPE_FAIL => {
-            block_on(sender.take().ok_or(Error::ProtocolError)?.send_fail(msg))
+            Ok(block_on(sender.take().ok_or(Error::ProtocolError)?.send_fail(msg))?)
         }
         _ => Err(Error::InvalidInput),
     }

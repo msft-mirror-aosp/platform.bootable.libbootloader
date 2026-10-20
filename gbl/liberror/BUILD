@@ -31,6 +31,7 @@ rust_library(
         "@avb",
         "@gbl//libabr",
         "@gbl//libefi_types",
+        "@gbl//libfastboot",
         "@gbl//libopendice",
         "@gbl//libsafemath",
     ],

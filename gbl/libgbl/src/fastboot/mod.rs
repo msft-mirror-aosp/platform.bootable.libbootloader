@@ -67,13 +67,11 @@ const ERR_ALREADY_UNLOCKED: &str = "Already unlocked";
 use gbl_async::{join, join_mut, yield_now};
 use gbl_storage::{BlockIo, Disk, Gpt};
 use liberror::Error;
-use libutils::{
+use libgblutils::{
     buffer_pool::{BufferPool, ScopedBuffer},
-    constants::KiB,
-    next_arg,
     shared::Shared,
-    FormattedBytes, FromHexStr,
 };
+use libutils::{constants::KiB, next_arg, FormattedBytes, FromHexStr};
 use safemath::SafeNum;
 use trace::{gbl_trace_get_enable, TraceGuard};
 #[cfg(feature = "fuchsia")]
@@ -507,7 +505,7 @@ where
                         let _guard = TraceGuard::new(trace_config_orig);
                         match run_tcp_session(v, self).await {
                             Ok(()) => break 'outer,
-                            Err(e) if e != Error::Disconnected => {
+                            Err(e) if e != fastboot::Error::Disconnected => {
                                 gbl_println!(self.gbl_ops, "GBL Fastboot TCP session error: {e}");
                             }
                             _ => (),
@@ -1554,7 +1552,8 @@ where
             let read = part_io.read(read_off, &mut read_buf[..to_send]);
             let send = uploader.upload(&mut send_buf[..usize::try_from(read_off - upload_off)?]);
             let (read_res, send_res) = join(read, send).await;
-            read_res.and_then(|_| send_res)?;
+            read_res?;
+            send_res?;
             upload_off = read_off;
             read_off += u64::try_from(to_send)?;
             core::mem::swap(&mut read_buf, &mut send_buf);
@@ -2159,7 +2158,7 @@ pub(crate) mod test {
         async fn send_formatted_info<F: FnOnce(&mut dyn Write)>(
             &mut self,
             cb: F,
-        ) -> Result<(), Error> {
+        ) -> fastboot::Result<()> {
             let mut msg: String = "".into();
             cb(&mut msg);
             self.info_messages.try_lock().unwrap().push(msg);
@@ -2168,14 +2167,20 @@ pub(crate) mod test {
     }
 
     impl OkaySender for &TestResponder {
-        async fn send_formatted_okay<F: FnOnce(&mut dyn Write)>(self, _: F) -> Result<(), Error> {
+        async fn send_formatted_okay<F: FnOnce(&mut dyn Write)>(
+            self,
+            _: F,
+        ) -> fastboot::Result<()> {
             *self.okay_sent.try_lock().unwrap() = true;
             Ok(())
         }
     }
 
     impl FailSender for &TestResponder {
-        async fn send_formatted_fail<F: FnOnce(&mut dyn Write)>(self, _: F) -> Result<(), Error> {
+        async fn send_formatted_fail<F: FnOnce(&mut dyn Write)>(
+            self,
+            _: F,
+        ) -> fastboot::Result<()> {
             Ok(())
         }
     }
@@ -2519,7 +2524,7 @@ pub(crate) mod test {
             name: &str,
             args: impl IntoIterator<Item = &'_ str>,
             val: &str,
-        ) -> Result<(), Error> {
+        ) -> fastboot::Result<()> {
             let args = [vec![name], args.into_iter().collect::<Vec<_>>()].concat();
             self.0.push(format!("{}: {}", args.join(":"), val));
             Ok(())
@@ -3923,19 +3928,19 @@ pub(crate) mod test {
     }
 
     impl Transport for &SharedTestListener<'_> {
-        async fn receive(&mut self, out: &mut [u8]) -> Result<(usize, usize), Error> {
+        async fn receive(&mut self, out: &mut [u8]) -> fastboot::Result<(usize, usize)> {
             match self.lock().transport_in_queue.pop_front() {
                 Some(Ok(mut v)) => {
                     let (sz, rem) = v.read(out).map(|s| (s, v.len())).unwrap();
                     (rem > 0).then(|| Some(self.lock().transport_in_queue.push_front(Ok(v))));
                     Ok((sz, rem))
                 }
-                Some(Err(e)) => Err(e),
-                _ => Err(Error::Other(Some("No more data"))),
+                Some(Err(e)) => Err(e.into()),
+                _ => Err(fastboot::Error::Other(Some("No more data"))),
             }
         }
 
-        async fn send_packet(&mut self, packet: &[u8]) -> Result<(), Error> {
+        async fn send_packet(&mut self, packet: &[u8]) -> fastboot::Result<()> {
             self.lock().transport_out_err.as_mut().map(|f| f(packet)).unwrap_or(Ok(()))?;
             Ok(self.lock().transport_out_queue.push_back(packet.into()))
         }
@@ -3948,14 +3953,14 @@ pub(crate) mod test {
     }
 
     impl TcpStream for &SharedTestListener<'_> {
-        async fn read(&mut self, out: &mut [u8]) -> Result<usize, Error> {
+        async fn read(&mut self, out: &mut [u8]) -> fastboot::Result<usize> {
             match self.lock().tcp_in_queue.read(out).unwrap() {
-                0 => Err(Error::Other(Some("No more data"))),
+                0 => Err(fastboot::Error::Other(Some("No more data"))),
                 v => Ok(v),
             }
         }
 
-        async fn write_exact(&mut self, data: &[u8]) -> Result<(), Error> {
+        async fn write_exact(&mut self, data: &[u8]) -> fastboot::Result<()> {
             Ok(self.lock().tcp_out_queue.append(&mut data.to_vec().into()))
         }
     }

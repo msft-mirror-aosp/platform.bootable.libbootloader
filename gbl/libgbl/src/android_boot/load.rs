@@ -31,7 +31,7 @@ use avb::SlotVerifyData;
 use bootimg::{defs::*, BootImage, VendorImageHeader};
 use core::{mem::take, ops::Range};
 use liberror::Error;
-use libutils::{aligned_offset, aligned_subslice};
+use libgblutils::{aligned_offset, aligned_subslice};
 use safemath::SafeNum;
 use zerocopy::{IntoBytes, Ref};
 

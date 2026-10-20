@@ -44,6 +44,7 @@ rust_library(
         "@gbl//liberror",
         "@gbl//libfdt",
         "@gbl//libgbl",
+        "@gbl//libgblutils",
         "@gbl//libprofile",
         "@gbl//libsafemath",
         "@gbl//libtrace",

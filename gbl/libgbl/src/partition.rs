@@ -29,10 +29,8 @@ use gbl_storage::{
     BlockInfo, BlockIo, BlockIoSync, Disk, Gpt, GptSyncResult, Partition as GptPartition,
 };
 use liberror::Error;
-use libutils::{
-    buffer_pool::{BufferPool, PoolRef},
-    FormattedBytes,
-};
+use libgblutils::buffer_pool::{BufferPool, PoolRef};
+use libutils::FormattedBytes;
 use safemath::SafeNum;
 use zerocopy::{FromBytes, IntoBytes};
 

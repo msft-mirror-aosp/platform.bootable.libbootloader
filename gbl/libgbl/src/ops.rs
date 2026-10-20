@@ -37,10 +37,11 @@ use core::{
     ops::{Deref, DerefMut},
     result::Result,
 };
-use libprofile::ProfileBackend;
 #[cfg(feature = "fuchsia")]
-use libutils::aligned_subslice;
-use libutils::{buffer_pool::BufferPool, cstr_buffer};
+use libgblutils::aligned_subslice;
+use libgblutils::buffer_pool::BufferPool;
+use libprofile::ProfileBackend;
+use libutils::cstr_buffer;
 
 // Re-exports of types from other dependencies that appear in the APIs of this library.
 pub use avb::{
@@ -51,7 +52,7 @@ pub use fastboot::{
 };
 pub use gbl_storage::{BlockIo, Disk, Gpt};
 use liberror::Error;
-pub use libutils::arch_timestamp;
+pub use libgblutils::arch_timestamp;
 pub use slots::Slot;
 #[cfg(feature = "fuchsia")]
 pub use zbi::{ZbiContainer, ZBI_ALIGNMENT_USIZE};

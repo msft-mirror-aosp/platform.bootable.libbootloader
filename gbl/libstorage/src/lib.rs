@@ -28,7 +28,7 @@ use core::{
 };
 use gbl_async::{block_on, yield_now};
 use liberror::{Error, Result};
-use libutils::{
+use libgblutils::{
     aligned_subslice,
     buffer_pool::{BufferPool, PoolRef},
     shared::Shared,

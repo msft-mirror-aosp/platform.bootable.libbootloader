@@ -74,6 +74,7 @@ rust_library(
         "@gbl//libfastboot",
         "@gbl//libfdt",
         "@gbl//libfit",
+        "@gbl//libgblutils",
         "@gbl//liblp",
         "@gbl//libmisc",
         "@gbl//libopendice",
@@ -115,7 +116,7 @@ rust_test(
         "@gbl//libavb:sysdeps",
         "@gbl//libboringssl:sysdeps",
         "@gbl//libc:libc_deps_posix",
-        "@gbl//libutils:libtestutils",
+        "@gbl//libgblutils:libtestutils",
         "@spin",
     ],
 )

@@ -73,13 +73,13 @@ mod network_fastboot {
     }
 
     impl TcpStream for EfiFastbootTcpTransport<'_, '_, '_> {
-        async fn read(&mut self, out: &mut [u8]) -> Result<usize> {
-            self.socket.receive(out, DEFAULT_TIMEOUT).await
+        async fn read(&mut self, out: &mut [u8]) -> fastboot::Result<usize> {
+            Ok(self.socket.receive(out, DEFAULT_TIMEOUT).await?)
         }
 
         /// Sends exactly `data.len()` number bytes from `data` to the TCP connection.
-        async fn write_exact(&mut self, data: &[u8]) -> Result<()> {
-            self.socket.send_exact(data, DEFAULT_TIMEOUT).await
+        async fn write_exact(&mut self, data: &[u8]) -> fastboot::Result<()> {
+            Ok(self.socket.send_exact(data, DEFAULT_TIMEOUT).await?)
         }
     }
 
@@ -151,11 +151,11 @@ mod network_fastboot {
     pub(super) struct NoOpTcp {}
 
     impl TcpStream for NoOpTcp {
-        async fn read(&mut self, _out: &mut [u8]) -> Result<usize> {
+        async fn read(&mut self, _out: &mut [u8]) -> fastboot::Result<usize> {
             unimplemented!();
         }
 
-        async fn write_exact(&mut self, _data: &[u8]) -> Result<()> {
+        async fn write_exact(&mut self, _data: &[u8]) -> fastboot::Result<()> {
             unimplemented!();
         }
     }
@@ -211,11 +211,12 @@ impl<'a> EfiFastbootTransport<'a> {
 }
 
 impl Transport for EfiFastbootTransport<'_> {
-    async fn receive(&mut self, out: &mut [u8]) -> Result<(usize, usize)> {
+    async fn receive(&mut self, out: &mut [u8]) -> fastboot::Result<(usize, usize)> {
         let len = match &mut self.prefetched {
             (pkt, len) if *len > 0 => {
-                let out = out.get_mut(..*len).ok_or(Error::BufferTooSmall(Some(*len)))?;
-                let src = pkt.get(..*len).ok_or(Error::Other(Some("Invalid read size")))?;
+                let out = out.get_mut(..*len).ok_or(fastboot::Error::BufferTooSmall(Some(*len)))?;
+                let src =
+                    pkt.get(..*len).ok_or(fastboot::Error::Other(Some("Invalid read size")))?;
                 out.clone_from_slice(src);
                 take(len)
             }
@@ -238,8 +239,8 @@ impl Transport for EfiFastbootTransport<'_> {
     }
 
     /// Sends data over the transport channel.
-    async fn send_packet(&mut self, packet: &[u8]) -> Result<()> {
-        self.protocol.send_all(packet).await
+    async fn send_packet(&mut self, packet: &[u8]) -> fastboot::Result<()> {
+        Ok(self.protocol.send_all(packet).await?)
     }
 }
 

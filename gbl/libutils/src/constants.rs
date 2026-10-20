@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use static_assertions::const_assert_eq;
-
 /// Macro for defining Kibibyte-sized constants
 #[macro_export]
 macro_rules! KiB  (
@@ -21,8 +19,8 @@ macro_rules! KiB  (
         $x*1024
     }
 );
-const_assert_eq!(KiB!(1), 1024);
-const_assert_eq!(KiB!(5), 5 * 1024);
+const _: () = assert!(KiB!(1) == 1024);
+const _: () = assert!(KiB!(5) == 5 * 1024);
 
 /// Macro for defining Mebibyte-sized constants
 #[macro_export]
@@ -31,8 +29,8 @@ macro_rules! MiB  (
         $x*KiB!(1024)
     }
 );
-const_assert_eq!(MiB!(1), 1024 * 1024);
-const_assert_eq!(MiB!(5), 5 * 1024 * 1024);
+const _: () = assert!(MiB!(1) == 1024 * 1024);
+const _: () = assert!(MiB!(5) == 5 * 1024 * 1024);
 
 pub use KiB;
 pub use MiB;

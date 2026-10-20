@@ -182,6 +182,8 @@ pub enum Error {
     EndOfFile,
     /// Beginning or end of media was reached
     EndOfMedia,
+    /// Fastboot library error.
+    FastbootError(fastboot::Error),
     /// A polled operation has finished
     Finished,
     /// GPT related errors.
@@ -192,8 +194,6 @@ pub enum Error {
     IcmpError,
     /// The provided buffer or data structure is invalidly aligned.
     InvalidAlignment,
-    /// A connected agent failed a multi-stage handshake.
-    InvalidHandshake,
     /// At least one parameter fails preconditions.
     InvalidInput,
     /// The language specified was invalid.
@@ -342,6 +342,27 @@ impl From<core::fmt::Error> for Error {
     }
 }
 
+impl From<fastboot::Error> for Error {
+    fn from(error: fastboot::Error) -> Self {
+        Self::FastbootError(error)
+    }
+}
+
+impl From<Error> for fastboot::Error {
+    fn from(error: Error) -> Self {
+        match error {
+            Error::FastbootError(e) => e,
+            Error::Aborted => Self::Aborted,
+            Error::BufferTooSmall(v) => Self::BufferTooSmall(v),
+            Error::Disconnected => Self::Disconnected,
+            Error::InvalidInput => Self::InvalidInput,
+            Error::InvalidState => Self::InvalidState,
+            Error::Other(msg) => Self::Other(msg),
+            _ => Self::Other(None),
+        }
+    }
+}
+
 /// Helper type alias.
 pub type Result<T> = core::result::Result<T, Error>;
 
@@ -387,6 +408,9 @@ const EFI_ERROR_TO_ERR_TABLE: &[(EfiError, Error)] = &[
     (EfiError::VolumeCorrupted, Error::VolumeCorrupted),
     (EfiError::VolumeFull, Error::VolumeFull),
     (EfiError::WriteProtected, Error::WriteProtected),
+    (EfiError::Aborted, Error::FastbootError(fastboot::Error::Aborted)),
+    (EfiError::ConnectionFin, Error::FastbootError(fastboot::Error::Disconnected)),
+    (EfiError::InvalidParameter, Error::FastbootError(fastboot::Error::InvalidInput)),
 ];
 
 impl From<EfiError> for Error {
@@ -407,7 +431,10 @@ impl From<Error> for EfiError {
     fn from(e: Error) -> Self {
         match e {
             // Special-case handling for `BufferTooSmall` to retain the size.
-            Error::BufferTooSmall(size) => EfiError::BufferTooSmall(size.unwrap_or(0)),
+            Error::BufferTooSmall(size)
+            | Error::FastbootError(fastboot::Error::BufferTooSmall(size)) => {
+                EfiError::BufferTooSmall(size.unwrap_or(0))
+            }
             Error::UnexpectedEfiError(status) => {
                 match status.into() {
                     // This indicates an internal error somewhere in GBL, and
@@ -500,5 +527,36 @@ mod test {
             result_to_efi_status(Err(Error::UnexpectedEfiError(EfiStatus(1)))),
             EFI_STATUS_DEVICE_ERROR
         );
+    }
+
+    #[test]
+    fn test_fastboot_error_to_efi_error() {
+        assert_eq!(
+            EfiError::from(Error::FastbootError(fastboot::Error::BufferTooSmall(Some(16)))),
+            EfiError::BufferTooSmall(16)
+        );
+        assert_eq!(
+            EfiError::from(Error::FastbootError(fastboot::Error::BufferTooSmall(None))),
+            EfiError::BufferTooSmall(0)
+        );
+        assert_eq!(
+            EfiError::from(Error::FastbootError(fastboot::Error::Aborted)),
+            EfiError::Aborted
+        );
+        assert_eq!(
+            EfiError::from(Error::FastbootError(fastboot::Error::Disconnected)),
+            EfiError::ConnectionFin
+        );
+        assert_eq!(
+            EfiError::from(Error::FastbootError(fastboot::Error::InvalidInput)),
+            EfiError::InvalidParameter
+        );
+        assert_eq!(
+            EfiError::from(Error::FastbootError(fastboot::Error::Other(None))),
+            EfiError::DeviceError
+        );
+        assert_eq!(Error::from(EfiError::Aborted), Error::Aborted);
+        assert_eq!(Error::from(EfiError::ConnectionFin), Error::Disconnected);
+        assert_eq!(Error::from(EfiError::InvalidParameter), Error::InvalidInput);
     }
 }

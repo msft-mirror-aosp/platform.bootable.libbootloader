@@ -24,7 +24,7 @@ use crate::{
 };
 pub use abr::{get_boot_slot, SlotIndex};
 use liberror::Error;
-use libutils::aligned_subslice;
+use libgblutils::aligned_subslice;
 use safemath::SafeNum;
 use zbi::{ZbiContainer, ZbiFlags, ZbiType};
 use zerocopy::IntoBytes;

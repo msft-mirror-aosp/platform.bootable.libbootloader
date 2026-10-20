@@ -24,7 +24,7 @@
 
 use core::{ffi::CStr, num::NonZeroUsize};
 use liberror::Error;
-pub use libutils::arch_timestamp;
+pub use libgblutils::arch_timestamp;
 use libutils::snprintf;
 
 /// Semihosting operation codes.
