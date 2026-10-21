@@ -32,6 +32,7 @@ load(
     "rust_toolchain",
     "rustfmt_toolchain",
 )
+load("@rules_rust//rust/private:lto.bzl", "rust_lto_flag")
 load("@rules_rust_bindgen//:defs.bzl", "rust_bindgen_toolchain")
 load(
     ":gbl_toolchain.bzl",
@@ -762,6 +763,8 @@ uefi_rustc_flags = [
     "force-unwind-tables=yes",
     # Generate debug information. For MSVC targets, this only affects the size of the PDB file.
     "-g",
+    "-C",
+    "codegen-units=1",
 ] + ([
     # Enable linker-plugin LTO for cross-language inlining
     "-C",
@@ -771,6 +774,13 @@ uefi_rustc_flags = [
 config_setting(
     name = "compilation_mode_dbg",
     values = {"compilation_mode": "dbg"},
+)
+
+# Firmware Rust builds (dev, prod and debug, but not host builds) use fat LTO. Disable it with
+# --@gbl//toolchain:lto=off.
+rust_lto_flag(
+    name = "lto",
+    build_setting_default = "fat",
 )
 
 rustc_opt_flags = ["-C"] + select({
@@ -818,6 +828,7 @@ rust_toolchain(
         "cf-protection=full",
     ] + rustc_common_flags + rustc_opt_flags,
     global_allocator_library = None,
+    lto = ":lto",
     rust_doc = "@rust_prebuilts//:bin/rustdoc",
     rust_std = select({
         ":rust_no_sysroot_true": ":rust_stdlib_empty",
@@ -866,6 +877,7 @@ rust_toolchain(
         "cf-protection=full",
     ] + rustc_common_flags + msvc_rustc_debug_common,
     global_allocator_library = None,
+    lto = ":lto",
     rust_doc = "@rust_prebuilts//:bin/rustdoc",
     # Need to use our own built sysroot because we are using a custom spec below.
     rust_std = select({
@@ -982,6 +994,7 @@ rust_toolchain(
         ],
     }),
     global_allocator_library = None,
+    lto = ":lto",
     rust_doc = "@rust_prebuilts//:bin/rustdoc",
     rust_std = select({
         ":rust_no_sysroot_true": ":rust_stdlib_empty",
@@ -1021,6 +1034,7 @@ rust_toolchain(
         "branch-protection=bti,pac-ret,leaf",
     ] + rustc_common_flags + msvc_rustc_debug_common,
     global_allocator_library = None,
+    lto = ":lto",
     rust_doc = "@rust_prebuilts//:bin/rustdoc",
     # Need to use our own built sysroot because we are using a custom spec below.
     rust_std = select({
@@ -1120,6 +1134,7 @@ rust_toolchain(
     exec_triple = "x86_64-unknown-linux-musl",
     extra_rustc_flags = rustc_common_flags + rustc_opt_flags,
     global_allocator_library = None,
+    lto = ":lto",
     rust_doc = "@rust_prebuilts//:bin/rustdoc",
     # Need to use our own built sysroot because we are using a custom spec below.
     rust_std = select({
@@ -1200,6 +1215,7 @@ rust_toolchain(
         "link-arg=-pie",
     ],
     global_allocator_library = None,
+    lto = ":lto",
     rust_doc = "@rust_prebuilts//:bin/rustdoc",
     rust_std = select({
         ":rust_no_sysroot_true": ":rust_stdlib_empty",
@@ -1238,6 +1254,7 @@ rust_toolchain(
         "link-arg=-pie",
     ],
     global_allocator_library = None,
+    lto = ":lto",
     rust_doc = "@rust_prebuilts//:bin/rustdoc",
     rust_std = select({
         ":rust_no_sysroot_true": ":rust_stdlib_empty",
