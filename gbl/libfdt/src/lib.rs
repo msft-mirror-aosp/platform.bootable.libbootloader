@@ -270,18 +270,24 @@ impl FdtHeader {
 
     /// Cast a bytes into a reference of FDT header
     pub fn from_bytes_ref(buffer: &[u8]) -> Result<&FdtHeader> {
-        fdt_check_header(buffer)?;
-
-        Ok(Ref::into_ref(
+        let header = Ref::into_ref(
             Ref::<_, FdtHeader>::new_from_prefix(buffer)
                 .ok_or(Error::BufferTooSmall(Some(FDT_HEADER_SIZE)))?
                 .0,
-        ))
+        );
+        fdt_check_header(header.as_bytes())?;
+
+        Ok(header)
     }
 
     /// Cast a bytes into a mutable reference of FDT header.
     pub fn from_bytes_mut(buffer: &mut [u8]) -> Result<&mut FdtHeader> {
-        fdt_check_header(buffer)?;
+        fdt_check_header(
+            Ref::<_, FdtHeader>::new_from_prefix(&*buffer)
+                .ok_or(Error::BufferTooSmall(Some(FDT_HEADER_SIZE)))?
+                .0
+                .as_bytes(),
+        )?;
 
         Ok(Ref::into_mut(
             Ref::<_, FdtHeader>::new_from_prefix(buffer)
@@ -346,20 +352,19 @@ impl<'a, T: AsRef<[u8]> + 'a> Fdt<T> {
                 &mut len,
             )
         };
-        // SAFETY: On error, `fdt_get_property` returns NULL. On success, it returns
-        // a pointer to a `const struct fdt_property`.
-        match unsafe { ptr.as_ref() } {
-            // SAFETY: On success the `const struct fdt_property` contains a byte array
-            // pointed to by `v.data`, with its length in `v.len`.
-            // The length is in big-endian byte order, so we convert it before using it.
-            Some(v) => Ok(unsafe {
-                from_raw_parts(
-                    v.data.as_ptr() as *const u8,
-                    u32::from_be(v.len).try_into().or(Err(Error::Other(None)))?,
-                )
-            }),
+        if ptr.is_null() {
             // On error, `len` is set to an error value.
-            _ => Err(map_result(len).unwrap_err()),
+            return Err(map_result(len).unwrap_err());
+        }
+        // SAFETY: On success, `fdt_get_property` returns a non-null pointer to a
+        // `const struct fdt_property` within `self.0` whose flexible array member `data` has
+        // length `u32::from_be((*ptr).len)`. Using `addr_of!` avoids shrinking provenance to the
+        // 12-byte header struct.
+        unsafe {
+            let data_len: usize =
+                u32::from_be((*ptr).len).try_into().or(Err(Error::Other(None)))?;
+            let data_ptr = core::ptr::addr_of!((*ptr).data).cast::<u8>();
+            Ok(from_raw_parts(data_ptr, data_len))
         }
     }
 
@@ -433,13 +438,11 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
     /// Creates a mutable [Fdt] copied from `init`.
     pub fn new_from_init(mut fdt: T, init: &[u8]) -> Result<Self> {
         fdt_check_buffer(init)?;
+        let fdt_slice = fdt.as_mut();
+        let fdt_len = fdt_slice.len().try_into().or(Err(Error::Other(None)))?;
         // SAFETY: API from libfdt_c.
         map_result(unsafe {
-            fdt_move(
-                init.as_ptr() as *const _,
-                fdt.as_mut().as_ptr() as *mut _,
-                fdt.as_mut().len().try_into().or(Err(Error::Other(None)))?,
-            )
+            fdt_move(init.as_ptr() as *const _, fdt_slice.as_mut_ptr() as *mut _, fdt_len)
         })?;
         let mut ret = Fdt::new(fdt)?;
         ret.expand_to_buffer()?;
@@ -449,10 +452,13 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
     /// Creates a new empty [Fdt] in `init`.
     pub fn new_empty(mut init: T) -> Result<Self> {
         let buffer = init.as_mut();
+        if (buffer.as_ptr() as usize) % core::mem::align_of::<u64>() != 0 {
+            return Err(Error::InvalidAlignment);
+        }
         // SAFETY:
-        // `buffer` is a valid, aligned, and writable byte slice. The pointer derived from it is
-        // valid for writes up to `buffer.len()` bytes. The C function will not write out of bounds.
-        // All byte patterns are valid for `[u8]`, so no additional invariants are violated.
+        // `buffer` is a valid, 8-byte aligned, and writable byte slice. The pointer derived from
+        // it is valid for writes up to `buffer.len()` bytes. The C function will not write out of
+        // bounds. All byte patterns are valid for `[u8]`, so no additional invariants are violated.
         map_result(unsafe {
             fdt_create_empty_tree(
                 buffer.as_mut_ptr().cast(),
@@ -614,13 +620,15 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
         // Disable tracing to avoid excessive trace data.
         {
             let _guard = trace::TraceGuard::new(false);
+            let fdt_slice = self.0.as_mut();
+            let fdt_len = fdt_slice.len();
             // SAFETY: The `ufdt_apply_multioverlay` function guarantees that `self.0` is accessed
             // within the specified length boundaries. The `pointers` are non-null and are accessed
             // by indexes only within the provided length.
             map_result_libufdt(unsafe {
                 ufdt_apply_multioverlay(
-                    self.0.as_mut().as_mut_ptr() as *mut _,
-                    self.0.as_ref().len(),
+                    fdt_slice.as_mut_ptr() as *mut _,
+                    fdt_len,
                     pointers.as_ptr().cast(),
                     pointers.len(),
                 )
@@ -905,6 +913,11 @@ mod test {
         unaligned.copy_from_slice(&init[..HEADER_SIZE]);
 
         assert!(FdtHeader::from_bytes_ref(unaligned).is_err());
+        assert_eq!(
+            FdtHeader::from_bytes_ref(&init[..HEADER_SIZE - 1]),
+            Err(Error::BufferTooSmall(Some(HEADER_SIZE)))
+        );
+        assert_eq!(Fdt::new_empty(&mut unaligned[..]).err(), Some(Error::InvalidAlignment));
     }
 
     #[test]

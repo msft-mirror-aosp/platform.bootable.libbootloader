@@ -127,6 +127,18 @@ fn get_ecam_from_dt(entry: &EfiEntry) -> Option<(u64, u64)> {
 /// HAL implementation for VirtIO in GBL.
 pub struct GblVirtIoHal {}
 
+/// Returns the allocation layout for `pages` pages of DMA memory.
+///
+/// # Panics
+///
+/// If `pages` is 0, because a zero-sized allocation is undefined behavior and `dma_alloc` cannot
+/// otherwise return valid memory, or if the allocation size overflows.
+fn dma_layout(pages: usize) -> Layout {
+    assert_ne!(pages, 0, "DMA allocation must be at least one page");
+    let size = pages.checked_mul(EFI_PAGE_SIZE).unwrap();
+    Layout::from_size_align(size, EFI_PAGE_SIZE).unwrap()
+}
+
 /// SAFETY:
 /// The implementation meets the safety requirements by `virtio_drivers::Hal`:
 /// * `dma_alloc` guarantees to return valid, page-aligned, zeroed memory. The memory is not
@@ -135,26 +147,28 @@ pub struct GblVirtIoHal {}
 ///   requires identity mapping, the return pointer is guaranteed to be valid.
 unsafe impl Hal for GblVirtIoHal {
     fn dma_alloc(pages: usize, _direction: BufferDirection) -> (PhysAddr, NonNull<u8>) {
-        // SAFETY: The layout is valid and the allocation will be deallocated by dma_dealloc.
-        let ptr = NonNull::new(unsafe {
-            alloc(Layout::from_size_align(pages * EFI_PAGE_SIZE, EFI_PAGE_SIZE).unwrap())
-        })
-        .unwrap();
-        // SAFETY: The pointer is non-null and points to a valid allocated region.
-        unsafe { ptr.write_bytes(0, pages * EFI_PAGE_SIZE) };
+        let layout = dma_layout(pages);
+        // SAFETY: `dma_layout()` asserts `pages != 0` and checks the size for overflow, so
+        // `layout` has a nonzero size. The allocation will be deallocated by `dma_dealloc`.
+        let ptr = NonNull::new(unsafe { alloc(layout) }).unwrap();
+        // SAFETY: The pointer is non-null and points to a valid allocated region of
+        // `layout.size()` bytes. The allocation is fresh and nothing else references it yet.
+        unsafe { ptr.write_bytes(0, layout.size()) };
+        // GBL requires identity mapping, so the device-visible physical address is the same as
+        // the CPU virtual address.
         (ptr.as_ptr() as _, ptr)
     }
 
     /// # Safety: Caller should follow the safety requirements in
     /// virtio_drivers::Hal::dma_dealloc.
-    unsafe fn dma_dealloc(paddr: PhysAddr, _vaddr: NonNull<u8>, pages: usize) -> i32 {
-        // SAFETY: The memory points to a valid allocated region allocated by dma_alloc.
-        unsafe {
-            dealloc(
-                paddr as _,
-                Layout::from_size_align(pages * EFI_PAGE_SIZE, EFI_PAGE_SIZE).unwrap(),
-            )
-        };
+    unsafe fn dma_dealloc(_paddr: PhysAddr, vaddr: NonNull<u8>, pages: usize) -> i32 {
+        // `paddr` and `vaddr` have the same value due to identity mapping, but `dealloc` takes a
+        // CPU pointer to the allocation, which is `vaddr`. `paddr` is the address for the device
+        // and converting it back to a pointer would rely on an integer-to-pointer cast.
+        //
+        // SAFETY: By the `Hal::dma_dealloc` contract, `vaddr` and `pages` are the values
+        // returned by and passed to `dma_alloc`, which allocated `vaddr` with this layout.
+        unsafe { dealloc(vaddr.as_ptr(), dma_layout(pages)) };
         0
     }
 

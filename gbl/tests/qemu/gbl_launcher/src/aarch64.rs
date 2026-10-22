@@ -28,7 +28,7 @@ use core::arch::asm;
 pub unsafe fn walk_page_table(
     va_start: usize,
     va_size: usize,
-    mut f: impl FnMut(&mut u64, core::ops::Range<usize>),
+    mut f: impl FnMut(*mut u64, core::ops::Range<usize>),
 ) -> Result<(), &'static str> {
     // Mask to extract the physical base address (bits [47:12]) from an ARM64 translation table
     // descriptor.
@@ -63,18 +63,21 @@ pub unsafe fn walk_page_table(
         let shift_amounts: [usize; 4] = [39, 30, 21, 12];
         for (level, shift_amount) in shift_amounts.iter().enumerate() {
             let idx = (va >> shift_amount) & 0x1ff;
-            // SAFETY: By safety requirement of this function, the aarch64 page table is valid
-            // and not being borrowed elsewhere.
-            let desc = unsafe { table_ptr.add(idx).as_mut().unwrap() };
+            let desc_ptr = table_ptr.wrapping_add(idx);
+            // SAFETY: By safety requirement of this function, the aarch64 page table is valid, so
+            // `table_ptr` points to an aligned table of 512 `u64` descriptors. `idx < 512`, so
+            // `desc_ptr` is in bounds and aligned. Use raw pointer + `read_volatile` rather than
+            // `&mut u64` since hardware MMU walks the live translation table concurrently.
+            let desc_val = unsafe { desc_ptr.read_volatile() };
             // Bit 0 of a descriptor determines whether the entry is valid/present (1) or invalid
             // (0).
-            if (*desc & 1) == 0 {
+            if (desc_val & 1) == 0 {
                 return Err("Page table entry invalid");
             }
 
             // In Levels 0, 1, 2, if bit 1 is 0, this is a block mapping (leaf).
             // At Level 3, it is always a page mapping (leaf), which has bit 1 set to 1.
-            if level == 3 || (*desc & 2) == 0 {
+            if level == 3 || (desc_val & 2) == 0 {
                 // Level 0 block descriptors are invalid/reserved in ARM64.
                 if level == 0 {
                     return Err("Invalid page table. L0 must be a table descriptor.");
@@ -88,12 +91,12 @@ pub unsafe fn walk_page_table(
                 } else if va + block_size > end_va {
                     return Err("Target memory region extends beyond user-provided range");
                 }
-                f(desc, va..va + block_size);
+                f(desc_ptr, va..va + block_size);
                 va += block_size;
                 break;
             } else {
                 // Extract next level table physical base address.
-                table_ptr = (*desc & AARCH64_DESCRIPTOR_ADDR_MASK) as *mut u64;
+                table_ptr = (desc_val & AARCH64_DESCRIPTOR_ADDR_MASK) as *mut u64;
                 continue;
             }
         }
@@ -118,10 +121,11 @@ pub unsafe fn mark_memory_guarded(va_start: usize, va_size: usize) -> Result<(),
         // Pass 1: Verifies that the target address aligned on mmap boundaries.
         walk_page_table(va_start, va_size, |_, _| {})?;
         // Pass 2: Sets the GP bit only on executable descriptors.
-        walk_page_table(va_start, va_size, |desc, _| {
+        walk_page_table(va_start, va_size, |desc_ptr, _| {
+            let desc = desc_ptr.read_volatile();
             // A page is executable if both PXN (bit 53) and UXN/XN (bit 54) are 0.
-            if (*desc & (1u64 << 53)) == 0 && (*desc & (1u64 << 54)) == 0 {
-                *desc |= 1u64 << 50; // Set Guarded Page (GP) bit
+            if (desc & (1u64 << 53)) == 0 && (desc & (1u64 << 54)) == 0 {
+                desc_ptr.write_volatile(desc | (1u64 << 50)); // Set Guarded Page (GP) bit
             }
         })?;
     }

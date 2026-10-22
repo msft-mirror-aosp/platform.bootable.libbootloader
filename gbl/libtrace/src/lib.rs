@@ -41,6 +41,11 @@ unsafe extern "C" {
 
     /// Leaks and returns trace buffer to caller.
     ///
+    /// Implemented by the backend, e.g. `efi/arch/aarch64/mcount.c`, where `efi_main_tracing`
+    /// allocates the buffer before GBL starts. The backend writes NULL to `out` if tracing was never
+    /// set up or the buffer was already taken. After handing off the buffer, it stops writing to it.
+    /// The mcount backend resets the device if called off the GBL main stack.
+    ///
     /// # Args:
     ///
     /// `out`: output pointer for the buffer.
@@ -88,8 +93,21 @@ pub fn gbl_trace_take_buffer() -> Option<(&'static mut [u8], usize)> {
     // SAFETY:
     // * `out`, `out_buffer_size` and `out_data_size` are valid memories and outlive the call.
     unsafe { _gbl_trace_take_buffer(&mut out, &mut buffer_size, &mut data_size) };
-    // SAFETY: `_gbl_trace_take_buffer` leaks and returns valid memory buffer if non-null.
-    (!out.is_null()).then_some((unsafe { from_raw_parts_mut(out, buffer_size) }, data_size))
+    if out.is_null() {
+        return None;
+    }
+    // SAFETY: `_gbl_trace_take_buffer` (see `efi/arch/aarch64/mcount.c`) returns a buffer of
+    // `buffer_size` bytes with `data_size` initialized bytes, then points its global state at an
+    // empty placeholder before returning. GBL is single-core, and UEFI event callbacks that preempt
+    // it only see the placeholder from then on, so nothing else accesses the buffer and it is safe
+    // to treat as `'static` and exclusively ours. Zero-initialize the remaining tail before
+    // materializing `&'static mut [u8]`.
+    unsafe {
+        if data_size < buffer_size {
+            core::ptr::write_bytes(out.add(data_size), 0, buffer_size - data_size);
+        }
+        Some((from_raw_parts_mut(out, buffer_size), data_size))
+    }
 }
 
 /// Returns the total size of GBL trace data.

@@ -153,8 +153,9 @@ impl BlockInfo {
 /// if an implementation crosses an FFI boundary.
 ///
 /// SAFETY:
-/// * `read_blocks` method must guarantee `out` to be fully initialized on success.
-///   Otherwise error must be returned.
+/// * Both `read_blocks` and `read_blocks_sync` methods must guarantee `out` to be fully
+///   initialized on success and must never write uninitialized bytes into `out`.
+///   Otherwise an error must be returned.
 ///   This is necessary because callers are guaranteed that the [UninitSlice] buffer
 ///   has been fully initialized on success and can safely be converted to a `&[u8]`
 ///   and read normally.

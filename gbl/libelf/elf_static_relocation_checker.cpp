@@ -39,21 +39,24 @@ std::vector<uint8_t> ReadFile(const std::string& file_name) {
 }
 }  // namespace
 
-#define ASSERT(cond)                                                                 \
-  {                                                                                  \
-    if (!(cond)) {                                                                   \
-      fprintf(stderr, "%s:%d. Assert failed \"(%s)\"\n", __FILE__, __LINE__, #cond); \
-      exit(1);                                                                       \
-    }                                                                                \
+#define ASSERT(cond)                                                         \
+  {                                                                          \
+    if (!(cond)) {                                                           \
+      fprintf(stderr, "%s:%d. Assert failed \"(%s)\"\n", __FILE__, __LINE__, \
+              #cond);                                                        \
+      exit(1);                                                               \
+    }                                                                        \
   }
 
-// Simulate an ELF relocation processs using GBL relocation library. Fail if the ELF contains
-// relocation types that we don't expect.
+// Simulate an ELF relocation process using GBL relocation library. Fail if the
+// ELF contains relocation types that we don't expect.
 //
 // Usage:
-//   <executable> <ELF file> <Binary only version (ELF header stripped) of the ELF>
+//   <executable> <ELF file> <Binary only version (ELF header stripped) of the
+//   ELF>
 //
-// The binary only version can be obtained by `llvm-objcopy -O binary <ELF> <output>`
+// The binary only version can be obtained by `llvm-objcopy -O binary <ELF>
+// <output>`
 //
 // Return 0 if successful.
 int main(int argc, char* argv[]) {
@@ -69,13 +72,14 @@ int main(int argc, char* argv[]) {
   memcpy(&elf_header, elf_file.data(), sizeof(elf_header));
 
   // Iterate all program headers and find out the address for dynamic section.
-  const uint8_t* program_hdr_start = elf_file.data() + elf_header.e_phoff;
+  ASSERT(elf_header.e_phoff <= elf_file.size());
   std::optional<uint64_t> dynamic_section_offset = std::nullopt;
   for (size_t i = 0; i < elf_header.e_phnum; i++) {
-    const uint8_t* header_start = program_hdr_start + i * sizeof(Elf64_Phdr);
+    ASSERT(i <= (elf_file.size() - elf_header.e_phoff) / sizeof(Elf64_Phdr));
+    size_t header_offset = elf_header.e_phoff + i * sizeof(Elf64_Phdr);
+    ASSERT(elf_file.size() - header_offset >= sizeof(Elf64_Phdr));
+    const uint8_t* header_start = elf_file.data() + header_offset;
     Elf64_Phdr elf_program_header;
-    ASSERT(static_cast<size_t>(header_start + sizeof(elf_program_header) - elf_file.data()) <=
-           elf_file.size());
     memcpy(&elf_program_header, header_start, sizeof(elf_program_header));
     if (elf_program_header.p_type == PT_DYNAMIC) {
       // Store the physical address
@@ -91,9 +95,11 @@ int main(int argc, char* argv[]) {
   }
 
   ASSERT(bin_file.size() >= *dynamic_section_offset);
-  // Perform relocation as if we have loaded the program @ address bin_file.data().
+  // Perform relocation as if we have loaded the program @ address
+  // bin_file.data().
   return ApplyRelocation(reinterpret_cast<uintptr_t>(bin_file.data()),
-                         reinterpret_cast<uintptr_t>(bin_file.data() + *dynamic_section_offset))
+                         reinterpret_cast<uintptr_t>(bin_file.data() +
+                                                     *dynamic_section_offset))
              ? 0
              : 1;
 }

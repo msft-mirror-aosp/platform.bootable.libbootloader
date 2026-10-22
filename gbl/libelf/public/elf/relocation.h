@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <stdint.h>
+
 // Check .dynamic section in an ELF and apply necessary relocation.
 //
 // The API assumes that program_base and dynamic section address are properly aligned.

@@ -23,12 +23,12 @@
 //
 // It would be worth to investigate if this can be implemented in rust.
 
+#include "elf/relocation.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
 #include "libelf/elf.h"
-
-#include "elf/relocation.h"
 
 #ifdef HOST_TOOLING
 #include <stdio.h>
@@ -48,19 +48,23 @@ struct DynamicSectionInfo {
   const Elf64_Sym* symtab;
 };
 
-Elf64_Sxword GetRelxAddend(const Elf64_Rela& entry, uint64_t*) {
+using UnalignedU64 __attribute__((aligned(1), may_alias)) = uint64_t;
+
+Elf64_Sxword GetRelxAddend(const Elf64_Rela& entry, const UnalignedU64*) {
   return entry.r_addend;
 }
-Elf64_Sxword GetRelxAddend(const Elf64_Rel&, uint64_t* addr) {
-  return *addr;
+Elf64_Sxword GetRelxAddend(const Elf64_Rel&, const UnalignedU64* addr) {
+  return static_cast<Elf64_Sxword>(*addr);
 }
 
 // Perform relocation fixup for the given RELA/REL relocation table.
 //
-// For more information about REL/RELA relocation, see the Relocation and Dynamic linking
-// related sections in System V ABI (https://www.sco.com/developers/gabi/latest/contents.html)
+// For more information about REL/RELA relocation, see the Relocation and
+// Dynamic linking related sections in System V ABI
+// (https://www.sco.com/developers/gabi/latest/contents.html)
 template <typename T>
-bool FixUpRelxTable(uintptr_t program_base, [[maybe_unused]] const Elf64_Sym* symtab,
+bool FixUpRelxTable(uintptr_t program_base,
+                    [[maybe_unused]] const Elf64_Sym* symtab,
                     uintptr_t table_addr, size_t size) {
   size_t num_entries = size / sizeof(T);
   const T* table = reinterpret_cast<const T*>(table_addr);
@@ -76,13 +80,14 @@ bool FixUpRelxTable(uintptr_t program_base, [[maybe_unused]] const Elf64_Sym* sy
           program_base, entry.r_offset);
       return false;
     }
-    uint64_t* addr = reinterpret_cast<uint64_t*>(program_base + entry.r_offset);
-    // Addend value. For RELA, it comes from the entry. For REL, it's the current
-    // value at address `addr`.
+    UnalignedU64* addr =
+        reinterpret_cast<UnalignedU64*>(program_base + entry.r_offset);
+    // Addend value. For RELA, it comes from the entry. For REL, it's the
+    // current value at address `addr`.
     Elf64_Sxword addend = GetRelxAddend(entry, addr);
     // Index of the corresponding symbol in the symbol table.
-    // Certain type of relocation requires to modify symbol table. Keep this here
-    // for reference.
+    // Certain type of relocation requires to modify symbol table. Keep this
+    // here for reference.
     [[maybe_unused]] size_t symbol_index = entry.r_info >> 32;
 
     // Now process the various type of relocation.
@@ -93,13 +98,16 @@ bool FixUpRelxTable(uintptr_t program_base, [[maybe_unused]] const Elf64_Sym* sy
     // For document about RISC-V relocation, see
     // https://github.com/riscv-non-isa/riscv-elf-psabi-doc/blob/master/riscv-elf.adoc#relocations
     //
-    // GBL's usage of ELF is restricted. We only implement relocations that we expect to see.
+    // GBL's usage of ELF is restricted. We only implement relocations that we
+    // expect to see.
     if (reloc_type == R_RISCV_RELATIVE || reloc_type == R_AARCH64_RELATIVE ||
         reloc_type == R_X86_64_RELATIVE) {
-      // This is the most common type of relocation. For position independent executable,
-      // symbol address is typically the relative offset to program start. Relocated absolute
-      // address is obtained by adding the address the program is loaded to.
-      *addr = program_base + addend;
+      // This is the most common type of relocation. For position independent
+      // executable, symbol address is typically the relative offset to program
+      // start. Relocated absolute address is obtained by adding the address the
+      // program is loaded to.
+      *addr =
+          static_cast<uint64_t>(program_base + static_cast<uintptr_t>(addend));
     } else {
       RELOCATION_PRINTF("Unhandled relocation type: %lx\n", reloc_type);
       return false;
@@ -109,33 +117,44 @@ bool FixUpRelxTable(uintptr_t program_base, [[maybe_unused]] const Elf64_Sym* sy
   return true;
 }
 
-// Search for RELA type relocation table from the .dynamic section and apply relocation fix up if
-// there is one.
-bool ApplyRelaRelocation(uintptr_t program_base, const DynamicSectionInfo& info) {
+// Search for RELA type relocation table from the .dynamic section and apply
+// relocation fix up if there is one.
+bool ApplyRelaRelocation(uintptr_t program_base,
+                         const DynamicSectionInfo& info) {
   if ((info.rela == NULL) != (info.rela_size == NULL)) {
     return false;
   } else if (!info.rela) {
     return true;
   }
-  return FixUpRelxTable<Elf64_Rela>(program_base, info.symtab, info.rela->d_un.d_ptr + program_base,
+  if (UINTPTR_MAX - info.rela->d_un.d_ptr < program_base) {
+    return false;
+  }
+  return FixUpRelxTable<Elf64_Rela>(program_base, info.symtab,
+                                    info.rela->d_un.d_ptr + program_base,
                                     info.rela_size->d_un.d_val);
 }
 
-// Search for REL type relocation table from the .dynamic section and apply relocation fix up if
-// there is one.
-bool ApplyRelRelocation(uintptr_t program_base, const DynamicSectionInfo& info) {
+// Search for REL type relocation table from the .dynamic section and apply
+// relocation fix up if there is one.
+bool ApplyRelRelocation(uintptr_t program_base,
+                        const DynamicSectionInfo& info) {
   if ((info.rel == NULL) != (info.rel_size == NULL)) {
     return false;
   } else if (!info.rel) {
     return true;
   }
-  return FixUpRelxTable<Elf64_Rel>(program_base, info.symtab, info.rel->d_un.d_ptr + program_base,
+  if (UINTPTR_MAX - info.rel->d_un.d_ptr < program_base) {
+    return false;
+  }
+  return FixUpRelxTable<Elf64_Rel>(program_base, info.symtab,
+                                   info.rel->d_un.d_ptr + program_base,
                                    info.rel_size->d_un.d_val);
 }
 
 }  // namespace
 
-extern "C" bool ApplyRelocation(uintptr_t program_base, uintptr_t dynamic_section) {
+extern "C" bool ApplyRelocation(uintptr_t program_base,
+                                uintptr_t dynamic_section) {
   DynamicSectionInfo dynamic_section_info = {
       .rel = NULL,
       .rel_size = NULL,
@@ -144,7 +163,8 @@ extern "C" bool ApplyRelocation(uintptr_t program_base, uintptr_t dynamic_sectio
       .symtab = NULL,
   };
 
-  const Elf64_Dyn* dynamic_section_table = reinterpret_cast<const Elf64_Dyn*>(dynamic_section);
+  const Elf64_Dyn* dynamic_section_table =
+      reinterpret_cast<const Elf64_Dyn*>(dynamic_section);
   for (size_t i = 0; dynamic_section_table[i].d_tag != DT_NULL; i++) {
     switch (dynamic_section_table[i].d_tag) {
       // RELA type relocation entries
@@ -166,9 +186,11 @@ extern "C" bool ApplyRelocation(uintptr_t program_base, uintptr_t dynamic_sectio
       // Symbol table
       case DT_SYMTAB:
         dynamic_section_info.symtab =
-            (const Elf64_Sym*)(dynamic_section_table[i].d_un.d_ptr + program_base);
+            (const Elf64_Sym*)(dynamic_section_table[i].d_un.d_ptr +
+                               program_base);
         break;
-      // We shouldn't see RELR relocation unless `-Wl,--pack-dyn-relocs=relr` is used.
+      // We shouldn't see RELR relocation unless `-Wl,--pack-dyn-relocs=relr` is
+      // used.
       case DT_RELR:
       // We shouldn't see PLT relocation unless we are loading a shared library.
       case DT_JMPREL:

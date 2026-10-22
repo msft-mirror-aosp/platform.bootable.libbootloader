@@ -214,7 +214,8 @@ unsafe fn setup_bzimage_boot_params<'a>(
     let bootparam = BootParams::from_bytes_ref(&kernel[..])?;
     bootparam.check()?;
 
-    // low memory address greater than 0x9_0000 is bogus.
+    // low memory address must be non-null, aligned for `BootParams`, and <= 0x9_0000.
+    assert!(low_mem_addr != 0 && low_mem_addr % core::mem::align_of::<BootParams>() == 0);
     assert!(low_mem_addr <= 0x9_0000);
     // SAFETY: By safety requirement of this function, `low_mem_addr` points to sufficiently large
     // memory.
@@ -241,12 +242,10 @@ unsafe fn setup_bzimage_boot_params<'a>(
 
     // Zeroizes the entire boot sector.
     boot_param_buffer.fill(0);
+    let source_header = *bootparam.setup_header_ref();
     let bootparam_fixup = BootParams::from_bytes_mut(boot_param_buffer)?;
     // Only copies over the header. Leaves the rest zeroes.
-    *bootparam_fixup.setup_header_mut() =
-        *BootParams::from_bytes_ref(&kernel[..])?.setup_header_ref();
-
-    let bootparam_fixup = BootParams::from_bytes_mut(boot_param_buffer)?;
+    *bootparam_fixup.setup_header_mut() = source_header;
 
     // Sets commandline.
     cmdline_buffer.clone_from_slice(cmdline);
@@ -356,17 +355,16 @@ pub unsafe fn zbi_boot_raw(entry: usize, data: &[u8]) -> ! {
     // SAFETY: By safety requirement of this function, input contains a valid ZBI kernel.
     unsafe {
         asm!(
+            "cli",
+            "cld",
             "xor ebp, ebp",
             "xor esp, esp",
-            "cld",
-            "cli",
-            "jmp {ep}",
-            ep = in(reg) entry,
+            "jmp rax",
+            in("rax") entry,
             in("rsi") data.as_ptr(),
+            options(noreturn),
         );
     }
-
-    unreachable!();
 }
 
 /// Boot ZBI kernel from provided ZBI containers
