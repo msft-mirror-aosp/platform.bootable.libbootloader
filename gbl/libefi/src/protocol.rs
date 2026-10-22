@@ -449,19 +449,16 @@ impl<'a, T: Identified + MaybeVersioned> DerefMut for Protocol<'a, Client<T>> {
 ///   ...
 /// )
 /// ```
+///
+/// This macro is expanded at ~100 call sites, so any code added to it is duplicated at each of
+/// them. Keep it minimal and put new logic in out-of-line helpers such as `efi_method_not_found()`.
 #[macro_export]
 macro_rules! efi_call {
     ( $method:expr $(, $x:expr)* $(,)? ) => {
         {
-            use liberror::{Error, Result, efi_status_to_result};
-            use libutils::{method_basename, func_name};
+            use liberror::{Result, efi_status_to_result};
             let res: Result<()> = match $method {
-                None => {
-                    $crate::efi_try_print!("Protocol method not found in caller '{}': {}\r\n",
-                                           func_name!(),
-                                           method_basename(stringify!($method)));
-                    Err(Error::NotFound)
-                },
+                None => Err($crate::protocol::efi_method_not_found(stringify!($method))),
                 Some(f) => efi_status_to_result(f($($x,)*)),
             };
             res
@@ -471,13 +468,9 @@ macro_rules! efi_call {
         {
             use efi_types::{EFI_STATUS_BUFFER_TOO_SMALL, EFI_STATUS_SUCCESS};
             use liberror::{Error, Result, efi_status_to_result};
-            use libutils::{method_basename, func_name};
+            use libutils::method_basename;
             let res: Result<()> = match $method {
-                None => {
-                    $crate::efi_try_print!("Protocol method not found in caller '{}': {}\r\n",
-                                           func_name!(),
-                                           method_basename(stringify!($method)));
-                    Err(Error::NotFound)},
+                None => Err($crate::protocol::efi_method_not_found(stringify!($method))),
                 Some(f) => {
                     let capacity = $size;
                     match f($($x,)*) {
@@ -498,6 +491,25 @@ macro_rules! efi_call {
             res
         }
     };
+}
+
+/// Cold path of [efi_call!] when the protocol method pointer is NULL.
+///
+/// Prints `Protocol method not found at <file>:<line>:<column>: <method basename>`, where the
+/// location is the [efi_call!] invocation, and returns `Error::NotFound`. Not a public API.
+#[doc(hidden)]
+#[cold]
+#[inline(never)]
+#[track_caller]
+pub fn efi_method_not_found(method: &str) -> liberror::Error {
+    // Must be read outside `efi_try_print!`, which may wrap its arguments in a closure.
+    let caller = core::panic::Location::caller();
+    crate::efi_try_print!(
+        "Protocol method not found at {}: {}\r\n",
+        caller,
+        libutils::method_basename(method)
+    );
+    liberror::Error::NotFound
 }
 
 #[cfg(test)]

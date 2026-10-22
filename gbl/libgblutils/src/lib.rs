@@ -61,7 +61,7 @@ where
     Ok(bytes.get_mut(aligned_offset..).ok_or(Error::BufferTooSmall(Some(aligned_offset)))?)
 }
 
-/// A helper for getting the offset of the first byte with and aligned address.
+/// A helper for getting the offset of the first byte with an aligned address.
 ///
 /// # Arguments
 /// * `bytes`: the byte slice
@@ -186,6 +186,21 @@ fn tsc_freq_hz() -> Result<u64> {
 pub fn arch_timestamp() -> Result<core::time::Duration> {
     // Implement for other architectures if needed. For riscv64, we can use `rdtime`.
     Err(Error::Unsupported)
+}
+
+/// Writes `args` and `newline` to `out`, prefixed with a `[<seconds>.<4 decimals>] ` timestamp
+/// from [arch_timestamp] if it is supported.
+#[inline(never)]
+pub fn writeln_with_timestamp(
+    out: &mut dyn core::fmt::Write,
+    newline: &str,
+    args: core::fmt::Arguments,
+) {
+    if let Ok(t) = arch_timestamp() {
+        write!(out, "[{}.{:04}] ", t.as_secs(), t.subsec_micros() / 100).unwrap();
+    }
+    out.write_fmt(args).unwrap();
+    out.write_str(newline).unwrap();
 }
 
 #[cfg(test)]

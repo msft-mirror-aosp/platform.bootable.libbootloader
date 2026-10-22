@@ -52,7 +52,7 @@ pub use fastboot::{
 };
 pub use gbl_storage::{BlockIo, Disk, Gpt};
 use liberror::Error;
-pub use libgblutils::arch_timestamp;
+pub use libgblutils::{arch_timestamp, writeln_with_timestamp};
 pub use slots::Slot;
 #[cfg(feature = "fuchsia")]
 pub use zbi::{ZbiContainer, ZBI_ALIGNMENT_USIZE};
@@ -701,17 +701,17 @@ macro_rules! gbl_print {
 }
 
 /// Prints the given text plus a newline termination with `GblOps::console_out()`.
+///
+/// This macro is expanded at 100+ call sites, so any code added to it is duplicated at each of
+/// them. Keep it minimal and put new logic in [writeln_with_timestamp].
 #[macro_export]
 macro_rules! gbl_println {
     ( $ops:expr, $( $x:expr ),* $(,)? ) => {
         {
-            // Print timestamp if supported
-            let _ = $crate::ops::arch_timestamp().inspect(|v| {
-                $crate::gbl_print!($ops, "[{:.4}] ", v.as_secs_f32());
-            });
             let newline = $ops.console_newline();
-            $crate::gbl_print!($ops, $($x,)*);
-            $crate::gbl_print!($ops, "{}", newline);
+            if let Some(v) = $ops.console_out() {
+                $crate::ops::writeln_with_timestamp(v, newline, format_args!($($x,)*));
+            }
         }
     };
 }
