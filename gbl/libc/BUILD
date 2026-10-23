@@ -13,7 +13,6 @@
 # limitations under the License.
 
 load("@gbl//toolchain:gbl_toolchain.bzl", "link_static_cc_library")
-load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
@@ -26,7 +25,6 @@ rust_library(
     name = "libc",
     srcs = glob(["src/*.rs"]),
     edition = "2021",
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         ":libc_c_staticlib",
         "@gbl//libsafemath",
@@ -39,7 +37,6 @@ rust_library(
 rust_test(
     name = "libc_test",
     crate = ":libc",
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [":libc_deps_posix"],
 )
 
@@ -47,7 +44,6 @@ rust_library(
     name = "libc_deps_posix",
     srcs = ["deps/posix.rs"],
     edition = "2021",
-    rustc_flags = ANDROID_RUST_LINTS,
 )
 
 cc_library(

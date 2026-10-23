@@ -13,7 +13,6 @@
 # limitations under the License.
 
 load("@gbl//toolchain:gbl_toolchain.bzl", "link_static_cc_library")
-load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@gbl_llvm_prebuilts//:info.bzl", "LLVM_PREBUILTS_C_INCLUDE")
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
@@ -39,6 +38,7 @@ rust_bindgen(
         "(fdt_.*)",
         "--raw-line",
         """
+#![allow(missing_docs)]
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 #![allow(dead_code)]
@@ -68,7 +68,8 @@ rust_bindgen(
         "ufdt_apply_multioverlay",
         "--raw-line",
         """
-# ![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_std)]
+#![allow(missing_docs)]
 """,
     ],
     cc_lib = "@libufdt_c",
@@ -93,7 +94,6 @@ rust_library(
 rust_library(
     name = "libfdt_sysdeps",
     srcs = ["deps/lib.rs"],
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@gbl//libc",
     ],
@@ -109,7 +109,6 @@ rust_library(
     srcs = ["src/lib.rs"],
     crate_name = "fdt",
     edition = "2021",
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         ":libfdt_bindgen",
         ":libfdt_c_static",
@@ -131,7 +130,6 @@ rust_test(
         "@gbl//libfdt/test/data:all",
     ],
     crate = ":libfdt",
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@gbl//libc:libc_deps_posix",
         "@gbl//libgblutils:libtestutils",

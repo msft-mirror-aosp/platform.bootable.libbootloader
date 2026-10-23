@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 load("@rules_rust_bindgen//:defs.bzl", "rust_bindgen")
@@ -70,6 +69,7 @@ rust_bindgen(
         ),
         "--raw-line",
         """
+#![allow(missing_docs)]
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 #![cfg_attr(not(test), no_std)]
@@ -122,7 +122,6 @@ rust_library(
     ],
     crate_name = "bootimg",
     data = [":bootimg_sources_gen"],
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         ":bootimg_bindgen",
         "@gbl//liberror",
@@ -133,5 +132,4 @@ rust_library(
 rust_test(
     name = "libbootimg_test",
     crate = ":libbootimg",
-    rustc_flags = ANDROID_RUST_LINTS,
 )

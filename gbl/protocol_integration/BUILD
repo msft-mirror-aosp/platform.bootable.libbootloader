@@ -13,7 +13,6 @@
 # limitations under the License.
 
 load("@gbl//toolchain:gbl_toolchain.bzl", "build_with_platform", "extract_pdb_file")
-load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 
 package(
@@ -31,7 +30,6 @@ TEST_NAME = select({
 rust_library(
     name = "libprotocol_test",
     srcs = glob(["src/**/*.rs"]),
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@avb//:libavb_c_sha_staticlib",
         "@gbl//libavb:sysdeps",
@@ -58,7 +56,7 @@ rust_binary(
             "//conditions:default": None,
         },
     ),
-    rustc_flags = ANDROID_RUST_LINTS + [
+    rustc_flags = [
         "-C",
         "panic=abort",
     ],
@@ -122,7 +120,7 @@ rust_binary(
             "//conditions:default": None,
         },
     ),
-    rustc_flags = ANDROID_RUST_LINTS + [
+    rustc_flags = [
         "-C",
         "panic=abort",
     ],

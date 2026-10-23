@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 load("@rules_rust_bindgen//:defs.bzl", "rust_bindgen")
@@ -52,6 +51,7 @@ rust_bindgen(
         "--with-derive-custom-union=.*={}".format(CUSTOM_DERIVES),
         "--raw-line",
         """
+#![allow(missing_docs)]
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 #![cfg_attr(not(test), no_std)]
@@ -75,7 +75,6 @@ rust_library(
     srcs = glob(["**/*.rs"]),
     crate_name = "boot",
     edition = "2021",
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@gbl//liberror",
         "@static_assertions",
@@ -101,6 +100,5 @@ rust_test(
         "@gbl//libboot/test/data:all",
     ],
     crate = ":libboot",
-    rustc_flags = ANDROID_RUST_LINTS,
     visibility = ["//visibility:public"],
 )

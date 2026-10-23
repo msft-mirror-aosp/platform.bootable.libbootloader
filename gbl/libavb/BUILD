@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 
@@ -34,7 +33,6 @@ rust_library(
     srcs = glob(["src/sysdeps/**/*.rs"]),
     crate_name = "avb_sysdeps",
     edition = "2021",
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@avb//:avb_bindgen",
         "@gbl//libc",

@@ -14,7 +14,6 @@
 
 load("@gbl//licensing:licenses.bzl", "merged_license")
 load("@gbl//toolchain:gbl_toolchain.bzl", "build_with_platform", "dev_test", "extract_pdb_file", "rename_output")
-load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@gbl_config//:variables.bzl", "IMG_ARCHIVE_TAG")
 load("@gbl_llvm_prebuilts//:info.bzl", "gbl_llvm_tool_path")
 load("@rules_pkg//pkg:install.bzl", "pkg_install")
@@ -49,7 +48,6 @@ rust_library(
     crate_name = "gbl_efi",
     edition = "2024",
     proc_macro_deps = ["@gbl//libprofile:libprofile_macros"],
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@arrayvec",
         "@bytes",
@@ -92,7 +90,7 @@ rust_test(
     # remove dead-code; for now it would require a lot of invasive
     # code changes to selectively disable things on tests so this
     # is worth it to keep things more readable.
-    rustc_flags = ANDROID_RUST_LINTS + [
+    rustc_flags = [
         "-A",
         "dead-code",
     ],
@@ -139,7 +137,7 @@ rust_binary(
             "//conditions:default": None,
         },
     ),
-    rustc_flags = ANDROID_RUST_LINTS + [
+    rustc_flags = [
         "-C",
         "panic=abort",
     ],

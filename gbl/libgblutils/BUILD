@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(
@@ -25,7 +24,6 @@ rust_library(
         "src/**/*.rs",
     ]),
     edition = "2021",
-    rustc_flags = ANDROID_RUST_LINTS,
     visibility = ["//visibility:public"],
     deps = [
         "@gbl//libasync",
@@ -50,7 +48,6 @@ rust_library(
         "test/lib.rs",
     ],
     edition = "2021",
-    rustc_flags = ANDROID_RUST_LINTS,
     visibility = ["//visibility:public"],
     deps = [
         "@gbl//libsafemath",
@@ -60,7 +57,6 @@ rust_library(
 rust_test(
     name = "test",
     crate = ":libgblutils",
-    rustc_flags = ANDROID_RUST_LINTS,
     visibility = ["//visibility:public"],
     deps = [
         ":libtestutils",
@@ -70,6 +66,5 @@ rust_test(
 rust_test(
     name = "testutils_test",
     crate = ":libtestutils",
-    rustc_flags = ANDROID_RUST_LINTS,
     visibility = ["//visibility:public"],
 )

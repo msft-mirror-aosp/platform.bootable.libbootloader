@@ -31,6 +31,10 @@ pkg_files(
 readme_test(
     name = "readme_test",
     readme = "docs/efi_integration.md",
+    # `readme_test` only inspects source files (`CrateInfo.srcs`) and does not
+    # transition its UEFI `deps` (such as `@gbl//efi:app`) to their target
+    # platforms, so opt it out of Clippy aspect propagation.
+    tags = ["no_clippy"],
     # Note: can't read files in subpackages, not sure how to add a dependency on all,
     # globbed, subpackages and all the rust_lib targets they contain.
     deps = [

@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 
 package(
@@ -24,7 +23,6 @@ rust_library(
     name = "libsemihosting",
     srcs = ["src/lib.rs"],
     crate_name = "semihosting",
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@gbl//liberror",
         "@gbl//libgblutils",

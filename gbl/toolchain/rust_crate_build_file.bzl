@@ -54,7 +54,7 @@ def rust_crate_build_file(
     deps = "[{}]".format(",".join(['"{}"'.format(ele) for ele in deps]))
     proc_macro_deps = "[{}]".format(",".join(['"{}"'.format(ele) for ele in proc_macro_deps]))
     features = "[{}]".format(",".join(['"{}"'.format(ele) for ele in features]))
-    rustc_flags = "[{}]".format(",".join(['"{}"'.format(ele) for ele in rustc_flags]))
+    rustc_flags = "[{}]".format(",".join(['"{}"'.format(ele) for ele in (["--cap-lints=allow"] + rustc_flags)]))
     compile_data = "[{}]".format(",".join(['"{}"'.format(ele) for ele in compile_data]))
     aliases_str = "{" + ",".join(['"{K}": "{V}"'.format(K = k, V = v) for k, v in aliases.items()]) + "}"
     return """

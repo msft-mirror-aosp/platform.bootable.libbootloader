@@ -13,7 +13,6 @@
 # limitations under the License.
 
 load("@gbl//toolchain:gbl_toolchain.bzl", "dev_test")
-load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(
@@ -53,7 +52,6 @@ rust_library(
     }),
     edition = "2024",
     proc_macro_deps = ["@gbl//libprofile:libprofile_macros"],
-    rustc_flags = ANDROID_RUST_LINTS,
     visibility = ["//visibility:public"],
     deps = [
         "@arrayvec",
@@ -108,7 +106,6 @@ rust_test(
     crate = ":libgbl",
     crate_features = ["uuid"],
     data = ["//libgbl/testdata"],
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@avb//:avb_crypto_ops_for_test",
         "@avb//:avb_test",

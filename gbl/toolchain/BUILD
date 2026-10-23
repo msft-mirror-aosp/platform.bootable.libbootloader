@@ -32,6 +32,8 @@ load(
     "rust_toolchain",
     "rustfmt_toolchain",
 )
+
+# buildifier: disable=bzl-visibility
 load("@rules_rust//rust/private:lto.bzl", "rust_lto_flag")
 load("@rules_rust_bindgen//:defs.bzl", "rust_bindgen_toolchain")
 load(
@@ -40,6 +42,7 @@ load(
     "gbl_clang_cc_toolchain",
     "prebuilt_binary",
 )
+load(":gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 
 package(
     default_applicable_licenses = ["@gbl//licensing:gbl_license"],
@@ -669,30 +672,29 @@ rust_stdlib_filegroup(
     srcs = [":rust_sysroot_source_build"],
 )
 
-common_lint_opts = [
-    "-A",
-    "deprecated",
-    # Lints such as `unsafe_op_in_unsafe_fn` and `missing-docs` are enabled for first-party GBL
-    # crates via `ANDROID_RUST_LINTS` in `gbl_workspace_util.bzl` rather than here, because
-    # `extra_rustc_flags` are appended after per-target `rustc_flags` and cannot be overridden by
-    # third-party crates.
-    "-D",
-    "warnings",
-    "-D",
-    "clippy::undocumented_unsafe_blocks",
-    "-D",
-    "clippy::too-many-arguments",
-]
+# Default Rust and Clippy lint flags applied globally via the Rust toolchains.
+# Individual targets can override these settings in two ways:
+# 1. In `BUILD` files via `rustc_flags` (e.g. `rustc_flags = ["-A", "..."]` or
+#    `["--cap-lints=allow"]` for third-party crates), which `rules_rust`
+#    appends after `extra_rustc_flags` so the target's flags take precedence.
+# 2. In Rust source files via `#[allow(...)]` / `#![allow(...)]` attributes,
+#    which take precedence over command-line `-D` / `-W` flags.
+common_lint_opts = ANDROID_RUST_LINTS
 
 # Linux x86_64 Host toolchain
 rust_toolchain(
     name = "x86_64_unknown_linux_gnu",
     allocator_library = None,
     binary_ext = "",
+    clippy_driver = "@rust_prebuilts//:bin/clippy-driver",
     default_edition = "2021",
     dylib_ext = ".so",
     exec_triple = "x86_64-unknown-linux-musl",
-    extra_rustc_flags = select(rustc_dev_prod_flags_select),
+    extra_exec_rustc_flags = [
+        "-A",
+        "deprecated",
+    ],
+    extra_rustc_flags = common_lint_opts + select(rustc_dev_prod_flags_select),
     extra_rustc_flags_for_crate_types = {
         # The x86_64-unknown-linux-musl target defaults to static CRT (+crt-static). For proc-macros
         # (dynamically loaded .so plugins), static CRT linking embeds an uninitialized musl allocator
@@ -820,6 +822,7 @@ rust_toolchain(
     name = "x86_64-unknown-uefi",
     allocator_library = None,
     binary_ext = ".efi",
+    clippy_driver = "@rust_prebuilts//:bin/clippy-driver",
     default_edition = "2021",
     dylib_ext = ".so",
     exec_triple = "x86_64-unknown-linux-musl",
@@ -869,6 +872,7 @@ rust_toolchain(
     name = "x86_64-unknown-uefi-debug",
     allocator_library = None,
     binary_ext = "",
+    clippy_driver = "@rust_prebuilts//:bin/clippy-driver",
     default_edition = "2021",
     dylib_ext = ".so",
     exec_triple = "x86_64-unknown-linux-musl",
@@ -974,6 +978,7 @@ rust_toolchain(
     name = "aarch64-unknown-uefi",
     allocator_library = None,
     binary_ext = ".efi",
+    clippy_driver = "@rust_prebuilts//:bin/clippy-driver",
     default_edition = "2021",
     dylib_ext = ".so",
     exec_triple = "x86_64-unknown-linux-musl",
@@ -1026,6 +1031,7 @@ rust_toolchain(
     name = "aarch64-unknown-uefi-debug",
     allocator_library = None,
     binary_ext = "",
+    clippy_driver = "@rust_prebuilts//:bin/clippy-driver",
     default_edition = "2021",
     dylib_ext = ".so",
     exec_triple = "x86_64-unknown-linux-musl",
@@ -1129,6 +1135,7 @@ rust_toolchain(
     name = "riscv64gc-unknown-none-pie_elf",
     allocator_library = None,
     binary_ext = "",
+    clippy_driver = "@rust_prebuilts//:bin/clippy-driver",
     default_edition = "2021",
     dylib_ext = ".so",
     exec_triple = "x86_64-unknown-linux-musl",
@@ -1202,6 +1209,7 @@ rust_toolchain(
     name = "aarch64-unknown-none",
     allocator_library = None,
     binary_ext = "",
+    clippy_driver = "@rust_prebuilts//:bin/clippy-driver",
     default_edition = "2021",
     dylib_ext = ".so",
     exec_triple = "x86_64-unknown-linux-musl",
@@ -1239,6 +1247,7 @@ rust_toolchain(
     name = "x86_64-unknown-none",
     allocator_library = None,
     binary_ext = "",
+    clippy_driver = "@rust_prebuilts//:bin/clippy-driver",
     default_edition = "2021",
     dylib_ext = ".so",
     exec_triple = "x86_64-unknown-linux-musl",

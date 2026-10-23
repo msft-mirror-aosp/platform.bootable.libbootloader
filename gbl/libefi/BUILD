@@ -13,7 +13,6 @@
 # limitations under the License.
 
 load("@gbl//toolchain:gbl_toolchain.bzl", "dev_test")
-load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load(
     "@rules_cc//cc:defs.bzl",
     "cc_library",
@@ -33,7 +32,6 @@ rust_library(
         exclude = ["src/efi_rng_c.rs"],
     ),
     crate_name = "efi",
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@arrayvec",
         "@avb//:avb_bindgen",
@@ -59,7 +57,6 @@ rust_library(
     name = "libefi_rng",
     srcs = ["src/efi_rng_c.rs"],
     crate_name = "efi_rng",
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         ":libefi",
     ],
@@ -89,7 +86,6 @@ cc_library(
 rust_static_library(
     name = "rust_dep_hack_for_cc",
     srcs = ["dep_hack/lib.rs"],
-    rustc_flags = ANDROID_RUST_LINTS,
 )
 
 cc_test(
@@ -120,7 +116,6 @@ rust_test(
     name = "libefi_test",
     crate = ":libefi",
     proc_macro_deps = ["@gbl//libprofile:libprofile_macros"],
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@avb//:libavb_c_sha_staticlib",
         "@gbl//libavb:sysdeps",
@@ -137,7 +132,6 @@ rust_library(
     testonly = True,
     srcs = glob(["mocks/**/*.rs"]),
     crate_name = "efi_mocks",
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@arrayvec",
         "@gbl//libefi",
@@ -154,5 +148,4 @@ rust_library(
 rust_test(
     name = "mocks_test",
     crate = ":mocks",
-    rustc_flags = ANDROID_RUST_LINTS,
 )

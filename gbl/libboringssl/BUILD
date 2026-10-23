@@ -13,7 +13,6 @@
 # limitations under the License.
 
 load("@gbl//toolchain:gbl_toolchain.bzl", "link_static_cc_library")
-load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 load("@rules_rust_bindgen//:defs.bzl", "rust_bindgen")
@@ -30,7 +29,6 @@ rust_library(
     srcs = ["@boringssl//:rust_bssl_crypto_sources"],
     crate_name = "boringssl_sysdeps",
     edition = "2021",
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         ":bssl-sys",
     ],
@@ -39,7 +37,6 @@ rust_library(
 rust_test(
     name = "sysdeps_test",
     crate = ":sysdeps",
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@boringssl//:crypto_baremetal",
     ],
@@ -49,7 +46,6 @@ rust_library(
     name = "libboringssl",
     srcs = ["lib.rs"],
     edition = "2021",
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         ":libcrypto_c_baremetal_static",
     ],
@@ -58,7 +54,6 @@ rust_library(
 rust_test(
     name = "crypto_test",
     srcs = ["crypto_test.rs"],
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         ":bssl-sys",
         ":libboringssl",
@@ -118,7 +113,6 @@ rust_library(
     srcs = [":bssl-sys-raw__bindgen"],
     crate_name = "bssl_sys",
     edition = "2021",
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         ":bssl-sys-raw__bindgen_c_thunks_library",
     ],
@@ -127,7 +121,6 @@ rust_library(
 rust_binary(
     name = "crypto_bench",
     srcs = ["crypto_bench.rs"],
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         ":bssl-sys",
         ":libboringssl",

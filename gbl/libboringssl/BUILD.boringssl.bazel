@@ -13,7 +13,6 @@
 # limitations under the License.
 
 load("@gbl//licensing:licenses.bzl", "generate_license")
-load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@gbl//toolchain:nasm.bzl", "nasm_cc_library")
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("@rules_rust//rust:defs.bzl", "rust_library")
@@ -147,7 +146,6 @@ rust_library(
     crate_name = "bssl_crypto",
     crate_root = "src/rust/bssl-crypto/src/lib.rs",
     edition = "2021",
-    rustc_flags = ANDROID_RUST_LINTS,
     visibility = ["//visibility:public"],
     deps = [
         "@gbl//libboringssl:bssl-sys",

@@ -34,6 +34,7 @@ rust_proc_macro(
         "ANDROID_RUST_VERSION": GBL_RUST_VERSION,
     },
     rustc_flags = [
+        "--cap-lints=allow",
         # Pretend to be soong so that it uses "ANDROID_RUST_VERSION" environment variable for rust
         # version. But there may be better option.
         "--cfg",

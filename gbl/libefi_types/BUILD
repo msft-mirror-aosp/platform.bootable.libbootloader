@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@gbl_llvm_prebuilts//:info.bzl", "LLVM_PREBUILTS_C_INCLUDE")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_pkg//pkg:mappings.bzl", "pkg_files", "strip_prefix")
@@ -104,7 +103,7 @@ genrule(
     name = "efi_defs_genrule",
     srcs = [":efi_defs_bindgen"],
     outs = ["src/defs.rs"],
-    cmd = "cat $(location :efi_defs_bindgen) > $@",
+    cmd = "cat $(execpath :efi_defs_bindgen) > $@",
 )
 
 rust_library(
@@ -112,7 +111,6 @@ rust_library(
     srcs = glob(["**/*.rs"]) + ["src/defs.rs"],
     crate_name = "efi_types",
     data = [":efi_defs_genrule"],
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@spin",
         "@zerocopy",
@@ -123,7 +121,6 @@ rust_test(
     name = "libefi_types_test",
     crate = ":libefi_types",
     crate_features = ["mocks"],
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@mockall",
     ],

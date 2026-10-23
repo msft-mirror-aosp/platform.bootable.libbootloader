@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@gbl_llvm_prebuilts//:info.bzl", "LLVM_PREBUILTS_C_INCLUDE")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 load("@rules_rust_bindgen//:defs.bzl", "rust_bindgen")
@@ -29,7 +28,6 @@ rust_library(
     srcs = glob(["src/**/*.rs"]),
     crate_name = "opendice",
     edition = "2021",
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         ":opendice_android_bindgen",
         ":opendice_cbor_bindgen",
@@ -48,7 +46,6 @@ rust_library(
 rust_test(
     name = "libopendice_test",
     crate = ":libopendice",
-    rustc_flags = ANDROID_RUST_LINTS,
 )
 
 rust_bindgen(
@@ -57,6 +54,10 @@ rust_bindgen(
     bindgen_flags = [
         "--use-core",
         "--raw-line=#![no_std]",
+        "--raw-line=#![allow(missing_docs)]",
+        "--raw-line=#![allow(non_camel_case_types)]",
+        "--raw-line=#![allow(non_snake_case)]",
+        "--raw-line=#![allow(non_upper_case_globals)]",
         "--ctypes-prefix=core::ffi",
         "--rustified-enum=DiceConfigType",
         "--rustified-enum=DiceMode",
@@ -97,11 +98,6 @@ rust_bindgen(
 rust_library(
     name = "opendice_cbor_bindgen",
     srcs = [":libopen_dice_cbor_bindgen_nostd"],
-    rustc_flags = [
-        "--allow=non_snake_case",
-        "--allow=non_camel_case_types",
-        "--allow=non_upper_case_globals",
-    ],
 )
 
 rust_bindgen(
@@ -110,6 +106,10 @@ rust_bindgen(
     bindgen_flags = [
         "--use-core",
         "--raw-line=#![no_std]",
+        "--raw-line=#![allow(missing_docs)]",
+        "--raw-line=#![allow(non_camel_case_types)]",
+        "--raw-line=#![allow(non_snake_case)]",
+        "--raw-line=#![allow(non_upper_case_globals)]",
         "--ctypes-prefix=core::ffi",
         "--allowlist-function=DiceAndroidFormatConfigDescriptor",
         "--allowlist-function=DiceAndroidHandoverMainFlow",
@@ -134,10 +134,5 @@ rust_bindgen(
 rust_library(
     name = "opendice_android_bindgen",
     srcs = [":libopen_dice_android_bindgen_nostd"],
-    rustc_flags = [
-        "--allow=non_snake_case",
-        "--allow=non_camel_case_types",
-        "--allow=non_upper_case_globals",
-    ],
     deps = [":opendice_cbor_bindgen"],
 )

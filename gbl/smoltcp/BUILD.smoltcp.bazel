@@ -78,16 +78,7 @@ rust_library(
         "OUT_DIR": ".",
     },
     rustc_flags = [
-        "-A",
-        "unused_imports",
-        "-A",
-        "dead_code",
-        "-A",
-        "unreachable_patterns",
-        "-A",
-        "unused_variables",
-        "-A",
-        "unused_mut",
+        "--cap-lints=allow",
     ],
     # TCP in the bootloader can be a significant attack vector, only allow
     # it for dev boards.

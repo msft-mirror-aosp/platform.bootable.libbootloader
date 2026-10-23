@@ -13,7 +13,6 @@
 # limitations under the License.
 
 load("@gbl//toolchain:gbl_toolchain.bzl", "build_with_platform")
-load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 package(
@@ -28,7 +27,7 @@ rust_binary(
         "src/main.rs",
     ],
     edition = "2024",
-    rustc_flags = ANDROID_RUST_LINTS + [
+    rustc_flags = [
         "-C",
         "panic=abort",
     ],

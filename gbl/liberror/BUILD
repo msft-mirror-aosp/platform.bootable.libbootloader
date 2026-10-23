@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(
@@ -25,7 +24,6 @@ rust_library(
         ["**/*.rs"],
     ),
     edition = "2021",
-    rustc_flags = ANDROID_RUST_LINTS,
     visibility = ["//visibility:public"],
     deps = [
         "@avb",
@@ -40,6 +38,5 @@ rust_library(
 rust_test(
     name = "liberror_test",
     crate = ":liberror",
-    rustc_flags = ANDROID_RUST_LINTS,
     visibility = ["//visibility:public"],
 )

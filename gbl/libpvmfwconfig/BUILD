@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(
@@ -25,7 +24,6 @@ rust_library(
     srcs = glob(["src/**/*.rs"]),
     crate_name = "pvmfwconfig",
     edition = "2021",
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@gbl//liberror",
         "@gbl//libsafemath",
@@ -37,5 +35,4 @@ rust_library(
 rust_test(
     name = "libpvmfwconfig_test",
     crate = ":libpvmfwconfig",
-    rustc_flags = ANDROID_RUST_LINTS,
 )

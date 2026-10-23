@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 load("@rules_rust_bindgen//:defs.bzl", "rust_bindgen")
@@ -54,6 +53,7 @@ rust_bindgen(
         ),
         "--raw-line",
         """
+#![allow(missing_docs)]
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 #![cfg_attr(not(test), no_std)]
@@ -79,7 +79,6 @@ rust_library(
 rust_library(
     name = "liblp",
     srcs = ["src/liblp.rs"],
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         ":liblp_bindgen",
         "@zerocopy",
@@ -90,7 +89,6 @@ rust_test(
     name = "liblp_test",
     srcs = ["src/liblp_test.rs"],
     data = ["@gbl//liblp/testdata"],
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         ":liblp",
         "@avb//:avb_bindgen",

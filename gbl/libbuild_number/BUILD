@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 package(
@@ -34,13 +33,11 @@ rust_library(
     srcs = glob(["src/**/*.rs"]),
     edition = "2021",
     rustc_env_files = [":workspace_status_env"],
-    rustc_flags = ANDROID_RUST_LINTS,
     visibility = ["//visibility:public"],
 )
 
 rust_test(
     name = "libbuild_number_test",
     crate = ":libbuild_number",
-    rustc_flags = ANDROID_RUST_LINTS,
     visibility = ["//visibility:public"],
 )

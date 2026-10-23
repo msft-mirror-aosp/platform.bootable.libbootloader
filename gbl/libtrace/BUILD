@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@gbl_llvm_prebuilts//:info.bzl", "LLVM_PREBUILTS_C_INCLUDE")
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("@rules_rust//rust:defs.bzl", "rust_library")
@@ -76,7 +75,6 @@ rust_library(
     name = "libtrace",
     srcs = ["src/lib.rs"],
     crate_name = "trace",
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         ":gbl_trace_format",
         "@gbl//liberror",

@@ -13,7 +13,6 @@
 # limitations under the License.
 
 load("@gbl//toolchain:gbl_toolchain.bzl", "link_static_cc_library")
-load("@gbl//toolchain:gbl_workspace_util.bzl", "ANDROID_RUST_LINTS")
 load("@gbl_llvm_prebuilts//:info.bzl", "LLVM_PREBUILTS_C_INCLUDE")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 load("@rules_rust_bindgen//:defs.bzl", "rust_bindgen")
@@ -39,7 +38,10 @@ rust_bindgen(
         "(DT_TABLE.*)",
         "--raw-line",
         """
-# ![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_std)]
+#![allow(missing_docs)]
+#![allow(non_camel_case_types)]
+#![allow(non_snake_case)]
 
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 """,
@@ -63,7 +65,6 @@ rust_library(
     srcs = ["src/lib.rs"],
     crate_name = "dttable",
     edition = "2021",
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         ":libdttable_bindgen",
         ":libdttable_c_static",
@@ -79,7 +80,6 @@ rust_test(
         "@gbl//libdttable/test/data:all",
     ],
     crate = ":libdttable",
-    rustc_flags = ANDROID_RUST_LINTS,
     deps = [
         "@gbl//libfdt",
         "@gbl//libgblutils:libtestutils",
