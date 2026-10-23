@@ -32,6 +32,18 @@ COPTS = [
     "-D_GNU_SOURCE",
 ]
 
+# Patch https://bugzilla.nasm.us/show_bug.cgi?id=3392701 (fixed in NASM 2.15.04).
+# Upstream BoringSSL dropped its workaround for this bug because it requires a
+# newer NASM version, but AOSP's `external/nasm` is still on an older version
+# (2.14) that contains the bug. This patch can be removed once `external/nasm`
+# is upgraded to >= 2.15.04.
+genrule(
+    name = "outcoff_patched",
+    srcs = ["output/outcoff.c"],
+    outs = ["output/outcoff_patched.c"],
+    cmd = "sed 's/unsigned int align_flags = flags & IMAGE_SCN_ALIGN_MASK;/unsigned int align_flags = align_or;/' $(SRCS) > $(OUTS)",
+)
+
 cc_library(
     name = "nasmlib",
     srcs = [
@@ -89,7 +101,6 @@ cc_library(
         "output/outaout.c",
         "output/outas86.c",
         "output/outbin.c",
-        "output/outcoff.c",
         "output/outdbg.c",
         "output/outelf.c",
         "output/outform.c",
@@ -114,6 +125,7 @@ cc_library(
         "x86/regflags.c",
         "x86/regs.c",
         "x86/regvals.c",
+        ":outcoff_patched",
     ],
     hdrs = glob(["**/*.h"]),
     copts = COPTS,

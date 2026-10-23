@@ -87,7 +87,10 @@ rust_bindgen(
         "--raw-line=#![allow(non_snake_case)]",
         "--raw-line=#![allow(non_upper_case_globals)]",
         "--ctypes-prefix=core::ffi",
-        "--default-enum-style=rust",
+        # Match BoringSSL's `bssl-sys` bindgen config: `bssl-crypto` expects
+        # bindgen's default constified enum style for C enums except for
+        # `point_conversion_form_t`.
+        "--rustified-enum=point_conversion_form_t",
         "--default-macro-constant-type=signed",
     ],
     cc_lib = ":crypto_with_stubs",
