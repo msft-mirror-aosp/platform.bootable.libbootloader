@@ -362,6 +362,13 @@ out of space, additional traces will be truncated.
 [tools/gbl-trace-to-perfetto.py](tools/gbl-trace-to-perfetto.py) will estimate
 and log potential truncation size.
 
+By default, tracing timestamps use the AArch64 Generic Timer (`cntpct_el0` /
+`cntfrq_el0`), which stays synchronized across cores if the GBL thread migrates
+(at coarser tick resolution). To use the per-CPU PMU cycle counter
+(`pmccntr_el0`, calibrated against a 1-second Generic Timer wait at startup) for
+cycle-level resolution when GBL runs on a single core without migration, add
+`--@gbl//toolchain:aarch64_trace_timer=pmu` (`generic_timer` or `pmu`).
+
 ## Licensing
 
 Unless stated otherwise, all GBL source files are licensed under the Apache

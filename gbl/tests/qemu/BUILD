@@ -234,6 +234,18 @@ build_with_tracing(
     deps = ["@gbl//efi:aarch64_dev_pdb"],
 )
 
+build_with_tracing(
+    name = "aarch64_dev_tracing_pmu",
+    aarch64_trace_timer = "pmu",
+    deps = ["@gbl//efi:aarch64_dev"],
+)
+
+build_with_tracing(
+    name = "aarch64_dev_tracing_pmu_pdb",
+    aarch64_trace_timer = "pmu",
+    deps = ["@gbl//efi:aarch64_dev_pdb"],
+)
+
 py_binary(
     name = "trace_test",
     srcs = ["trace_test.py"],
@@ -250,6 +262,20 @@ qemu_test(
     gbl = ":aarch64_dev_tracing",
     runfiles = [
         ":aarch64_dev_tracing_pdb",
+        ":test_boot_img",
+    ],
+    test_script = ":trace_test",
+)
+
+qemu_test(
+    name = "qemu_trace_pmu_test",
+    disk = [
+        ":test_gpt_misc_fastboot_mode",
+        ":test_gpt_no_boot_image",
+    ],
+    gbl = ":aarch64_dev_tracing_pmu",
+    runfiles = [
+        ":aarch64_dev_tracing_pmu_pdb",
         ":test_boot_img",
     ],
     test_script = ":trace_test",
@@ -394,6 +420,7 @@ test_suite(
         ":qemu_fastboot_misc_test",
         ":qemu_fastboot_misc_test_x86_64",
         ":qemu_lldb_debugging_test",
+        ":qemu_trace_pmu_test",
         ":qemu_trace_test",
     ],
 )

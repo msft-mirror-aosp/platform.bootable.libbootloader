@@ -13,7 +13,7 @@
 # limitations under the License.
 
 load("@bazel_skylib//lib:selects.bzl", "selects")
-load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "bool_setting", "int_flag")
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "bool_setting", "int_flag", "string_flag")
 load("@gbl_config//:variables.bzl", "ENABLE_CROSS_LANG_LTO")
 load(
     "@gbl_llvm_prebuilts//:info.bzl",
@@ -360,6 +360,23 @@ int_flag(
     name = "trace_buffer_size_mb",
     build_setting_default = 64,
     help = "Size of trace buffer.",
+)
+
+string_flag(
+    name = "aarch64_trace_timer",
+    build_setting_default = "generic_timer",
+    help = "AArch64 timer source for gbl-tracing ('generic_timer' or 'pmu').",
+    values = [
+        "generic_timer",
+        "pmu",
+    ],
+)
+
+config_setting(
+    name = "aarch64_trace_timer_pmu",
+    flag_values = {
+        ":aarch64_trace_timer": "pmu",
+    },
 )
 
 builtin_includes_common = [

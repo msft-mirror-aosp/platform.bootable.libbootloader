@@ -410,13 +410,20 @@ int_flag_to_c_def = rule(
 )
 
 # A transition rule that emits the "@gbl//toolchain:enable_tracing" option.
-def _tracing_transition_impl(_settings, _attr):
-    return {"@gbl//toolchain:enable_tracing": True}
+def _tracing_transition_impl(settings, attr):
+    timer = attr.aarch64_trace_timer if attr.aarch64_trace_timer != "" else settings["@gbl//toolchain:aarch64_trace_timer"]
+    return {
+        "@gbl//toolchain:enable_tracing": True,
+        "@gbl//toolchain:aarch64_trace_timer": timer,
+    }
 
 _tracing_transition = transition(
     implementation = _tracing_transition_impl,
-    inputs = [],
-    outputs = ["@gbl//toolchain:enable_tracing"],
+    inputs = ["@gbl//toolchain:aarch64_trace_timer"],
+    outputs = [
+        "@gbl//toolchain:enable_tracing",
+        "@gbl//toolchain:aarch64_trace_timer",
+    ],
 )
 
 build_with_tracing = rule(
@@ -427,6 +434,7 @@ build_with_tracing = rule(
         "_allowlist_function_transition": attr.label(
             default = Label("@bazel_tools//tools/allowlists/function_transition_allowlist"),
         ),
+        "aarch64_trace_timer": attr.string(mandatory = False),
         "deps": attr.label_list(allow_files = True, mandatory = True),
     },
 )

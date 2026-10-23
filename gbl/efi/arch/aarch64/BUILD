@@ -37,7 +37,10 @@ cc_library(
         "-fno-sanitize=all",
         # Always optimize tracing code.
         "-O3",
-    ],
+    ] + select({
+        "@gbl//toolchain:aarch64_trace_timer_pmu": ["-DGBL_TRACE_USE_PMU=1"],
+        "//conditions:default": ["-DGBL_TRACE_USE_PMU=0"],
+    }),
     data = [":trace_buffer_size"],
     includes = ["."],
     visibility = ["//visibility:public"],

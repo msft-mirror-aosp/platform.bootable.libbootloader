@@ -43,6 +43,7 @@ __attribute__((no_instrument_function)) static void Reset(const uint16_t* msg) {
   }
 }
 
+#if GBL_TRACE_USE_PMU
 // Get CPU tick via aarch64 PMU (Performance Monitor Unit) counter.
 // See ARMv8-A architecture reference for more detail.
 __attribute__((no_instrument_function)) static uint64_t PmcTick() {
@@ -67,6 +68,7 @@ __attribute__((no_instrument_function)) static void EnablePmc() {
       "msr pmcntenset_el0, x0 \n\t" ::
           : "x0");
 }
+#endif
 
 // Get system tick (from generic timer)
 // See ARMv8-A architecture reference for more detail.
@@ -85,6 +87,40 @@ __attribute__((no_instrument_function)) static uint64_t SysTickFreq() {
   uint64_t sys_tick_freq = 0;
   asm volatile("mrs %0, cntfrq_el0" : "=r"(sys_tick_freq));
   return sys_tick_freq;
+}
+
+// Reads the configured trace timestamp counter.
+__attribute__((no_instrument_function)) static inline uint64_t TraceTick() {
+#if GBL_TRACE_USE_PMU
+  return PmcTick();
+#else
+  return SysTick();
+#endif
+}
+
+// Initializes the configured trace timer and returns its frequency in Hz.
+__attribute__((no_instrument_function)) static uint64_t InitTraceTimer() {
+  uint64_t sys_tick_freq = SysTickFreq();
+  if (sys_tick_freq == 0) {
+    Reset(L"Trace: cntfrq_el0 is 0\n");
+  }
+#if GBL_TRACE_USE_PMU
+  EnablePmc();
+
+  // PMC tick frequency is not a fixed value and varies as CPU frequency.
+  // Measures the frequency at runtime and assume it doesn't change throughout
+  // GBL.
+  size_t tick = PmcTick();
+  // Use aarch64 generic timer to do a 1 second wait.
+  uint64_t sys_tick = SysTick();
+  // aarch64 requires that generic timer tick always start from 0 on boot and
+  // roll-over time not less than 40 years. Thus we don't expect it to wrap.
+  while (SysTick() - sys_tick < sys_tick_freq) {
+  }
+  return PmcTick() - tick;
+#else
+  return sys_tick_freq;
+#endif
 }
 
 // The dedicated stack memory range for GBL.
@@ -188,7 +224,7 @@ __attribute__((no_instrument_function)) void gbl_trace_add_heap_snapshot(
   GBlTraceHeapSnapshot* entry = AllocateEntry(sizeof(GBlTraceHeapSnapshot));
   TraceMeta()->heap_snapshot_events++;
   if (entry) {
-    *entry = (GBlTraceHeapSnapshot){{GBL_TRACE_TYPE_HEAP_SNAPSHOT, PmcTick()},
+    *entry = (GBlTraceHeapSnapshot){{GBL_TRACE_TYPE_HEAP_SNAPSHOT, TraceTick()},
                                     total};
   }
 }
@@ -238,7 +274,7 @@ mcount_func_entry(size_t entry_stack_addr) {
     return;
   }
 
-  uint64_t start = PmcTick();
+  uint64_t start = TraceTick();
 
   // Don't proceed if we are not on GBL stack. This could mean we are running
   // from different thread.
@@ -290,9 +326,9 @@ mcount_func_entry(size_t entry_stack_addr) {
     };
     fr->parent->parent->return_address = (size_t)mcount_return_override;
     mcount_stack[mcount_stack_top++] = (struct McountStackEntry){
-        func_addr, func_return_addr, PmcTick() - start, 1};
+        func_addr, func_return_addr, TraceTick() - start, 1};
   }
-  TraceMeta()->tracing_overhead += PmcTick() - start;
+  TraceMeta()->tracing_overhead += TraceTick() - start;
   in_mcount = false;
   return;
 }
@@ -302,7 +338,7 @@ __attribute__((no_instrument_function)) size_t
 mcount_func_exit(size_t exit_stack_addr) {
   // Prevents further entry/exit event.
   in_mcount = true;
-  uint64_t start = PmcTick();
+  uint64_t start = TraceTick();
   struct McountStackEntry entry = mcount_stack[--mcount_stack_top];
   GblTraceFunctionExit* exit = AllocateEntry(sizeof(GblTraceFunctionExit));
   if (exit) {
@@ -317,10 +353,10 @@ mcount_func_exit(size_t exit_stack_addr) {
   // Accumulate mcount overhead to its caller if exists.
   if (mcount_stack_top) {
     mcount_stack[mcount_stack_top - 1].mcount_overhead +=
-        entry.mcount_overhead + PmcTick() - start;
+        entry.mcount_overhead + TraceTick() - start;
     mcount_stack[mcount_stack_top - 1].mcount_calls += entry.mcount_calls;
   }
-  TraceMeta()->tracing_overhead += PmcTick() - start;
+  TraceMeta()->tracing_overhead += TraceTick() - start;
   in_mcount = false;
   return entry.return_addr;
 }
@@ -351,20 +387,7 @@ __attribute__((no_instrument_function)) EfiStatus
 efi_main_tracing(void* image_handle, EfiSystemTable* systab) {
   gST = systab;
 
-  EnablePmc();
-
-  // PMC tick frequency is not a fixed value and varies as CPU frequency.
-  // Measures the frequency at runtime and assume it doesn't change throughout
-  // GBL.
-  size_t tick = PmcTick();
-  // Use aarch64 generic timer to do a 1 second wait.
-  uint64_t sys_tick = SysTick();
-  uint64_t sys_tick_freq = SysTickFreq();
-  // aarch64 requires that generic timer tick always start from 0 on boot and
-  // roll-over time not less than 40 years. Thus we don't expect it to wrap.
-  while (SysTick() - sys_tick < sys_tick_freq) {
-  }
-  uint64_t pmc_freq = PmcTick() - tick;
+  uint64_t trace_freq = InitTraceTimer();
 
   // OEM firmware, i.e. u-boot, may not have unwind table enabled. Thus set this
   // frame as the end node.
@@ -402,7 +425,7 @@ efi_main_tracing(void* image_handle, EfiSystemTable* systab) {
   trace_buffer.size = trace_buffer_size;
   memset(TraceMeta(), 0, sizeof(GblTraceMetadata));
   TraceMeta()->magic = GBL_TRACE_MAGIC;
-  TraceMeta()->timestamp_frequency = pmc_freq;
+  TraceMeta()->timestamp_frequency = trace_freq;
 
   // Start GBL on the new stack.
   return efi_main_switch_stack(image_handle, systab, (void*)gbl_stack_end);
