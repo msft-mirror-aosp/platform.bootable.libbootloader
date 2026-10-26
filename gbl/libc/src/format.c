@@ -274,7 +274,9 @@ static size_t gbl_printf_buffer(const char* fmt, va_list args, char* buffer,
         fmt++;
 
         fmt += skip_flags(fmt);
+        if (*fmt == '*') (void)va_arg(args, int);
         fmt += skip_width(fmt);
+        if (fmt[0] == '.' && fmt[1] == '*') (void)va_arg(args, int);
         fmt += skip_precision(fmt);
         fmt += parse_length_modifiers(fmt, &flags);
 
@@ -328,7 +330,7 @@ static size_t gbl_printf_buffer(const char* fmt, va_list args, char* buffer,
             i += format_character(va_arg(args, int), buffer + i,
                                   buffer_available - i);
             fmt++;
-            break;
+            continue;
           default:
             i += append_cannot_handle_error(buffer + i, buffer_available - i,
                                             *fmt);

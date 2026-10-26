@@ -166,13 +166,18 @@ TEST(PrintfTest, SkipComplexFlagsInt) {
 }
 
 TEST(PrintfTest, SkipDynamicWidth) {
-  test_gbl_printf("before %*d after", 77);
+  test_gbl_printf("before %*d after", 5, 77);
   ASSERT_STREQ("before 77 after", print_buffer);
 }
 
 TEST(PrintfTest, SkipDynamicPrecision) {
-  test_gbl_printf("before %.*d after", 123);
+  test_gbl_printf("before %.*d after", 5, 123);
   ASSERT_STREQ("before 123 after", print_buffer);
+}
+
+TEST(PrintfTest, SkipDynamicWidthAndPrecision) {
+  test_gbl_printf("before %*.*d after", 8, 4, 42);
+  ASSERT_STREQ("before 42 after", print_buffer);
 }
 
 TEST(PrintfTest, SkipFlagsString) {
