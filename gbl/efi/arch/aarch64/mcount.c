@@ -260,7 +260,7 @@ __attribute__((no_instrument_function)) size_t _gbl_trace_buffer_size() {
   return (trace_buffer.buffer == (uint8_t*)&null_meta) ? 0 : trace_buffer.size;
 }
 
-// TODO(b/473552136): Maximum system stack usage. Temporary for test.
+// TODO(b/578053117): Maximum system stack usage. Temporary for test.
 static size_t peak_stack = 0;
 __attribute__((no_instrument_function)) size_t get_peak_stack() {
   return peak_stack;

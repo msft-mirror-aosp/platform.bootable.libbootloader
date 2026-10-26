@@ -298,7 +298,7 @@ where
             PartitionTable::Raw(_, _) => Ok(None),
             PartitionTable::Gpt(gpt) => {
                 // Don't repair GPT silently.
-                // TODO(b/441574159): Provides a mechanism for platform to configure whether GPT
+                // TODO(b/578053160): Provides a mechanism for platform to configure whether GPT
                 // should be repaired.
                 Ok(Some(self.disk.sync_gpt(gpt, false).await?))
             }

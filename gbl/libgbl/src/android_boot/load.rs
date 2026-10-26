@@ -54,7 +54,7 @@ fn exact_range(start: impl Into<SafeNum>, sz: impl Into<SafeNum>) -> Result<Rang
 
 /// Represents a loaded boot image of version 2 and lower.
 ///
-/// TODO(b/384964561): Investigate if the APIs are better suited for bootimg.rs. The issue
+/// TODO(b/578052925): Investigate if the APIs are better suited for bootimg.rs. The issue
 /// is that it uses `Error` and `SafeNum` from GBL.
 #[derive(Clone)]
 struct BootImageV2Info<'a> {

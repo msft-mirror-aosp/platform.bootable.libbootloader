@@ -63,7 +63,7 @@ pub enum PreloadBufferState<'a> {
 /// Implements avb ops callbacks for [GblOps].
 pub struct GblAvbOps<'a: 'c, 'b, 'c, T> {
     /// The underlying [GblOps].
-    /// TODO(b/337846185): Make private to ensure GblAvbOps methods are used
+    /// TODO(b/578053084): Make private to ensure GblAvbOps methods are used
     /// instead of accessing the underlying `gbl_ops` directly.
     pub gbl_ops: &'b mut T,
     slot: Option<SlotIndex>,
@@ -117,8 +117,6 @@ impl<'a, 'b, 'c, 'p, T: GblOps<'p>> GblAvbOps<'a, 'b, 'c, T> {
         status: VerificationStatus,
         digest: Option<&str>,
     ) -> IoResult<()> {
-        // TODO(b/337846185): Cover this logic with unittests.
-
         // Convert digest rust string to null-terminated string by copying it into separate buffer.
         let mut digest_buffer = ArrayString::<{ 2 * SHA512_DIGEST_SIZE + 1 }>::new();
         let digest_cstr = match digest {
@@ -476,8 +474,6 @@ impl<'a, 'b, 'c, 'p, T: GblOps<'p>> AvbOps<'a> for GblAvbOps<'a, 'b, 'c, T> {
     }
 
     fn read_persistent_value(&mut self, name: &CStr, value: &mut [u8]) -> IoResult<usize> {
-        // TODO(b/337846185): Use Option<&mut [u8]> for `value` to support checking the value's
-        // availability and size documented by `libavb`.
         let result = self.gbl_ops.avb_read_persistent_value(name, value);
 
         // On dev boards default to no persistent values. libavb will handle

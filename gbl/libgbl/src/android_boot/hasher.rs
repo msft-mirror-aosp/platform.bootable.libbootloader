@@ -19,7 +19,7 @@ use avb_bindgen::{
     avb_sha512_update, AvbSHA256Ctx, AvbSHA512Ctx, AVB_SHA256_DIGEST_SIZE, AVB_SHA512_DIGEST_SIZE,
 };
 
-// TODO: replace this with a dedicated hash crate (b/429168146).
+// TODO: replace this with a dedicated hash crate (b/578053216).
 
 pub(crate) trait Hasher {
     const DIGEST_SIZE: usize;

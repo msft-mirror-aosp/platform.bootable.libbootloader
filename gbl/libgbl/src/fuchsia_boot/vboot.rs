@@ -63,7 +63,7 @@ fn zircon_verify_kernel_internal<'a, 'b, B: SplitByteSliceMut + PartialEq>(
         _ => SlotVerifyFlags::AVB_SLOT_VERIFY_FLAGS_NONE,
     };
 
-    // TODO(b/334962583): Supports optional additional partitions to verify.
+    // TODO(b/578053265): Supports optional additional partitions to verify.
     let verify_res = slot_verify(&mut avb_ops, &[c"zircon"], slot.map(|s| s.into()), flag, mode);
     let verified_success = verify_res.is_ok();
     let verify_data = match verify_res {

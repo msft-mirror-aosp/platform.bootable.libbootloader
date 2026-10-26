@@ -133,7 +133,7 @@ pub fn android_load_verify_fixup<'a, 'b>(
         match buffer {
             Some(buffer) => partitions_to_verify.try_push_preloaded(*partition, buffer)?,
             None => {
-                // TODO(b/337846185): Android partitions listed in vbmeta must be loaded or boot
+                // TODO(b/578053084): Android partitions listed in vbmeta must be loaded or boot
                 // fails, so this size check should be removed. For now, it's kept to allow reusing
                 // the same vbmeta in unit tests without providing all partitions.
                 if partition.verification() == Verification::Required
@@ -325,7 +325,6 @@ pub fn android_load_verify_fixup<'a, 'b>(
     // Make sure we provide an actual device tree size, so FW can calculate amount of space
     // available for fixup.
     fdt.shrink_to_fit()?;
-    // TODO(b/353272981): Handle buffer too small
     ops.fixup_device_tree(fdt.as_mut())?;
     // The FDT is not resized after the fixup, so that totalsize reported by FW is preserved.
     let fdt_ptr_range = fdt.as_ref().get(..fdt.size()?).ok_or(Error::BadBufferSize)?.as_ptr_range();

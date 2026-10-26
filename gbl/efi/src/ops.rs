@@ -421,8 +421,8 @@ impl<'a, 'b> GblOps<'b> for Ops<'a, 'b> {
         &mut self,
         container: &mut ZbiContainer<&mut [u8]>,
     ) -> Result<()> {
-        // TODO(b/353272981): Switch to use OS configuration protocol once it is implemented on
-        // existing platforms such as VIM3.
+        // TODO(b/368647237): Switch to a GBL EFI protocol for device ZBI items once one is
+        // implemented on existing platforms such as VIM3.
         if let Some(fdt) = self.get_efi_fdt()
             && let Ok(blob) = fdt.get_property("zircon", c"zbi-blob")
         {
@@ -529,7 +529,8 @@ impl<'a, 'b> GblOps<'b> for Ops<'a, 'b> {
         &mut self,
         attributes: &mut CertPermanentAttributes,
     ) -> AvbIoResult<()> {
-        // TODO(b/337846185): Switch to use GBL Verified Boot EFI protocol when available.
+        // TODO(b/368647237): Switch to use a GBL EFI protocol once one supports avb_cert
+        // permanent attributes.
         if let Some(fdt) = self.get_efi_fdt()
             && let Ok(perm_attr) = fdt.get_property("gbl", c"avb-cert-permanent-attributes")
         {
@@ -541,7 +542,8 @@ impl<'a, 'b> GblOps<'b> for Ops<'a, 'b> {
     }
 
     fn avb_cert_read_permanent_attributes_hash(&mut self) -> AvbIoResult<[u8; SHA256_DIGEST_SIZE]> {
-        // TODO(b/337846185): Switch to use GBL Verified Boot EFI protocol when available.
+        // TODO(b/368647237): Switch to use a GBL EFI protocol once one supports avb_cert
+        // permanent attributes.
         if let Some(fdt) = self.get_efi_fdt()
             && let Ok(hash) = fdt.get_property("gbl", c"avb-cert-permanent-attributes-hash")
         {

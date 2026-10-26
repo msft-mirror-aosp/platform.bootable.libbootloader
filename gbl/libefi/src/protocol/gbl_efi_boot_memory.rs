@@ -224,7 +224,7 @@ fn partition_buffer_op(
 ) -> Result<Option<GblVendorReservedMemory>> {
     // 64 is randomly chosen. Changed if a tighter bound is found.
     //
-    // TODO(b/422688425): Ideally this should shared the same constant as the maximum avb verify
+    // TODO(b/578053116): Ideally this should shared the same constant as the maximum avb verify
     // partitions from libgbl. But doing that currently causes dependency cycle. Alterantively,
     // investigate letting caller determine the pool size.
     const POOL_SIZE: usize = 64;

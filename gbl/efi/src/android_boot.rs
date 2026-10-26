@@ -51,7 +51,7 @@ pub fn efi_android_boot(
 
     #[cfg(all(target_arch = "aarch64", feature = "gbl_tracing"))]
     {
-        // TODO(b/473552136): Temporary test for tracing functionality.
+        // TODO(b/578053117): Temporary test for tracing functionality.
         unsafe extern "C" {
             safe fn get_peak_stack() -> usize;
         }

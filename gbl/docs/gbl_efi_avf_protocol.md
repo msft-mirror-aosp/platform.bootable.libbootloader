@@ -152,7 +152,7 @@ The AVF protocol can be uninstalled at runtime if needed. In that case, GBL will
 skip all the AVF-related work. To uninstall AVF protocol, use the
 `UninstallProtocolInterface` function.
 
-TODO(b/391191885): be less specific about AVF DICE requirements once protocol is
+TODO(b/578052649): be less specific about AVF DICE requirements once protocol is
 mainly adopted by the ecosystem.
 
 ### Status Codes Returned

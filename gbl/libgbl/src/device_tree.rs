@@ -275,7 +275,7 @@ impl<'a> DtComponentsRegistry<'a> {
     /// * `data` - Input buffer containing the raw sequential FDT data.
     /// * `buffer` - Output buffer where the 8-byte aligned FDT data will be stored.
     ///
-    /// TODO(b/363244924): Remove after partners migrated to DTB.
+    /// TODO(b/374336105): Remove after partners migrated to DTB.
     fn append_from_multifdt_buffer<'b, 'd: 'a>(
         &mut self,
         ops: &mut impl GblOps<'b>,
@@ -370,7 +370,7 @@ impl<'a> DtComponentsRegistry<'a> {
             selected: false,
         });
 
-        // TODO(b/363244924): Remove after partners migrated to dttable.
+        // TODO(b/374336105): Remove after partners migrated to dttable.
         self.append_from_multifdt_buffer(
             ops,
             component_source,

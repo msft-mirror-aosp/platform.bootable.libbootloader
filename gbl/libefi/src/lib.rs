@@ -2041,7 +2041,7 @@ mod test {
 
     /// A test wrapper that sets up a system table, image handle and runs a test function like it
     /// is an EFI application.
-    /// TODO(300168989): Investigate using procedural macro to generate test that auto calls this.
+    /// TODO(b/578052958): Investigate using procedural macro to generate test that auto calls this.
     pub fn run_test(func: impl FnOnce(EfiHandle, *mut EfiSystemTable) -> ()) {
         // Reset all traces
         EFI_CALL_TRACES.with(|trace| {

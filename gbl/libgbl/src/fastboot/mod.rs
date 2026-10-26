@@ -1035,7 +1035,7 @@ where
 
         #[cfg(feature = "fuchsia")]
         if self.gbl_ops.expected_os_is_fuchsia()? {
-            // TODO(b/374776896): Prioritizes platform specific `set_active_slot`  if available.
+            // TODO(b/578053863): Prioritizes platform specific `set_active_slot`  if available.
             return Ok(mark_slot_active(
                 &mut GblAbrOps(self.gbl_ops),
                 match suffix {

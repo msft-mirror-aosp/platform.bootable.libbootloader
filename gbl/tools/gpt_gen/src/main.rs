@@ -89,7 +89,7 @@ fn main() {
         })
         .unwrap();
 
-    // TODO(b/508260420): Support 256 entries if necessary.
+    // TODO(b/578052123): Support 256 entries if necessary.
     let mut gpt = new_gpt_n::<128>();
     let (mut builder, _) = GptBuilder::new(&mut disk, &mut gpt)
         .inspect_err(|e| {

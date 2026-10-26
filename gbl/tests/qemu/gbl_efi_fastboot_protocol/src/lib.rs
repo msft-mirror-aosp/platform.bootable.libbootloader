@@ -45,17 +45,17 @@ impl GblEfiFastboot for GblEfiFastbootImpl {
         _args: impl Iterator<Item = &'a str>,
         _buffer: &mut [u8],
     ) -> EfiResult<usize> {
-        // TODO(b/531837677): Implement and test get_var
+        // TODO(b/578052235): Implement and test get_var
         Err(EfiError::NotFound)
     }
 
     fn get_var_all(&self, _cb: &mut dyn FnMut(&[&CStr], &CStr) -> EfiResult<()>) -> EfiResult<()> {
-        // TODO(b/531837677): Implement and test get_var_all
+        // TODO(b/578052235): Implement and test get_var_all
         Ok(())
     }
 
     fn get_staged(&self, _buffer: &mut [u8]) -> EfiResult<(usize, usize)> {
-        // TODO(b/531837677): Implement and test get_staged
+        // TODO(b/578052235): Implement and test get_staged
         Err(EfiError::Unsupported)
     }
 

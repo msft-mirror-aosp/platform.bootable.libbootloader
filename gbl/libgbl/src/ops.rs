@@ -236,7 +236,7 @@ pub trait GblOps<'a> {
     /// Returns if the expected_os is fuchsia
     #[cfg(feature = "fuchsia")]
     fn expected_os_is_fuchsia(&mut self) -> Result<bool, Error> {
-        // TODO(b/374776896): Implement auto detection.
+        // TODO(b/578053863): Implement auto detection.
         Ok(self.expected_os()?.map(|v| v == Os::Fuchsia).unwrap_or(false))
     }
 

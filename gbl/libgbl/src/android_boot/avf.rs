@@ -104,7 +104,7 @@ impl AVFVerificationData for SlotVerifyData<'_> {
         vbmeta: Option<&str>,
     ) -> core::result::Result<T::Output, VbmetaVerifyError> {
         // TODO: a more precise approach identifying vbmetas that cover relevant partitions, and
-        // extracting their public keys (b/429168146).
+        // extracting their public keys (b/578053216).
         let mut hasher = T::new();
         self.vbmeta_data().iter().try_for_each(|data| {
             if vbmeta.map_or(true, |v| data.partition_name().to_str() == Ok(v)) {

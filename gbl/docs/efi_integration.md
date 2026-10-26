@@ -215,7 +215,7 @@ command line. GBL will validate the applied changes and prevent booting if any
 of the security limitations (listed below) are violated. Error details will be
 reported through the UEFI log.
 
-TODO (b/353272981): Add limitations
+TODO (b/578053044): Add limitations
 
 ## GBL Custom Protocols
 

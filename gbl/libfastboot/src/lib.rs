@@ -371,7 +371,7 @@ pub trait FastbootImplementation {
     /// Gets the value of a variable specified by name and configuration represented by list of
     /// additional arguments in `args`.
     ///
-    /// Variable `max-download-size`, `version` are reserved by the library.
+    /// Variable `all` is reserved by the library and dispatched to `get_var_all()`.
     ///
     /// # Args
     ///
@@ -379,8 +379,6 @@ pub trait FastbootImplementation {
     /// * `args`: Additional arguments.
     /// * `out`: Output buffer for storing the variable value.
     /// * `responder`: An instance of `InfoSender`.
-    ///
-    /// TODO(b/322540167): Figure out other reserved variables.
     async fn get_var(
         &mut self,
         var: &CStr,
@@ -431,7 +429,7 @@ pub trait FastbootImplementation {
     ///   (bootloader) partition-size:init_boot_b: <size of init_boot_b>
     ///   ...
     ///
-    /// TODO(b/322540167): This and `get_var()` contain duplicated logic. Investigate if there can
+    /// TODO(b/465769208): This and `get_var()` contain duplicated logic. Investigate if there can
     /// be better solutions for doing the combination traversal.
     async fn get_var_all(&mut self, responder: impl VarInfoSender) -> CommandResult<()>;
 
@@ -637,8 +635,6 @@ pub trait FastbootImplementation {
     ///
     /// * `message`: A displayable object to be printed.
     fn log_line(&mut self, message: impl Display);
-
-    // TODO(b/322540167): Add methods for other commands.
 }
 
 /// A download builder/downloader with data from buffer.
