@@ -111,8 +111,6 @@ pub unsafe extern "C" fn efi_main(image_handle: EfiHandle, systab_ptr: *mut EfiS
     let gbl_read_size = gbl_file.read(&mut gbl_buffer).unwrap();
     efi_println!(entry, "Loaded GBL with {} bytes", gbl_read_size);
 
-    // TODO(b/499359597): Mock EFI protocols and launch GBL.
-
     efi_println!(entry, "Loading GBL...");
     // SAFETY:
     // `gbl_buffer` contains a valid PE image.

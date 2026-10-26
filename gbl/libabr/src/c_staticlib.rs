@@ -42,7 +42,7 @@ pub const ABR_RESULT_ERR_UNSUPPORTED_VERSION: c_uint = 3;
 // ABR system dependencies.
 //
 // These correspond to the definitions in Fuchsia upstream header
-// "src/firmware/lib/abr/include/lib/abr/sysdeps.h", which will eventually migrate over.
+// "src/firmware/lib/abr/include/lib/abr/sysdeps.h".
 extern "C" {
     /// Prints out a NULL-terminated string.
     pub fn AbrPrint(message: *const c_char);
@@ -84,7 +84,7 @@ fn panic(panic: &core::panic::PanicInfo<'_>) -> ! {
 }
 
 /// This corresponds to the `AbrOps` C definition in Fuchsia upstream header
-/// "src/firmware/lib/abr/include/lib/abr/ops.h", which will eventually migrate over.
+/// "src/firmware/lib/abr/include/lib/abr/ops.h".
 ///
 /// typedef struct AbrOps {
 ///     void* context;
@@ -444,8 +444,8 @@ pub unsafe extern "C" fn AbrMarkSlotSuccessful(
 
 /// `SlotInfo` contains the current state of an A/B/R slot.
 ///
-/// TODO(b/338243123): Detailed documentation is available in Fuchsia upstream header
-/// "src/firmware/lib/abr/include/lib/abr/abr.h", which will migrate to the GBL repo.
+/// Detailed documentation is available in Fuchsia upstream header
+/// "src/firmware/lib/abr/include/lib/abr/abr.h".
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct SlotInfo {

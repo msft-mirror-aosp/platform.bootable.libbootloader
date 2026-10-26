@@ -14,8 +14,6 @@
 
 //! This file provides common constants that are used in GBL
 
-// TODO(b/380392958) Cleanup other used of the constants. Move them here as well.
-
 use static_assertions::const_assert_eq;
 
 /// Macro for defining Kibibyte-sized constants

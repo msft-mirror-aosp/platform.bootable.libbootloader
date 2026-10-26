@@ -562,8 +562,8 @@ fn save_metadata_if_changed(
 
 /// Equivalent to C API `AbrGetBootSlot()`.
 ///
-/// TODO(b/338243123): Detailed documentation is available in Fuchsia upstream header
-/// "src/firmware/lib/abr/include/lib/abr/abr.h", which will migrate to the GBL repo.
+/// Detailed documentation is available in Fuchsia upstream header
+/// "src/firmware/lib/abr/include/lib/abr/abr.h".
 pub fn get_boot_slot(abr_ops: &mut dyn Ops, update_metadata: bool) -> (SlotIndex, bool) {
     let mut is_slot_marked_successful = false;
     let (mut abr_data, abr_data_orig) = match load_metadata(abr_ops) {
@@ -635,8 +635,8 @@ pub fn get_boot_slot(abr_ops: &mut dyn Ops, update_metadata: bool) -> (SlotIndex
 
 /// Equivalent to C API `AbrMarkSlotActive()`.
 ///
-/// TODO(b/338243123): Detailed documentation is available in Fuchsia upstream header
-/// "src/firmware/lib/abr/include/lib/abr/abr.h", which will migrate to the GBL repo.
+/// Detailed documentation is available in Fuchsia upstream header
+/// "src/firmware/lib/abr/include/lib/abr/abr.h".
 pub fn mark_slot_active(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> Result<()> {
     if slot_index == SlotIndex::R {
         avb_print!(abr_ops, "Invalid argument: Cannot mark slot R as active.\n");
@@ -659,8 +659,8 @@ pub fn mark_slot_active(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> Result<
 
 /// Equivalent to C API `AbrGetSlotLastMarkedActive()`.
 ///
-/// TODO(b/338243123): Detailed documentation is available in Fuchsia upstream header
-/// "src/firmware/lib/abr/include/lib/abr/abr.h", which will migrate to the GBL repo.
+/// Detailed documentation is available in Fuchsia upstream header
+/// "src/firmware/lib/abr/include/lib/abr/abr.h".
 pub fn get_slot_last_marked_active(abr_ops: &mut dyn Ops) -> Result<SlotIndex> {
     let (abr_data, _) = load_metadata(abr_ops)?;
     Ok(
@@ -674,8 +674,8 @@ pub fn get_slot_last_marked_active(abr_ops: &mut dyn Ops) -> Result<SlotIndex> {
 
 /// Equivalent to C API `AbrMarkSlotUnbootable()`.
 ///
-/// TODO(b/338243123): Detailed documentation is available in Fuchsia upstream header
-/// "src/firmware/lib/abr/include/lib/abr/abr.h", which will migrate to the GBL repo.
+/// Detailed documentation is available in Fuchsia upstream header
+/// "src/firmware/lib/abr/include/lib/abr/abr.h".
 pub fn mark_slot_unbootable(
     abr_ops: &mut dyn Ops,
     slot_index: SlotIndex,
@@ -692,8 +692,8 @@ pub fn mark_slot_unbootable(
 
 /// Equivalent to C API `AbrMarkSlotSuccessful()`.
 ///
-/// TODO(b/338243123): Detailed documentation is available in Fuchsia upstream header
-/// "src/firmware/lib/abr/include/lib/abr/abr.h", which will migrate to the GBL repo.
+/// Detailed documentation is available in Fuchsia upstream header
+/// "src/firmware/lib/abr/include/lib/abr/abr.h".
 pub fn mark_slot_successful(
     abr_ops: &mut dyn Ops,
     slot_index: SlotIndex,
@@ -731,8 +731,8 @@ pub fn mark_slot_successful(
 
 /// Equivalent to C API `AbrGetSlotInfo()`.
 ///
-/// TODO(b/338243123): Detailed documentation is available in Fuchsia upstream header
-/// "src/firmware/lib/abr/include/lib/abr/abr.h", which will migrate to the GBL repo.
+/// Detailed documentation is available in Fuchsia upstream header
+/// "src/firmware/lib/abr/include/lib/abr/abr.h".
 pub fn get_slot_info(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> Result<SlotInfo> {
     let (abr_data, _) = load_metadata(abr_ops)?;
     Ok(match slot_index {
@@ -755,8 +755,8 @@ pub fn get_slot_info(abr_ops: &mut dyn Ops, slot_index: SlotIndex) -> Result<Slo
 
 /// Equivalent to C API `AbrSetOneShotRecovery()`.
 ///
-/// TODO(b/338243123): Detailed documentation is available in Fuchsia upstream header
-/// "src/firmware/lib/abr/include/lib/abr/abr.h", which will migrate to the GBL repo.
+/// Detailed documentation is available in Fuchsia upstream header
+/// "src/firmware/lib/abr/include/lib/abr/abr.h".
 pub fn set_one_shot_recovery(abr_ops: &mut dyn Ops, enable: bool) -> Result<()> {
     let (mut abr_data, abr_data_orig) = load_metadata(abr_ops)?;
     abr_data.set_one_shot_recovery(enable);
@@ -765,8 +765,8 @@ pub fn set_one_shot_recovery(abr_ops: &mut dyn Ops, enable: bool) -> Result<()> 
 
 /// Equivalent to C API `AbrSetOneShotBootloader()`.
 ///
-/// TODO(b/338243123): Detailed documentation is available in Fuchsia upstream header
-/// "src/firmware/lib/abr/include/lib/abr/abr.h", which will migrate to the GBL repo.
+/// Detailed documentation is available in Fuchsia upstream header
+/// "src/firmware/lib/abr/include/lib/abr/abr.h".
 pub fn set_one_shot_bootloader(abr_ops: &mut dyn Ops, enable: bool) -> Result<()> {
     let (mut abr_data, abr_data_orig) = load_metadata(abr_ops)?;
     abr_data.set_one_shot_bootloader(enable);
@@ -775,8 +775,8 @@ pub fn set_one_shot_bootloader(abr_ops: &mut dyn Ops, enable: bool) -> Result<()
 
 /// Equivalent to C API `AbrGetAndClearOneShotFlags()`.
 ///
-/// TODO(b/338243123): Detailed documentation is available in Fuchsia upstream header
-/// "src/firmware/lib/abr/include/lib/abr/abr.h", which will migrate to the GBL repo.
+/// Detailed documentation is available in Fuchsia upstream header
+/// "src/firmware/lib/abr/include/lib/abr/abr.h".
 pub fn get_and_clear_one_shot_flag(abr_ops: &mut dyn Ops) -> Result<u8> {
     let (mut abr_data, abr_data_orig) = load_metadata(abr_ops)?;
     let res = abr_data.one_shot_flags;

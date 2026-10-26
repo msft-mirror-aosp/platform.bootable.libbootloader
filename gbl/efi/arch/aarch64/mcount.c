@@ -296,8 +296,6 @@ mcount_func_entry(size_t entry_stack_addr) {
 
   in_mcount = true;
 
-  // TODO(b/473552136): collect trace information such as timestamp, stack
-  // snapshot.
   size_t stack = gbl_stack_end - entry_stack_addr;
   if (stack > peak_stack) {
     peak_stack = stack;
@@ -419,7 +417,6 @@ efi_main_tracing(void* image_handle, EfiSystemTable* systab) {
   gbl_stack_end = gbl_stack_start + stack_size;
 
   // Allocate trace storage buffer.
-  // TODO(b/473552136): Make trace buffer size configurable
   const size_t trace_buffer_size = TRACE_BUFFER_SIZE_MB * 1024 * 1024;
   trace_buffer.buffer = AllocPage(systab, trace_buffer_size / EFI_PAGE_SIZE);
   trace_buffer.size = trace_buffer_size;

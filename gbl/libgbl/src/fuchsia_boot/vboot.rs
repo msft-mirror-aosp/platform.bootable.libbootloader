@@ -244,8 +244,6 @@ mod test {
         let mut items_iter = zbi_container.iter();
         // Skip first kernel item
         items_iter.next();
-        // TODO(b/379778252) It is not as efficient as moving kernel since ZBI items would contain file
-        // system and be bigger than kernel.
         zbi_items.extend_items(items_iter).unwrap();
 
         let (kernel, _) = zbi_split_unused_buffer_mut(&mut load_buffer[..]).unwrap();

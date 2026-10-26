@@ -20,9 +20,6 @@ use liberror::Error;
 use static_assertions::const_assert;
 use zerocopy::{FromBytes, Immutable, IntoBytes, Ref};
 
-// TODO(b/331854173): Switch to use bindgen for the following type definitions once
-// system/core/libsparse is added to repo checkout.
-
 const HEADER_MAGIC: u32 = 0xED26FF3A;
 const CHUNK_TYPE_RAW: u16 = 0xCAC1;
 const CHUNK_TYPE_FILL: u16 = 0xCAC2;

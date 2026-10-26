@@ -101,7 +101,7 @@ pub fn fdt_select_from_boot_partitions<'b, 'a: 'b, 'c: 'b>(
     let mut components = DtComponentsRegistry::new();
 
     let mut remains = match images.dtbo.len() > 0 {
-        // TODO(b/384964561, b/374336105): Investigate if we can avoid additional copy.
+        // TODO(b/374336105): Investigate if we can avoid additional copy.
         true => {
             gbl_println!(ops, "Handling overlays from dtbo");
             components.append_from_dttable(

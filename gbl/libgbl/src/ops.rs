@@ -145,13 +145,6 @@ impl Display for FastbootPartitionType {
     }
 }
 
-// https://stackoverflow.com/questions/41081240/idiomatic-callbacks-in-rust
-// should we use traits for this? or optional/box FnMut?
-//
-/* TODO: b/312612203 - needed callbacks:
-missing:
-- key management => atx extension in callback =>  atx_ops: ptr::null_mut(), // support optional ATX.
-*/
 /// Trait that defines callbacks that can be provided to Gbl.
 pub trait GblOps<'a> {
     /// Gets a console for logging messages.
@@ -268,14 +261,6 @@ pub trait GblOps<'a> {
     fn get_zbi_bootloader_files_buffer_aligned(&mut self) -> Option<&mut [u8]> {
         aligned_subslice(self.get_zbi_bootloader_files_buffer()?, ZBI_ALIGNMENT_USIZE).ok()
     }
-
-    // TODO(b/334962570): figure out how to plumb ops-provided hash implementations into
-    // libavb. The tricky part is that libavb hashing APIs are global with no way to directly
-    // correlate the implementation to a particular [GblOps] object, so we'll probably have to
-    // create a [Context] ahead of time and store it globally for the hashing APIs to access.
-    // However this would mean that [Context] must be a standalone object and cannot hold a
-    // reference to [GblOps], which may restrict implementations.
-    // fn new_digest(&self) -> Option<Self::Context>;
 
     // The following is a selective subset of the interfaces in `avb::Ops` and `avb::CertOps` needed
     // by GBL's usage of AVB. The rest of the APIs are either not relevant to or are implemented and

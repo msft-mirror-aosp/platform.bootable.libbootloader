@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Use host readlink. b/348003050
+# Use host readlink: the hermetic prebuilts cannot be located until WORKSPACE_DIR is known.
 MYPATH=$(readlink -f "$0")
 BAZEL_PY="${MYPATH%/*}/bazel.py"
 WORKSPACE_DIR=${MYPATH%/bootable/libbootloader/gbl/*}

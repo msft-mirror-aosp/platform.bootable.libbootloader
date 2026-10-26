@@ -477,7 +477,7 @@ pub fn efi_status_to_result(e: EfiStatus) -> Result<()> {
     // Convert to `EfiResult` using libefi_types, then from there into our
     // GBL `Result`. Once the Rust protocol wrappers get pushed up to
     // libefi_types, we'll get an `EfiResult` directly and won't have to deal
-    // with the raw `EfiStatus` here (b/413021069).
+    // with the raw `EfiStatus` here.
     //
     // This does incur a double-lookup, but it's easier to not have to maintain
     // mappings to both `EfiStatus` and `EfiError`, and the extra lookup time

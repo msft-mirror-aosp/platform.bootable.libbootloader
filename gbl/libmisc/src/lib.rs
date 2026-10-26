@@ -16,9 +16,6 @@
 //!
 //! Reference code:
 //! https://cs.android.com/android/platform/superproject/main/+/main:bootable/recovery/bootloader_message/include/bootloader_message/bootloader_message.h
-//!
-//! TODO(b/329716686): Generate rust bindings for misc API from recovery to reuse the up to date
-//! implementation
 
 #![cfg_attr(not(test), no_std)]
 
