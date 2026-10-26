@@ -51,7 +51,7 @@ const RAW_ALGORITHM_GUID: EfiGuid =
     EfiGuid::from_u64s(EFI_RNG_ALGORITHM_RAW_GUID_U64_0, EFI_RNG_ALGORITHM_RAW_GUID_U64_1);
 
 impl Protocol<'_, RandomNumberGeneratorProtocol> {
-    /// `get_info` is deliberately not provided. See b/413744208 for details.
+    // `get_info` is deliberately not provided. See b/413744208 for details.
 
     /// Wrapper of `EFI_RANDOM_NUMBER_GENERATOR_PROTOCOL.get_rng()` which fills a
     /// byte slice.

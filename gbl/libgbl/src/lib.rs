@@ -14,10 +14,13 @@
 
 //! # Generic Bootloader Library (GBL)
 //!
-//! TODO: b/312610098 - add documentation.
+//! `libgbl` implements the platform-agnostic core boot and fastboot logic for the Android Generic
+//! Bootloader (GBL), including Android and Fuchsia boot flows, Android Verified Boot (AVB),
+//! Android Virtualization Framework (AVF) pvmfw configuration, Device Tree / bootconfig / kernel
+//! command-line assembly, GPT partition and slot management, and Fastboot over USB/TCP.
 //!
 //! The intended users of this library are firmware, bootloader, and bring-up teams at OEMs and SOC
-//! vendors
+//! vendors.
 //!
 //! This library is `no_std` as it is intended for use in bootloaders that typically will not
 //! support the Rust standard library. However, it does require `alloc` with a global allocator,

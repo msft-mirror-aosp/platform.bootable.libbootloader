@@ -40,7 +40,8 @@
 //       * nul-terminated strings (s)
 //     Others are not supported (undefined behaviour).
 //
-// TODO(b/394149272): Support floating pointers formatting.
+// Floating-point conversions (e.g. %f, %e, %g) are not supported; none of the
+// current consumers use them.
 //
 // The maximum supported output length is 2048 bytes (see `PRINT_BUFFER_SIZE`).
 // Any additional content is silently truncated.
