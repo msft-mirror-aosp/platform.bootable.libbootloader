@@ -515,8 +515,8 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
     /// Set the value of a node's property. Create the node and property if it doesn't exist.
     ///
     /// Looking up a node by path walks every node that precedes it. To update several properties
-    /// of the same node in a large FDT, look it up once with [Fdt::find_or_add_node_offset] and
-    /// use [Fdt::set_property_by_node_offset] instead.
+    /// of the same node in a large FDT, look it up once with [Fdt::find_or_add_node_mut] and use
+    /// [FdtNodeMut::set_property] instead.
     pub fn set_property(&mut self, path: &str, name: &CStr, val: &[u8]) -> Result<()> {
         // When FDT is large and complicated, fdt_setprop can generate a lots of noisy traces
         // such as memcpy, memcmp which significantly bloat trace data size. Disable tracing to
@@ -528,7 +528,7 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
 
     /// Set the value of a property of the node at `node_offset`. Create the property if it
     /// doesn't exist.
-    pub fn set_property_by_node_offset(
+    fn set_property_by_node_offset(
         &mut self,
         node_offset: usize,
         name: &CStr,
@@ -572,7 +572,7 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
     }
 
     /// Same as [Fdt::set_property_placeholder], but for the node at `node_offset`.
-    pub fn set_property_placeholder_by_node_offset(
+    fn set_property_placeholder_by_node_offset(
         &mut self,
         node_offset: usize,
         name: &CStr,
@@ -608,11 +608,7 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
     }
 
     /// Delete property `name` of the node at `node_offset`. Fail if property doesn't exist.
-    pub fn delete_property_by_node_offset(
-        &mut self,
-        node_offset: usize,
-        name: &CStr,
-    ) -> Result<()> {
+    fn delete_property_by_node_offset(&mut self, node_offset: usize, name: &CStr) -> Result<()> {
         // SAFETY:
         // * `self.0` is guaranteed to be a proper fdt header reference.
         // * `fdt_delprop` validates `node_offset`.
@@ -677,13 +673,20 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
         Ok(())
     }
 
-    /// Finds the node at `path`, creating it and any missing parents, and returns its offset.
+    /// Finds the node at `path`, creating it and any missing parents, and returns a mutable
+    /// handle to it.
     ///
     /// Looking up a node by path walks every node that precedes it in the FDT, which is slow for
-    /// large device trees. To access several properties of the same node, look it up once and use
-    /// the `*_by_node_offset()` methods. Adding, resizing or deleting the node's own properties
-    /// doesn't move it, but any change before it in the FDT invalidates the offset.
-    pub fn find_or_add_node_offset(&mut self, path: &str) -> Result<usize> {
+    /// large device trees. [FdtNodeMut] caches the node's offset while holding `&mut self`, so
+    /// callers can access several properties of the same node without re-walking the tree or
+    /// risking offset invalidation from modifications elsewhere in the FDT.
+    pub fn find_or_add_node_mut(&mut self, path: &str) -> Result<FdtNodeMut<'_, T>> {
+        let offset = self.find_or_add_node_offset(path)?;
+        Ok(FdtNodeMut { fdt: self, offset })
+    }
+
+    /// Finds the node at `path`, creating it and any missing parents, and returns its offset.
+    fn find_or_add_node_offset(&mut self, path: &str) -> Result<usize> {
         self.find_or_add_node(path)?
             .try_into()
             .map_err(|_| Error::Other(Some("Invalid FDT node offset")))
@@ -702,6 +705,72 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
             };
         }
         Ok(curr)
+    }
+}
+
+/// Mutable handle to a single node in an [Fdt].
+///
+/// Exclusively borrows the [Fdt] and exposes only operations on the node's own properties,
+/// ensuring the cached node offset cannot be invalidated while the handle is alive.
+pub struct FdtNodeMut<'a, T> {
+    fdt: &'a mut Fdt<T>,
+    offset: usize,
+}
+
+impl<T: AsRef<[u8]>> FdtNodeMut<'_, T> {
+    /// Gets a property from this node.
+    pub fn get_property(&self, name: &CStr) -> Result<&[u8]> {
+        self.fdt.get_property_by_node_offset(self.offset, name)
+    }
+}
+
+impl<T: AsMut<[u8]> + AsRef<[u8]>> FdtNodeMut<'_, T> {
+    /// Sets the value of a property on this node, creating it if it doesn't exist.
+    pub fn set_property(&mut self, name: &CStr, val: &[u8]) -> Result<()> {
+        self.fdt.set_property_by_node_offset(self.offset, name, val)
+    }
+
+    /// Creates or resizes a property on this node to `len` bytes and returns its buffer.
+    ///
+    /// See [Fdt::set_property_placeholder] for details on existing data and uninitialized
+    /// trailing bytes.
+    pub fn set_property_placeholder(&mut self, name: &CStr, len: usize) -> Result<&mut [u8]> {
+        self.fdt.set_property_placeholder_by_node_offset(self.offset, name, len)
+    }
+
+    /// Deletes property `name` from this node. Fails if the property doesn't exist.
+    pub fn delete_property(&mut self, name: &CStr) -> Result<()> {
+        self.fdt.delete_property_by_node_offset(self.offset, name)
+    }
+
+    /// Borrows `dst_name` mutably and `src_name` immutably on this node without resizing the FDT.
+    /// Fails with `Error::InvalidInput` if `dst_name == src_name`.
+    pub fn get_property_mut_and_ref(
+        &mut self,
+        dst_name: &CStr,
+        src_name: &CStr,
+    ) -> Result<(&mut [u8], &[u8])> {
+        if dst_name == src_name {
+            return Err(Error::InvalidInput);
+        }
+        let fdt_start = self.fdt.as_ref().as_ptr().addr();
+        let dst = self.get_property(dst_name)?;
+        let dst_off = dst.as_ptr().addr() - fdt_start;
+        let dst_len = dst.len();
+        let src = self.get_property(src_name)?;
+        let src_off = src.as_ptr().addr() - fdt_start;
+        let src_len = src.len();
+
+        let buf = self.fdt.as_mut();
+        if dst_off + dst_len <= src_off {
+            let (left, right) = buf.split_at_mut(src_off);
+            Ok((&mut left[dst_off..dst_off + dst_len], &right[..src_len]))
+        } else if src_off + src_len <= dst_off {
+            let (left, right) = buf.split_at_mut(dst_off);
+            Ok((&mut right[..dst_len], &left[src_off..src_off + src_len]))
+        } else {
+            Err(Error::InvalidInput)
+        }
     }
 }
 
@@ -943,65 +1012,93 @@ mod test {
     }
 
     #[test]
-    fn test_find_or_add_node_offset() {
+    fn test_find_or_add_node_mut() {
         let init = include_bytes!("../test/data/base.dtb").to_vec();
         let mut fdt_buf = vec![0u8; init.len() + 512];
         let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
 
         // Existing node.
-        let existing = fdt.find_or_add_node_offset("/dev-2/dev-2.2").unwrap();
-        assert_eq!(existing, fdt.find_node_offset("/dev-2/dev-2.2").unwrap());
+        let existing = fdt.find_or_add_node_mut("/dev-2/dev-2.2/dev-2.2.1").unwrap();
+        assert_eq!(
+            CStr::from_bytes_with_nul(existing.get_property(c"property-1").unwrap()).unwrap(),
+            c"dev-2.2.1-property-1"
+        );
+        let existing_offset = existing.offset;
+        assert_eq!(existing_offset, fdt.find_node_offset("/dev-2/dev-2.2/dev-2.2.1").unwrap());
+
         // New node and its missing parent are created.
-        let new = fdt.find_or_add_node_offset("/new-node/child").unwrap();
-        assert_eq!(new, fdt.find_node_offset("/new-node/child").unwrap());
+        let new_offset = fdt.find_or_add_node_mut("/new-node/child").unwrap().offset;
+        assert_eq!(new_offset, fdt.find_node_offset("/new-node/child").unwrap());
     }
 
     #[test]
-    fn test_set_property_by_node_offset() {
+    fn test_fdt_node_mut_set_property() {
         let init = include_bytes!("../test/data/base.dtb").to_vec();
         let mut fdt_buf = vec![0u8; init.len() + 512];
         let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
 
-        let node = fdt.find_or_add_node_offset("/new-node").unwrap();
-        fdt.set_property_by_node_offset(node, c"first", &[0x11]).unwrap();
-        fdt.set_property_by_node_offset(node, c"second", &[0x22, 0x33]).unwrap();
-        fdt.set_property_by_node_offset(node, c"first", &[0x44, 0x55, 0x66]).unwrap();
+        let mut node = fdt.find_or_add_node_mut("/new-node").unwrap();
+        let offset = node.offset;
+        node.set_property(c"first", &[0x11]).unwrap();
+        node.set_property(c"second", &[0x22, 0x33]).unwrap();
+        node.set_property(c"first", &[0x44, 0x55, 0x66]).unwrap();
 
         // Adding and resizing the node's own properties doesn't move it.
-        assert_eq!(node, fdt.find_node_offset("/new-node").unwrap());
+        assert_eq!(offset, fdt.find_node_offset("/new-node").unwrap());
         assert_eq!(fdt.get_property("/new-node", c"first").unwrap(), &[0x44, 0x55, 0x66]);
         assert_eq!(fdt.get_property("/new-node", c"second").unwrap(), &[0x22, 0x33]);
     }
 
     #[test]
-    fn test_set_property_placeholder_by_node_offset() {
+    fn test_fdt_node_mut_set_property_placeholder() {
         let init = include_bytes!("../test/data/base.dtb").to_vec();
         let mut fdt_buf = vec![0u8; init.len() + 512];
         let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
 
-        let node = fdt.find_or_add_node_offset("/new-node").unwrap();
+        let mut node = fdt.find_or_add_node_mut("/new-node").unwrap();
+        let offset = node.offset;
         let data = [0x11u8, 0x22u8, 0x33u8];
-        fdt.set_property_placeholder_by_node_offset(node, c"custom", data.len())
-            .unwrap()
-            .clone_from_slice(&data);
+        node.set_property_placeholder(c"custom", data.len()).unwrap().clone_from_slice(&data);
 
         // Extend it.
-        let payload = fdt.set_property_placeholder_by_node_offset(node, c"custom", 5).unwrap();
+        let payload = node.set_property_placeholder(c"custom", 5).unwrap();
         assert_eq!(payload.len(), 5);
         assert_eq!(payload[..data.len()], data[..]);
-        assert_eq!(node, fdt.find_node_offset("/new-node").unwrap());
+        assert_eq!(offset, fdt.find_node_offset("/new-node").unwrap());
     }
 
     #[test]
-    fn test_delete_property_by_node_offset() {
+    fn test_fdt_node_mut_delete_property() {
         let init = include_bytes!("../test/data/base.dtb").to_vec();
         let mut fdt_buf = vec![0u8; init.len()];
         let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
 
-        let node = fdt.find_node_offset("/dev-2/dev-2.2/dev-2.2.1").unwrap();
-        fdt.delete_property_by_node_offset(node, c"property-1").unwrap();
-        assert!(fdt.get_property_by_node_offset(node, c"property-1").is_err());
-        assert!(fdt.delete_property_by_node_offset(node, c"property-1").is_err());
+        let mut node = fdt.find_or_add_node_mut("/dev-2/dev-2.2/dev-2.2.1").unwrap();
+        node.delete_property(c"property-1").unwrap();
+        assert!(node.get_property(c"property-1").is_err());
+        assert!(node.delete_property(c"property-1").is_err());
+    }
+
+    #[test]
+    fn test_fdt_node_mut_get_property_mut_and_ref() {
+        let init = include_bytes!("../test/data/base.dtb").to_vec();
+        let mut fdt_buf = vec![0u8; init.len() + 512];
+        let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
+
+        let mut node = fdt.find_or_add_node_mut("/new-node").unwrap();
+        node.set_property(c"a", &[1, 2, 3]).unwrap();
+        node.set_property(c"b", &[4, 5, 6]).unwrap();
+
+        assert_eq!(node.get_property_mut_and_ref(c"a", c"a"), Err(Error::InvalidInput));
+        // Both property orderings (`dst` before `src` and `src` before `dst`).
+        let (a, b) = node.get_property_mut_and_ref(c"a", c"b").unwrap();
+        a.copy_from_slice(b);
+        assert_eq!(node.get_property(c"a").unwrap(), &[4, 5, 6]);
+
+        node.set_property(c"a", &[7, 8, 9]).unwrap();
+        let (b, a) = node.get_property_mut_and_ref(c"b", c"a").unwrap();
+        b.copy_from_slice(a);
+        assert_eq!(node.get_property(c"b").unwrap(), &[7, 8, 9]);
     }
 
     #[test]

@@ -29,7 +29,7 @@ use arrayvec::ArrayVec;
 use bootparams::commandline::CommandlineBuilder;
 use core::ffi::CStr;
 use dttable::DtTableImage;
-use fdt::{Fdt, FdtHeader, MAXIMUM_OVERLAYS_TO_APPLY};
+use fdt::{Fdt, FdtHeader, FdtNodeMut, MAXIMUM_OVERLAYS_TO_APPLY};
 use fit::Fit;
 use liberror::{Error, Result};
 use safemath::SafeNum;
@@ -154,7 +154,12 @@ pub const PROP_INITRD_START: &CStr = c"linux,initrd-start";
 /// `linux,initrd-end` property name.
 pub const PROP_INITRD_END: &CStr = c"linux,initrd-end";
 const PROP_BOOTARGS_EXT: &CStr = c"bootargs_ext";
-const NODE_CHOSEN: &str = "chosen";
+/// `/chosen` node path.
+///
+/// Looking it up walks every node that precedes it, which is slow on large device trees where it
+/// can sit near the end. Callers updating several of its properties should look it up once with
+/// `Fdt::find_or_add_node_mut()`.
+pub(crate) const NODE_CHOSEN: &str = "chosen";
 
 /// Helper function to build DT commandline from loaded images, overlays
 /// `bootargs_ext` and additional items provided via fastboot.
@@ -185,22 +190,24 @@ pub(crate) fn fdt_build_bootargs<'a, 'b>(
         }
     }
 
-    fdt_append_bootargs(ops, fdt, bootargs_to_append)?;
+    let mut chosen = fdt.find_or_add_node_mut(NODE_CHOSEN)?;
+
+    fdt_append_bootargs(ops, &mut chosen, bootargs_to_append)?;
 
     // Show debug messages related to EFI.
     #[cfg(all(feature = "efi_boot_stub", feature = "gbl_dev"))]
-    fdt_append_bootargs(ops, fdt, ["efi=debug"])?;
+    fdt_append_bootargs(ops, &mut chosen, ["efi=debug"])?;
 
     // Appends `/chosen/bootargs_ext` to `/chosen/bootargs` after overlays are applied:
     // https://source.android.com/docs/core/architecture/dto/optimize#kernel
     //
     // TODO(b/482462468): Remove concat logic once all platforms have switched to using
     // bootargs_ext in the overlay root instead of within fragments.
-    fdt_concat_bootargs_properties(fdt, NODE_CHOSEN, PROP_BOOTARGS, PROP_BOOTARGS_EXT)?;
+    fdt_concat_bootargs_properties(&mut chosen, PROP_BOOTARGS, PROP_BOOTARGS_EXT)?;
     if let Some(items) = boot_items {
-        fdt_append_bootargs(ops, fdt, items.utf8_items(BootItem::Cmdline))?;
+        fdt_append_bootargs(ops, &mut chosen, items.utf8_items(BootItem::Cmdline))?;
     }
-    fdt_bootargs_reserve_space(fdt, extra_reserved)?;
+    fdt_bootargs_reserve_space(&mut chosen, extra_reserved)?;
 
     Ok(())
 }
@@ -208,8 +215,9 @@ pub(crate) fn fdt_build_bootargs<'a, 'b>(
 /// Helper to get current bootargs length.
 ///
 /// Returns `(actual_cmdline_size, total_buffer_size)`.
-fn fdt_get_bootargs_len<T: AsRef<[u8]>>(fdt: &Fdt<T>) -> (usize, usize) {
-    fdt.get_property(NODE_CHOSEN, PROP_BOOTARGS)
+fn fdt_get_bootargs_len<T: AsRef<[u8]>>(chosen: &FdtNodeMut<'_, T>) -> (usize, usize) {
+    chosen
+        .get_property(PROP_BOOTARGS)
         .map(|b| {
             (
                 CStr::from_bytes_until_nul(b).map(|s| s.to_bytes_with_nul().len()).unwrap_or(0),
@@ -219,15 +227,16 @@ fn fdt_get_bootargs_len<T: AsRef<[u8]>>(fdt: &Fdt<T>) -> (usize, usize) {
         .unwrap_or((0, 0))
 }
 
+/// Appends `cmds` to the FDT bootargs property.
 pub(crate) fn fdt_append_bootargs<'a, 'b>(
     ops: &mut impl GblOps<'a>,
-    fdt: &mut Fdt<&mut [u8]>,
+    chosen: &mut FdtNodeMut<'_, &mut [u8]>,
     cmds: impl IntoIterator<Item = &'b str> + Clone,
 ) -> Result<()> {
-    let (current_used_prefix, current_buffer_len) = fdt_get_bootargs_len(fdt);
+    let (current_used_prefix, current_buffer_len) = fdt_get_bootargs_len(chosen);
     let to_append_len = cmds.clone().into_iter().map(|v| v.len() + 1).sum::<usize>();
     let final_buffer_len = current_buffer_len + to_append_len + 1;
-    let buffer = fdt.set_property_placeholder(NODE_CHOSEN, PROP_BOOTARGS, final_buffer_len)?;
+    let buffer = chosen.set_property_placeholder(PROP_BOOTARGS, final_buffer_len)?;
     let mut builder =
         CommandlineBuilder::from_prefix_with_len(&mut buffer[..], current_used_prefix)?;
     for v in cmds {
@@ -247,10 +256,13 @@ pub(crate) fn fdt_append_bootargs<'a, 'b>(
 }
 
 /// Reserves additional space in the FDT bootargs property.
-fn fdt_bootargs_reserve_space(fdt: &mut Fdt<&mut [u8]>, reserved: usize) -> Result<()> {
-    let (current_used_prefix, current_buffer_len) = fdt_get_bootargs_len(fdt);
+fn fdt_bootargs_reserve_space(
+    chosen: &mut FdtNodeMut<'_, &mut [u8]>,
+    reserved: usize,
+) -> Result<()> {
+    let (current_used_prefix, current_buffer_len) = fdt_get_bootargs_len(chosen);
     let final_buffer_len: usize = (SafeNum::from(current_buffer_len) + reserved).try_into()?;
-    let buffer = fdt.set_property_placeholder(NODE_CHOSEN, PROP_BOOTARGS, final_buffer_len)?;
+    let buffer = chosen.set_property_placeholder(PROP_BOOTARGS, final_buffer_len)?;
     let mut builder =
         CommandlineBuilder::from_prefix_with_len(&mut buffer[..], current_used_prefix)?;
     builder.zeroize_remains();
@@ -264,12 +276,11 @@ fn fdt_bootargs_reserve_space(fdt: &mut Fdt<&mut [u8]>, reserved: usize) -> Resu
 /// larger buffer.
 pub(crate) fn fdt_fixup_bootargs<'a>(
     ops: &mut impl GblOps<'a>,
-    fdt: &mut Fdt<&mut [u8]>,
+    chosen: &mut FdtNodeMut<'_, &mut [u8]>,
 ) -> Result<()> {
-    let mut fixup = |fdt: &mut Fdt<&mut [u8]>| -> Result<()> {
-        let (current_used_prefix, current_buffer_len) = fdt_get_bootargs_len(fdt);
-        let buffer =
-            fdt.set_property_placeholder(NODE_CHOSEN, PROP_BOOTARGS, current_buffer_len)?;
+    let mut fixup = |chosen: &mut FdtNodeMut<'_, &mut [u8]>| -> Result<()> {
+        let (current_used_prefix, current_buffer_len) = fdt_get_bootargs_len(chosen);
+        let buffer = chosen.set_property_placeholder(PROP_BOOTARGS, current_buffer_len)?;
         let mut builder =
             CommandlineBuilder::from_prefix_with_len(&mut buffer[..], current_used_prefix)?;
         builder.add_raw_with(|current, out| ops.fixup_kernel_commandline(current, out))?;
@@ -277,10 +288,10 @@ pub(crate) fn fdt_fixup_bootargs<'a>(
         Ok(())
     };
 
-    match fixup(fdt) {
+    match fixup(chosen) {
         Err(Error::BufferTooSmall(Some(requested))) => {
-            fdt_bootargs_reserve_space(fdt, requested)?;
-            fixup(fdt)
+            fdt_bootargs_reserve_space(chosen, requested)?;
+            fixup(chosen)
         }
         v => v,
     }
@@ -291,13 +302,12 @@ pub(crate) fn fdt_fixup_bootargs<'a>(
 /// This implementation performs the concatenation within the FDT buffer without
 /// requiring temporary buffers.
 fn fdt_concat_bootargs_properties(
-    fdt: &mut Fdt<&mut [u8]>,
-    path: &str,
+    node: &mut FdtNodeMut<'_, &mut [u8]>,
     dst_name: &CStr,
     src_name: &CStr,
 ) -> Result<()> {
     // If src doesn't exist, we have nothing to concat.
-    let Ok(src_prop) = fdt.get_property(path, src_name) else {
+    let Ok(src_prop) = node.get_property(src_name) else {
         return Ok(());
     };
     let src_len = CStr::from_bytes_until_nul(src_prop)?.to_bytes().len();
@@ -305,37 +315,27 @@ fn fdt_concat_bootargs_properties(
         return Ok(());
     }
 
-    let dst_prop = fdt.get_property(path, dst_name)?;
+    let dst_prop = node.get_property(dst_name)?;
     let mut dst_len = CStr::from_bytes_until_nul(dst_prop)?.to_bytes().len();
 
     let needs_separator = dst_len > 0;
-    let separator_len = match needs_separator {
-        true => 1,
-        _ => 0,
-    };
+    let separator_len = usize::from(needs_separator);
     // Includes null terminator.
     let required_len: usize = (SafeNum::from(dst_len) + separator_len + src_len + 1).try_into()?;
-
-    let fdt_start = fdt.as_ref().as_ptr().addr();
-    let (src_offset, dst_offset) = if dst_prop.len() < required_len {
+    if dst_prop.len() < required_len {
         // Extends the property to required length.
-        let dst_off =
-            fdt.set_property_placeholder(path, dst_name, required_len)?.as_ptr().addr() - fdt_start;
-        let src_off = fdt.get_property(path, src_name)?.as_ptr().addr() - fdt_start;
-        (src_off, dst_off)
-    } else {
-        (src_prop.as_ptr().addr() - fdt_start, dst_prop.as_ptr().addr() - fdt_start)
-    };
+        node.set_property_placeholder(dst_name, required_len)?;
+    }
 
-    let fdt_buf = fdt.as_mut();
+    let (dst_buf, src_buf) = node.get_property_mut_and_ref(dst_name, src_name)?;
     // Replaces null terminator with separator if needed.
     if needs_separator {
-        fdt_buf[dst_offset + dst_len] = b' ';
+        dst_buf[dst_len] = b' ';
         dst_len += 1;
     }
 
     // Includes null terminator.
-    fdt_buf.copy_within(src_offset..src_offset + src_len + 1, dst_offset + dst_len);
+    dst_buf[dst_len..dst_len + src_len + 1].copy_from_slice(&src_buf[..src_len + 1]);
 
     Ok(())
 }
@@ -356,9 +356,9 @@ pub const KASLR_SEED_SIZE_BYTES: usize = core::mem::size_of::<u64>();
 /// to HLOS and initialize the KASLR feature.
 pub(crate) fn fdt_propagate_random<'a>(
     ops: &mut impl GblOps<'a>,
-    dt: &mut Fdt<&mut [u8]>,
+    chosen: &mut FdtNodeMut<'_, &mut [u8]>,
 ) -> Result<()> {
-    fdt_propagate_random_seed(ops, dt, NODE_CHOSEN, RNG_SEED_PROP, RNG_SEED_SIZE_BYTES)?;
+    fdt_propagate_random_seed(ops, chosen, RNG_SEED_PROP, RNG_SEED_SIZE_BYTES)?;
     // NOTE: We ensure that KASLR SEED is generated even for the Linux EFI boot stub flow.
     // The  EFI boot stub expects the EFI RNG protocol to be optional. If the RNG protocol is
     // somehow inaccessible from the boot stub, then it would continue boot without a KASLR seed.
@@ -366,26 +366,25 @@ pub(crate) fn fdt_propagate_random<'a>(
     // This ensures that failing to initialize an RNG device and seed is treated as an error.
     // The EFI boot stub can choose to generate a new seed (thus ignoring the bootloader injected
     // one), or fallback to the bootloader injected one when it fails to generate a seed.
-    fdt_propagate_random_seed(ops, dt, NODE_CHOSEN, KASLR_SEED_PROP, KASLR_SEED_SIZE_BYTES)?;
+    fdt_propagate_random_seed(ops, chosen, KASLR_SEED_PROP, KASLR_SEED_SIZE_BYTES)?;
 
     Ok(())
 }
 
 fn fdt_propagate_random_seed<'a>(
     ops: &mut impl GblOps<'a>,
-    dt: &mut Fdt<&mut [u8]>,
-    path: &str,
+    node: &mut FdtNodeMut<'_, &mut [u8]>,
     name: &CStr,
     seed_size: usize,
 ) -> Result<()> {
     // Allocate space for seed data right inside device tree.
-    let buffer = dt.set_property_placeholder(path, name, seed_size)?;
+    let buffer = node.set_property_placeholder(name, seed_size)?;
 
     match get_random_seed(ops, buffer) {
         Ok(_) => Ok(()),
         Err(e) => {
             // Error occurred, so clear out seed placeholder.
-            dt.delete_property(path, name)?;
+            node.delete_property(name)?;
 
             match e {
                 #[cfg(feature = "gbl_dev")]
@@ -426,7 +425,8 @@ mod test {
         let mut ops = FakeGblOps::new(&[]);
         ops.test_custom_cmdline_fixup = Some(fixup.clone());
 
-        fdt_fixup_bootargs(&mut ops, &mut fdt).unwrap();
+        let mut chosen = fdt.find_or_add_node_mut(NODE_CHOSEN).unwrap();
+        fdt_fixup_bootargs(&mut ops, &mut chosen).unwrap();
 
         let bootargs = fdt.get_property(NODE_CHOSEN, PROP_BOOTARGS).unwrap();
         assert_eq!(
@@ -444,7 +444,8 @@ mod test {
         let mut ops = FakeGblOps::new(&[]);
         ops.test_custom_cmdline_fixup = Some("c".into());
 
-        fdt_fixup_bootargs(&mut ops, &mut fdt).unwrap();
+        let mut chosen = fdt.find_or_add_node_mut(NODE_CHOSEN).unwrap();
+        fdt_fixup_bootargs(&mut ops, &mut chosen).unwrap();
 
         // Property isn't extended since the fixup fits into the free space.
         assert_eq!(fdt.get_property(NODE_CHOSEN, PROP_BOOTARGS).unwrap(), b"a=b c\0\0\0");
@@ -458,7 +459,8 @@ mod test {
         let mut ops = FakeGblOps::new(&[]);
         ops.test_custom_cmdline_fixup = Some("c=\0".into());
 
-        assert_eq!(fdt_fixup_bootargs(&mut ops, &mut fdt), Err(Error::InvalidInput));
+        let mut chosen = fdt.find_or_add_node_mut(NODE_CHOSEN).unwrap();
+        assert_eq!(fdt_fixup_bootargs(&mut ops, &mut chosen), Err(Error::InvalidInput));
     }
 
     enum BootargsConcatResult<'a> {
@@ -492,7 +494,8 @@ mod test {
             fdt.shrink_to_fit().unwrap();
         }
 
-        let res = fdt_concat_bootargs_properties(&mut fdt, "/", c"dst", c"src");
+        let mut root = fdt.find_or_add_node_mut("/").unwrap();
+        let res = fdt_concat_bootargs_properties(&mut root, c"dst", c"src");
 
         match expected {
             BootargsConcatResult::Ok(expected_val) => {

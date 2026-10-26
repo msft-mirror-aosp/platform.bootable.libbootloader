@@ -47,8 +47,8 @@ pub(crate) mod hasher;
 
 pub mod device_tree;
 use device_tree::{
-    fdt_build_bootargs, fdt_fixup_bootargs, fdt_propagate_random, fdt_select, PROP_BOOTARGS,
-    PROP_INITRD_END, PROP_INITRD_START,
+    fdt_build_bootargs, fdt_fixup_bootargs, fdt_propagate_random, fdt_select, NODE_CHOSEN,
+    PROP_BOOTARGS, PROP_INITRD_END, PROP_INITRD_START,
 };
 
 pub mod vboot;
@@ -310,13 +310,17 @@ pub fn android_load_verify_fixup<'a, 'b>(
     drop(partitions);
     ops.sync_partition_buffer(false)?;
 
-    fdt_propagate_random(ops, &mut fdt)?;
+    // Looking up /chosen walks every node before it, which takes milliseconds on large device
+    // trees, so look it up once for all of its updates below.
+    let mut chosen = fdt.find_or_add_node_mut(NODE_CHOSEN)?;
+
+    fdt_propagate_random(ops, &mut chosen)?;
 
     // Reserves the ramdisk range properties, so that they can be updated in place after the fixup.
-    fdt.set_property("chosen", PROP_INITRD_START, &0u64.to_be_bytes())?;
-    fdt.set_property("chosen", PROP_INITRD_END, &0u64.to_be_bytes())?;
+    chosen.set_property(PROP_INITRD_START, &0u64.to_be_bytes())?;
+    chosen.set_property(PROP_INITRD_END, &0u64.to_be_bytes())?;
 
-    fdt_fixup_bootargs(ops, &mut fdt)?;
+    fdt_fixup_bootargs(ops, &mut chosen)?;
 
     // Make sure we provide an actual device tree size, so FW can calculate amount of space
     // available for fixup.
@@ -425,14 +429,15 @@ fn finalize_dt<'b>(ops: &mut impl GblOps<'b>, fdt: &mut [u8], ramdisk: &[u8]) ->
     let Range { start, end } = ramdisk.as_ptr_range();
     let ramdisk_addr = u64::try_from(start as usize)?;
     let ramdisk_end = u64::try_from(end as usize)?;
-    fdt.set_property("chosen", PROP_INITRD_START, &ramdisk_addr.to_be_bytes())?;
-    fdt.set_property("chosen", PROP_INITRD_END, &ramdisk_end.to_be_bytes())?;
+    let mut chosen = fdt.find_or_add_node_mut(NODE_CHOSEN)?;
+    chosen.set_property(PROP_INITRD_START, &ramdisk_addr.to_be_bytes())?;
+    chosen.set_property(PROP_INITRD_END, &ramdisk_end.to_be_bytes())?;
     gbl_println!(ops, "linux,initrd-start: {:#x}", ramdisk_addr);
     gbl_println!(ops, "linux,initrd-end: {:#x}", ramdisk_end);
     // Print the final commandline. If the bootargs were changed by the firmware during fdt fixup,
     // then the firmware must ensure the bootargs end with '\0'.
-    let final_command_line = CStr::from_bytes_until_nul(fdt.get_property("chosen", PROP_BOOTARGS)?)
-        .map_err(Error::from)?;
+    let final_command_line =
+        CStr::from_bytes_until_nul(chosen.get_property(PROP_BOOTARGS)?).map_err(Error::from)?;
     gbl_println!(ops, "final cmdline: \"{}\"", final_command_line.to_str().unwrap());
 
     Ok(fdt.size()?)
