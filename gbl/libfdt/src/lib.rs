@@ -513,17 +513,34 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
     }
 
     /// Set the value of a node's property. Create the node and property if it doesn't exist.
+    ///
+    /// Looking up a node by path walks every node that precedes it. To update several properties
+    /// of the same node in a large FDT, look it up once with [Fdt::find_or_add_node_offset] and
+    /// use [Fdt::set_property_by_node_offset] instead.
     pub fn set_property(&mut self, path: &str, name: &CStr, val: &[u8]) -> Result<()> {
         // When FDT is large and complicated, fdt_setprop can generate a lots of noisy traces
         // such as memcpy, memcmp which significantly bloat trace data size. Disable tracing to
         // avoid excessive trace data.
         let _guard = trace::TraceGuard::new(false);
-        let node = self.find_or_add_node(path)?;
-        // SAFETY: API from libfdt_c.
+        let node = self.find_or_add_node_offset(path)?;
+        self.set_property_by_node_offset(node, name, val)
+    }
+
+    /// Set the value of a property of the node at `node_offset`. Create the property if it
+    /// doesn't exist.
+    pub fn set_property_by_node_offset(
+        &mut self,
+        node_offset: usize,
+        name: &CStr,
+        val: &[u8],
+    ) -> Result<()> {
+        // See `set_property()`.
+        let _guard = trace::TraceGuard::new(false);
+        // SAFETY: API from libfdt_c. `fdt_setprop` validates `node_offset`.
         map_result(unsafe {
             fdt_setprop(
                 self.0.as_mut().as_mut_ptr() as *mut _,
-                node,
+                node_offset.try_into()?,
                 name.to_bytes_with_nul().as_ptr() as *const _,
                 val.as_ptr() as *const _,
                 val.len().try_into().or(Err(Error::Other(None)))?,
@@ -550,19 +567,30 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
         // noisy traces such as memcpy, memcmp which significantly bloat trace data size.
         // Disable tracing to avoid excessive trace data.
         let _guard = trace::TraceGuard::new(false);
+        let node = self.find_or_add_node_offset(path)?;
+        self.set_property_placeholder_by_node_offset(node, name, len)
+    }
 
-        let node = self.find_or_add_node(path)?;
+    /// Same as [Fdt::set_property_placeholder], but for the node at `node_offset`.
+    pub fn set_property_placeholder_by_node_offset(
+        &mut self,
+        node_offset: usize,
+        name: &CStr,
+        len: usize,
+    ) -> Result<&mut [u8]> {
+        // See `set_property_placeholder()`.
+        let _guard = trace::TraceGuard::new(false);
         let mut out_ptr: *mut u8 = core::ptr::null_mut();
 
         // SAFETY:
         // * `self.0` is guaranteed to be a valid FDT buffer.
-        // * `node` is offset of the node within the `self.0` FDT buffer.
+        // * `fdt_setprop_placeholder` validates `node_offset`.
         // * `name` is guaranteed to be a valid null-terminated string.
         // * `&mut out_ptr` is a valid pointer to receive the address of the resized buffer.
         map_result(unsafe {
             fdt_setprop_placeholder(
                 self.0.as_mut().as_mut_ptr() as *mut _,
-                node,
+                node_offset.try_into()?,
                 name.to_bytes_with_nul().as_ptr() as *const _,
                 len.try_into().or(Err(Error::Other(None)))?,
                 &mut out_ptr as *mut *mut u8 as *mut _,
@@ -575,15 +603,24 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
 
     /// Delete property by `path` and `name`. Fail if property doesn't exist.
     pub fn delete_property(&mut self, path: &str, name: &CStr) -> Result<()> {
-        let node = self.find_node_offset_ffi(path)?;
+        let node = self.find_node_offset(path)?;
+        self.delete_property_by_node_offset(node, name)
+    }
+
+    /// Delete property `name` of the node at `node_offset`. Fail if property doesn't exist.
+    pub fn delete_property_by_node_offset(
+        &mut self,
+        node_offset: usize,
+        name: &CStr,
+    ) -> Result<()> {
         // SAFETY:
         // * `self.0` is guaranteed to be a proper fdt header reference.
-        // * `node` is offset of the node to delete within `self.0` fdt buffer.
+        // * `fdt_delprop` validates `node_offset`.
         // * `name` is guaranteed to be a valid null-terminated string.
         map_result(unsafe {
             fdt_delprop(
                 self.0.as_mut().as_mut_ptr() as *mut c_void,
-                node,
+                node_offset.try_into()?,
                 name.to_bytes_with_nul().as_ptr() as *const _,
             )
         })?;
@@ -638,6 +675,18 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Fdt<T> {
         self.expand_to_buffer()?;
 
         Ok(())
+    }
+
+    /// Finds the node at `path`, creating it and any missing parents, and returns its offset.
+    ///
+    /// Looking up a node by path walks every node that precedes it in the FDT, which is slow for
+    /// large device trees. To access several properties of the same node, look it up once and use
+    /// the `*_by_node_offset()` methods. Adding, resizing or deleting the node's own properties
+    /// doesn't move it, but any change before it in the FDT invalidates the offset.
+    pub fn find_or_add_node_offset(&mut self, path: &str) -> Result<usize> {
+        self.find_or_add_node(path)?
+            .try_into()
+            .map_err(|_| Error::Other(Some("Invalid FDT node offset")))
     }
 
     /// Find the offset of a node by a given node path. Add if node does not exist.
@@ -891,6 +940,84 @@ mod test {
         let shrunk_len = data.len() - 3;
         let payload = fdt.set_property_placeholder("/new-node", c"custom", shrunk_len).unwrap();
         assert_eq!(payload, &data[..shrunk_len]);
+    }
+
+    #[test]
+    fn test_find_or_add_node_offset() {
+        let init = include_bytes!("../test/data/base.dtb").to_vec();
+        let mut fdt_buf = vec![0u8; init.len() + 512];
+        let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
+
+        // Existing node.
+        let existing = fdt.find_or_add_node_offset("/dev-2/dev-2.2").unwrap();
+        assert_eq!(existing, fdt.find_node_offset("/dev-2/dev-2.2").unwrap());
+        // New node and its missing parent are created.
+        let new = fdt.find_or_add_node_offset("/new-node/child").unwrap();
+        assert_eq!(new, fdt.find_node_offset("/new-node/child").unwrap());
+    }
+
+    #[test]
+    fn test_set_property_by_node_offset() {
+        let init = include_bytes!("../test/data/base.dtb").to_vec();
+        let mut fdt_buf = vec![0u8; init.len() + 512];
+        let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
+
+        let node = fdt.find_or_add_node_offset("/new-node").unwrap();
+        fdt.set_property_by_node_offset(node, c"first", &[0x11]).unwrap();
+        fdt.set_property_by_node_offset(node, c"second", &[0x22, 0x33]).unwrap();
+        fdt.set_property_by_node_offset(node, c"first", &[0x44, 0x55, 0x66]).unwrap();
+
+        // Adding and resizing the node's own properties doesn't move it.
+        assert_eq!(node, fdt.find_node_offset("/new-node").unwrap());
+        assert_eq!(fdt.get_property("/new-node", c"first").unwrap(), &[0x44, 0x55, 0x66]);
+        assert_eq!(fdt.get_property("/new-node", c"second").unwrap(), &[0x22, 0x33]);
+    }
+
+    #[test]
+    fn test_set_property_placeholder_by_node_offset() {
+        let init = include_bytes!("../test/data/base.dtb").to_vec();
+        let mut fdt_buf = vec![0u8; init.len() + 512];
+        let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
+
+        let node = fdt.find_or_add_node_offset("/new-node").unwrap();
+        let data = [0x11u8, 0x22u8, 0x33u8];
+        fdt.set_property_placeholder_by_node_offset(node, c"custom", data.len())
+            .unwrap()
+            .clone_from_slice(&data);
+
+        // Extend it.
+        let payload = fdt.set_property_placeholder_by_node_offset(node, c"custom", 5).unwrap();
+        assert_eq!(payload.len(), 5);
+        assert_eq!(payload[..data.len()], data[..]);
+        assert_eq!(node, fdt.find_node_offset("/new-node").unwrap());
+    }
+
+    #[test]
+    fn test_delete_property_by_node_offset() {
+        let init = include_bytes!("../test/data/base.dtb").to_vec();
+        let mut fdt_buf = vec![0u8; init.len()];
+        let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
+
+        let node = fdt.find_node_offset("/dev-2/dev-2.2/dev-2.2.1").unwrap();
+        fdt.delete_property_by_node_offset(node, c"property-1").unwrap();
+        assert!(fdt.get_property_by_node_offset(node, c"property-1").is_err());
+        assert!(fdt.delete_property_by_node_offset(node, c"property-1").is_err());
+    }
+
+    #[test]
+    fn test_by_node_offset_invalid_offset() {
+        let init = include_bytes!("../test/data/base.dtb").to_vec();
+        let mut fdt_buf = vec![0u8; init.len() + 512];
+        let mut fdt = Fdt::new_from_init(&mut fdt_buf[..], &init[..]).unwrap();
+
+        // Doesn't fit in `c_int`.
+        assert!(fdt.set_property_by_node_offset(usize::MAX, c"custom", &[0x11]).is_err());
+        assert!(fdt.set_property_placeholder_by_node_offset(usize::MAX, c"custom", 1).is_err());
+        assert!(fdt.delete_property_by_node_offset(usize::MAX, c"custom").is_err());
+        // Not the offset of a node.
+        assert!(fdt.set_property_by_node_offset(1, c"custom", &[0x11]).is_err());
+        assert!(fdt.set_property_placeholder_by_node_offset(1, c"custom", 1).is_err());
+        assert!(fdt.delete_property_by_node_offset(1, c"custom").is_err());
     }
 
     #[test]
