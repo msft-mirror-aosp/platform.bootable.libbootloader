@@ -84,44 +84,20 @@ use zerocopy::{Immutable, IntoBytes, FromBytes, KnownLayout};""",
     header = "@gbl//libbootimg:bootimg_bindgen.h",
 )
 
-# The source files do not specify "no_std" and thus can't be used as library crate root in our EFI
-# environment. For now, the workaround is to copy over and wrap them under a top level crate that
-# enforces no_std.
-genrule(
-    name = "bootimg_sources_gen",
-    srcs = [
-        "mkbootimg/rust/bootimg.rs",
-        ":bootimg_defs_bindgen",
-    ],
-    outs = [
-        "src/bootimg.rs",
-        "src/defs.rs",
-    ],
-    # Copy each src[i] to outs[i]
-    cmd = """
-        IFS=" " read -a srcs <<< "$(SRCS)" && \
-        IFS=" " read -a outs <<< "$(OUTS)" && \
-        for index in $${!srcs[@]}; do cp $${srcs[$$index]} $${outs[$$index]}; done
-""",
-)
-
 rust_library(
     # The naming is expected by "mkbootimg/rust/bootimg.rs".
     name = "bootimg_bindgen",
-    srcs = ["src/defs.rs"],
-    crate_root = "src/defs.rs",
-    data = [":bootimg_sources_gen"],
+    srcs = [":bootimg_defs_bindgen"],
     deps = ["@zerocopy"],
 )
 
 rust_library(
     name = "libbootimg",
     srcs = [
-        "src/bootimg.rs",
+        "mkbootimg/rust/bootimg.rs",
         "src/lib.rs",
     ],
     crate_name = "bootimg",
-    data = [":bootimg_sources_gen"],
     deps = [
         ":bootimg_bindgen",
         "@gbl//liberror",

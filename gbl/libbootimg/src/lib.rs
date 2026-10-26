@@ -17,6 +17,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+#[path = "../mkbootimg/rust/bootimg.rs"]
 #[rustfmt::skip]
 mod bootimg;
 pub use bootimg::*;

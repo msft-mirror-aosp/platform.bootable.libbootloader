@@ -20,14 +20,6 @@ with custom BUILD files.
 load("@bazel_skylib//lib:paths.bzl", "paths")
 load(":rust_crate_build_file.bzl", "rust_crate_build_file")
 
-# Hack for missing original_name. original_name is available on 8.1 and above.
-# https://github.com/bazelbuild/bazel/issues/24467
-def _original_name(repo_ctx):
-    if hasattr(repo_ctx, "original_name"):
-        return repo_ctx.original_name
-    idx = repo_ctx.attr.name.rfind("+")
-    return repo_ctx.attr.name[idx + 1:]
-
 def _symlink_tree(repo_ctx, source_root):
     """Symlinks each file in the given directory tree into the repo root.
 
@@ -66,7 +58,7 @@ def _symlink_tree(repo_ctx, source_root):
 
     # Verify that our loop count was sufficient to process every directory.
     if relative_dirs_to_read:
-        fail("{}: failed to symlink entire source tree", _original_name(repo_ctx))
+        fail("{}: failed to symlink entire source tree", repo_ctx.original_name)
 
 def _gbl_new_local_repository_common_impl(repo_ctx, build_file, build_file_content):
     path = repo_ctx.workspace_root.get_child(repo_ctx.attr.path)
@@ -80,7 +72,7 @@ def _gbl_new_local_repository_common_impl(repo_ctx, build_file, build_file_conte
             # the source repo might have significantly changed its structure and
             # the caller should re-examine the exclusion requests.
             if not repo_ctx.delete(path):
-                fail("{}: excluded file {} does not exist", _original_name(repo_ctx), path)
+                fail("{}: excluded file {} does not exist", repo_ctx.original_name, path)
 
     if hasattr(repo_ctx.attr, "exist_marker_path") and repo_ctx.attr.exist_marker_path != "":
         marker_build_file = """
@@ -108,7 +100,7 @@ config_setting(
     # allow neither, in case the repo already contains a top-level BUILD file
     # that we can use as-is.
     if build_file and build_file_content:
-        fail("{}: cannot specify both build_file and build_file_content", _original_name(repo_ctx))
+        fail("{}: cannot specify both build_file and build_file_content", repo_ctx.original_name)
     elif build_file:
         repo_ctx.file("BUILD", repo_ctx.read(repo_ctx.path(build_file)))
     elif build_file_content:
@@ -150,7 +142,7 @@ def _gbl_rust_crate_repository_impl(repo_ctx):
         repo_ctx,
         None,
         rust_crate_build_file(
-            _original_name(repo_ctx),
+            repo_ctx.original_name,
             rule = repo_ctx.attr.rule,
             crate_name = repo_ctx.attr.crate_name,
             deps = repo_ctx.attr.deps,
