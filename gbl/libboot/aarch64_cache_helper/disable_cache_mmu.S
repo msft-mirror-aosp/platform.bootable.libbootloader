@@ -28,16 +28,18 @@
 disable_cache_mmu_and_jump:
     // BTI landing pad. Just in case we reach here via indirect branch.
     bti jc
+    // Mask all interrupts and asynchronous aborts (D, A, I, F).
+    msr     daifset, #0xf
+    /*
+     * Invalidate instruction cache before disabling it.
+     */
+    ic      iallu
+    dsb     nsh
+    isb
     // Query current EL
     mrs     x5, CurrentEL
     cmp     x5, #(1 << 3)
     beq     asm_disable_cache_mmu_el2
-
-    /*
-     * Invalidate instruction cache before disabling it.
-     */
-    ic  iallu
-    isb
 
 asm_disable_cache_mmu_el1:
     mrs x5, sctlr_el1

@@ -85,8 +85,6 @@ fn flush_cache_by_set_way() {
 /// * Caller must ensure to flush any data cache for memory regions that contain data to be accessed
 ///   by the destination code, including the execution code itself at address `addr`
 unsafe fn jump_kernel(addr: usize, arg0: usize, arg1: usize, arg2: usize, arg3: usize) -> ! {
-    // TODO(b/334962949): Disable other stuffs such as interrupt, async abort, branch prediction etc.
-
     // After disabling MMU and cache, memory regions that have unflushed cache are stale and cannot
     // be trusted, including stack memory. Therefore all needed data including local variables must
     // be ensured to be loaded to registers first. `disable_cache_mmu_and_jump` only operates on
