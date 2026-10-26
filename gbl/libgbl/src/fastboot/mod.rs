@@ -280,15 +280,6 @@ pub struct GblFastbootResult {
 }
 
 impl GblFastbootResult {
-    /// Splits the given buffer into `(ramdisk, fdt, kernel, unused)` according to layout info in
-    ///  `Self::loaded_image_info` if it is a `Some(LoadedImageInfo::Android)`.
-    pub(crate) fn split_loaded_android<'a>(
-        &self,
-        boot_buffer: BootBuffer<'a>,
-    ) -> Option<(&'a [u8], &'a [u8], &'a [u8], &'a mut [u8])> {
-        split_loaded_android(self.loaded_image_info.clone(), boot_buffer)
-    }
-
     /// Splits the given buffer into `(zbi_items, kernel)` according to layout info in
     /// `Self::loaded_image_info` if it is a `Some(LoadedImageInfo::Fuchsia)`. `load` should be the
     /// same buffer passed to GblFastboot.
@@ -5440,7 +5431,7 @@ pub(crate) mod test {
             listener.dump_transport_out_queue()
         );
 
-        res.split_loaded_android((&mut load_buffer[..]).into()).unwrap()
+        split_loaded_android(res.loaded_image_info, (&mut load_buffer[..]).into()).unwrap()
     }
 
     #[test]
@@ -5526,7 +5517,7 @@ pub(crate) mod test {
         );
 
         let (ramdisk, _, kernel, _) =
-            res.split_loaded_android((&mut load_buffer[..]).into()).unwrap();
+            split_loaded_android(res.loaded_image_info, (&mut load_buffer[..]).into()).unwrap();
         assert_eq!(kernel, read_test_data("android/kernel_a.img"));
         assert!(ramdisk.starts_with(
             &[

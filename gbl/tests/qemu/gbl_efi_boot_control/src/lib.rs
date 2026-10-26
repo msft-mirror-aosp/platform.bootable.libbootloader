@@ -70,7 +70,25 @@ impl GblEfiBootControl for GblEfiBootControlImpl {
         Ok(GBL_EFI_ONE_SHOT_BOOT_MODE_NONE)
     }
 
-    fn handle_loaded_os(&self, _os: &GblEfiLoadedOs) -> EfiResult<()> {
+    fn handle_loaded_os(&self, os: &GblEfiLoadedOs) -> EfiResult<()> {
+        if os.kernel == 0
+            || os.kernel_size == 0
+            || os.ramdisk == 0
+            || os.ramdisk_size == 0
+            || os.device_tree == 0
+            || os.device_tree_size == 0
+        {
+            return Err(EfiError::InvalidParameter);
+        }
+        semihosting::println!(
+            "handle_loaded_os: kernel @ {:#x} ({:#x}), ramdisk @ {:#x} ({:#x}), fdt @ {:#x} ({:#x})",
+            os.kernel,
+            os.kernel_size,
+            os.ramdisk,
+            os.ramdisk_size,
+            os.device_tree,
+            os.device_tree_size,
+        );
         Ok(())
     }
 }

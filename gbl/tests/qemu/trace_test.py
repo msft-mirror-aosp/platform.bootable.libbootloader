@@ -19,6 +19,7 @@ The script tests:
 
 1. GBL trace collection and conversion to trace event format used by perfetto.
 2. Enforce maximum stack usage in currently known critical path "fastboot boot".
+3. HandleLoadedOs() invocation during "fastboot boot".
 """
 
 import logging
@@ -29,6 +30,7 @@ from qemu_test_utils import (
     process_and_check_trace,
     wait_for_fastboot_ready,
     wait_for_kernel_exit,
+    wait_for_log_pattern,
 )
 
 
@@ -48,6 +50,23 @@ def main():
   client.download("boot_a.img")
   client.run_command(b"boot", assert_ok=True)
   client.close()
+
+  loaded_matches = wait_for_log_pattern(
+      console_log_path,
+      [
+          r"^\[\d+\.\d+\] handle_loaded_os: kernel @ (0x[0-9a-fA-F]+)"
+          r" \(0x[0-9a-fA-F]+\), ramdisk @ (0x[0-9a-fA-F]+)"
+          r" \(0x[0-9a-fA-F]+\), fdt @ (0x[0-9a-fA-F]+) \(0x[0-9a-fA-F]+\)$"
+      ],
+  )
+  kernel_addr, ramdisk_addr, fdt_addr = loaded_matches[0][0].groups()
+  wait_for_log_pattern(
+      console_log_path,
+      [
+          rf"^\[\d+\.\d+\] Booting kernel @ {kernel_addr}, ramdisk @"
+          rf" {ramdisk_addr}, fdt @ {fdt_addr}$"
+      ],
+  )
 
   wait_for_kernel_exit(console_log_path)
 

@@ -71,9 +71,19 @@ def main():
   ramdisk_addr = alloc_matches[0][1].group(1)
   fdt_addr = alloc_matches[0][2].group(1)
 
-  # Verify booting log matches allocated addresses, i.e.:
+  # Verify HandleLoadedOs() and booting logs match allocated addresses, i.e.:
   #
+  # [1.3490] handle_loaded_os: kernel @ 0x4c000000 (...), ramdisk @ 0x4bd23000 (...), fdt @ 0x4bc22018 (...)
   # [1.3496] Booting kernel @ 0x4c000000, ramdisk @ 0x4bd23000, fdt @ 0x4bc22018
+  wait_for_log_pattern(
+      console_log_path,
+      [
+          rf"^\[\d+\.\d+\] handle_loaded_os: kernel @ {kernel_addr}"
+          r" \(0x[0-9a-fA-F]+\),"
+          rf" ramdisk @ {ramdisk_addr} \(0x[0-9a-fA-F]+\),"
+          rf" fdt @ {fdt_addr} \(0x[0-9a-fA-F]+\)$"
+      ],
+  )
   wait_for_log_pattern(
       console_log_path,
       [
