@@ -15,7 +15,11 @@
 //! Rust trait for
 //! [`GBL_EFI_BOOT_MEMORY_PROTOCOL`](https://android.googlesource.com/platform/bootable/libbootloader/+/refs/heads/gbl-mainline/gbl/docs/gbl_efi_boot_memory_protocol.md).
 
-use alloc::{borrow::ToOwned, collections::BTreeMap, ffi::CString};
+use alloc::{
+    borrow::ToOwned,
+    collections::{btree_map::Entry, BTreeMap},
+    ffi::CString,
+};
 use core::{
     ffi::{c_void, CStr},
     ops::DerefMut,
@@ -27,7 +31,7 @@ use crate::{
         EfiGuid, EfiStatus, GblEfiBootBufferType, GblEfiBootMemoryProtocol,
         GblEfiPartitionBufferFlag,
     },
-    protocol::{BridgeToRust, Provider},
+    protocol::{check_required_params, BridgeToRust, Provider},
     status::{EfiError, EfiResult},
     Identified,
 };
@@ -121,16 +125,14 @@ impl<R: GblEfiBootMemory> Provider<'_, GblEfiBootMemoryProtocol, R> {
         (|| {
             // SAFETY: `interface` is the C interface pointer from [Provider::to_ptr()].
             let rust_impl = unsafe { Self::to_rust(interface) };
-            // SAFETY: By UEFI spec, `out_size` and `out_buffer` point to valid
-            // output parameters.
-            let (Some(out_size), Some(out_buffer)) =
-                (unsafe { (out_size.as_mut(), out_buffer.as_mut()) })
-            else {
-                return Err(EfiError::InvalidParameter);
-            };
+            check_required_params(&[&out_size, &out_buffer])?;
             let (size, buffer) = rust_impl.get_boot_buffer(buffer_type)?;
-            *out_size = size;
-            *out_buffer = buffer as _;
+            // SAFETY: `out_size` and `out_buffer` were checked non-null and aligned above, and by
+            // UEFI spec are valid for writes.
+            unsafe {
+                out_size.write(size);
+                out_buffer.write(buffer as _);
+            }
             Ok(())
         })()
         .into()
@@ -157,19 +159,17 @@ impl<R: GblEfiBootMemory> Provider<'_, GblEfiBootMemoryProtocol, R> {
         (|| {
             // SAFETY: `interface` is the C interface pointer from [Provider::to_ptr()].
             let rust_impl = unsafe { Self::to_rust(interface) };
+            check_required_params(&[&base_name, &out_size, &out_buffer, &out_flag])?;
             // SAFETY: By UEFI spec, `base_name` is a pointer to a null-terminated string.
             let base_name = unsafe { CStr::from_ptr(base_name as _) };
-            // SAFETY: By UEFI spec, `out_size`, `out_buffer`, and `out_flag` point to valid
-            // output parameters.
-            let (Some(out_size), Some(out_buffer), Some(out_flag)) =
-                (unsafe { (out_size.as_mut(), out_buffer.as_mut(), out_flag.as_mut()) })
-            else {
-                return Err(EfiError::InvalidParameter);
-            };
             let partition_buffer = rust_impl.get_partition_buffer(base_name)?;
-            *out_size = partition_buffer.size;
-            *out_buffer = partition_buffer.buffer;
-            *out_flag = partition_buffer.flag;
+            // SAFETY: `out_size`, `out_buffer`, and `out_flag` were checked non-null and aligned
+            // above, and by UEFI spec are valid for writes.
+            unsafe {
+                out_size.write(partition_buffer.size);
+                out_buffer.write(partition_buffer.buffer);
+                out_flag.write(partition_buffer.flag);
+            }
             Ok(())
         })()
         .into()
@@ -178,8 +178,8 @@ impl<R: GblEfiBootMemory> Provider<'_, GblEfiBootMemoryProtocol, R> {
 
 /// Boot buffer type for return by GblEfiBootMemorySafe::take_boot_buffer`.
 pub enum BootBuffer {
-    /// Static boot buffer.
-    Static(&'static [u8]),
+    /// Static writable boot buffer.
+    Static(&'static mut [u8]),
     /// Boot buffer to be allocated.
     ToAllocate(usize),
 }
@@ -259,10 +259,10 @@ unsafe impl<T: GblEfiBootMemorySafe> GblEfiBootMemory for GblEfiBootMemoryManage
 
     fn get_partition_buffer(&self, base_name: &CStr) -> EfiResult<PartitionBuffer> {
         let mut cache = self.partition_buffers.try_lock().ok_or(EfiError::NotReady)?;
-        if let Some((buffer, flag)) = cache.get(base_name) {
+        if let Some((buffer, flag)) = cache.get_mut(base_name) {
             return Ok(PartitionBuffer {
                 size: buffer.len(),
-                buffer: buffer.as_ptr() as *mut c_void,
+                buffer: buffer.as_mut_ptr() as *mut c_void,
                 flag: *flag,
             });
         }
@@ -281,15 +281,12 @@ unsafe impl<T: GblEfiBootMemorySafe> GblEfiBootMemory for GblEfiBootMemoryManage
         buffer_type: GblEfiBootBufferType,
     ) -> EfiResult<(usize, *mut c_void)> {
         let mut cache = self.boot_buffers.try_lock().ok_or(EfiError::NotReady)?;
-        let buf = match cache.get(&(buffer_type.0)) {
-            Some(buffer) => buffer,
-            None => {
-                let new = self.inner.take_boot_buffer(buffer_type)?;
-                cache.entry(buffer_type.0).or_insert(new)
-            }
+        let buf = match cache.entry(buffer_type.0) {
+            Entry::Occupied(e) => e.into_mut(),
+            Entry::Vacant(e) => e.insert(self.inner.take_boot_buffer(buffer_type)?),
         };
         match buf {
-            BootBuffer::Static(buf) => Ok((buf.len(), buf.as_ptr() as *mut c_void)),
+            BootBuffer::Static(buf) => Ok((buf.len(), buf.as_mut_ptr() as *mut c_void)),
             BootBuffer::ToAllocate(size) => Ok((*size, core::ptr::null_mut())),
         }
     }

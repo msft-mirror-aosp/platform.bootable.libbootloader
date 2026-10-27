@@ -93,8 +93,11 @@ pub mod gbl_efi_fastboot;
 pub mod gbl_efi_fastboot_transport;
 pub mod load_file2;
 
-use crate::Identified;
-use core::{marker::PhantomPinned, pin::Pin};
+use crate::{
+    status::{EfiError, EfiResult},
+    Identified,
+};
+use core::{cell::UnsafeCell, marker::PhantomPinned, pin::Pin, ptr::NonNull, slice};
 
 /// A UEFI protocol client.
 ///
@@ -147,7 +150,7 @@ impl<C: 'static + Identified> Client<C> {
     /// Additionally, in UEFI the caller must only use the returned [Client]
     /// within the protocol's
     /// [supported TPL range](https://uefi.org/specs/UEFI/2.10/07_Services_Boot_Services.html#tpl-restrictions)
-    pub unsafe fn new(c_interface: core::ptr::NonNull<C>) -> Self {
+    pub unsafe fn new(c_interface: NonNull<C>) -> Self {
         // SAFETY: function safety requires a valid pointer which outlives us.
         let c_interface = unsafe { c_interface.as_ref() };
         Self(c_interface)
@@ -249,7 +252,7 @@ impl<C: 'static + Identified> Client<C> {
 pub struct Provider<'a, C: Identified, R> {
     // This must come first, so that with `repr(C)` we can cast between this
     // `c_interface` pointer and the overall `Provider` pointer.
-    c_interface: C,
+    c_interface: UnsafeCell<C>,
     rust_impl: &'a R,
     // Clients use our `c_interface` pointer directly, so pinning is critical
     // to ensure those pointers stay valid.
@@ -262,7 +265,7 @@ impl<'a, C: 'a + Identified + BridgeToRust<R>, R> Provider<'a, C, R> {
         // SAFETY: we hold a borrow of `rust_impl` so we know it will not be
         // moved or destroyed while we exist.
         let c_interface = unsafe { C::create_bridge(rust_impl) };
-        Self { c_interface, rust_impl, _pin: PhantomPinned }
+        Self { c_interface: UnsafeCell::new(c_interface), rust_impl, _pin: PhantomPinned }
     }
 }
 
@@ -299,8 +302,11 @@ impl<'a, C: 'a + Identified, R> Provider<'a, C, R> {
     /// This library's [Client] classes enforce proper usage, but other clients,
     /// particulary those written in C, could cause undefined behavior if they
     /// violate the protocol requirements.
-    pub unsafe fn to_ptr(self: Pin<&Self>) -> *mut C {
-        &self.c_interface as *const C as *mut C
+    pub fn to_ptr(self: Pin<&Self>) -> NonNull<C> {
+        // With `#[repr(C)]` and `UnsafeCell<C>` at offset 0, a pointer to `Self` is also a
+        // pointer to `C`, and deriving it from `self.get_ref()` gives it provenance over the whole
+        // `Provider` for `to_rust()`.
+        NonNull::from(self.get_ref()).cast()
     }
 
     /// Converts the raw C interface pointer back to our Rust implementation.
@@ -392,6 +398,92 @@ pub unsafe trait BridgeToRust<R> {
     /// ensure those pointers stay valid, `rust_impl` must remain valid and
     /// unmoved until `self` is dropped.
     unsafe fn create_bridge(rust_impl: &R) -> Self;
+}
+
+/// A raw pointer parameter passed to a protocol provider by a C caller.
+pub(crate) trait RawParam {
+    /// Returns true if the pointer is non-null and aligned for its pointee type.
+    fn is_non_null_and_aligned(&self) -> bool;
+}
+
+impl<T> RawParam for *const T {
+    fn is_non_null_and_aligned(&self) -> bool {
+        !self.is_null() && self.is_aligned()
+    }
+}
+
+impl<T> RawParam for *mut T {
+    fn is_non_null_and_aligned(&self) -> bool {
+        !self.is_null() && self.is_aligned()
+    }
+}
+
+/// Checks that required pointer parameters are non-null and aligned.
+///
+/// This does not by itself make the pointers safe to use; callers must still
+/// ensure they are valid for the intended access, e.g. by the protocol spec.
+///
+/// # Returns
+///
+/// `Err(EfiError::InvalidParameter)` if any pointer is null or misaligned.
+pub(crate) fn check_required_params(params: &[&dyn RawParam]) -> EfiResult<()> {
+    match params.iter().all(|p| p.is_non_null_and_aligned()) {
+        true => Ok(()),
+        false => Err(EfiError::InvalidParameter),
+    }
+}
+
+/// Converts a C (pointer, length) buffer into a slice.
+///
+/// C callers may pass a null or dangling pointer for an empty buffer, which
+/// [slice::from_raw_parts] does not allow, so `ptr` is ignored if `len` is 0.
+///
+/// # Returns
+///
+/// `Err(EfiError::InvalidParameter)` if `len` is nonzero and `ptr` is null or
+/// misaligned.
+///
+/// # Safety
+///
+/// If `len` is nonzero, `ptr` must be valid for reads of `len` initialized
+/// elements of `T` within a single allocation, `len * size_of::<T>()` must not
+/// exceed `isize::MAX`, and the memory must not be mutated for `'a`.
+pub unsafe fn slice_from_raw_parts<'a, T>(ptr: *const T, len: usize) -> EfiResult<&'a [T]> {
+    match len {
+        0 => Ok(&[]),
+        _ => {
+            check_required_params(&[&ptr])?;
+            // SAFETY: `ptr` was checked non-null and aligned above. The caller guarantees the
+            // rest of the `slice::from_raw_parts` contract: `ptr` is valid for reads of `len`
+            // initialized elements in one allocation, the size fits in `isize`, and the memory
+            // is not mutated for `'a`.
+            Ok(unsafe { slice::from_raw_parts(ptr, len) })
+        }
+    }
+}
+
+/// Converts a mutable C (pointer, length) buffer into a mutable slice.
+///
+/// See [slice_from_raw_parts].
+///
+/// # Safety
+///
+/// If `len` is nonzero, `ptr` must be valid for reads and writes of `len`
+/// initialized elements of `T` within a single allocation,
+/// `len * size_of::<T>()` must not exceed `isize::MAX`, and the memory must not
+/// be accessed through any other pointer for `'a`.
+pub unsafe fn slice_from_raw_parts_mut<'a, T>(ptr: *mut T, len: usize) -> EfiResult<&'a mut [T]> {
+    match len {
+        0 => Ok(&mut []),
+        _ => {
+            check_required_params(&[&ptr])?;
+            // SAFETY: `ptr` was checked non-null and aligned above. The caller guarantees the
+            // rest of the `slice::from_raw_parts_mut` contract: `ptr` is valid for reads and
+            // writes of `len` initialized elements in one allocation, the size fits in `isize`,
+            // and the memory is not accessed through any other pointer for `'a`.
+            Ok(unsafe { slice::from_raw_parts_mut(ptr, len) })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -615,15 +707,13 @@ pub(crate) mod test {
     impl<'a, C: Identified + BridgeToRust<R>, R> TestProtocolTunnel<'a, C, R> {
         pub(super) fn new(backend: &'a R) -> Self {
             let provider = Box::pin(Provider::<'a, C, R>::new(backend));
-
-            // SAFETY: `provider` outlives `c_interface`.
-            let c_interface = unsafe { provider.as_ref().to_ptr() };
+            let c_interface = provider.as_ref().to_ptr();
 
             // SAFETY:
             // * `c_interface` points to a valid UEFI protocol interface
             //   backed by `provider`
             // * `provider` outlives `client` due to struct declaration order
-            let client = unsafe { Client::new(core::ptr::NonNull::new(c_interface).unwrap()) };
+            let client = unsafe { Client::new(c_interface) };
 
             Self { client, _provider: provider }
         }

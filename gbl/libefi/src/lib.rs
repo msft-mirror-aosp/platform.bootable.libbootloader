@@ -907,21 +907,26 @@ impl<'a> BootServices<'a> {
     {
         let mut null: EfiHandle = null_mut();
         let handle = handle.unwrap_or(&mut null);
-        let provider = Box::pin(Provider::<T::InterfaceType, R>::new(rust_impl));
+        let provider = Box::into_raw(Box::new(Provider::<T::InterfaceType, R>::new(rust_impl)));
         // SAFETY:
         // * `handle` is an optional output parameter. It is either NULL or points to a valid
         //   handle. It is not retained and outlives the call.
-        // * `provider` is immediately leaked and ownership is fully given to the UEFI firmware.
-        unsafe {
+        // * `provider` comes from `Box::into_raw`, so it is never moved after the firmware gets it,
+        //   which keeps it pinned and its provenance intact. On failure it is reclaimed below.
+        let res = unsafe {
             efi_call!(
                 self.boot_services.install_protocol_interface,
                 handle as *mut _,
                 &T::GUID,
                 EFI_INTERFACE_TYPE_EFI_NATIVE_INTERFACE,
-                provider.as_ref().to_ptr() as *mut _ as _
-            )?;
+                provider.cast::<core::ffi::c_void>()
+            )
+        };
+        if let Err(e) = res {
+            // SAFETY: `provider` came from `Box::into_raw` above and was not installed.
+            drop(unsafe { Box::from_raw(provider) });
+            return Err(e);
         }
-        core::mem::forget(provider);
         Ok(())
     }
 
@@ -1313,8 +1318,11 @@ impl<'a> EfiMemoryAttributesTable<'a> {
             return Err(Error::NotFound);
         }
         let buf = configuration_table.vendor_table;
+        if buf.is_null() {
+            return Err(Error::InvalidInput);
+        }
 
-        // SAFETY: Buffer provided by EFI configuration table.
+        // SAFETY: Buffer provided by EFI configuration table and verified non-null.
         let header = unsafe {
             let header_bytes =
                 from_raw_parts(buf as *const u8, size_of::<EfiMemoryAttributesTableHeader>());
@@ -1324,13 +1332,12 @@ impl<'a> EfiMemoryAttributesTable<'a> {
         // Note: `descriptor_size` may be bigger than `EfiMemoryDescriptor`.
         let descriptor_size: usize = header.descriptor_size.try_into().unwrap();
         let descriptors_count: usize = header.number_of_entries.try_into().unwrap();
+        let tail_size =
+            descriptors_count.checked_mul(descriptor_size).ok_or(Error::InvalidInput)?;
 
         // SAFETY: Buffer provided by EFI configuration table.
         let tail = unsafe {
-            from_raw_parts(
-                (buf as *const u8).add(core::mem::size_of_val(header)),
-                descriptors_count * descriptor_size,
-            )
+            from_raw_parts((buf as *const u8).add(core::mem::size_of_val(header)), tail_size)
         };
 
         Ok(Self { header, tail })
@@ -1349,6 +1356,7 @@ impl<'a> IntoIterator for &EfiMemoryAttributesTable<'a> {
 }
 
 /// A type representing a UEFI handle to a UEFI device.
+#[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct DeviceHandle(EfiHandle);
 
@@ -2069,7 +2077,11 @@ mod test {
 
         func(image_handle as EfiHandle, &mut systab as *mut _);
 
-        // Reset all traces
+        // Reset all traces and clear any thread-local `GLOBAL_EFI_ENTRY` pointer so stack-local
+        // `EfiEntry` instances never dangle across tests.
+        crate::GLOBAL_EFI_ENTRY.with(|e| {
+            *e.borrow_mut() = None;
+        });
         EFI_CALL_TRACES.with(|trace| {
             *trace.borrow_mut() = Default::default();
         });

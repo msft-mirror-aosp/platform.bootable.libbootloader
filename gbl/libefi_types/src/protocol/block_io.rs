@@ -17,12 +17,12 @@
 
 use crate::{
     defs::{EfiBlockIoMedia, EfiBlockIoProtocol, EfiGuid, EfiStatus, EfiTpl, EFI_TPL_CALLBACK},
-    protocol::{BridgeToRust, Client, Provider},
+    protocol::{slice_from_raw_parts, slice_from_raw_parts_mut, BridgeToRust, Client, Provider},
     status::{EfiError, EfiResult},
     tpl::TplLocked,
     Identified,
 };
-use core::{mem::MaybeUninit, slice};
+use core::mem::MaybeUninit;
 
 impl Identified for EfiBlockIoProtocol {
     const GUID: EfiGuid = EfiGuid::from_u64s(
@@ -220,10 +220,15 @@ impl<R: BlockIo> Provider<'_, EfiBlockIoProtocol, R> {
     ) -> EfiStatus {
         // SAFETY: `this` is the C interface pointer from [Provider::to_ptr()].
         let rust_impl = unsafe { Self::to_rust(this) };
-        // SAFETY: protocol spec requires this be a valid mutable buffer.
-        let buffer =
-            unsafe { slice::from_raw_parts_mut(buffer as *mut MaybeUninit<u8>, buffer_size) };
-        rust_impl.read_blocks(media_id, lba, buffer).into()
+        (|| {
+            // SAFETY: The Block I/O spec requires `buffer` to be valid for writes of `buffer_size`
+            // bytes for the duration of this call, and nothing else accesses it until we return.
+            // `MaybeUninit<u8>` has no initialization requirement.
+            let buffer =
+                unsafe { slice_from_raw_parts_mut(buffer as *mut MaybeUninit<u8>, buffer_size)? };
+            rust_impl.read_blocks(media_id, lba, buffer)
+        })()
+        .into()
     }
 
     unsafe extern "efiapi" fn write_blocks_wrapper(
@@ -235,9 +240,13 @@ impl<R: BlockIo> Provider<'_, EfiBlockIoProtocol, R> {
     ) -> EfiStatus {
         // SAFETY: `this` is the C interface pointer from [Provider::to_ptr()].
         let rust_impl = unsafe { Self::to_rust(this) };
-        // SAFETY: protocol spec requires this be a valid buffer.
-        let buffer = unsafe { slice::from_raw_parts(buffer as *const u8, buffer_size) };
-        rust_impl.write_blocks(media_id, lba, buffer).into()
+        (|| {
+            // SAFETY: The Block I/O spec requires `buffer` to be valid for reads of `buffer_size`
+            // initialized bytes that are not modified for the duration of this call.
+            let buffer = unsafe { slice_from_raw_parts(buffer as *const u8, buffer_size)? };
+            rust_impl.write_blocks(media_id, lba, buffer)
+        })()
+        .into()
     }
 
     unsafe extern "efiapi" fn flush_blocks_wrapper(this: *mut EfiBlockIoProtocol) -> EfiStatus {

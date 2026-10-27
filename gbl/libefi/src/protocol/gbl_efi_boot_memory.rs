@@ -384,6 +384,8 @@ fn boot_buffer_op(entry: &EfiEntry, op: BootBufferOp) -> Result<Option<GblVendor
                     );
                     Buffer::Allocated { buffer, offset, size }
                 }
+                // No buffer from firmware and no default size, so there is nothing to borrow.
+                (Ok((NULL_PTR, _)), _) => return Err(Error::NotFound),
                 (Ok((addr, sz)), _) => {
                     efi_println!(entry, "Found {name:?} buffer: addr {addr:?}, sz: {sz:#x}.");
                     // SAFETY:

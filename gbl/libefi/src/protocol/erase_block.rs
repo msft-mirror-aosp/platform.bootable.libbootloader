@@ -88,7 +88,7 @@ impl Protocol<'_, EraseBlockProtocol> {
     async fn erase_blocks_nonblocking(&self, media_id: u32, lba: u64, size: usize) -> Result<()> {
         let bs = self.efi_entry().system_table().boot_services();
         let complete = AtomicBool::new(false);
-        let mut notify_fn = &mut |_| complete.store(true, Ordering::Relaxed);
+        let mut notify_fn = &mut |_| complete.store(true, Ordering::Release);
         let mut notify = EventNotify::new(Tpl::Callback, &mut notify_fn);
         // SAFETY: the notification callback never allocates, deallocates, or panics.
         let event =

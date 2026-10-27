@@ -19,7 +19,6 @@ use alloc::vec::Vec;
 use core::{
     ffi::{c_void, CStr},
     ptr::NonNull,
-    slice,
 };
 
 use crate::{
@@ -28,7 +27,10 @@ use crate::{
         GblEfiFastbootMessageType, GblEfiFastbootProtocol, GetVarAllCallback,
         GBL_EFI_FASTBOOT_SERIAL_NUMBER_MAX_LEN_UTF8,
     },
-    protocol::{BridgeToRust, Provider},
+    protocol::{
+        check_required_params, slice_from_raw_parts, slice_from_raw_parts_mut, BridgeToRust,
+        Provider,
+    },
     status::{EfiError, EfiResult},
     Identified,
 };
@@ -118,16 +120,17 @@ impl<R: GblEfiFastboot> Provider<'_, GblEfiFastbootProtocol, R> {
         // first field, `interface` is also a valid pointer to the `Self` struct.
         let rust_impl = unsafe { Self::to_rust(interface) };
         (|| {
-            // SAFETY: By safety contract, `buffer` point to a valid buffer of size stored in
-            // `buffer_size`.
+            // SAFETY: By safety contract, `buffer_size` points to a valid `usize`, and `buffer` is
+            // valid for reads and writes of `*buffer_size` bytes that nothing else accesses for the
+            // duration of this call. Neither reference outlives the call.
             let (buffer, out_size) = unsafe {
                 let out_size = buffer_size.as_mut().ok_or(EfiError::InvalidParameter)?;
-                (slice::from_raw_parts_mut(buffer as *mut u8, *out_size), out_size)
+                (slice_from_raw_parts_mut(buffer, *out_size)?, out_size)
             };
-            // SAFETY: By safety contract, `args` points to an array of `num_args` null-terminated
-            // strings.
+            // SAFETY: By safety contract, `args` is valid for reads of `num_args` pointers, each to
+            // a null-terminated string, none of which are modified for the duration of this call.
             let args = unsafe {
-                let ptrs = slice::from_raw_parts(args, num_args)
+                let ptrs = slice_from_raw_parts(args, num_args)?
                     .iter()
                     .map(|&v| NonNull::new(v as *mut _));
                 if ptrs.clone().any(|v| v.is_none()) {
@@ -200,14 +203,15 @@ impl<R: GblEfiFastboot> Provider<'_, GblEfiFastbootProtocol, R> {
         let rust_impl = unsafe { Self::to_rust(interface) };
         (|| {
             // SAFETY: By safety contract, `buffer_size` and `buffer_remains` point to valid
-            // parameters and `buffer` points to valid buffer of size `*buffer_size` on input.
+            // `usize`s, and `buffer` is valid for reads and writes of `*buffer_size` bytes that
+            // nothing else accesses for the duration of this call. None of the references outlive
+            // the call. Read `*out_size` through `out_size` rather than `buffer_size` so
+            // `out_size`'s Stacked Borrows `Unique` tag is not invalidated.
             let (out_size, buffer_remains, buffer) = unsafe {
                 let out_size = buffer_size.as_mut().ok_or(EfiError::InvalidParameter)?;
-                (
-                    out_size,
-                    buffer_remains.as_mut().ok_or(EfiError::InvalidParameter)?,
-                    slice::from_raw_parts_mut(buffer, *buffer_size),
-                )
+                let buffer_remains = buffer_remains.as_mut().ok_or(EfiError::InvalidParameter)?;
+                let buf = slice_from_raw_parts_mut(buffer, *out_size)?;
+                (out_size, buffer_remains, buf)
             };
             let (written, remains) = rust_impl.get_staged(buffer)?;
             *out_size = written;
@@ -246,12 +250,11 @@ impl<R: GblEfiFastboot> Provider<'_, GblEfiFastbootProtocol, R> {
         // first field, `interface` is also a valid pointer to the `Self` struct.
         let rust_impl = unsafe { Self::to_rust(interface) };
         (|| {
-            // SAFETY: By safety contract, `implementation` points to a valid parameter.
-            let out_impl = unsafe { implementation.as_mut().ok_or(EfiError::InvalidParameter)? };
-            // SAFETY: By safety contract, `args` points to an array of `num_args` null-terminated
-            // strings.
+            check_required_params(&[&implementation])?;
+            // SAFETY: By safety contract, `args` is valid for reads of `num_args` pointers, each to
+            // a null-terminated string, none of which are modified for the duration of this call.
             let args = unsafe {
-                let ptrs = slice::from_raw_parts(args, num_args)
+                let ptrs = slice_from_raw_parts(args, num_args)?
                     .iter()
                     .map(|&v| NonNull::new(v as *mut _));
                 if ptrs.clone().any(|v| v.is_none()) {
@@ -259,13 +262,14 @@ impl<R: GblEfiFastboot> Provider<'_, GblEfiFastbootProtocol, R> {
                 }
                 ptrs.map(|v| CStr::from_ptr(v.unwrap().as_ptr()).to_str().unwrap())
             };
-            // SAFETY: By safety contract, `download_buffer` points to a buffer of at least
-            // `download_buffer_size` bytes.
+            // SAFETY: By safety contract, `download_buffer` is valid for reads and writes of
+            // `download_buffer_size` bytes that nothing else accesses for the duration of this
+            // call, and the slice does not outlive the call.
             let download_buffer =
-                unsafe { slice::from_raw_parts_mut(download_buffer, download_buffer_size) };
+                unsafe { slice_from_raw_parts_mut(download_buffer, download_buffer_size)? };
 
             let sender_cb = sender.ok_or(EfiError::InvalidParameter)?;
-            *out_impl = rust_impl.command_exec(
+            let exec_res = rust_impl.command_exec(
                 args,
                 download_buffer,
                 download_buffer_used_size,
@@ -279,6 +283,9 @@ impl<R: GblEfiFastboot> Provider<'_, GblEfiFastbootProtocol, R> {
                     EfiResult::from(status)
                 },
             )?;
+            // SAFETY: `implementation` was checked non-null and aligned above, and by safety
+            // contract is valid for writes.
+            unsafe { implementation.write(exec_res) };
             Ok(())
         })()
         .into()
@@ -305,18 +312,17 @@ impl<R: GblEfiFastboot> Provider<'_, GblEfiFastbootProtocol, R> {
         // first field, `interface` is also a valid pointer to the `Self` struct.
         let rust_impl = unsafe { Self::to_rust(interface) };
         (|| {
-            if part_name.is_null() {
-                return Err(EfiError::InvalidParameter);
-            }
+            check_required_params(&[&part_name])?;
             // SAFETY: By safety contract, `part_name` points to a valid null-terminated C string.
             let part_name = unsafe { CStr::from_ptr(part_name as *const _) };
-            // SAFETY: By safety contract, `part_type' points to a valid buffers of size
-            // `part_type_len`.
-            let (part_tye_buf, out_len) = unsafe {
+            // SAFETY: By safety contract, `part_type_len` points to a valid `usize`, and
+            // `part_type` is valid for reads and writes of `*part_type_len` bytes that nothing
+            // else accesses for the duration of this call. Neither reference outlives the call.
+            let (part_type_buf, out_len) = unsafe {
                 let out_len = part_type_len.as_mut().ok_or(EfiError::InvalidParameter)?;
-                (slice::from_raw_parts_mut(part_type, *out_len), out_len)
+                (slice_from_raw_parts_mut(part_type, *out_len)?, out_len)
             };
-            match rust_impl.get_partition_type(part_name, part_tye_buf) {
+            match rust_impl.get_partition_type(part_name, part_type_buf) {
                 rep @ Ok(size) | rep @ Err(EfiError::BufferTooSmall(size)) => {
                     *out_len = size;
                     rep

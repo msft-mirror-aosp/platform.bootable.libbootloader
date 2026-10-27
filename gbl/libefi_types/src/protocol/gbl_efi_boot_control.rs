@@ -20,7 +20,7 @@ use crate::{
         EfiGuid, EfiStatus, GblEfiBootControlProtocol, GblEfiLoadedOs, GblEfiOneShotBootMode,
         GblEfiSlotInfo,
     },
-    protocol::{BridgeToRust, Provider},
+    protocol::{check_required_params, BridgeToRust, Provider},
     status::{EfiError, EfiResult},
     Identified,
 };
@@ -90,9 +90,10 @@ impl<R: GblEfiBootControl> Provider<'_, GblEfiBootControlProtocol, R> {
         // first field, `interface` is also a valid pointer to the `Self` struct.
         let rust_impl = unsafe { Self::to_rust(interface) };
         (|| {
-            // SAFETY: By safety contract, `slot_count` points to a valid parameter.
-            let slot_count = unsafe { slot_count.as_mut().ok_or(EfiError::InvalidParameter)? };
-            rust_impl.get_slot_count().inspect(|count| *slot_count = *count)
+            check_required_params(&[&slot_count])?;
+            // SAFETY: `slot_count` was checked non-null and aligned above, and by safety contract
+            // is valid for writes.
+            rust_impl.get_slot_count().inspect(|count| unsafe { slot_count.write(*count) })
         })()
         .into()
     }
@@ -114,9 +115,10 @@ impl<R: GblEfiBootControl> Provider<'_, GblEfiBootControlProtocol, R> {
         // first field, `interface` is also a valid pointer to the `Self` struct.
         let rust_impl = unsafe { Self::to_rust(interface) };
         (|| {
-            // SAFETY: By safety contract, `info` points to a valid parameter.
-            let info = unsafe { info.as_mut().ok_or(EfiError::InvalidParameter)? };
-            rust_impl.get_slot_info(index).inspect(|slot_info| *info = *slot_info)
+            check_required_params(&[&info])?;
+            // SAFETY: `info` was checked non-null and aligned above, and by safety contract is
+            // valid for writes.
+            rust_impl.get_slot_info(index).inspect(|slot_info| unsafe { info.write(*slot_info) })
         })()
         .into()
     }
@@ -137,9 +139,10 @@ impl<R: GblEfiBootControl> Provider<'_, GblEfiBootControlProtocol, R> {
         // first field, `interface` is also a valid pointer to the `Self` struct.
         let rust_impl = unsafe { Self::to_rust(interface) };
         (|| {
-            // SAFETY: By safety contract, `info` points to a valid parameter.
-            let info = unsafe { info.as_mut().ok_or(EfiError::InvalidParameter)? };
-            rust_impl.get_current_slot().inspect(|slot_info| *info = *slot_info)
+            check_required_params(&[&info])?;
+            // SAFETY: `info` was checked non-null and aligned above, and by safety contract is
+            // valid for writes.
+            rust_impl.get_current_slot().inspect(|slot_info| unsafe { info.write(*slot_info) })
         })()
         .into()
     }
@@ -177,9 +180,12 @@ impl<R: GblEfiBootControl> Provider<'_, GblEfiBootControlProtocol, R> {
         // first field, `interface` is also a valid pointer to the `Self` struct.
         let rust_impl = unsafe { Self::to_rust(interface) };
         (|| {
-            // SAFETY: By safety contract, `mode` points to a valid parameter.
-            let mode = unsafe { mode.as_mut().ok_or(EfiError::InvalidParameter)? };
-            rust_impl.get_one_shot_boot_mode().inspect(|boot_mode| *mode = *boot_mode)
+            check_required_params(&[&mode])?;
+            // SAFETY: `mode` was checked non-null and aligned above, and by safety contract is
+            // valid for writes.
+            rust_impl
+                .get_one_shot_boot_mode()
+                .inspect(|boot_mode| unsafe { mode.write(*boot_mode) })
         })()
         .into()
     }

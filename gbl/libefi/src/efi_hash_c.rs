@@ -21,10 +21,8 @@ use crate::{
     with_global_efi_entry,
 };
 use avb_bindgen::avb_abort;
-use core::{
-    ptr::{copy_nonoverlapping, null_mut},
-    slice::from_raw_parts,
-};
+use core::ptr::{copy_nonoverlapping, null_mut};
+use efi_types::protocol::slice_from_raw_parts;
 use zerocopy::IntoBytes;
 
 // TODO(b/439659986): store the hasher by value instead of dynamically
@@ -48,17 +46,21 @@ unsafe fn efi_sha_update<Algorithm: HashAlgorithm>(
     data: *const u8,
     len: usize,
 ) {
-    if hasher == null_mut() {
+    if hasher.is_null() {
         // Safety:
         // * FFI call
         unsafe { avb_abort() };
     }
 
     // Safety:
-    // * It is a precondition that `hasher` is a pointer to a valid
-    //   Hasher<Algorithm>.
-    // * It is a precondition that `data` is valid to read for `len` bytes.
-    let _ = unsafe { (*hasher).update(from_raw_parts(data, len)) };
+    // * It is a precondition that `data` is valid to read for `len` bytes. `slice_from_raw_parts`
+    //   accepts a null `data` when `len` is 0 and rejects it otherwise.
+    // * `avb_abort` is an FFI call.
+    let slice =
+        unsafe { slice_from_raw_parts(data, len) }.unwrap_or_else(|_| unsafe { avb_abort() });
+    // Safety:
+    // * It is a precondition that `hasher` is a pointer to a valid Hasher<Algorithm>.
+    let _ = unsafe { (*hasher).update(slice) };
 }
 
 /// Safety:
@@ -69,7 +71,10 @@ unsafe fn efi_sha_final<Algorithm: HashAlgorithm>(
     hasher_ptr: *mut *mut Hasher<'static, Algorithm>,
     out: *mut u8,
 ) {
-    if hasher_ptr == null_mut() {
+    // Safety:
+    // * `*hasher_ptr` is only read after `hasher_ptr` is checked non-null, and it is otherwise
+    //   valid per the function contract.
+    if hasher_ptr.is_null() || unsafe { (*hasher_ptr).is_null() } || out.is_null() {
         // Safety:
         // * FFI call
         unsafe { avb_abort() };

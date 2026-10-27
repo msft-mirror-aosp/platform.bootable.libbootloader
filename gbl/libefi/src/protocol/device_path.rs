@@ -224,7 +224,7 @@ pub struct DevicePathText<'a> {
 
 impl<'a> DevicePathText<'a> {
     pub(crate) fn new(text: *mut u16, efi_entry: &'a EfiEntry) -> Self {
-        if text.is_null() {
+        if text.is_null() || !text.is_aligned() {
             return Self { text: None, efi_entry: efi_entry };
         }
 
