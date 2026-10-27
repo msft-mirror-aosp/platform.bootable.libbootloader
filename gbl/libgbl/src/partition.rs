@@ -168,6 +168,9 @@ pub struct GblDisk<D, G> {
     disk: D,
     partitions: RefCell<PartitionTable<G>>,
     info_cache: BlockInfo,
+    // Whether `partitions` is `PartitionTable::Gpt`. The variant never changes after construction.
+    // Cached so that it can be queried while `partitions` is borrowed by an ongoing GPT update.
+    is_gpt: bool,
 }
 
 impl<B, P, T> GblDisk<Disk<B, P>, Gpt<T>>
@@ -200,7 +203,12 @@ where
     /// Creates a new instance as a GPT device.
     pub fn new_gpt(disk: Disk<B, P>, gpt: Gpt<T>) -> Self {
         let info_cache = disk.io().info();
-        Self { disk: disk.into(), info_cache, partitions: PartitionTable::Gpt(gpt).into() }
+        Self {
+            disk: disk.into(),
+            info_cache,
+            partitions: PartitionTable::Gpt(gpt).into(),
+            is_gpt: true,
+        }
     }
 
     /// Creates a new instance as a raw storage partition.
@@ -210,7 +218,14 @@ where
             disk: disk.into(),
             info_cache,
             partitions: PartitionTable::Raw(RawName::new(name)?, info_cache.total_size()?).into(),
+            is_gpt: false,
         })
+    }
+
+    /// Returns whether the disk uses the GPT partition scheme rather than being a single raw
+    /// partition.
+    pub fn is_gpt(&self) -> bool {
+        self.is_gpt
     }
 
     /// Gets the cached `BlockInfo`.

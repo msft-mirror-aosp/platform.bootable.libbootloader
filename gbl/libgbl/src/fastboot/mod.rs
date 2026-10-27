@@ -548,6 +548,15 @@ where
         Ok(blk_id)
     }
 
+    /// Returns the ID of the only GPT block device, or `None` if there are zero or multiple.
+    fn unique_gpt_blk_id(&self) -> Option<usize> {
+        let mut gpt_ids = self.disks.iter().enumerate().filter(|(_, v)| v.is_gpt()).map(|(i, _)| i);
+        match (gpt_ids.next(), gpt_ids.next()) {
+            (Some(id), None) => Some(id),
+            _ => None,
+        }
+    }
+
     /// Parses and checks the argument for "fastboot flash gpt/<blk_idx>/"resize".
     ///
     /// Also verifies that the device is critically-unlocked if necessary.
@@ -566,9 +575,11 @@ where
         if next_arg(&mut args).filter(|v| *v == FLASH_GPT_PART).is_none() {
             return Ok(None);
         }
-        // Parses block device ID.
+        // Parses block device ID. Falls back to the only GPT device if not resolved, so that raw
+        // devices do not make the target ambiguous.
         let blk_id = self
             .check_next_arg_blk_id(&mut args)?
+            .or_else(|| self.unique_gpt_blk_id())
             .ok_or("Block ID is required for flashing GPT")?;
         // Parses resize option.
         let resize = match next_arg(&mut args) {
@@ -4742,6 +4753,87 @@ pub(crate) mod test {
             listener.dump_transport_out_queue()
         );
     }
+
+    #[test]
+    fn test_update_gpt_unique_gpt_blk_with_raw_blks() {
+        let disk_orig = include_bytes!("../../../libstorage/test/gpt_test_1.bin");
+        let mut disk = disk_orig.to_vec();
+        disk[512..][..512].fill(0);
+        disk.last_chunk_mut::<512>().unwrap().fill(0);
+        let raw_0 = [0xaau8; KiB!(4)];
+        let raw_1 = [0x55u8; KiB!(4)];
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"raw_0", raw_0);
+        storage.add_gpt_device(&disk);
+        storage.add_raw_device(c"raw_1", raw_1);
+        let buffers = vec![Some(vec![0u8; KiB!(128)]); 2];
+        let mut gbl_ops = FakeGblOps::new(&storage);
+        gbl_ops.avb_device_status.is_unlocked = true;
+        let listener: SharedTestListener = Default::default();
+        let (transports, tcp) = (&mut [&listener], &listener);
+
+        let gpt = &disk_orig[..34 * 512];
+        listener.add_transport_input(format!("download:{:#x}", gpt.len()).as_bytes());
+        listener.add_transport_input(gpt);
+        listener.add_transport_input(b"flash:gpt");
+        listener.add_transport_input(b"getvar:partition-size:boot_a");
+        listener.add_transport_input(b"erase:gpt");
+        listener.add_transport_input(b"getvar:partition-size:boot_a");
+        listener.add_transport_input(format!("download:{:#x}", gpt.len()).as_bytes());
+        listener.add_transport_input(gpt);
+        listener.add_transport_input(b"flash:gpt//resize");
+        listener.add_transport_input(b"getvar:partition-size:boot_a");
+        listener.add_transport_input(b"oem gbl-set-default-block 2");
+        listener.add_transport_input(format!("download:{:#x}", gpt.len()).as_bytes());
+        listener.add_transport_input(gpt);
+        listener.add_transport_input(b"flash:gpt");
+        listener.add_transport_input(b"continue");
+
+        block_on(run_gbl_fastboot_stack::<3>(
+            &mut gbl_ops,
+            buffers,
+            transports,
+            Some(tcp),
+            Default::default(),
+        ));
+
+        assert_eq!(
+            listener.transport_out_queue(),
+            make_expected_transport_out(&[
+                b"DATA00004400",
+                b"OKAY",
+                b"INFOUpdating GPT...",
+                b"OKAY",
+                b"OKAY0x2000",
+                b"OKAY",
+                b"FAILNotFound",
+                b"DATA00004400",
+                b"OKAY",
+                b"INFOUpdating GPT...",
+                b"OKAY",
+                b"OKAY0x2000",
+                b"INFODefault block device: 0x2",
+                b"OKAY",
+                b"DATA00004400",
+                b"OKAY",
+                b"INFOUpdating GPT...",
+                b"FAILBlock device is not for GPT",
+                b"OKAY",
+            ]),
+            "\nActual Transport output:\n{}",
+            listener.dump_transport_out_queue()
+        );
+
+        assert_eq!(
+            storage[0].partition_io(None).unwrap().dev().io().storage.borrow().deref(),
+            &raw_0
+        );
+        assert_eq!(
+            storage[2].partition_io(None).unwrap().dev().io().storage.borrow().deref(),
+            &raw_1
+        );
+    }
+
     #[test]
     fn test_update_gpt_critical_locked() {
         let disk_orig = include_bytes!("../../../libstorage/test/gpt_test_1.bin");
