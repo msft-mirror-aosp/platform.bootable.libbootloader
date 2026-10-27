@@ -957,13 +957,14 @@ impl<'r, 'a: 'r, T: GblOps<'a>> GblOps<'a> for RambootOps<'r, T> {
         unreachable!()
     }
 
-    fn handle_loaded_os(
-        &mut self,
-        kernel: &[u8],
-        ramdisk: &[u8],
-        device_tree: &[u8],
-    ) -> Result<(), Error> {
-        self.ops.handle_loaded_os(kernel, ramdisk, device_tree)
+    fn one_shot_pause_fastboot_after_load(&mut self) -> bool {
+        // Ramboot should never call this interface.
+        unreachable!()
+    }
+
+    fn handle_loaded_os(&mut self, _: &[u8], _: &[u8], _: &[u8]) -> Result<(), Error> {
+        // Ramboot should never call this interface.
+        unreachable!()
     }
 
     fn get_base_sp(&mut self) -> Option<usize> {
@@ -1400,6 +1401,10 @@ pub(crate) mod test {
 
         /// For return by `get_fw_api_level`.
         pub fw_api_level: Option<Result<u64, Error>>,
+
+        /// Custom handler for `Self::handle_loaded_os`.
+        pub handle_loaded_os_handler:
+            Option<&'a mut dyn FnMut(&[u8], &[u8], &[u8]) -> Result<(), Error>>,
     }
 
     /// Print `console_out` output, which can be useful for debugging.
@@ -1947,11 +1952,14 @@ pub(crate) mod test {
 
         fn handle_loaded_os(
             &mut self,
-            _kernel: &[u8],
-            _ramdisk: &[u8],
-            _device_tree: &[u8],
+            kernel: &[u8],
+            ramdisk: &[u8],
+            device_tree: &[u8],
         ) -> Result<(), Error> {
-            Ok(())
+            match self.handle_loaded_os_handler {
+                Some(ref mut func) => (*func)(kernel, ramdisk, device_tree),
+                None => Ok(()),
+            }
         }
 
         fn get_base_sp(&mut self) -> Option<usize> {

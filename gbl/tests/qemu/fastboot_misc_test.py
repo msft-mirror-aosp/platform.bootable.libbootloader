@@ -80,7 +80,15 @@ def main():
   client = VsockFastbootClient(port=port)
   client.run_command(b"reboot-recovery", assert_ok=True)
 
-  # Poll the console log file for success pattern
+  # Poll the console log file for HandleLoadedOs() and success pattern
+  wait_for_log_pattern(
+      console_log_path,
+      [
+          r"^\[\d+\.\d+\] handle_loaded_os: kernel @ 0x[0-9a-fA-F]+"
+          r" \(0x[0-9a-fA-F]+\), ramdisk @ 0x[0-9a-fA-F]+"
+          r" \(0x[0-9a-fA-F]+\), fdt @ 0x[0-9a-fA-F]+ \(0x[0-9a-fA-F]+\)$"
+      ],
+  )
   wait_for_log_pattern(
       console_log_path,
       [r"^\[\d+\.\d+\] Normal Mode: false$"],

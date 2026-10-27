@@ -23,5 +23,8 @@ rust_library(
     name = "gbl_efi_boot_control",
     srcs = ["src/lib.rs"],
     edition = "2024",
-    deps = ["@gbl//libefi_types"],
+    deps = [
+        "@gbl//libefi_types",
+        "@gbl//libsemihosting",
+    ],
 )

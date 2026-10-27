@@ -824,32 +824,38 @@ pub fn android_main<'a, 'b, G: GblOps<'a>>(
             load_result: None,
         });
         gbl_println!(ops, "Leaving fastboot mode...");
-        // Checks if "fastboot boot" has loaded an android image.
-        if matches!(&result.loaded_image_info, LoadedImageInfo::Android { .. }) {
-            gbl_println!(ops, "Booting from \"fastboot boot\"");
-            return Ok(result.split_loaded_android(boot_buffer).unwrap());
-        }
 
-        // Device state or disk content might have changed. Re-sync preloaded partition buffer.
-        ops.sync_partition_buffer(true)?;
+        if !matches!(&result.loaded_image_info, LoadedImageInfo::Android { .. }) {
+            // Device state or disk content might have changed. Re-sync preloaded partition buffer.
+            ops.sync_partition_buffer(true)?;
 
-        // Checks whether fastboot has set a different active slot. Reboot if it does.
-        if slot.map_or(
-            false,
-            |s| matches!(result.last_set_active_slot, Some(x) if x != s.suffix.as_char()),
-        ) {
-            gbl_println!(ops, "Active slot changed by \"fastboot set_active\". Reset..");
-            ops.reboot()?;
+            // Checks whether fastboot has set a different active slot. Reboot if it does.
+            if slot.map_or(
+                false,
+                |s| matches!(result.last_set_active_slot, Some(x) if x != s.suffix.as_char()),
+            ) {
+                gbl_println!(ops, "Active slot changed by \"fastboot set_active\". Reset..");
+                ops.reboot()?;
+            }
         }
     }
 
-    let is_recovery = boot_mode.should_enter_recovery()
-        || matches!(one_shot_boot_mode, Some(OneShotBootMode::Recovery));
-    let load_res = android_load_verify_fixup(ops, slot, is_recovery, boot_buffer.as_borrowed())
-        .map(|(ramdisk, fdt, kernel, _)| {
-            let [ramdisk, fdt, kernel] = [ramdisk, fdt, kernel].map(|v| v.as_ptr_range());
-            LoadedImageInfo::Android { ramdisk, fdt, kernel }
-        });
+    let load_res = match &result.loaded_image_info {
+        info @ LoadedImageInfo::Android { .. } => {
+            gbl_println!(ops, "Booting from \"fastboot boot\"");
+            Ok(info.clone())
+        }
+        _ => {
+            let is_recovery = boot_mode.should_enter_recovery()
+                || matches!(one_shot_boot_mode, Some(OneShotBootMode::Recovery));
+            android_load_verify_fixup(ops, slot, is_recovery, boot_buffer.as_borrowed()).map(
+                |(ramdisk, fdt, kernel, _)| {
+                    let [ramdisk, fdt, kernel] = [ramdisk, fdt, kernel].map(|v| v.as_ptr_range());
+                    LoadedImageInfo::Android { ramdisk, fdt, kernel }
+                },
+            )
+        }
+    };
 
     if result.pause_in_fastboot || ops.one_shot_pause_fastboot_after_load() {
         let result = &mut Default::default();
@@ -3249,6 +3255,110 @@ pub(crate) mod tests {
             "\nActual USB output:\n{}",
             listener.dump_transport_out_queue()
         );
+    }
+
+    #[test]
+    fn test_android_main_fastboot_boot_handle_loaded_os() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"vbmeta_a", read_test_data("android/vbmeta_v2_a.img"));
+        storage.add_raw_device(c"misc", vec![0u8; 4 * 1024 * 1024]);
+
+        let mut calls = 0usize;
+        let mut handler = |kernel: &[u8], ramdisk: &[u8], _: &[u8]| {
+            calls += 1;
+            checks_loaded_v2_slot_a_unlocked_mode(ramdisk, kernel);
+            Err(Error::SecurityViolation)
+        };
+
+        let mut ops = default_test_gbl_ops(&storage);
+        ops.one_shot_boot_mode = Some(OneShotBootMode::Bootloader);
+        ops.avb_device_status.is_unlocked = true;
+        ops.handle_loaded_os_handler = Some(&mut handler);
+
+        let listener: SharedTestListener = Default::default();
+        let data = read_test_data("android/boot_v2_a.img");
+        listener.add_transport_input(format!("download:{:#x}", data.len()).as_bytes());
+        listener.add_transport_input(&data);
+        listener.add_transport_input(b"boot");
+
+        let mut load_buffer = vec![0u8; 8 * 1024 * 1024];
+        let res = android_main(&mut ops, (&mut load_buffer[..]).into(), |fb| {
+            fb.run_n::<2>(&mut vec![0u8; 256 * 1024], &mut [&listener], Some(&listener));
+        });
+
+        assert_eq!(res.unwrap_err(), Error::SecurityViolation.into());
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn test_android_main_fastboot_boot_post_load_fastboot() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"vbmeta_a", read_test_data("android/vbmeta_v2_a.img"));
+        storage.add_raw_device(c"misc", vec![0u8; 4 * 1024 * 1024]);
+
+        let mut ops = default_test_gbl_ops(&storage);
+        ops.one_shot_boot_mode = Some(OneShotBootMode::Bootloader);
+        ops.avb_device_status.is_unlocked = true;
+
+        let listener: SharedTestListener = Default::default();
+        let data = read_test_data("android/boot_v2_a.img");
+        listener.add_transport_input(b"oem gbl-pause-fastboot-after-load");
+        listener.add_transport_input(format!("download:{:#x}", data.len()).as_bytes());
+        listener.add_transport_input(&data);
+        listener.add_transport_input(b"boot");
+        // `oem gbl-stage` only succeeds in post-load fastboot after images are loaded.
+        listener.add_transport_input(b"oem gbl-stage kernel");
+        listener.add_transport_input(b"continue");
+
+        let mut load_buffer = vec![0u8; 8 * 1024 * 1024];
+        let res = android_main(&mut ops, (&mut load_buffer[..]).into(), |fb| {
+            fb.run_n::<2>(&mut vec![0u8; 256 * 1024], &mut [&listener], Some(&listener));
+        });
+
+        assert_eq!(
+            listener.transport_out_queue(),
+            make_expected_transport_out(&[
+                b"OKAY",
+                b"DATA00004000",
+                b"OKAY",
+                b"INFOBoot image as Android slot a",
+                b"OKAY",
+                b"OKAY",
+                b"OKAY",
+            ]),
+        );
+
+        if cfg!(feature = "gbl_dev") {
+            assert!(res.is_ok());
+        } else {
+            assert_eq!(res.unwrap_err(), Error::Aborted.into());
+        }
+    }
+
+    #[test]
+    fn test_android_main_set_active_then_fastboot_boot() {
+        let mut storage = FakeGblOpsStorage::default();
+        storage.add_raw_device(c"vbmeta_b", read_test_data("android/vbmeta_v2_b.img"));
+        storage.add_raw_device(c"misc", vec![0u8; 4 * 1024 * 1024]);
+
+        let mut ops = default_test_gbl_ops(&storage);
+        ops.one_shot_boot_mode = Some(OneShotBootMode::Bootloader);
+        ops.avb_device_status.is_unlocked = true;
+
+        let listener: SharedTestListener = Default::default();
+        let data = read_test_data("android/boot_v2_b.img");
+        listener.add_transport_input(b"set_active:b");
+        listener.add_transport_input(format!("download:{:#x}", data.len()).as_bytes());
+        listener.add_transport_input(&data);
+        listener.add_transport_input(b"boot");
+
+        let mut load_buffer = vec![0u8; 8 * 1024 * 1024];
+        let (ramdisk, _, kernel, _) = android_main(&mut ops, (&mut load_buffer[..]).into(), |fb| {
+            fb.run_n::<2>(&mut vec![0u8; 256 * 1024], &mut [&listener], Some(&listener));
+        })
+        .unwrap();
+
+        checks_loaded_v2_slot_b_unlocked_mode(ramdisk, kernel);
     }
 
     #[test]
