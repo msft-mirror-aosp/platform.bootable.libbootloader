@@ -100,7 +100,7 @@ fn main() {
     let mut part_files = vec![];
     for (i, part_arg) in args.partition.iter().enumerate() {
         let part_arg: Vec<&str> = part_arg.split(',').collect();
-        let name = part_arg.get(0).expect("Partition name is required");
+        let name = part_arg.first().expect("Partition name is required");
         let size_str = part_arg.get(1).expect("Partition size is required");
         let part_size = parse_size_str(size_str).unwrap();
 
