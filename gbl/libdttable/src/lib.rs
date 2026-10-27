@@ -214,12 +214,12 @@ pub struct DtTableImage<'a> {
 }
 
 /// To iterate over entries.
-pub struct DtTableImageIterator<'a> {
-    table_image: &'a DtTableImage<'a>,
+pub struct DtTableImageIterator<'a, 'b> {
+    table_image: &'b DtTableImage<'a>,
     current_index: usize,
 }
 
-impl<'a> Iterator for DtTableImageIterator<'a> {
+impl<'a, 'b> Iterator for DtTableImageIterator<'a, 'b> {
     type Item = DtTableEntry<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -270,7 +270,7 @@ impl<'a> DtTableImage<'a> {
     }
 
     /// Returns an iterator over the entries in the DT table image
-    pub fn entries(&'a self) -> DtTableImageIterator<'a> {
+    pub fn entries<'b>(&'b self) -> DtTableImageIterator<'a, 'b> {
         DtTableImageIterator { table_image: self, current_index: 0 }
     }
 

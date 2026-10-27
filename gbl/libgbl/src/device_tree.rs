@@ -209,9 +209,9 @@ impl<'a> DtComponentsRegistry<'a> {
         }
     }
 
-    /// Load device tree components from a dt table image. Ensure components are 8 bytes
-    /// aligned by using provided buffer to cut from. Returns remaining buffer.
-    pub fn append_from_dttable<'b, 'c: 'a>(
+    /// Load device tree components from a dt table image. Entries already 8-byte aligned are
+    /// borrowed in place; unaligned entries are copied into `buffer`. Returns remaining buffer.
+    pub fn append_from_dttable<'b: 'a, 'c: 'a>(
         &mut self,
         component_source: DtComponentSource,
         dttable: &DtTableImage<'b>,
@@ -223,18 +223,24 @@ impl<'a> DtComponentsRegistry<'a> {
 
         let mut remains = buffer;
         for (idx, entry) in dttable.entries().enumerate() {
-            // TODO(b/374336105): Find a better way to handle 8-bytes alignment rather than copy.
-            let (aligned_buffer, rest) = aligned_subslice(remains, FDT_ALIGNMENT)?
-                .split_at_mut_checked(entry.dtb.len())
-                .ok_or(Error::Other(Some(
-                    "Provided buffer is too small to ensure dttable entry is aligned",
-                )))?;
-            aligned_buffer.copy_from_slice(entry.dtb);
+            let dt = if entry.dtb.as_ptr().align_offset(FDT_ALIGNMENT) == 0 {
+                entry.dtb
+            } else {
+                // TODO(b/374336105): Find a better way to handle 8-bytes alignment rather than copy.
+                let (aligned_buffer, rest) = aligned_subslice(remains, FDT_ALIGNMENT)?
+                    .split_at_mut_checked(entry.dtb.len())
+                    .ok_or(Error::Other(Some(
+                        "Provided buffer is too small to ensure dttable entry is aligned",
+                    )))?;
+                aligned_buffer.copy_from_slice(entry.dtb);
+                remains = rest;
+                &aligned_buffer[..]
+            };
 
             // Make sure the FDT reported size is valid (fits in the dttable entry size).
-            let fdt_header = FdtHeader::from_bytes_ref(aligned_buffer)?;
+            let fdt_header = FdtHeader::from_bytes_ref(dt)?;
             let fdt_totalsize = fdt_header.totalsize();
-            if fdt_totalsize > aligned_buffer.len() {
+            if fdt_totalsize > dt.len() {
                 return Err(Error::Other(Some("DTBO overlay totalsize exceeds entry size")));
             }
 
@@ -246,11 +252,9 @@ impl<'a> DtComponentsRegistry<'a> {
                 component_type: Self::component_type(component_source, &entry),
                 selection_metadata: Some(entry.metadata),
                 // Trim off any unused trailing bytes e.g. due to dttable padding.
-                dt: &aligned_buffer[..fdt_totalsize],
+                dt: &dt[..fdt_totalsize],
                 selected: false,
             });
-
-            remains = rest;
         }
 
         Ok(remains)
@@ -634,6 +638,59 @@ pub(crate) mod test {
 
         // Check data is aligned
         registry.components().for_each(|c| assert!(c.dt.as_ptr().align_offset(FDT_ALIGNMENT) == 0));
+    }
+
+    #[test]
+    fn test_components_append_from_dttable_borrows_aligned_in_place() {
+        let raw = include_bytes!("../../libdttable/test/data/dttable_v0.img");
+        let mut backing = vec![0u8; raw.len() + FDT_ALIGNMENT];
+        let aligned_dttable =
+            &mut aligned_subslice(&mut backing[..], FDT_ALIGNMENT).unwrap()[..raw.len()];
+        aligned_dttable.copy_from_slice(raw);
+
+        let table = DtTableImage::from_bytes(aligned_dttable).unwrap();
+        let mut empty_scratch = [];
+        let mut registry = DtComponentsRegistry::new();
+        let remains = registry
+            .append_from_dttable(DtComponentSource::Dtbo, &table, &mut empty_scratch)
+            .unwrap();
+        assert!(remains.is_empty());
+
+        for (component, entry) in registry.components().zip(table.entries()) {
+            assert!(core::ptr::eq(component.dt.as_ptr(), entry.dtb.as_ptr()));
+            assert_eq!(component.dt, entry.dtb);
+        }
+    }
+
+    #[test]
+    fn test_components_append_from_dttable_copies_unaligned() {
+        let raw = include_bytes!("../../libdttable/test/data/dttable_v0.img");
+        // Shift by 4 bytes so DtTableHeader remains 4-byte aligned while entries (mod 8 == 4)
+        // are not 8-byte (FDT_ALIGNMENT) aligned.
+        let mut backing = vec![0u8; raw.len() + FDT_ALIGNMENT + 4];
+        let aligned_backing = aligned_subslice(&mut backing[..], FDT_ALIGNMENT).unwrap();
+        let unaligned_dttable = &mut aligned_backing[4..4 + raw.len()];
+        unaligned_dttable.copy_from_slice(raw);
+
+        let table = DtTableImage::from_bytes(unaligned_dttable).unwrap();
+        let mut empty_scratch = [];
+        let mut empty_registry = DtComponentsRegistry::new();
+        assert!(empty_registry
+            .append_from_dttable(DtComponentSource::Dtbo, &table, &mut empty_scratch)
+            .is_err());
+
+        let mut buffer = vec![0u8; 4096];
+        let initial_len = buffer.len();
+        let mut registry = DtComponentsRegistry::new();
+        let remains =
+            registry.append_from_dttable(DtComponentSource::Dtbo, &table, &mut buffer[..]).unwrap();
+        assert!(remains.len() < initial_len);
+
+        for (component, entry) in registry.components().zip(table.entries()) {
+            assert_eq!(component.dt.as_ptr().align_offset(FDT_ALIGNMENT), 0);
+            assert!(!core::ptr::eq(component.dt.as_ptr(), entry.dtb.as_ptr()));
+            assert_eq!(component.dt, entry.dtb);
+        }
     }
 
     #[test]
