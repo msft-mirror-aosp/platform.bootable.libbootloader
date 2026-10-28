@@ -74,7 +74,7 @@ mod tests {
         // You can now use the file content for your test.
         let mut hasher = AvbHashOps::default();
         let metadata = liblp::parse(&buffer, &mut hasher)
-            .expect(format!("Failed to parse super.bin with size {}", buffer.len()).as_str());
+            .unwrap_or_else(|_| panic!("Failed to parse super.bin with size {}", buffer.len()));
 
         // Add assertions to verify the parsed data.
         let magic = metadata.geometry.magic;
