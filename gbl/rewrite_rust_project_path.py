@@ -21,7 +21,7 @@ import shutil
 import tempfile
 
 # To generate rust-project.json from bazel, run
-# ./tools/bazel run @rules_rust//tools/rust_analyzer:gen_rust_project --norepository_disable_download -- --bazel ./tools/bazel @gbl//efi/...
+# ./tools/bazel run @rules_rust//tools/rust_analyzer:gen_rust_project --norepository_disable_download -- --bazel ./tools/bazel --config=no_clippy @gbl//efi/...
 # However, this yields incorrect source path.
 # Your source file
 # /usr/local/google/home/zhangkelvin/uefi-gbl-mainline/bootable/libbootloader/gbl/efi/src/main.rs
