@@ -16,7 +16,7 @@
 //! https://en.cppreference.com/w/c/string/byte/strncmp
 
 use core::cmp::Ordering;
-use core::ffi::{c_char, c_int, CStr};
+use core::ffi::{c_char, c_int};
 
 /// int strcmp(const char *s1, const char *s2);
 ///
@@ -25,10 +25,9 @@ use core::ffi::{c_char, c_int, CStr};
 /// * `s1` and `s2` must be valid pointers to null terminated C strings.
 #[cfg_attr(not(target_os = "linux"), no_mangle)]
 pub unsafe extern "C" fn strcmp(s1: *const c_char, s2: *const c_char) -> c_int {
-    // SAFETY: `s1` and `s2` are valid null-terminated strings. References are only used
-    // within function.
-    let (lhs, rhs) = unsafe { (CStr::from_ptr(s1.cast()), CStr::from_ptr(s2.cast())) };
-    Ord::cmp(lhs, rhs) as _
+    // SAFETY: `s1` and `s2` are valid null-terminated strings, so `strncmp()` stops at the first
+    // null byte or mismatch without reading past the end of either string.
+    unsafe { strncmp(s1, s2, usize::MAX) }
 }
 
 /// int strncmp(const char *s1, const char *s2, size_t n);
@@ -125,6 +124,13 @@ mod test {
     #[test]
     fn strcmp_case_sensitivity() {
         assert_eq!(do_strcmp("First", "first"), -1);
+    }
+
+    #[test]
+    fn strcmp_unsigned_char_comparison() {
+        // U+0080 is encoded as 0xc2 0x80 in UTF-8.
+        assert_eq!(do_strcmp("\u{80}", "\u{7f}"), 1);
+        assert_eq!(do_strcmp("\u{7f}", "\u{80}"), -1);
     }
 
     // strncmp tests
