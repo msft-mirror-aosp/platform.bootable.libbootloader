@@ -20,7 +20,6 @@ use crate::{
     versioned_protocol,
 };
 use core::ffi::c_void;
-use core::ptr::null_mut;
 use efi_types::{
     EfiGuid, EfiMacAddress, EfiSimpleNetworkMode, EfiSimpleNetworkProtocol,
     EFI_SIMPLE_NETWORK_PROTOCOL_GUID_U64_0, EFI_SIMPLE_NETWORK_PROTOCOL_GUID_U64_1,
@@ -219,5 +218,5 @@ impl<'a> Protocol<'a, SimpleNetworkProtocol> {
 
 /// A helper to convert an `Option<&mut T>` to `*mut T`. None maps to NULL.
 fn option_ref_mut_to_pointer<T>(option: Option<&mut T>) -> *mut T {
-    option.map(|t| t as *mut _).unwrap_or(null_mut())
+    option.map(|t| t as *mut _).unwrap_or_default()
 }

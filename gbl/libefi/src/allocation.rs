@@ -201,7 +201,7 @@ impl EfiAllocator {
             .and_then(|v| v.boot_services_checked())
             .and_then(|v| v.allocate_pool(EFI_MEMORY_TYPE_LOADER_DATA, size))
             .inspect_err(|e| efi_try_print!("Failed to allocate: {e}"))
-            .unwrap_or(null_mut()) as _
+            .unwrap_or_default() as _
     }
 
     /// Deallocates memory previously allocated by `Self::allocate()`.
